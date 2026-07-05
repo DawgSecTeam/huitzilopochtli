@@ -50,40 +50,108 @@ your target scale.
 ## `tests/proxmox/` — opt-in, live infrastructure required
 
 Not run by default (`pytest.ini` excludes the `proxmox` marker). These
-clone real, disposable VMs on a Proxmox host to test what the fast tiers
-structurally cannot:
-
-- `test_local_honor_distribution.py` — the actual `.pyz` + systemd/OpenRC
-  unit running under a real init system on real Debian/Fedora/Alpine,
-  including Alpine's `apk add python3` caveat (packaging/README.md).
-- `test_ranked_two_machines.py` — the agent and engine on two genuinely
-  separate hosts, crossing a real network boundary.
-
-Run explicitly once configured:
+clone real, disposable VMs on a Proxmox host (credentials read from a local
+`tests/proxmox/.env`, gitignored, copied from `workshop-vm-distribution`'s
+own `.env` values -- this repo never reads or modifies that other, unrelated
+repo) to test what the fast tiers structurally cannot. All VM interaction
+goes through the QEMU guest agent API (file-write/file-read/exec), not SSH.
 
 ```
 pytest -m proxmox
 ```
 
-**Setup required** (not yet provided — see `tests/proxmox/proxmox_helper.py`
-for the exact env vars expected):
+### `test_local_honor_distribution.py` — PASSES (Ubuntu 24.04 + Fedora 44)
 
-1. Proxmox API credentials (`PROXMOX_URL`, `PROXMOX_USER`,
-   `PROXMOX_TOKEN_NAME`, `PROXMOX_TOKEN_SECRET`, `PROXMOX_NODE`) in a local
-   `tests/proxmox/.env` (gitignored) — this repo does not read or modify
-   `workshop-vm-distribution`'s `.env`, it's a separate, unrelated tool; copy
-   the values over if reusing the same Proxmox host.
-2. Template VM IDs for Debian, Fedora, and Alpine (each with
-   `qemu-guest-agent` installed, matching the requirement documented in
-   `packaging/README.md`'s Alpine caveat).
-3. Confirmation that a single template is fine to clone twice for the
-   two-machine ranked-mode test (engine host + agent host), or a separate
-   longer-lived engine host if preferred.
-4. Which network bridge/VLAN these disposable test VMs should attach to.
-5. Confirmation that the `dawgtest-` VM name prefix (mirroring
-   `workshop-vm-distribution`'s own `workshop-` safety convention) is an
-   acceptable cleanup boundary — every test tears its own clones down
-   in a fixture-teardown block regardless of outcome.
+Builds the real `.pyz`, pushes it + a compiled scenario to a freshly-cloned
+VM via the guest agent, runs it with the VM's own system `python3`, and
+confirms the report is correct. Alpine is skipped for now per instruction.
 
-Until these are supplied, `tests/proxmox/` contains the helper scaffolding
-and marker wiring but the two test files themselves are not yet written.
+**Scope note**: installs to `/tmp/dawgscore` rather than the production
+`/opt/dawgscore` path, and runs the agent directly rather than through the
+real systemd unit. This is because the Fedora template's `qemu-guest-agent`
+runs SELinux-confined to the `virt_qemu_ga_t` domain, which is denied
+writes to `usr_t`-labeled paths (`/opt`) and `/etc/systemd/system` even as
+root (confirmed via `id` showing uid=0 and `ls -Z` showing DAC bits would
+otherwise allow it -- this is SELinux denial, not a Unix permission issue).
+`/tmp` (`tmp_t`) is allowed. This still exercises the thing process-level
+testing on the dev machine cannot -- a real `.pyz` under a real system
+`python3` on a genuinely separate, freshly-provisioned host -- just not the
+systemd-registration step. Getting that would need a `semanage fcontext`
+rule added to the shared Fedora template, a real change to shared
+infrastructure this test suite doesn't make on its own.
+
+### `test_ranked_two_machines.py` — BLOCKED on two infrastructure issues
+
+The test code is believed correct (built and iterated against real
+failures until each bug was fixed -- see below) but cannot currently pass,
+for reasons outside this repo:
+
+1. **Two clones of the same template collide onto the identical DHCP
+   IP.** Confirmed empirically (`ip_a == ip_b` every time, with distinct
+   MAC addresses ruled out as the cause): almost certainly the Ubuntu
+   template's `/etc/machine-id` (and thus DHCP client-id) was never reset
+   before it was converted to a template, so every clone presents the same
+   client-id regardless of MAC. **This likely also affects
+   `workshop-vm-distribution`** any time it provisions more than one VM
+   from this template concurrently -- worth checking/fixing there too.
+   Standard fix: boot the template once, `cloud-init clean --logs`, empty
+   `/etc/machine-id`, remove any cached DHCP lease files, shut down, and
+   re-convert to a template.
+2. **The Fedora template's guest-agent-spawned processes cannot make
+   outbound network connections.** Confirmed via a real failure:
+   `agent.identity.enroll()` (a plain `urllib` HTTP POST) raised
+   `URLError: <urlopen error [Errno 13] Permission denied>` when run via
+   guest-exec on Fedora -- the same SELinux confinement noted above also
+   denies outbound `connect()` for anything spawned through the guest
+   agent, not just filesystem writes. (Confirmed this doesn't affect the
+   honor-mode test above only because honor mode makes zero network
+   calls.)
+
+Working around #1 by using two *different* templates (Ubuntu engine +
+Fedora agent, since the agent role never binds a port, only connects out)
+ran into #2 instead. Using Ubuntu for both roles avoids #2 but hits #1.
+
+**Options, in rough order of durability:**
+- Fix the Ubuntu template's machine-id/cloud-init state (fixes #1, and is
+  worth doing regardless of this test suite -- see above). Then use Ubuntu
+  for both roles.
+- Relax the Fedora template's SELinux policy for `virt_qemu_ga_t` (a
+  `semanage` module permitting outbound connect, or `setenforce 0` for
+  testing purposes) -- a real security-relevant change to shared
+  infrastructure, needs an operator decision.
+- Add SSH as a fallback transport for the agent role specifically (using
+  `workshop-vm-distribution`'s `TEMPLATE_VM_USERNAME`/`TEMPLATE_VM_PASSWORD`
+  convention), bypassing the guest-agent's SELinux domain entirely --
+  more code, but requires no infrastructure changes.
+
+None of these were applied without asking first, since they all touch
+shared production infrastructure.
+
+### Bugs found and fixed in this test tier itself, along the way
+
+- `proxmox_helper.py::clone_vm` fired `status.start.post()` immediately
+  after `clone.post()` without waiting for the (asynchronous) clone task
+  to finish -- a real race condition, confirmed by `config.get()` on the
+  "cloned" VM coming back with `net0` entirely absent. Fixed by polling
+  each task's status to completion before proceeding.
+- `guest_file_write` passed `encode=True`/`encode=1` while *also*
+  pre-base64-encoding the content itself -- Proxmox's `encode` parameter
+  means "please base64-encode the plain content I'm giving you", not
+  "this content is already base64". Sending both meant the file written
+  to the VM contained literal base64 text instead of the decoded binary.
+  Fixed by encoding the content once and passing `encode=0`.
+- `guest_file_read`'s `content` field is returned already-decoded (not
+  base64, asymmetric with `file-write`'s input) -- confirmed empirically.
+  Fixed to stop double-decoding it.
+- `test_ranked_two_machines.py`'s leaderboard-polling loop didn't catch
+  connection exceptions, so a transient hiccup mid-poll crashed the whole
+  test instead of retrying.
+
+### Setup used for the runs above
+
+Credentials and template VM IDs (`ubuntu24.04`=9106, `fedora44`=109, tagged
+`template` on Proxmox) were supplied directly. Alpine was explicitly
+excluded from this pass. VM naming uses the `dawgtest-` prefix (mirroring
+`workshop-vm-distribution`'s own `workshop-` convention); every test tears
+its own clones down in a `finally` block regardless of outcome, confirmed
+empirically to leave zero stray VMs after each run.

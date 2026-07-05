@@ -1,10 +1,16 @@
-"""Auto-skip the whole tests/proxmox/ tier when credentials aren't
-configured, so `pytest -m proxmox` fails clearly and fast rather than
-erroring deep inside a test. See tests/README.md.
+"""Load tests/proxmox/.env (if present) into os.environ, and auto-skip the
+whole tests/proxmox/ tier when credentials aren't configured, so
+`pytest -m proxmox` fails clearly and fast rather than erroring deep inside
+a test. See tests/README.md.
 """
-import pytest
+import os
 
-from tests.proxmox.proxmox_helper import proxmox_env_available
+import pytest
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+from tests.proxmox.proxmox_helper import proxmox_env_available  # noqa: E402
 
 collect_ignore_glob = []
 
