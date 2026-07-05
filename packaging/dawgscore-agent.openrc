@@ -1,0 +1,44 @@
+#!/sbin/openrc-run
+# DAWGSCORE agent OpenRC init script (Alpine/musl-style systems).
+# See architecture.md §17. Functional equivalent of
+# packaging/dawgscore-agent.service.
+#
+# Install layout assumed (see packaging/README.md):
+#   /opt/dawgscore/agent.pyz
+#   /opt/dawgscore/agent_config.json
+#   /opt/dawgscore/manifest.signed.json
+#   /opt/dawgscore/rubric.json          (honor mode only)
+#   /opt/dawgscore/identity.json        (ranked mode only, 0600)
+#
+# Alpine caveat: minimal Alpine ships without Python at all -- image
+# provisioning must run `apk add python3` before this service can start.
+#
+# Same caveat as the systemd unit applies here: honor mode's agent
+# process runs the checks once and exits 0; ranked mode's process
+# loops forever. This script backgrounds the process either way
+# (command_background=true) so `rc-service` returns promptly; for
+# honor mode that just means the backgrounded process exits shortly
+# after start and rc-status will show it as stopped, which is
+# expected and harmless.
+
+name="dawgscore-agent"
+description="DAWGSCORE scoring agent"
+
+command=/usr/bin/python3
+command_args="/opt/dawgscore/agent.pyz /opt/dawgscore/agent_config.json"
+command_background=true
+directory=/opt/dawgscore
+
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+depend() {
+	# Ranked mode needs network connectivity to check in with the
+	# engine; honor mode does not strictly need it but declaring the
+	# dependency is harmless (and this same init script serves both
+	# modes, selected via agent_config.json).
+	need net
+	use dns
+	after firewall
+}

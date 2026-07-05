@@ -1,0 +1,53 @@
+# DAWGSCORE agent systemd unit. See architecture.md §17.
+#
+# Install layout assumed (see packaging/README.md):
+#   /opt/dawgscore/agent.pyz
+#   /opt/dawgscore/agent_config.json
+#   /opt/dawgscore/manifest.signed.json
+#   /opt/dawgscore/rubric.json          (honor mode only)
+#   /opt/dawgscore/identity.json        (ranked mode only, 0600)
+#
+# Ranked mode: agent/__main__.py's _run_ranked() loops forever
+# (collect -> check-in -> sleep), so this is modeled as a long-running
+# service, not a oneshot.
+#
+# Honor mode: main() runs the checks once, writes the report, and
+# exits 0. The unit below (Restart=on-failure) will NOT restart it on
+# a clean exit, which is usually fine for a one-shot honor-mode grade;
+# systemd just leaves the service in an "inactive (exited, status=0)"
+# state and the report file already reflects the single run. If you
+# want honor mode to re-grade periodically without operator action,
+# pair this unit with a systemd timer instead, or swap the commented
+# alternatives below. The SAME box image / unit file can be used for
+# either mode -- behavior is controlled entirely by agent_config.json's
+# "mode" field, so no unit changes are required to switch.
+#
+# Alternative Restart= policies (uncomment the one you want instead of
+# the default below):
+#   Restart=no          # recommended for a strictly one-shot honor install
+#   Restart=on-failure  # default here: restarts only on nonzero exit/crash
+#   Restart=always       # recommended for ranked mode if you want the
+#                         # loop to auto-recover even after unexpected
+#                         # clean exits (rare, since ranked's loop is
+#                         # infinite by design)
+
+[Unit]
+Description=DAWGSCORE scoring agent
+Documentation=file:///opt/dawgscore/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/dawgscore/agent.pyz /opt/dawgscore/agent_config.json
+WorkingDirectory=/opt/dawgscore
+Restart=on-failure
+RestartSec=5s
+
+# Hardening (best-effort; loosen if the agent's checks need broader
+# access to inspect the host -- many checks legitimately need root).
+ProtectHome=read-only
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
