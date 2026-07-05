@@ -15,6 +15,7 @@ retry next cycle.
 """
 import base64
 import json
+import os
 import sys
 import time
 import uuid
@@ -172,14 +173,33 @@ def _run_honor(config, manifest, ctx) -> None:
         f.write(html)
 
 
+def _enroll_if_first_boot(config, manifest, identity) -> None:
+    """Enrollment is a first-boot-only step (§9.6): call it once, before the
+    box's first check-in, using the one-time token provisioned into its
+    config. Never called again once an identity file exists on disk."""
+    if config.enrollment_token is None:
+        raise ValueError(
+            "ranked mode requires enrollment_token in agent_config.json for "
+            "a box's first boot (no identity file existed yet)"
+        )
+    agent.identity.enroll(
+        manifest.engine_url, config.enrollment_token, identity,
+        AGENT_VERSION, manifest.scenario_name,
+    )
+
+
 def _run_ranked(config, manifest, ctx) -> None:
     queue_path = config.identity_path + ".queue"
     last_response = None  # cached CheckinResponse across loop iterations
 
+    is_first_boot = not os.path.exists(config.identity_path)
+    identity = agent.identity.load_or_create(config.identity_path)
+    if is_first_boot:
+        _enroll_if_first_boot(config, manifest, identity)
+
     while True:
         evidence = agent.collector.run_all(manifest.checks, ctx)
 
-        identity = agent.identity.load_or_create(config.identity_path)
         bundle = Bundle(
             box_id=identity.box_id,
             seq=identity.last_seq + 1,
@@ -191,16 +211,23 @@ def _run_ranked(config, manifest, ctx) -> None:
             created_wall_claim=time.time(),
         )
 
+        # Persist the committed seq BEFORE attempting the network round-trip,
+        # not after. seq only needs to be strictly increasing (§9.4), not
+        # gapless, so it's always safe to burn one; what's NOT safe is a
+        # crash between "the engine recorded this seq" and "we saved that
+        # fact locally" -- that would desync local last_seq behind the
+        # engine's and permanently 409 every future check-in (the box can
+        # never resend a seq it's already used). Saving first means local
+        # state is always >= anything the engine could possibly have seen,
+        # even across a hard kill mid-request; a bundle that ends up queued
+        # (network down) keeps this same seq, so no collision on retry.
+        identity.last_seq = bundle.seq
+        agent.identity.save(config.identity_path, identity)
+
         client = agent.transport.TransportClient(
             manifest.engine_url, identity, queue_path=queue_path
         )
         response = client.checkin(bundle)
-
-        # Whether or not the check-in succeeded, this bundle's seq has been
-        # committed (sent, or queued with this seq preserved per §9.5) -- the
-        # seq must still advance.
-        identity.last_seq = bundle.seq
-        agent.identity.save(config.identity_path, identity)
 
         if response is not None:
             last_response = response

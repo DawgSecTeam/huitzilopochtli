@@ -15,6 +15,7 @@ class AgentConfig:
     report_path: str
     checkin_interval_s: Optional[int]  # ranked only
     authoring_public_key_path: Optional[str] = None  # for manifest signature verification
+    enrollment_token: Optional[str] = None  # ranked only; consumed once on first boot
 
 
 def load_config(config_path: str) -> AgentConfig:
@@ -23,12 +24,17 @@ def load_config(config_path: str) -> AgentConfig:
     Shape: {"mode": "honor"|"ranked", "manifest_path": str,
             "rubric_path": str|null, "identity_path": str|null,
             "report_path": str, "checkin_interval_s": int|null,
-            "authoring_public_key_path": str|null}
+            "authoring_public_key_path": str|null,
+            "enrollment_token": str|null}
 
     authoring_public_key_path is optional for backwards compatibility with
     configs written before manifest signature verification existed; if
     omitted, the agent falls back to warn-and-proceed-unverified (see
     agent/__main__.py::_load_manifest).
+
+    enrollment_token is read only on a box's first-ever ranked-mode boot
+    (see agent/__main__.py::_run_ranked) -- once the box has an identity
+    file, this field is never consulted again.
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -41,4 +47,5 @@ def load_config(config_path: str) -> AgentConfig:
         report_path=data["report_path"],
         checkin_interval_s=data.get("checkin_interval_s"),
         authoring_public_key_path=data.get("authoring_public_key_path"),
+        enrollment_token=data.get("enrollment_token"),
     )
