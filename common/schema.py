@@ -295,7 +295,8 @@ def validate_rubric(obj: dict) -> list:
                     f"{ref}.category must be one of vuln/penalty/prohibited, "
                     f"got {entry.get('category')!r}"
                 )
-            if not isinstance(entry.get("points"), int):
+            points = entry.get("points")
+            if isinstance(points, bool) or not isinstance(points, int):
                 errors.append(f"{ref}.points must be an integer")
             if not isinstance(entry.get("matcher"), dict):
                 errors.append(f"{ref}.matcher must be an object")
