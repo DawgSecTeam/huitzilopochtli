@@ -6,3 +6,5 @@ dist/
 *.db
 *.sqlite3
 *.swp
+.pytest_cache/
+tests/proxmox/.env
