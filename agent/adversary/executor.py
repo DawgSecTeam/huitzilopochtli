@@ -10,4 +10,7 @@ def execute(directive: Directive, ctx: "agent.platform.base.PlatformContext") ->
     """Dispatch directive.action via the ACTIONS registry with directive.params.
     Unknown action -> raise (fail closed; never silently ignore a directive
     from the engine, but also never execute anything outside ACTIONS)."""
-    raise NotImplementedError
+    if directive.action not in ACTIONS:
+        raise KeyError(f"unknown adversary action: {directive.action!r}")
+    action_fn = ACTIONS[directive.action]
+    action_fn(directive.params, ctx)

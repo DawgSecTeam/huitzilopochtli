@@ -7,16 +7,19 @@ callers.
 """
 
 
+from common.crypto import ed25519
+
+
 def keypair() -> tuple:
     """Return (private_key: bytes, public_key: bytes)."""
-    raise NotImplementedError
+    return ed25519.keypair()
 
 
 def sign(private_key: bytes, msg_bytes: bytes) -> bytes:
     """Sign canonical message bytes (see common.canon.canonicalize)."""
-    raise NotImplementedError
+    return ed25519.sign(private_key, msg_bytes)
 
 
 def verify(public_key: bytes, msg_bytes: bytes, sig: bytes) -> bool:
     """Verify a signature over canonical message bytes."""
-    raise NotImplementedError
+    return ed25519.verify(public_key, msg_bytes, sig)
