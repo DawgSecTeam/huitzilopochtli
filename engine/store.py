@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS adversary_log (
     issued_at REAL NOT NULL,
     params_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS scenarios (
+    scenario_name TEXT PRIMARY KEY,
+    rubric_json TEXT NOT NULL,
+    adversary_json TEXT NOT NULL,
+    uploaded_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS engine_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -150,6 +162,17 @@ class Store:
                 "INSERT INTO boxes (box_id, public_key, scenario_name, enrolled_at, "
                 "last_seq, last_boot_id, t0) VALUES (?, ?, ?, ?, 0, NULL, NULL)",
                 (box_id, public_key, scenario_name, now),
+            )
+            self._conn.commit()
+
+    def create_token(self, token: str, scenario_name: str, expires_at: float) -> None:
+        """Insert a fresh, unconsumed enrollment token. Used by the
+        POST /admin/tokens endpoint (engine/server.py)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO enrollment_tokens (token, scenario_name, expires_at, "
+                "consumed_at) VALUES (?, ?, ?, NULL)",
+                (token, scenario_name, expires_at),
             )
             self._conn.commit()
 
@@ -299,3 +322,57 @@ class Store:
             )
             for row in cur.fetchall()
         ]
+
+    # --- engine/server.py: multi-scenario support (POST /admin/scenarios) ---
+
+    def save_scenario(self, scenario_name: str, rubric_json: str,
+                       adversary_json: str) -> None:
+        """Insert or replace the rubric+adversary record for a scenario."""
+        import time
+
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO scenarios (scenario_name, rubric_json, adversary_json, "
+                "uploaded_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(scenario_name) DO UPDATE SET "
+                "rubric_json = excluded.rubric_json, "
+                "adversary_json = excluded.adversary_json, "
+                "uploaded_at = excluded.uploaded_at",
+                (scenario_name, rubric_json, adversary_json, time.time()),
+            )
+            self._conn.commit()
+
+    def get_scenario(self, scenario_name: str) -> Optional[dict]:
+        """Returns {"rubric_json": str, "adversary_json": str,
+        "uploaded_at": float} or None if the scenario is unknown."""
+        cur = self._conn.execute(
+            "SELECT rubric_json, adversary_json, uploaded_at FROM scenarios "
+            "WHERE scenario_name = ?",
+            (scenario_name,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "rubric_json": row["rubric_json"],
+            "adversary_json": row["adversary_json"],
+            "uploaded_at": row["uploaded_at"],
+        }
+
+    # --- engine/server.py: persisted server_secret (§4) ---------------------
+
+    def get_meta(self, key: str) -> Optional[str]:
+        cur = self._conn.execute(
+            "SELECT value FROM engine_meta WHERE key = ?", (key,)
+        )
+        row = cur.fetchone()
+        return row["value"] if row is not None else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO engine_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            self._conn.commit()
