@@ -2,6 +2,9 @@
 
 PHASE 1 TASK: implement. Depends only on engine.store.Store's signature.
 """
+import hashlib
+import random
+
 from common.schema import Directive
 from engine.store import Store
 
@@ -15,4 +18,25 @@ def due_directives(store: Store, box_id: str, server_secret: bytes,
     log it via store.log_adversary_event and include it in the returned
     list[Directive]. Already-issued events are never re-issued.
     """
-    raise NotImplementedError
+    seed_material = server_secret + box_id.encode()
+    seed = int.from_bytes(hashlib.sha256(seed_material).digest(), "big")
+    rng = random.Random(seed)
+
+    issued = store.get_issued_event_ids(box_id)
+    directives = []
+
+    for index, event in enumerate(event_pool):
+        event_id = f"e{index}"
+        window_s = event["window_s"]
+        offset = rng.uniform(window_s[0], window_s[1])
+        fire_time = t0 + offset
+
+        if event_id in issued:
+            continue
+        if received_at >= fire_time:
+            action = event["action"]
+            params = event.get("params", {})
+            store.log_adversary_event(box_id, event_id, action, received_at, params)
+            directives.append(Directive(event_id=event_id, action=action, params=params))
+
+    return directives

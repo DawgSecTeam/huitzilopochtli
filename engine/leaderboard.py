@@ -8,4 +8,13 @@ from engine.store import Store
 def get_leaderboard(store: Store, scenario_name: str) -> list:
     """Returns store.get_scores(scenario_name) as JSON-serializable dicts,
     ranked descending by total."""
-    raise NotImplementedError
+    rows = store.get_scores(scenario_name)
+    return [
+        {
+            "box_id": row.box_id,
+            "scenario_name": row.scenario_name,
+            "total": row.total,
+            "updated_at": row.updated_at,
+        }
+        for row in rows
+    ]

@@ -7,6 +7,8 @@ bodies to exist, only the ABC).
 collect_params: {"service": str}.
 Evidence.raw shape: {"active": bool, "enabled": bool}.
 """
+import time
+
 from agent.checks.base import Check, register
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
@@ -16,4 +18,30 @@ class ServiceStateCheck(Check):
     type_key = "service_state"
 
     def collect(self, spec: CheckSpec, ctx) -> Evidence:
-        raise NotImplementedError
+        name = spec.collect_params["service"]
+
+        try:
+            active = ctx.service_active(name)
+            enabled = ctx.service_enabled(name)
+        except Exception as exc:
+            return Evidence(
+                check_id=spec.id,
+                check_type=self.type_key,
+                host_id=spec.host_id,
+                status=CollectorStatus.ERROR,
+                raw={"active": False, "enabled": False},
+                reason=str(exc),
+                collected_monotonic=time.monotonic(),
+                collected_wall_claim=time.time(),
+            )
+
+        return Evidence(
+            check_id=spec.id,
+            check_type=self.type_key,
+            host_id=spec.host_id,
+            status=CollectorStatus.OK,
+            raw={"active": active, "enabled": enabled},
+            reason=f"{name} active={active} enabled={enabled}",
+            collected_monotonic=time.monotonic(),
+            collected_wall_claim=time.time(),
+        )

@@ -2,12 +2,14 @@
 
 PHASE 1 TASK: implement. Depends only on engine.store.Store's signature.
 """
-from common.schema import RubricEntry, SlaStatus
-from engine.store import Store
+import math
+
+from common.schema import SlaParams
+from engine.store import SlaStateRecord, Store
 
 
-def update_sla(store: Store, box_id: str, received_at: float,
-               sla_entry: "RubricEntry", check_passed: bool) -> "SlaStatus":
+def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
+                is_up: bool, received_at: float) -> SlaStateRecord:
     """Advance the per-(box_id, check_id) hysteresis state machine:
 
         UP   --(consec_fail >= fail_n)--> DOWN
@@ -18,9 +20,58 @@ def update_sla(store: Store, box_id: str, received_at: float,
 
     Accrual (engine clock only): on entering/continuing UP, credit points for
     floor(elapsed / interval_s) intervals since last_credited_at, capped at
-    max_intervals_per_checkin. No credit accrues while DOWN or during gaps.
+    max_intervals_per_checkin. No credit accrues while DOWN or during gaps;
+    while DOWN, last_credited_at is advanced to received_at so a later UP
+    transition does not retroactively credit the DOWN period.
 
     Persists the updated SlaStateRecord via store.save_sla_state and returns
-    a SlaStatus for inclusion in the ScoreBreakdown.
+    it.
+
+    Invariant: only `received_at` (the engine's receipt timestamp) is ever
+    used for timing; the box's self-reported clock never influences accrual.
     """
-    raise NotImplementedError
+    rec = store.get_sla_state(box_id, check_id)
+
+    if rec is None:
+        # First-ever observation for this (box, check_id): initialize state
+        # from the single observation, no elapsed interval to credit yet.
+        rec = SlaStateRecord(
+            box_id=box_id,
+            check_id=check_id,
+            state="UP" if is_up else "DOWN",
+            consec_ok=1 if is_up else 0,
+            consec_fail=0 if is_up else 1,
+            last_credited_at=received_at,
+            accrued_points=0,
+        )
+        store.save_sla_state(rec)
+        return rec
+
+    # Update consecutive counters.
+    if is_up:
+        rec.consec_ok += 1
+        rec.consec_fail = 0
+    else:
+        rec.consec_fail += 1
+        rec.consec_ok = 0
+
+    # Hysteresis transition.
+    if rec.state == "UP" and rec.consec_fail >= sla_params.hysteresis_fail_n:
+        rec.state = "DOWN"
+    elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
+        rec.state = "UP"
+
+    # Accrual, using the (possibly just-transitioned) new state.
+    if rec.state == "UP":
+        elapsed = received_at - rec.last_credited_at
+        intervals = math.floor(elapsed / sla_params.interval_s)
+        if intervals < 0:
+            intervals = 0
+        intervals = min(intervals, sla_params.max_intervals_per_checkin)
+        rec.accrued_points += intervals * sla_params.points_per_interval
+        rec.last_credited_at += intervals * sla_params.interval_s
+    else:
+        rec.last_credited_at = received_at
+
+    store.save_sla_state(rec)
+    return rec

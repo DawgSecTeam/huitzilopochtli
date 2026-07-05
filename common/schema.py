@@ -171,6 +171,19 @@ class EnrollResponse:
 
 # --- §6.7 Validation ---------------------------------------------------------
 
+_REQUIRED_CHECK_SPEC_KEYS = (
+    "id", "type", "category", "host_id", "collect_params",
+    "display_title", "display_max_points",
+)
+_REQUIRED_MANIFEST_KEYS = (
+    "schema_version", "scenario_name", "scenario_version", "mode", "hosts", "checks",
+)
+_REQUIRED_RUBRIC_ENTRY_KEYS = ("check_id", "matcher", "points")
+_REQUIRED_RUBRIC_KEYS = (
+    "schema_version", "scenario_name", "scenario_version", "entries",
+)
+
+
 def validate_manifest(obj: dict) -> list:
     """Return a list of human-readable error strings; empty list = valid.
 
@@ -178,9 +191,113 @@ def validate_manifest(obj: dict) -> list:
     Called by the authoring toolchain (fail the build) and by the agent on load
     (refuse to run on invalid/unsigned input). No silent coercion.
     """
-    raise NotImplementedError
+    errors = []
+    if not isinstance(obj, dict):
+        return ["manifest must be a JSON object"]
+
+    for key in _REQUIRED_MANIFEST_KEYS:
+        if key not in obj:
+            errors.append(f"manifest missing required key '{key}'")
+
+    if "schema_version" in obj and obj["schema_version"] != SCHEMA_VERSION:
+        errors.append(
+            f"manifest schema_version {obj['schema_version']!r} != "
+            f"supported {SCHEMA_VERSION!r}"
+        )
+
+    if "mode" in obj and obj["mode"] not in (Mode.HONOR.value, Mode.RANKED.value):
+        errors.append(f"manifest mode must be 'honor' or 'ranked', got {obj['mode']!r}")
+
+    if obj.get("mode") == Mode.RANKED.value and not obj.get("engine_url"):
+        errors.append("manifest mode is 'ranked' but engine_url is missing/empty")
+
+    if "hosts" in obj and not isinstance(obj["hosts"], list):
+        errors.append("manifest.hosts must be a list")
+
+    checks = obj.get("checks")
+    if checks is None:
+        pass  # already reported as missing above
+    elif not isinstance(checks, list):
+        errors.append("manifest.checks must be a list")
+    else:
+        seen_ids = set()
+        for idx, check in enumerate(checks):
+            ref = f"manifest.checks[{idx}]"
+            if not isinstance(check, dict):
+                errors.append(f"{ref} must be an object")
+                continue
+            for key in _REQUIRED_CHECK_SPEC_KEYS:
+                if key not in check:
+                    errors.append(f"{ref} missing required key '{key}'")
+            if check.get("category") not in (
+                Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
+            ):
+                errors.append(
+                    f"{ref}.category must be one of vuln/penalty/prohibited, "
+                    f"got {check.get('category')!r}"
+                )
+            # Invariant (§6.1): collect_params must never carry expected/correct
+            # values. Best-effort structural guard: reject an accidentally-leaked
+            # "expect"/"points" key inside collect_params.
+            collect_params = check.get("collect_params")
+            if isinstance(collect_params, dict):
+                for leaked_key in ("expect", "points", "matcher"):
+                    if leaked_key in collect_params:
+                        errors.append(
+                            f"{ref}.collect_params must not contain '{leaked_key}' "
+                            "(rubric data must never ship in the manifest)"
+                        )
+            cid = check.get("id")
+            if cid is not None:
+                if cid in seen_ids:
+                    errors.append(f"{ref} duplicate check id '{cid}'")
+                seen_ids.add(cid)
+
+    return errors
 
 
 def validate_rubric(obj: dict) -> list:
     """Return a list of human-readable error strings; empty list = valid."""
-    raise NotImplementedError
+    errors = []
+    if not isinstance(obj, dict):
+        return ["rubric must be a JSON object"]
+
+    for key in _REQUIRED_RUBRIC_KEYS:
+        if key not in obj:
+            errors.append(f"rubric missing required key '{key}'")
+
+    if "schema_version" in obj and obj["schema_version"] != SCHEMA_VERSION:
+        errors.append(
+            f"rubric schema_version {obj['schema_version']!r} != "
+            f"supported {SCHEMA_VERSION!r}"
+        )
+
+    entries = obj.get("entries")
+    if entries is None:
+        pass  # already reported as missing above
+    elif not isinstance(entries, list):
+        errors.append("rubric.entries must be a list")
+    else:
+        seen_ids = set()
+        for idx, entry in enumerate(entries):
+            ref = f"rubric.entries[{idx}]"
+            if not isinstance(entry, dict):
+                errors.append(f"{ref} must be an object")
+                continue
+            for key in _REQUIRED_RUBRIC_ENTRY_KEYS:
+                if key not in entry:
+                    errors.append(f"{ref} missing required key '{key}'")
+            if not isinstance(entry.get("points"), int):
+                errors.append(f"{ref}.points must be an integer")
+            if not isinstance(entry.get("matcher"), dict):
+                errors.append(f"{ref}.matcher must be an object")
+            cid = entry.get("check_id")
+            if cid is not None:
+                if cid in seen_ids:
+                    errors.append(f"{ref} duplicate check_id '{cid}'")
+                seen_ids.add(cid)
+            sla = entry.get("sla")
+            if sla is not None and not isinstance(sla, dict):
+                errors.append(f"{ref}.sla must be an object or null")
+
+    return errors
