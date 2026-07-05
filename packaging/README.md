@@ -14,13 +14,19 @@ Per §17, a restricted install dir (default `/opt/dawgscore/`) holds:
 
 ```
 /opt/dawgscore/
-  agent.pyz               # built by build_zipapp.py; agent/+common/ only
-  agent_config.json        # §9.7 on-box config (mode, paths, interval)
-  manifest.signed.json     # compiled + signed by authoring/compile.py
-  rubric.json               # honor mode only -- local scoring rubric
-  identity.json             # ranked mode only -- box_id + Ed25519 keys, 0600
-  report.html                # written by the agent on each run/check-in
+  agent.pyz                    # built by build_zipapp.py; agent/+common/ only
+  agent_config.json            # §9.7 on-box config (mode, paths, interval)
+  manifest.signed.json         # compiled + signed by authoring/compile.py
+  authoring_public_key.b64     # verifies manifest.signed.json's signature
+  rubric.json                  # honor mode only -- local scoring rubric
+  identity.json                # ranked mode only -- box_id + Ed25519 keys, 0600
+  report.html                  # written by the agent on each run/check-in
 ```
+
+`authoring_public_key.b64` (base64-encoded Ed25519 public key) is emitted
+by `authoring/compile.py` alongside the manifest, and lets the agent
+verify the manifest wasn't tampered with in transit/at rest (§7, §16).
+It is public and does not need to be protected like `identity.json`.
 
 The **identity file is kept separate and locked down (mode 0600)**:
 it holds the box's private Ed25519 key, which must never leave the
@@ -84,14 +90,15 @@ phase.
 
 1. Build the zipapp (above) and copy `agent.pyz` to
    `/opt/dawgscore/agent.pyz`.
-2. Copy the compiled `manifest.signed.json` (and `rubric.json` for
-   honor mode) to `/opt/dawgscore/`.
+2. Copy the compiled `manifest.signed.json`, `authoring_public_key.b64`
+   (and `rubric.json` for honor mode) to `/opt/dawgscore/`.
 3. Write `/opt/dawgscore/agent_config.json` (§9.7 shape):
 
    ```json
    {
      "mode": "honor",
      "manifest_path": "/opt/dawgscore/manifest.signed.json",
+     "authoring_public_key_path": "/opt/dawgscore/authoring_public_key.b64",
      "rubric_path": "/opt/dawgscore/rubric.json",
      "identity_path": null,
      "report_path": "/opt/dawgscore/report.html",
@@ -101,7 +108,12 @@ phase.
 
    (For ranked mode: `"mode": "ranked"`, `"rubric_path": null`,
    `"identity_path": "/opt/dawgscore/identity.json"`, and a real
-   `checkin_interval_s`.)
+   `checkin_interval_s"`.)
+
+   `authoring_public_key_path` is optional for backwards compatibility
+   with configs written before manifest verification existed -- if
+   omitted, the agent falls back to a loud warn-and-proceed-unverified
+   instead of failing closed. Always set it for real deployments.
 
 4. Install the init unit for the box's init system:
 

@@ -23,3 +23,10 @@ def sign(private_key: bytes, msg_bytes: bytes) -> bytes:
 def verify(public_key: bytes, msg_bytes: bytes, sig: bytes) -> bool:
     """Verify a signature over canonical message bytes."""
     return ed25519.verify(public_key, msg_bytes, sig)
+
+
+def public_key_from_private(private_key: bytes) -> bytes:
+    """Re-derive the public key from a private key. Used by the authoring
+    toolchain to emit a distributable verification artifact without having
+    to separately generate/track public key material."""
+    return ed25519.public_key_from_private(private_key)

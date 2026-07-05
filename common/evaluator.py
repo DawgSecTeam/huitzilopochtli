@@ -23,43 +23,6 @@ class Clock(Protocol):
     def now(self) -> float: ...
 
 
-# --- KNOWN SCHEMA GAP (flagged, not silently papered over) ------------------
-#
-# §10.1 defines three distinct scoring behaviors keyed by Category
-# (VULN / PENALTY / PROHIBITED), but Category lives on CheckSpec (in the
-# Manifest), NOT on RubricEntry (in the Rubric) — see common/schema.py.
-# evaluate() is only given (evidence, rubric, clock), with no Manifest, so
-# there is no way to recover the true Category for a given check_id here.
-#
-# Pragmatic convention used below (do not treat this as a permanent design
-# decision — see the "open design question" flagged in the implementer's
-# final report):
-#   - entry.points >= 0  => treat as VULN-like: award points on matcher PASS.
-#   - entry.points <  0  => treat as PENALTY/PROHIBITED-like. For PROHIBITED,
-#     "award negative points when the forbidden state IS present" is
-#     identical in shape to the VULN rule (award on matcher PASS), so the
-#     default for negative-points entries is also "award on PASS".
-#   - PENALTY is the one case that inverts this ("broken" == matcher FAILS).
-#     Since Rubric/RubricEntry carries no Category, PENALTY entries must
-#     opt in explicitly via `entry.matcher["penalty"] = True`. When that key
-#     is truthy, points are awarded when the matcher's `matched` is False
-#     instead of True.
-#
-# The CheckResult.category recorded is therefore also inferred, not looked
-# up: Category.VULN for points >= 0, Category.PENALTY for points < 0 with
-# matcher["penalty"] truthy, Category.PROHIBITED for points < 0 otherwise.
-# This is a real gap: RubricEntry should probably carry an explicit
-# `category: Category` field so this inference is never needed.
-
-
-def _category_for(entry) -> Category:
-    if entry.points >= 0:
-        return Category.VULN
-    if entry.matcher.get("penalty", False):
-        return Category.PENALTY
-    return Category.PROHIBITED
-
-
 def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
     """Score point-in-time (non-SLA) rubric entries against collected evidence.
 
@@ -76,11 +39,6 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
 
     Missing/ERROR/TIMEOUT evidence is scored as "not satisfied" for VULN, and
     handled explicitly per matcher for PENALTY/PROHIBITED.
-
-    NOTE: RubricEntry carries no Category (see the module-level comment
-    above) — category is inferred from entry.points' sign plus an explicit
-    `entry.matcher["penalty"]` opt-in flag for the PENALTY case. This is a
-    pragmatic convention, flagged as an open design question.
     """
     evidence_by_check_id = {e.check_id: e for e in evidence}
 
@@ -94,14 +52,10 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
 
         matched, matcher_reason = evaluate_matcher(entry.matcher, raw)
 
-        category = _category_for(entry)
-
-        if category == Category.PENALTY:
+        if entry.category == Category.PENALTY:
             awarded = entry.points if not matched else 0
         else:
-            # VULN and PROHIBITED both award on matcher PASS (§10.1; see
-            # module-level comment on why PROHIBITED collapses into this
-            # same rule given the frozen schema).
+            # VULN and PROHIBITED both award on matcher PASS (§10.1).
             awarded = entry.points if matched else 0
 
         if ev is not None and ev.reason:
@@ -112,7 +66,7 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
         results.append(
             CheckResult(
                 check_id=entry.check_id,
-                category=category,
+                category=entry.category,
                 awarded_points=awarded,
                 passed=matched,
                 reason=reason,

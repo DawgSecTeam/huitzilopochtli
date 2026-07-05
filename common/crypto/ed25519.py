@@ -199,3 +199,10 @@ def verify(public_key: bytes, msg: bytes, sig: bytes) -> bool:
     except Exception:
         return False
     return True
+
+
+def public_key_from_private(private_key: bytes) -> bytes:
+    """Re-derive the public key from a private key (seed). Ed25519 public
+    keys are always deterministically derivable from the seed, so no
+    separate key material needs to be generated or tracked alongside it."""
+    return publickey(private_key)

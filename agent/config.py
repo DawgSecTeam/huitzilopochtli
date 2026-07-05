@@ -14,6 +14,7 @@ class AgentConfig:
     identity_path: Optional[str]      # ranked only
     report_path: str
     checkin_interval_s: Optional[int]  # ranked only
+    authoring_public_key_path: Optional[str] = None  # for manifest signature verification
 
 
 def load_config(config_path: str) -> AgentConfig:
@@ -21,7 +22,13 @@ def load_config(config_path: str) -> AgentConfig:
 
     Shape: {"mode": "honor"|"ranked", "manifest_path": str,
             "rubric_path": str|null, "identity_path": str|null,
-            "report_path": str, "checkin_interval_s": int|null}
+            "report_path": str, "checkin_interval_s": int|null,
+            "authoring_public_key_path": str|null}
+
+    authoring_public_key_path is optional for backwards compatibility with
+    configs written before manifest signature verification existed; if
+    omitted, the agent falls back to warn-and-proceed-unverified (see
+    agent/__main__.py::_load_manifest).
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -33,4 +40,5 @@ def load_config(config_path: str) -> AgentConfig:
         identity_path=data.get("identity_path"),
         report_path=data["report_path"],
         checkin_interval_s=data.get("checkin_interval_s"),
+        authoring_public_key_path=data.get("authoring_public_key_path"),
     )

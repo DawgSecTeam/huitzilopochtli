@@ -4,6 +4,7 @@ See architecture.md §8.
 PHASE 1 TASK: implement. May use PyYAML (author-machine only — never
 shipped to the box or bundled into the zipapp).
 """
+import base64
 import dataclasses
 import json
 import os
@@ -12,6 +13,7 @@ import yaml
 
 from authoring.sign_scenario import sign_manifest
 from authoring.validate import validate_scenario_yaml
+from common.crypto.signing import public_key_from_private
 from common.schema import (
     Category,
     CheckSpec,
@@ -62,14 +64,6 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
         # must be stored as negative regardless of the sign the author used.
         points = -abs(points)
 
-    if category == "penalty":
-        # Matches the convention settled in common/evaluator.py: since
-        # RubricEntry carries no explicit Category, PENALTY entries must
-        # opt in via matcher["penalty"] = True so the evaluator knows to
-        # award points when the matcher FAILS (the "broken" case) rather
-        # than when it passes.
-        matcher["penalty"] = True
-
     sla = None
     if sla_raw is not None:
         sla = SlaParams(
@@ -82,6 +76,7 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
 
     return RubricEntry(
         check_id=check["id"],
+        category=Category(category),
         matcher=matcher,
         points=points,
         sla=sla,
@@ -195,5 +190,15 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
     with open(engine_record_path, "w") as f:
         json.dump(engine_record, f)
     outputs["engine_record"] = engine_record_path
+
+    # Distributable verification artifact: the box needs the authoring
+    # PUBLIC key to verify manifest.signed.json's signature (§7, §16). The
+    # public key is always re-derivable from the private key, so no separate
+    # key material needs to be tracked -- just export it here, always.
+    public_key = public_key_from_private(authoring_private_key)
+    public_key_path = os.path.join(out_dir, "authoring_public_key.b64")
+    with open(public_key_path, "w") as f:
+        f.write(base64.b64encode(public_key).decode("ascii"))
+    outputs["authoring_public_key"] = public_key_path
 
     return outputs

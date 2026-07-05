@@ -70,6 +70,7 @@ class SlaParams:
 @dataclass
 class RubricEntry:
     check_id: str
+    category: Category
     matcher: dict
     points: int  # SIGNED; negative for penalty/prohibited
     sla: Optional[SlaParams] = None
@@ -178,7 +179,7 @@ _REQUIRED_CHECK_SPEC_KEYS = (
 _REQUIRED_MANIFEST_KEYS = (
     "schema_version", "scenario_name", "scenario_version", "mode", "hosts", "checks",
 )
-_REQUIRED_RUBRIC_ENTRY_KEYS = ("check_id", "matcher", "points")
+_REQUIRED_RUBRIC_ENTRY_KEYS = ("check_id", "category", "matcher", "points")
 _REQUIRED_RUBRIC_KEYS = (
     "schema_version", "scenario_name", "scenario_version", "entries",
 )
@@ -287,6 +288,13 @@ def validate_rubric(obj: dict) -> list:
             for key in _REQUIRED_RUBRIC_ENTRY_KEYS:
                 if key not in entry:
                     errors.append(f"{ref} missing required key '{key}'")
+            if entry.get("category") not in (
+                Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
+            ):
+                errors.append(
+                    f"{ref}.category must be one of vuln/penalty/prohibited, "
+                    f"got {entry.get('category')!r}"
+                )
             if not isinstance(entry.get("points"), int):
                 errors.append(f"{ref}.points must be an integer")
             if not isinstance(entry.get("matcher"), dict):
