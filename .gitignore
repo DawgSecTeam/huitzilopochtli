@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 *.pyz
+dist/
 *.db
 *.sqlite3
 *.swp
