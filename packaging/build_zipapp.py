@@ -48,7 +48,7 @@ def build(output_path: str) -> str:
     """Build the zipapp at `output_path`, returning that same path."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="dawgscore-zipapp-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="huitzilopochtli-zipapp-") as tmpdir:
         for pkg in _PACKAGES:
             _copy_package(pkg, _REPO_ROOT, tmpdir)
 

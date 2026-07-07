@@ -142,7 +142,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
 <!-- Display cadence only, never a scoring input: the browser reloads this
      static page every REFRESH_SECONDS seconds so it looks "live". -->
 <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
-<title>DAWGSCORE &mdash; {scenario_name}</title>
+<title>HUITZILOPOCHTLI &mdash; {scenario_name}</title>
 <style>{_STYLE}</style>
 </head>
 <body>

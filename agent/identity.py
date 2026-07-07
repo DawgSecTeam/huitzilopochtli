@@ -71,8 +71,8 @@ def enroll(engine_url: str, enrollment_token: str, identity: Identity,
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "X-DAWGSCORE-Sig": base64.b64encode(signature).decode("ascii"),
-            "X-DAWGSCORE-Box": identity.box_id,
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(signature).decode("ascii"),
+            "X-HUITZILOPOCHTLI-Box": identity.box_id,
         },
     )
 

@@ -69,7 +69,7 @@ def _spawn_engine(env_overrides: dict, port: int) -> subprocess.Popen:
             env.pop(key, None)
         else:
             env[key] = value
-    env["DAWGSCORE_PORT"] = str(port)
+    env["HUITZILOPOCHTLI_PORT"] = str(port)
     proc = subprocess.Popen(
         [sys.executable, "-m", "engine.server"],
         cwd=REPO_ROOT,
@@ -95,14 +95,14 @@ def _terminate(proc: subprocess.Popen):
 
 
 def test_server_secret_persists_across_restarts(tmp_path):
-    db_path = str(tmp_path / "dawgscore.db")
+    db_path = str(tmp_path / "huitzilopochtli.db")
     port1 = _free_port()
 
     env = {
-        "DAWGSCORE_DB_PATH": db_path,
-        "DAWGSCORE_SERVER_SECRET": None,
-        "DAWGSCORE_TLS_CERT": None,
-        "DAWGSCORE_TLS_KEY": None,
+        "HUITZILOPOCHTLI_DB_PATH": db_path,
+        "HUITZILOPOCHTLI_SERVER_SECRET": None,
+        "HUITZILOPOCHTLI_TLS_CERT": None,
+        "HUITZILOPOCHTLI_TLS_KEY": None,
     }
 
     proc1 = _spawn_engine(env, port1)
@@ -161,12 +161,12 @@ def test_tls_enabled_serves_https_and_rejects_plain_http(tmp_path):
     if result.returncode != 0:
         pytest.skip(f"openssl cert generation failed: {result.stderr}")
 
-    db_path = str(tmp_path / "dawgscore.db")
+    db_path = str(tmp_path / "huitzilopochtli.db")
     port = _free_port()
     env = {
-        "DAWGSCORE_DB_PATH": db_path,
-        "DAWGSCORE_TLS_CERT": str(cert_path),
-        "DAWGSCORE_TLS_KEY": str(key_path),
+        "HUITZILOPOCHTLI_DB_PATH": db_path,
+        "HUITZILOPOCHTLI_TLS_CERT": str(cert_path),
+        "HUITZILOPOCHTLI_TLS_KEY": str(key_path),
     }
 
     proc = _spawn_engine(env, port)
@@ -210,12 +210,12 @@ def test_tls_enabled_serves_https_and_rejects_plain_http(tmp_path):
 
 
 def test_tls_disabled_by_default_serves_plain_http(tmp_path):
-    db_path = str(tmp_path / "dawgscore.db")
+    db_path = str(tmp_path / "huitzilopochtli.db")
     port = _free_port()
     env = {
-        "DAWGSCORE_DB_PATH": db_path,
-        "DAWGSCORE_TLS_CERT": None,
-        "DAWGSCORE_TLS_KEY": None,
+        "HUITZILOPOCHTLI_DB_PATH": db_path,
+        "HUITZILOPOCHTLI_TLS_CERT": None,
+        "HUITZILOPOCHTLI_TLS_KEY": None,
     }
 
     proc = _spawn_engine(env, port)

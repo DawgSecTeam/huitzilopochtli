@@ -27,8 +27,8 @@ sys.path.insert(0, REPO_ROOT)
 
 from tests.proxmox import proxmox_helper as ph  # noqa: E402
 
-ENGINE_DIR = "/tmp/dawgscore_engine"
-AGENT_DIR = "/tmp/dawgscore_agent"
+ENGINE_DIR = "/tmp/huitzilopochtli_engine"
+AGENT_DIR = "/tmp/huitzilopochtli_agent"
 ADMIN_TOKEN = "proxmox-test-admin-token"
 ENGINE_PORT = 8080
 
@@ -94,8 +94,8 @@ def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
 
         start_cmd = (
             f"cd {ENGINE_DIR} && "
-            f"PYTHONPATH={ENGINE_DIR} DAWGSCORE_PORT={ENGINE_PORT} "
-            f"DAWGSCORE_ADMIN_TOKEN={ADMIN_TOKEN} "
+            f"PYTHONPATH={ENGINE_DIR} HUITZILOPOCHTLI_PORT={ENGINE_PORT} "
+            f"HUITZILOPOCHTLI_ADMIN_TOKEN={ADMIN_TOKEN} "
             f"nohup python3 -m engine.server > /tmp/engine.log 2>&1 & echo started"
         )
         start_result = ph.guest_exec(proxmox, engine_vmid, ["/bin/sh", "-c", start_cmd])
@@ -142,7 +142,7 @@ checks:
         resp = requests.post(
             f"{engine_base}/admin/scenarios",
             json=engine_record,
-            headers={"X-DAWGSCORE-Admin-Token": ADMIN_TOKEN},
+            headers={"X-HUITZILOPOCHTLI-Admin-Token": ADMIN_TOKEN},
             timeout=10,
         )
         assert resp.status_code == 200, resp.text
@@ -150,7 +150,7 @@ checks:
         resp = requests.post(
             f"{engine_base}/admin/tokens",
             json={"scenario_name": "ProxmoxRankedTest", "ttl_s": 3600},
-            headers={"X-DAWGSCORE-Admin-Token": ADMIN_TOKEN},
+            headers={"X-HUITZILOPOCHTLI-Admin-Token": ADMIN_TOKEN},
             timeout=10,
         )
         assert resp.status_code == 200, resp.text

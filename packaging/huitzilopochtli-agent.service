@@ -1,11 +1,11 @@
-# DAWGSCORE agent systemd unit. See architecture.md §17.
+# Huitzilopochtli agent systemd unit. See architecture.md §17.
 #
 # Install layout assumed (see packaging/README.md):
-#   /opt/dawgscore/agent.pyz
-#   /opt/dawgscore/agent_config.json
-#   /opt/dawgscore/manifest.signed.json
-#   /opt/dawgscore/rubric.json          (honor mode only)
-#   /opt/dawgscore/identity.json        (ranked mode only, 0600)
+#   /opt/huitzilopochtli/agent.pyz
+#   /opt/huitzilopochtli/agent_config.json
+#   /opt/huitzilopochtli/manifest.signed.json
+#   /opt/huitzilopochtli/rubric.json          (honor mode only)
+#   /opt/huitzilopochtli/identity.json        (ranked mode only, 0600)
 #
 # Ranked mode: agent/__main__.py's _run_ranked() loops forever
 # (collect -> check-in -> sleep), so this is modeled as a long-running
@@ -32,15 +32,15 @@
 #                         # infinite by design)
 
 [Unit]
-Description=DAWGSCORE scoring agent
-Documentation=file:///opt/dawgscore/README.md
+Description=Huitzilopochtli scoring agent
+Documentation=file:///opt/huitzilopochtli/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/dawgscore/agent.pyz /opt/dawgscore/agent_config.json
-WorkingDirectory=/opt/dawgscore
+ExecStart=/usr/bin/python3 /opt/huitzilopochtli/agent.pyz /opt/huitzilopochtli/agent_config.json
+WorkingDirectory=/opt/huitzilopochtli
 Restart=on-failure
 RestartSec=5s
 
