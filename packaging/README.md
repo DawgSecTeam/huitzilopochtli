@@ -1,6 +1,6 @@
 # Packaging
 
-Phase 3 of DAWGSCORE: turns the already-built `agent/` + `common/`
+Phase 3 of Huitzilopochtli: turns the already-built `agent/` + `common/`
 packages into a deployable artifact for a scored box, plus the
 init-system glue and reset tooling. See architecture.md §17 for the
 authoritative spec this implements.
@@ -10,10 +10,10 @@ modified by anything in this directory.
 
 ## Install layout (on the box)
 
-Per §17, a restricted install dir (default `/opt/dawgscore/`) holds:
+Per §17, a restricted install dir (default `/opt/huitzilopochtli/`) holds:
 
 ```
-/opt/dawgscore/
+/opt/huitzilopochtli/
   agent.pyz                    # built by build_zipapp.py; agent/+common/ only
   agent_config.json            # §9.7 on-box config (mode, paths, interval)
   manifest.signed.json         # compiled + signed by authoring/compile.py
@@ -34,7 +34,7 @@ box and should not be group/world readable. `agent/identity.py`
 already creates it with 0600 permissions; just make sure the
 containing directory's ownership doesn't undermine that (e.g. don't
 run the agent as a user other than the one that owns
-`/opt/dawgscore/identity.json`).
+`/opt/huitzilopochtli/identity.json`).
 
 Honor mode does not use `identity.json` at all (no network, no
 engine) -- only `rubric.json` is needed locally, per
@@ -82,32 +82,32 @@ authoring-only dependency) or ship server-side code to a box.
 Use the existing `authoring/compile.py` `compile_scenario(...)` to
 produce `manifest.signed.json` (+ `rubric.json` for honor mode, or
 `engine_record.json` for ranked) from a scenario YAML. That output is
-what gets copied into `/opt/dawgscore/` alongside the `.pyz` below --
+what gets copied into `/opt/huitzilopochtli/` alongside the `.pyz` below --
 see that module's docstring for details; it is unaffected by this
 phase.
 
 ## Install (on the box)
 
 1. Build the zipapp (above) and copy `agent.pyz` to
-   `/opt/dawgscore/agent.pyz`.
+   `/opt/huitzilopochtli/agent.pyz`.
 2. Copy the compiled `manifest.signed.json`, `authoring_public_key.b64`
-   (and `rubric.json` for honor mode) to `/opt/dawgscore/`.
-3. Write `/opt/dawgscore/agent_config.json` (§9.7 shape):
+   (and `rubric.json` for honor mode) to `/opt/huitzilopochtli/`.
+3. Write `/opt/huitzilopochtli/agent_config.json` (§9.7 shape):
 
    ```json
    {
      "mode": "honor",
-     "manifest_path": "/opt/dawgscore/manifest.signed.json",
-     "authoring_public_key_path": "/opt/dawgscore/authoring_public_key.b64",
-     "rubric_path": "/opt/dawgscore/rubric.json",
+     "manifest_path": "/opt/huitzilopochtli/manifest.signed.json",
+     "authoring_public_key_path": "/opt/huitzilopochtli/authoring_public_key.b64",
+     "rubric_path": "/opt/huitzilopochtli/rubric.json",
      "identity_path": null,
-     "report_path": "/opt/dawgscore/report.html",
+     "report_path": "/opt/huitzilopochtli/report.html",
      "checkin_interval_s": null
    }
    ```
 
    (For ranked mode: `"mode": "ranked"`, `"rubric_path": null`,
-   `"identity_path": "/opt/dawgscore/identity.json"`, and a real
+   `"identity_path": "/opt/huitzilopochtli/identity.json"`, and a real
    `checkin_interval_s"`.)
 
    `authoring_public_key_path` is optional for backwards compatibility
@@ -119,17 +119,17 @@ phase.
 
    - **systemd:**
      ```
-     cp packaging/dawgscore-agent.service /etc/systemd/system/
+     cp packaging/huitzilopochtli-agent.service /etc/systemd/system/
      systemctl daemon-reload
-     systemctl enable --now dawgscore-agent
+     systemctl enable --now huitzilopochtli-agent
      ```
    - **OpenRC (Alpine):**
      ```
      apk add python3   # if not already present -- see caveat above
-     cp packaging/dawgscore-agent.openrc /etc/init.d/dawgscore-agent
-     chmod +x /etc/init.d/dawgscore-agent
-     rc-update add dawgscore-agent default
-     rc-service dawgscore-agent start
+     cp packaging/huitzilopochtli-agent.openrc /etc/init.d/huitzilopochtli-agent
+     chmod +x /etc/init.d/huitzilopochtli-agent
+     rc-update add huitzilopochtli-agent default
+     rc-service huitzilopochtli-agent start
      ```
 
 5. Export the configured VM as `.ova`/`.qcow2` for distribution (§17).
@@ -144,7 +144,7 @@ tradeoffs.
 To let a take-home box be replayed without a full redeploy:
 
 ```
-python3 packaging/rearm.py /opt/dawgscore
+python3 packaging/rearm.py /opt/huitzilopochtli
 ```
 
 By default this only deletes the cached report (`report_path` from

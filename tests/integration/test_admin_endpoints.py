@@ -63,7 +63,7 @@ def _spawn_engine(env_overrides: dict, port: int) -> subprocess.Popen:
 
     A value of None in env_overrides removes that key from the inherited
     environment entirely (rather than setting it to the string "None"), so
-    tests can reliably force e.g. DAWGSCORE_ADMIN_TOKEN off.
+    tests can reliably force e.g. HUITZILOPOCHTLI_ADMIN_TOKEN off.
     """
     env = os.environ.copy()
     for key, value in env_overrides.items():
@@ -71,7 +71,7 @@ def _spawn_engine(env_overrides: dict, port: int) -> subprocess.Popen:
             env.pop(key, None)
         else:
             env[key] = value
-    env["DAWGSCORE_PORT"] = str(port)
+    env["HUITZILOPOCHTLI_PORT"] = str(port)
     proc = subprocess.Popen(
         [sys.executable, "-m", "engine.server"],
         cwd=REPO_ROOT,
@@ -95,18 +95,18 @@ def _terminate(proc: subprocess.Popen):
 
 @pytest.fixture
 def engine(tmp_path):
-    """Start a real engine.server subprocess with DAWGSCORE_ADMIN_TOKEN set.
+    """Start a real engine.server subprocess with HUITZILOPOCHTLI_ADMIN_TOKEN set.
 
     Yields (base_url, admin_token, db_path, proc).
     """
-    db_path = str(tmp_path / "dawgscore.db")
+    db_path = str(tmp_path / "huitzilopochtli.db")
     port = _free_port()
     admin_token = "test-admin-token-abc123"
     env = {
-        "DAWGSCORE_DB_PATH": db_path,
-        "DAWGSCORE_ADMIN_TOKEN": admin_token,
-        "DAWGSCORE_TLS_CERT": None,
-        "DAWGSCORE_TLS_KEY": None,
+        "HUITZILOPOCHTLI_DB_PATH": db_path,
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": admin_token,
+        "HUITZILOPOCHTLI_TLS_CERT": None,
+        "HUITZILOPOCHTLI_TLS_KEY": None,
     }
     proc = _spawn_engine(env, port)
     try:
@@ -122,15 +122,15 @@ def engine(tmp_path):
 
 @pytest.fixture
 def engine_no_admin_token(tmp_path):
-    """Start a real engine.server subprocess with NO DAWGSCORE_ADMIN_TOKEN
+    """Start a real engine.server subprocess with NO HUITZILOPOCHTLI_ADMIN_TOKEN
     set at all, so admin endpoints must respond 503."""
-    db_path = str(tmp_path / "dawgscore.db")
+    db_path = str(tmp_path / "huitzilopochtli.db")
     port = _free_port()
     env = {
-        "DAWGSCORE_DB_PATH": db_path,
-        "DAWGSCORE_ADMIN_TOKEN": None,
-        "DAWGSCORE_TLS_CERT": None,
-        "DAWGSCORE_TLS_KEY": None,
+        "HUITZILOPOCHTLI_DB_PATH": db_path,
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": None,
+        "HUITZILOPOCHTLI_TLS_CERT": None,
+        "HUITZILOPOCHTLI_TLS_KEY": None,
     }
     proc = _spawn_engine(env, port)
     try:
@@ -200,7 +200,7 @@ def _enroll_box(base_url: str, admin_token: str, scenario_name: str, box_id: str
     resp = requests.post(
         f"{base_url}/admin/tokens",
         json={"scenario_name": scenario_name, "ttl_s": 3600},
-        headers={"X-DAWGSCORE-Admin-Token": admin_token},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 200, resp.text
@@ -220,7 +220,7 @@ def _enroll_box(base_url: str, admin_token: str, scenario_name: str, box_id: str
     resp = requests.post(
         f"{base_url}/enroll",
         json=body,
-        headers={"X-DAWGSCORE-Sig": base64.b64encode(sig).decode("ascii")},
+        headers={"X-HUITZILOPOCHTLI-Sig": base64.b64encode(sig).decode("ascii")},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 200, resp.text
@@ -257,7 +257,7 @@ def _signed_checkin(base_url: str, priv_key: bytes, body: dict):
     return requests.post(
         f"{base_url}/checkin",
         json=body,
-        headers={"X-DAWGSCORE-Sig": base64.b64encode(sig).decode("ascii")},
+        headers={"X-HUITZILOPOCHTLI-Sig": base64.b64encode(sig).decode("ascii")},
         timeout=REQUEST_TIMEOUT,
     )
 
@@ -272,7 +272,7 @@ def test_admin_tokens_and_scenarios_succeed_with_correct_token(engine, tmp_path)
     resp = requests.post(
         f"{base_url}/admin/tokens",
         json={"scenario_name": scenario_name, "ttl_s": 3600},
-        headers={"X-DAWGSCORE-Admin-Token": admin_token},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 200, resp.text
@@ -284,7 +284,7 @@ def test_admin_tokens_and_scenarios_succeed_with_correct_token(engine, tmp_path)
     resp = requests.post(
         f"{base_url}/admin/scenarios",
         json=engine_record,
-        headers={"X-DAWGSCORE-Admin-Token": admin_token},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 200, resp.text
@@ -301,7 +301,7 @@ def test_admin_tokens_rejects_wrong_token(engine, tmp_path):
     resp = requests.post(
         f"{base_url}/admin/tokens",
         json={"scenario_name": scenario_name, "ttl_s": 3600},
-        headers={"X-DAWGSCORE-Admin-Token": "totally-wrong-token"},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": "totally-wrong-token"},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 403, resp.text
@@ -322,7 +322,7 @@ def test_admin_scenarios_rejects_wrong_token(engine, tmp_path):
     resp = requests.post(
         f"{base_url}/admin/scenarios",
         json=engine_record,
-        headers={"X-DAWGSCORE-Admin-Token": "totally-wrong-token"},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": "totally-wrong-token"},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 403, resp.text
@@ -347,7 +347,7 @@ def test_admin_endpoints_disabled_with_503_when_no_admin_token_set(
     resp = requests.post(
         f"{base_url}/admin/tokens",
         json={"scenario_name": scenario_name, "ttl_s": 3600},
-        headers={"X-DAWGSCORE-Admin-Token": "anything"},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": "anything"},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 503, resp.text
@@ -356,7 +356,7 @@ def test_admin_endpoints_disabled_with_503_when_no_admin_token_set(
     resp = requests.post(
         f"{base_url}/admin/scenarios",
         json=engine_record,
-        headers={"X-DAWGSCORE-Admin-Token": "anything"},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": "anything"},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 503, resp.text
@@ -383,7 +383,7 @@ def test_checkin_resolves_rubric_per_scenario_not_globally(engine, tmp_path):
         resp = requests.post(
             f"{base_url}/admin/scenarios",
             json=record,
-            headers={"X-DAWGSCORE-Admin-Token": admin_token},
+            headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
             timeout=REQUEST_TIMEOUT,
         )
         assert resp.status_code == 200, resp.text
@@ -447,7 +447,7 @@ def test_leaderboard_reflects_score_after_checkin(engine, tmp_path):
     resp = requests.post(
         f"{base_url}/admin/scenarios",
         json=record,
-        headers={"X-DAWGSCORE-Admin-Token": admin_token},
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 200, resp.text

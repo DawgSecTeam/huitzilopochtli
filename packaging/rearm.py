@@ -9,7 +9,7 @@ Usage (run ON the box, as the same user/root that owns the install dir):
 
     python3 rearm.py [install_dir] [--config CONFIG] [--reset-identity]
 
-    install_dir   defaults to /opt/dawgscore
+    install_dir   defaults to /opt/huitzilopochtli
     --config      path to agent_config.json, defaults to
                   <install_dir>/agent_config.json
     --reset-identity  ALSO delete the ranked-mode identity file (and its
@@ -96,13 +96,13 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Reset local DAWGSCORE agent state for a take-home box."
+        description="Reset local Huitzilopochtli agent state for a take-home box."
     )
     parser.add_argument(
         "install_dir",
         nargs="?",
-        default="/opt/dawgscore",
-        help="install directory (default: /opt/dawgscore)",
+        default="/opt/huitzilopochtli",
+        help="install directory (default: /opt/huitzilopochtli)",
     )
     parser.add_argument(
         "--config",

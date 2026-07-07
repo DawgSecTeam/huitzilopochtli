@@ -85,7 +85,7 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
     path = params.get("path")
     if not path:
         return
-    content = "DAWGSCORE adversary marker - inert, non-executable\n"
+    content = "HUITZILOPOCHTLI adversary marker - inert, non-executable\n"
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)

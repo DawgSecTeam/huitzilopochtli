@@ -130,8 +130,8 @@ class TransportClient:
         sig = signing.sign(self.identity.private_key, canonical_bytes)
         headers = {
             "Content-Type": "application/json",
-            "X-DAWGSCORE-Sig": base64.b64encode(sig).decode("ascii"),
-            "X-DAWGSCORE-Box": self.identity.box_id,
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(sig).decode("ascii"),
+            "X-HUITZILOPOCHTLI-Box": self.identity.box_id,
         }
         req = urllib.request.Request(
             f"{self.engine_url}/checkin",

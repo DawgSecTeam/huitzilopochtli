@@ -1,4 +1,4 @@
-# Dawgscore/Huitzilopochtli — Architecture & Implementation Specification
+# Huitzilopochtli — Architecture & Implementation Specification
 
 **Status:** decision-complete design spec. Every architectural fork in this document is resolved; sections marked *Non-goal* or *Open* are intentionally out of scope.
 **Audience:** the engineer/agent implementing the tool. This document is the source of truth for component contracts and their interactions. Where this document and intuition disagree, follow this document or raise the conflict.
@@ -8,7 +8,7 @@
 
 ## 1. Purpose & Scope
 
-DAWGSCORE is a self-contained security-hardening scoring engine in the lineage of CyberPatriot (point-in-time hardening checks) and eCitadel/CCDC (continuous SLA + live adversary). It serves two distinct use cases:
+Huitzilopochtli is a self-contained security-hardening scoring engine in the lineage of CyberPatriot (point-in-time hardening checks) and eCitadel/CCDC (continuous SLA + live adversary). It serves two distinct use cases:
 
 - **Take-home / honor mode** — offline, self-paced boxes distributed after workshops. No network required. The person being scored is trusted (cheating only cheats themselves).
 - **Ranked / live mode** — an always-on external engine aggregates scores from boxes during intensive individual practices, supports timed scenarios and a live adversary, and keeps the answer key off the box.
@@ -246,7 +246,7 @@ Authors write readable YAML; a build step compiles it. The YAML/PyYAML dependenc
 **Author-facing scenario YAML (illustrative):**
 ```yaml
 scenario:
-  name: "DAWGSEC Linux Fundamentals"
+  name: "HUITZILOPOCHTLI Linux Fundamentals"
   version: 3
   mode: ranked            # or honor
   engine_url: "https://scoring.example.org"   # ranked only
@@ -275,7 +275,7 @@ checks:
       url: http://127.0.0.1:80
     expect:                # -> rubric only
       status: 200
-      body_contains: "DAWGSEC Default Page"
+      body_contains: "HUITZILOPOCHTLI Default Page"
       sla: { interval_s: 60, points_per_interval: 1 }
 
 adversary:                 # -> engine scenario record only; NEVER shipped to box
@@ -487,7 +487,7 @@ Dashboard elements: cumulative total; table of point-in-time results (category, 
 
 ## 14. Protocol Specification
 
-All requests over TLS (stdlib `ssl`). All bodies are canonical JSON (§7). All box→engine bodies are signed by the box key; the signature travels in an `X-DAWGSCORE-Sig` header (base64) alongside `X-DAWGSCORE-Box` (box_id).
+All requests over TLS (stdlib `ssl`). All bodies are canonical JSON (§7). All box→engine bodies are signed by the box key; the signature travels in an `X-HUITZILOPOCHTLI-Sig` header (base64) alongside `X-HUITZILOPOCHTLI-Box` (box_id).
 
 ### 14.1 Enrollment
 
@@ -495,7 +495,7 @@ Request `POST /enroll`:
 ```json
 { "enrollment_token": "<one-time>", "box_id": "<uuid>",
   "public_key": "<base64>", "agent_version": "1.0.0",
-  "scenario_name": "DAWGSEC Linux Fundamentals" }
+  "scenario_name": "HUITZILOPOCHTLI Linux Fundamentals" }
 ```
 Response `200`:
 ```json
@@ -568,7 +568,7 @@ Requirements:
 
 - **Agent artifact:** Python **zipapp** (`.pyz`), pure-Python/stdlib + vendored crypto. Assumes a Python interpreter is present. **Alpine caveat:** minimal Alpine ships without Python — provisioning must `apk add python3`.
 - **Compilation** (PyInstaller/Nuitka) is optional and for packaging convenience only; it is **irrelevant to security** because ranked mode never trusts the box regardless. Note glibc vs musl: a binary built on glibc will not run on Alpine/musl, so prefer the zipapp for portability and only compile per-target if a Python-free box is required.
-- **Install:** systemd unit or OpenRC init script that starts the agent at boot. Restricted install dir (e.g. `/opt/dawgscore/`) holding the `.pyz`, signed manifest, config, and (honor) rubric; identity file separate at `0600`.
+- **Install:** systemd unit or OpenRC init script that starts the agent at boot. Restricted install dir (e.g. `/opt/huitzilopochtli/`) holding the `.pyz`, signed manifest, config, and (honor) rubric; identity file separate at `0600`.
 - **Distribution:** export configured VM as `.ova`/`.qcow2`.
 - **Re-arm/reset:** a documented reset path resets local state (seq, identity optional, cached score, report) so a take-home box can be replayed without a full redeploy.
 - **Version stamping:** engine and scenario versions on every payload (§14.3).
@@ -576,7 +576,7 @@ Requirements:
 ## 18. Suggested Module Layout
 
 ```
-dawgscore/
+huitzilopochtli/
   common/                # pure stdlib; imported by agent AND engine
     schema.py            # dataclasses (§6)
     canon.py             # canonical serialization (§7)

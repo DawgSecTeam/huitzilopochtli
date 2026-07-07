@@ -1,14 +1,14 @@
 #!/sbin/openrc-run
-# DAWGSCORE agent OpenRC init script (Alpine/musl-style systems).
+# Huitzilopochtli agent OpenRC init script (Alpine/musl-style systems).
 # See architecture.md §17. Functional equivalent of
-# packaging/dawgscore-agent.service.
+# packaging/huitzilopochtli-agent.service.
 #
 # Install layout assumed (see packaging/README.md):
-#   /opt/dawgscore/agent.pyz
-#   /opt/dawgscore/agent_config.json
-#   /opt/dawgscore/manifest.signed.json
-#   /opt/dawgscore/rubric.json          (honor mode only)
-#   /opt/dawgscore/identity.json        (ranked mode only, 0600)
+#   /opt/huitzilopochtli/agent.pyz
+#   /opt/huitzilopochtli/agent_config.json
+#   /opt/huitzilopochtli/manifest.signed.json
+#   /opt/huitzilopochtli/rubric.json          (honor mode only)
+#   /opt/huitzilopochtli/identity.json        (ranked mode only, 0600)
 #
 # Alpine caveat: minimal Alpine ships without Python at all -- image
 # provisioning must run `apk add python3` before this service can start.
@@ -21,13 +21,13 @@
 # after start and rc-status will show it as stopped, which is
 # expected and harmless.
 
-name="dawgscore-agent"
-description="DAWGSCORE scoring agent"
+name="huitzilopochtli-agent"
+description="Huitzilopochtli scoring agent"
 
 command=/usr/bin/python3
-command_args="/opt/dawgscore/agent.pyz /opt/dawgscore/agent_config.json"
+command_args="/opt/huitzilopochtli/agent.pyz /opt/huitzilopochtli/agent_config.json"
 command_background=true
-directory=/opt/dawgscore
+directory=/opt/huitzilopochtli
 
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/${RC_SVCNAME}.log"

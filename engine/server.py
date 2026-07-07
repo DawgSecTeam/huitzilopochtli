@@ -9,8 +9,8 @@ Endpoints:
   POST /enroll
   POST /checkin
   GET  /leaderboard?scenario=...
-  POST /admin/tokens      (gated by X-DAWGSCORE-Admin-Token)
-  POST /admin/scenarios   (gated by X-DAWGSCORE-Admin-Token)
+  POST /admin/tokens      (gated by X-HUITZILOPOCHTLI-Admin-Token)
+  POST /admin/scenarios   (gated by X-HUITZILOPOCHTLI-Admin-Token)
 """
 import base64
 import dataclasses
@@ -136,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(raw.decode("utf-8"))
 
     def _sig_header(self) -> bytes:
-        sig_b64 = self.headers.get("X-DAWGSCORE-Sig", "")
+        sig_b64 = self.headers.get("X-HUITZILOPOCHTLI-Sig", "")
         try:
             return base64.b64decode(sig_b64) if sig_b64 else b""
         except Exception:
@@ -145,8 +145,8 @@ class Handler(BaseHTTPRequestHandler):
     def _admin_authorized(self) -> "tuple[bool, int, str]":
         """Returns (ok, status_code_if_not_ok, message_if_not_ok)."""
         if not self.admin_token:
-            return False, 503, "admin endpoints disabled (DAWGSCORE_ADMIN_TOKEN not set)"
-        provided = self.headers.get("X-DAWGSCORE-Admin-Token", "")
+            return False, 503, "admin endpoints disabled (HUITZILOPOCHTLI_ADMIN_TOKEN not set)"
+        provided = self.headers.get("X-HUITZILOPOCHTLI-Admin-Token", "")
         if not hmac.compare_digest(self.admin_token, provided):
             return False, 403, "bad admin token"
         return True, 0, ""
@@ -282,7 +282,7 @@ def _resolve_server_secret(store: Store) -> bytes:
     (surviving restarts), else generate + persist a fresh one. This keeps
     the adversary schedule (derived from (server_secret, box_id)) stable
     across restarts without requiring an operator to manage the env var."""
-    secret_env = os.environ.get("DAWGSCORE_SERVER_SECRET")
+    secret_env = os.environ.get("HUITZILOPOCHTLI_SERVER_SECRET")
     if secret_env:
         return secret_env.encode("utf-8")
 
@@ -296,7 +296,7 @@ def _resolve_server_secret(store: Store) -> bytes:
 
 
 def main() -> None:
-    db_path = os.environ.get("DAWGSCORE_DB_PATH", "dawgscore.db")
+    db_path = os.environ.get("HUITZILOPOCHTLI_DB_PATH", "huitzilopochtli.db")
     store = Store(db_path)
 
     server_secret = _resolve_server_secret(store)
@@ -304,7 +304,7 @@ def main() -> None:
     # Optional startup convenience: seed the DB from a single engine_record.json
     # via the same save_scenario() path POST /admin/scenarios uses, so the
     # existing enroll->checkin flow keeps working without an admin call.
-    engine_record_path = os.environ.get("DAWGSCORE_ENGINE_RECORD_PATH")
+    engine_record_path = os.environ.get("HUITZILOPOCHTLI_ENGINE_RECORD_PATH")
     if engine_record_path:
         record = _load_engine_record(engine_record_path)
         scenario_name = record["rubric"]["scenario_name"]
@@ -314,15 +314,15 @@ def main() -> None:
 
     Handler.store = store
     Handler.server_secret = server_secret
-    Handler.admin_token = os.environ.get("DAWGSCORE_ADMIN_TOKEN", "")
+    Handler.admin_token = os.environ.get("HUITZILOPOCHTLI_ADMIN_TOKEN", "")
     if not Handler.admin_token:
-        print("WARNING: DAWGSCORE_ADMIN_TOKEN not set; /admin/* endpoints disabled (503)")
+        print("WARNING: HUITZILOPOCHTLI_ADMIN_TOKEN not set; /admin/* endpoints disabled (503)")
 
-    port = int(os.environ.get("DAWGSCORE_PORT", "8080"))
+    port = int(os.environ.get("HUITZILOPOCHTLI_PORT", "8080"))
     httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
 
-    tls_cert = os.environ.get("DAWGSCORE_TLS_CERT")
-    tls_key = os.environ.get("DAWGSCORE_TLS_KEY")
+    tls_cert = os.environ.get("HUITZILOPOCHTLI_TLS_CERT")
+    tls_key = os.environ.get("HUITZILOPOCHTLI_TLS_KEY")
     scheme = "http"
     if tls_cert and tls_key:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -331,11 +331,11 @@ def main() -> None:
         scheme = "https"
     else:
         print(
-            "WARNING: running without TLS; set DAWGSCORE_TLS_CERT/DAWGSCORE_TLS_KEY "
+            "WARNING: running without TLS; set HUITZILOPOCHTLI_TLS_CERT/HUITZILOPOCHTLI_TLS_KEY "
             "to enable it"
         )
 
-    print(f"dawgscore engine listening on {scheme}://0.0.0.0:{port} (db={db_path})")
+    print(f"huitzilopochtli engine listening on {scheme}://0.0.0.0:{port} (db={db_path})")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
