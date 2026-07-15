@@ -39,7 +39,7 @@ def load_config(config_path: str) -> AgentConfig:
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    return AgentConfig(
+    config = AgentConfig(
         mode=Mode(data["mode"]),
         manifest_path=data["manifest_path"],
         rubric_path=data.get("rubric_path"),
@@ -49,3 +49,22 @@ def load_config(config_path: str) -> AgentConfig:
         authoring_public_key_path=data.get("authoring_public_key_path"),
         enrollment_token=data.get("enrollment_token"),
     )
+
+    # Ranked mode dereferences identity_path (`identity_path + ".queue"`) and
+    # sleeps on checkin_interval_s every loop; a null for either used to surface
+    # as an opaque TypeError deep in _run_ranked. Validate up front with a clear
+    # message instead. (Honor mode uses neither, so only enforce for ranked.)
+    if config.mode == Mode.RANKED:
+        if not config.identity_path:
+            raise ValueError(
+                f"config {config_path!r}: ranked mode requires a non-empty "
+                "'identity_path'"
+            )
+        interval = config.checkin_interval_s
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+            raise ValueError(
+                f"config {config_path!r}: ranked mode requires "
+                "'checkin_interval_s' to be a positive integer"
+            )
+
+    return config

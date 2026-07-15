@@ -53,6 +53,16 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
     points = expect.pop("points", 0)
     sla_raw = expect.pop("sla", None)
 
+    # Validate the type here, before `-abs(points)` below: a non-int (e.g. the
+    # author wrote `points: "5"`) would otherwise raise a bare TypeError deep in
+    # abs() rather than the clean, actionable message validate_rubric produces.
+    # bool is a subclass of int, so reject it explicitly.
+    if isinstance(points, bool) or not isinstance(points, int):
+        raise ValueError(
+            f"check {check.get('id')!r}: expect.points must be an integer, "
+            f"got {points!r}"
+        )
+
     # Whatever remains in `expect` after stripping `points`/`sla` is the
     # matcher dict passed to common.matchers.evaluate_matcher (§8 example:
     # expect: {equals: "no", points: 5} -> matcher {"equals": "no"}).
@@ -148,23 +158,14 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
     manifest_dict = dataclasses.asdict(manifest)
     rubric_dict = dataclasses.asdict(rubric)
 
-    # validate_manifest/validate_rubric are stubs (NotImplementedError) in
-    # common/schema.py as of this writing, being implemented by another
-    # in-progress agent. Don't let that block compile_scenario today; once
-    # real validation lands it is picked up automatically.
-    try:
-        schema_errors = validate_manifest(manifest_dict)
-        if schema_errors:
-            raise ValueError("\n".join(schema_errors))
-    except NotImplementedError:
-        print("WARNING: common.schema.validate_manifest is not yet implemented; skipping")
+    # Structural validation of the compiled artifacts (fail the build loudly).
+    schema_errors = validate_manifest(manifest_dict)
+    if schema_errors:
+        raise ValueError("\n".join(schema_errors))
 
-    try:
-        schema_errors = validate_rubric(rubric_dict)
-        if schema_errors:
-            raise ValueError("\n".join(schema_errors))
-    except NotImplementedError:
-        print("WARNING: common.schema.validate_rubric is not yet implemented; skipping")
+    schema_errors = validate_rubric(rubric_dict)
+    if schema_errors:
+        raise ValueError("\n".join(schema_errors))
 
     signed_manifest = sign_manifest(manifest_dict, authoring_private_key)
 

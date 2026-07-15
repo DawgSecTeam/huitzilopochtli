@@ -47,11 +47,15 @@ def test_actions_registry_has_exactly_three_entries():
 # drop_inert_artifact
 # ---------------------------------------------------------------------------
 
-def test_drop_inert_artifact_writes_inert_nonexecutable_file(tmp_path):
+def test_drop_inert_artifact_writes_inert_nonexecutable_file(tmp_path, monkeypatch):
+    # drop_inert_artifact confines writes under a dedicated sandbox base dir
+    # (overridable via env). Point the sandbox at tmp_path and use a relative
+    # path; the marker lands inside the sandbox.
+    monkeypatch.setenv("HUITZILOPOCHTLI_ARTIFACT_DIR", str(tmp_path))
     target = tmp_path / "marker.txt"
     ctx = FakeCtx()
 
-    ACTIONS["drop_inert_artifact"]({"path": str(target)}, ctx)
+    ACTIONS["drop_inert_artifact"]({"path": "marker.txt"}, ctx)
 
     assert target.exists()
 

@@ -10,7 +10,9 @@ Do not change the function signature.
 from typing import Optional, Protocol
 
 from common.matchers import evaluate_matcher
-from common.schema import Category, CheckResult, Evidence, Rubric, ScoreBreakdown
+from common.schema import (
+    Category, CheckResult, CollectorStatus, Evidence, Rubric, ScoreBreakdown,
+)
 
 
 class Clock(Protocol):
@@ -49,10 +51,21 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
 
         ev: Optional[Evidence] = evidence_by_check_id.get(entry.check_id)
         raw = ev.raw if ev is not None else {}
+        evidence_ok = ev is not None and ev.status == CollectorStatus.OK
 
         matched, matcher_reason = evaluate_matcher(entry.matcher, raw)
 
-        if entry.category == Category.PENALTY:
+        if not evidence_ok and entry.category in (Category.PENALTY, Category.PROHIBITED):
+            # Undetermined evidence (missing / ERROR / TIMEOUT) must NOT trigger a
+            # penalty: a collector failure is not proof that the box's required
+            # state is broken (PENALTY) or that a forbidden state is present
+            # (PROHIBITED). Awarding the negative points here would punish the box
+            # for a collector fault it didn't cause. Score 0 and say why. (VULN
+            # already scores undetermined evidence as "not satisfied" → 0, which
+            # is the correct fail-closed behavior for a positive-points check.)
+            awarded = 0
+            matcher_reason = f"evidence unavailable; penalty not applied ({matcher_reason})"
+        elif entry.category == Category.PENALTY:
             awarded = entry.points if not matched else 0
         else:
             # VULN and PROHIBITED both award on matcher PASS (§10.1).
