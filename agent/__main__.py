@@ -39,6 +39,7 @@ from common.schema import (
     Rubric,
     RubricEntry,
     SlaParams,
+    validate_manifest,
 )
 from common.version import AGENT_VERSION
 
@@ -148,6 +149,17 @@ def _load_manifest(manifest_path: str, authoring_public_key_path: str | None) ->
                 f"manifest at {manifest_path} FAILED signature verification "
                 f"against {authoring_public_key_path}; refusing to run"
             )
+
+    # Structural validation (§16/§7): catch malformed manifests here — missing
+    # checks, duplicate check ids, bad categories, ranked-without-engine_url —
+    # with a clear message, instead of letting them fail confusingly deep in the
+    # collect/evaluate pipeline.
+    schema_errors = validate_manifest(unsigned_dict)
+    if schema_errors:
+        raise ValueError(
+            f"manifest at {manifest_path} failed validation:\n  "
+            + "\n  ".join(schema_errors)
+        )
 
     return _manifest_from_dict(unsigned_dict)
 
@@ -265,6 +277,13 @@ def _run_ranked(config, manifest, ctx) -> None:
         with open(config.report_path, "w", encoding="utf-8") as f:
             f.write(html)
 
+        # Cadence is operator-configured (config.checkin_interval_s). The
+        # protocol carries response.next_checkin_s so the engine *could* drive
+        # cadence, but the engine currently returns a hardcoded placeholder
+        # (checkin.py) rather than a real per-scenario value; obeying that
+        # placeholder would silently override the operator's configured interval
+        # (and stall SLA/multi-check-in flows to 60s). Until the engine computes
+        # a real next_checkin_s, the local interval remains authoritative.
         time.sleep(config.checkin_interval_s)
 
 

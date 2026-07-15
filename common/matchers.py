@@ -102,6 +102,25 @@ def _get_raw(raw: dict, field: str):
     return raw[field]
 
 
+def _parse_mode(value) -> int:
+    """Normalize a file-mode value to its integer permission bits.
+
+    Accepts either an octal *string* (the convention the permission collector
+    emits, e.g. "0755") or a plain *int* (a collector returning os.stat().st_mode
+    directly, where the decimal int 493 == 0o755). For an int the digits are the
+    value itself, so `int(str(493), 8)` would wrongly re-parse "493" as octal and
+    raise; instead we take the int as-is. Masks to the low 12 bits
+    (permission + setuid/setgid/sticky). Raises ValueError/TypeError otherwise.
+    """
+    if isinstance(value, bool):
+        raise TypeError("bool is not a valid file mode")
+    if isinstance(value, int):
+        return value & 0o7777
+    if isinstance(value, str):
+        return int(value.strip(), 8) & 0o7777
+    raise TypeError(f"unsupported mode type: {type(value).__name__}")
+
+
 # --- predicates --------------------------------------------------------------
 
 @register("equals")
@@ -176,9 +195,9 @@ def _mode_at_most(matcher: dict, raw: dict) -> tuple:
     if actual is _MISSING or actual is None:
         return False, f"raw evidence missing field {field!r}"
     try:
-        actual_bits = int(str(actual), 8)
-        max_bits = int(str(max_mode), 8)
-    except ValueError:
+        actual_bits = _parse_mode(actual)
+        max_bits = _parse_mode(max_mode)
+    except (ValueError, TypeError):
         return False, f"could not parse mode(s): actual={actual!r} max={max_mode!r}"
     # Passes if actual has no bits set beyond what max_mode allows, i.e.
     # actual is no looser than max_mode (a subset of its permission bits).

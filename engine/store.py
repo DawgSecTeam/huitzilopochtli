@@ -98,6 +98,14 @@ CREATE TABLE IF NOT EXISTS adversary_log (
     params_json TEXT NOT NULL
 );
 
+-- A directive fires at most once per (box, event). The UNIQUE index lets
+-- concurrent check-ins race on INSERT OR IGNORE and lets the loser see it lost
+-- (rowcount == 0), so a directive is never issued twice. Created as a separate
+-- guarded index (not a table constraint) so it applies to pre-existing DBs
+-- where `adversary_log` was created before this invariant existed.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_adversary_log_box_event
+    ON adversary_log (box_id, event_id);
+
 CREATE TABLE IF NOT EXISTS scenarios (
     scenario_name TEXT PRIMARY KEY,
     rubric_json TEXT NOT NULL,
@@ -165,6 +173,56 @@ class Store:
             )
             self._conn.commit()
 
+    def enroll_box_atomic(self, token: str, box_id: str, public_key: str,
+                           scenario_name: str) -> str:
+        """Atomically validate+consume an enrollment token and create the box.
+
+        Holds `self._lock` across the entire check-and-mutate so two concurrent
+        /enroll requests can never both pass the "consumed_at IS NULL" guard for
+        the same one-time token (the TOCTOU that get_token + consume_token left
+        open). The box row is bound to the *token's* scenario (the token is the
+        authority), and a duplicate box_id is caught rather than surfacing as an
+        unhandled IntegrityError.
+
+        Returns a status string the HTTP layer maps onto an EnrollError code:
+          "ok" | "unknown_token" | "already_consumed" | "expired"
+          | "scenario_mismatch" | "duplicate_box"
+        On "ok" the box exists and the token is marked consumed.
+        """
+        import time
+
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT scenario_name, expires_at, consumed_at "
+                "FROM enrollment_tokens WHERE token = ?",
+                (token,),
+            ).fetchone()
+            if row is None:
+                return "unknown_token"
+            if row["consumed_at"] is not None:
+                return "already_consumed"
+            if row["expires_at"] < now:
+                return "expired"
+            if row["scenario_name"] != scenario_name:
+                return "scenario_mismatch"
+            try:
+                self._conn.execute(
+                    "INSERT INTO boxes (box_id, public_key, scenario_name, "
+                    "enrolled_at, last_seq, last_boot_id, t0) "
+                    "VALUES (?, ?, ?, ?, 0, NULL, NULL)",
+                    (box_id, public_key, row["scenario_name"], now),
+                )
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return "duplicate_box"
+            self._conn.execute(
+                "UPDATE enrollment_tokens SET consumed_at = ? WHERE token = ?",
+                (now, token),
+            )
+            self._conn.commit()
+            return "ok"
+
     def create_token(self, token: str, scenario_name: str, expires_at: float) -> None:
         """Insert a fresh, unconsumed enrollment token. Used by the
         POST /admin/tokens endpoint (engine/server.py)."""
@@ -205,13 +263,21 @@ class Store:
             )
             self._conn.commit()
 
-    def update_box_seq(self, box_id: str, seq: int, boot_id: str) -> None:
+    def update_box_seq(self, box_id: str, seq: int, boot_id: str) -> bool:
+        """Advance the box's last_seq, but only if `seq` is strictly greater
+        than what's stored. Returns True if the row was updated, False if a
+        concurrent check-in already advanced last_seq to >= seq (so the caller
+        should treat this as a replay/stale seq). The `last_seq < ?` guard makes
+        the seq check atomic with the write, closing the TOCTOU where two
+        concurrent check-ins both read the same old last_seq."""
         with self._lock:
-            self._conn.execute(
-                "UPDATE boxes SET last_seq = ?, last_boot_id = ? WHERE box_id = ?",
-                (seq, boot_id, box_id),
+            cur = self._conn.execute(
+                "UPDATE boxes SET last_seq = ?, last_boot_id = ? "
+                "WHERE box_id = ? AND last_seq < ?",
+                (seq, boot_id, box_id, seq),
             )
             self._conn.commit()
+            return cur.rowcount == 1
 
     def save_checkin(self, box_id: str, seq: int, received_at: float,
                       bundle_json: str) -> None:
@@ -295,14 +361,21 @@ class Store:
         return {row["event_id"] for row in cur.fetchall()}
 
     def log_adversary_event(self, box_id: str, event_id: str, action: str,
-                             issued_at: float, params: dict) -> None:
+                             issued_at: float, params: dict) -> bool:
+        """Record that (box_id, event_id) fired. Returns True if this call was
+        the one that logged it, False if it was already logged (by a concurrent
+        check-in or an earlier one). Backed by INSERT OR IGNORE against the
+        UNIQUE(box_id, event_id) index, so only the winner of a race returns
+        True — the caller issues the directive only when it wins, guaranteeing a
+        directive is never issued twice."""
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO adversary_log (box_id, event_id, action, issued_at, "
-                "params_json) VALUES (?, ?, ?, ?, ?)",
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO adversary_log (box_id, event_id, action, "
+                "issued_at, params_json) VALUES (?, ?, ?, ?, ?)",
                 (box_id, event_id, action, issued_at, json.dumps(params)),
             )
             self._conn.commit()
+            return cur.rowcount == 1
 
     # --- leaderboard.py --------------------------------------------------------
 

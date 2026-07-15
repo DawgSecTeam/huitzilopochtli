@@ -4,7 +4,6 @@ PHASE 1 TASK: implement handle_enroll(). Depends only on engine.store.Store's
 signature (task 18) and common.crypto.signing (task 1) — build alongside them.
 """
 import base64
-import time
 
 from common import canon
 from common.crypto import signing
@@ -78,22 +77,30 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
     if not signature_ok:
         raise EnrollError(403, "bad signature")
 
-    # 3. Look up the token.
-    token_row = store.get_token(body["enrollment_token"])
-    if token_row is None:
+    # 3-7. Validate the token, bind box_id -> public_key -> scenario, and
+    # consume the token — all atomically inside the Store under a single lock
+    # hold. Doing the check-and-mutate in one place closes the TOCTOU where two
+    # concurrent /enroll calls with the same one-time token both pass the
+    # consumed-check and both create a box (§14.1). The box is bound to the
+    # *token's* scenario; a body claiming a different scenario is rejected.
+    status = store.enroll_box_atomic(
+        body["enrollment_token"],
+        body["box_id"],
+        body["public_key"],
+        body["scenario_name"],
+    )
+    if status == "unknown_token":
         raise EnrollError(400, "unknown token")
-
-    # 4. Already consumed?
-    if token_row["consumed_at"] is not None:
+    if status == "scenario_mismatch":
+        raise EnrollError(400, "scenario_name does not match the token's scenario")
+    if status == "already_consumed":
         raise EnrollError(409, "token already consumed")
-
-    # 5. Expired?
-    if token_row["expires_at"] < time.time():
+    if status == "duplicate_box":
+        raise EnrollError(409, "box_id already enrolled")
+    if status == "expired":
         raise EnrollError(410, "token expired")
-
-    # 6/7. Bind token -> box_id -> public_key, then consume the token.
-    store.create_box(body["box_id"], body["public_key"], body["scenario_name"])
-    store.consume_token(body["enrollment_token"])
+    if status != "ok":
+        raise EnrollError(400, f"enrollment failed: {status}")
 
     # 8. EnrollResponse-shaped confirmation.
     return {

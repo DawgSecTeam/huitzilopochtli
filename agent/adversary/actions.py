@@ -10,9 +10,35 @@ runtime. Do not add a generic "run command" primitive.
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
 from typing import Callable
 
 ACTIONS: dict[str, Callable] = {}
+
+#: Dedicated directory the drop_inert_artifact action is confined to. A
+#: directive's `path` is always resolved *inside* this base and may never
+#: escape it, so a compromised/buggy engine cannot direct the agent to
+#: overwrite arbitrary files (/etc/shadow, authorized_keys, ...). Overridable
+#: via env for operators who want a specific location.
+_DEFAULT_ARTIFACT_DIR = os.path.join(tempfile.gettempdir(), "huitzilopochtli-adversary")
+
+
+def _artifact_base() -> str:
+    return os.environ.get("HUITZILOPOCHTLI_ARTIFACT_DIR", _DEFAULT_ARTIFACT_DIR)
+
+
+def _resolve_artifact_path(base: str, requested: str):
+    """Resolve `requested` as a path *inside* `base`, or return None if it would
+    escape. Leading separators/drive are stripped so an absolute-looking path
+    (e.g. "/etc/shadow") is re-anchored under base rather than honored, and the
+    normalized result is verified to stay within base (blocking `..` traversal)."""
+    base_abs = os.path.abspath(base)
+    rel = requested.replace("\\", "/").lstrip("/")
+    candidate = os.path.abspath(os.path.join(base_abs, rel))
+    if candidate != base_abs and not candidate.startswith(base_abs + os.sep):
+        return None
+    return candidate
 
 
 def register(name: str):
@@ -82,14 +108,28 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
     plain-text marker string; permissions are explicitly set to 0o644
     (never executable).
     """
-    path = params.get("path")
-    if not path:
+    requested = params.get("path")
+    if not requested:
+        return
+    base = _artifact_base()
+    target = _resolve_artifact_path(base, requested)
+    if target is None:
+        # The requested path escapes the artifact sandbox. Refuse rather than
+        # traverse -- a directive must never write outside the dedicated
+        # adversary artifact directory. This is a security boundary, so it is
+        # not silently swallowed like a best-effort write failure below.
+        print(
+            f"WARNING: refusing drop_inert_artifact path outside sandbox: "
+            f"{requested!r}",
+            file=sys.stderr,
+        )
         return
     content = "HUITZILOPOCHTLI adversary marker - inert, non-executable\n"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
             f.write(content)
-        os.chmod(path, 0o644)
+        os.chmod(target, 0o644)
     except Exception:
         # Best-effort local action; failure to write is not a security event.
         pass

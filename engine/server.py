@@ -245,12 +245,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
             scenario_name = body["scenario_name"]
+            ttl_s = body.get("ttl_s", 3600)
+            # Guard the type here (inside the try): a JSON string/other type
+            # would otherwise raise an unhandled TypeError at `time.time() + ttl_s`
+            # below, escaping this handler as a 500. bool is a subclass of int,
+            # so reject it explicitly.
+            if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
+                raise ValueError("ttl_s must be a number")
+            expires_at = time.time() + ttl_s
         except Exception:
-            self._send_json(400, {"error": "malformed body; expected {scenario_name, ttl_s?}"})
+            self._send_json(400, {"error": "malformed body; expected {scenario_name, ttl_s?: number}"})
             return
-        ttl_s = body.get("ttl_s", 3600)
         token = secrets.token_urlsafe(32)
-        expires_at = time.time() + ttl_s
         self.store.create_token(token, scenario_name, expires_at)
         self._send_json(
             200, {"token": token, "scenario_name": scenario_name, "expires_at": expires_at}
