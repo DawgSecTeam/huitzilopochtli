@@ -8,6 +8,7 @@ import dataclasses
 import json
 import os
 import socket
+import sys
 import ssl
 import urllib.error
 import urllib.request
@@ -55,7 +56,10 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
     score = ScoreBreakdown(
         scenario_name=score_data.get("scenario_name"),
         scenario_version=score_data.get("scenario_version"),
-        total=score_data.get("total"),
+        # Default numeric fields so a response that omits `score` (or its
+        # `total`) renders as "Total: 0" rather than the confusing "Total: None"
+        # in the report. A well-formed engine always includes these.
+        total=score_data.get("total", 0) or 0,
         results=results,
         sla_status=sla_status,
         computed_at=score_data.get("computed_at"),
@@ -102,16 +106,17 @@ class TransportClient:
             return [line for line in (l.rstrip("\n") for l in f) if line]
 
     def _write_queue(self, lines: list) -> None:
-        if not lines:
-            # Nothing left queued; leave an empty file (still "exists" but
-            # has no content, matching "queue_path exists and has content").
-            with open(self.queue_path, "w", encoding="utf-8") as f:
-                pass
-            return
-        with open(self.queue_path, "w", encoding="utf-8") as f:
+        # Write to a temp file and atomically rename into place, so a crash
+        # mid-write can never leave a truncated/corrupt queue that would poison
+        # every subsequent flush. os.replace is atomic on POSIX within a dir.
+        tmp_path = self.queue_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             for line in lines:
                 f.write(line)
                 f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, self.queue_path)
 
     def _append_queue(self, canonical_line: str) -> None:
         with open(self.queue_path, "a", encoding="utf-8") as f:
@@ -190,6 +195,22 @@ class TransportClient:
                 self._write_queue(queued)
                 self._append_queue(new_canonical.decode("utf-8"))
                 return None
+            except Exception as e:
+                # A permanent (non-transient) rejection of a QUEUED bundle, most
+                # commonly a 409 replay: the engine already recorded this seq
+                # (e.g. we crashed after it accepted the check-in but before we
+                # popped the queue). Retrying it forever would make the agent
+                # crash-loop on every restart. It can never succeed, so drop the
+                # poison bundle and keep flushing the rest instead of letting the
+                # exception kill the agent.
+                print(
+                    f"WARNING: dropping un-sendable queued bundle (permanent "
+                    f"rejection): {e}",
+                    file=sys.stderr,
+                )
+                queued.pop(0)
+                self._write_queue(queued)
+                continue
 
             # Successfully flushed; drop it from the queue file and move on.
             queued.pop(0)

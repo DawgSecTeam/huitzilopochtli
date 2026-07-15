@@ -18,7 +18,18 @@ class ServiceStateCheck(Check):
     type_key = "service_state"
 
     def collect(self, spec: CheckSpec, ctx) -> Evidence:
-        name = spec.collect_params["service"]
+        name = spec.collect_params.get("service")
+        if not name:
+            return Evidence(
+                check_id=spec.id,
+                check_type=self.type_key,
+                host_id=spec.host_id,
+                status=CollectorStatus.ERROR,
+                raw={"active": False, "enabled": False},
+                reason="collect_params missing required 'service'",
+                collected_monotonic=time.monotonic(),
+                collected_wall_claim=time.time(),
+            )
 
         try:
             active = ctx.service_active(name)

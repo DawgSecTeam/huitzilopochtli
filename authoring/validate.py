@@ -86,8 +86,13 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             if collect is not None and not isinstance(collect, dict):
                 errors.append(f"{source_path}: {ref}.collect must be a mapping")
 
-            expect = check.get("expect")
-            if expect is not None and not isinstance(expect, dict):
-                errors.append(f"{source_path}: {ref}.expect must be a mapping")
+            # `expect` is a required key (checked above). A present-but-null
+            # `expect:` (YAML null) satisfied the required-key check but compiled
+            # to an empty matcher {} that later crashes the evaluator with
+            # KeyError('tag'); reject it here at authoring time. Only enforce when
+            # the key is present so the earlier "missing required key" message
+            # stands on its own when it's absent.
+            if "expect" in check and not isinstance(check.get("expect"), dict):
+                errors.append(f"{source_path}: {ref}.expect must be a non-null mapping")
 
     return errors

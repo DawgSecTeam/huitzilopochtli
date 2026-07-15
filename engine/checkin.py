@@ -9,6 +9,7 @@ NotImplementedError while built in parallel).
 import base64
 import dataclasses
 import json
+import sqlite3
 import time
 
 import engine.sla as sla
@@ -65,6 +66,13 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     if box is None:
         raise CheckinError(403, "unknown box")
 
+    # 1b. The box is bound to one scenario at enrollment; it may only score
+    # against that scenario. Without this a box enrolled in scenario A could
+    # submit a bundle claiming scenario B and be scored against B's rubric
+    # (the caller loads the rubric by the client-supplied bundle.scenario_name).
+    if box.scenario_name != bundle.scenario_name:
+        raise CheckinError(400, "scenario_name does not match the box's enrolled scenario")
+
     # 2. Verify signature over the canonical body. Bad signature -> 403.
     canonical_bytes = canon.canonicalize(dataclasses.asdict(bundle))
     public_key = base64.b64decode(box.public_key)
@@ -82,15 +90,30 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         t0_to_use = received_at
     else:
         t0_to_use = box.t0
-    store.update_box_seq(bundle.box_id, bundle.seq, bundle.boot_id)
 
-    # 5. Persist the check-in (audit log).
-    store.save_checkin(
-        bundle.box_id,
-        bundle.seq,
-        received_at,
-        json.dumps(dataclasses.asdict(bundle), default=str),
-    )
+    # Advance last_seq atomically. The in-memory check at step 3 uses a snapshot
+    # of last_seq; the guarded UPDATE (WHERE last_seq < seq) is the real arbiter,
+    # so two concurrent check-ins with the same seq can't both proceed. If the
+    # guard rejects it, another check-in already claimed this seq -> replay/stale.
+    if not store.update_box_seq(bundle.box_id, bundle.seq, bundle.boot_id):
+        fresh = store.get_box(bundle.box_id)
+        last = fresh.last_seq if fresh is not None else box.last_seq
+        raise CheckinError(409, "replay/stale seq", last_seq=last)
+
+    # 5. Persist the check-in (audit log). The checkins table is UNIQUE(box_id,
+    # seq); a duplicate here means a concurrent check-in beat us to this seq, so
+    # translate the IntegrityError into the same 409 rather than a 500.
+    try:
+        store.save_checkin(
+            bundle.box_id,
+            bundle.seq,
+            received_at,
+            json.dumps(dataclasses.asdict(bundle), default=str),
+        )
+    except sqlite3.IntegrityError:
+        fresh = store.get_box(bundle.box_id)
+        last = fresh.last_seq if fresh is not None else box.last_seq
+        raise CheckinError(409, "replay/stale seq", last_seq=last)
 
     # 6. Evaluate point-in-time evidence against the engine-held rubric.
     clock = _Clock(received_at)
