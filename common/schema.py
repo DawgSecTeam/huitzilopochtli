@@ -230,12 +230,15 @@ def validate_manifest(obj: dict) -> list:
             for key in _REQUIRED_CHECK_SPEC_KEYS:
                 if key not in check:
                     errors.append(f"{ref} missing required key '{key}'")
-            if check.get("category") not in (
+            # Only validate the value when the key is present; otherwise the
+            # "missing required key 'category'" error above already covers it and
+            # this would add a redundant, misleading "got None" second error.
+            if "category" in check and check["category"] not in (
                 Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
             ):
                 errors.append(
                     f"{ref}.category must be one of vuln/penalty/prohibited, "
-                    f"got {check.get('category')!r}"
+                    f"got {check['category']!r}"
                 )
             # Invariant (§6.1): collect_params must never carry expected/correct
             # values. Best-effort structural guard: reject an accidentally-leaked
@@ -288,12 +291,14 @@ def validate_rubric(obj: dict) -> list:
             for key in _REQUIRED_RUBRIC_ENTRY_KEYS:
                 if key not in entry:
                     errors.append(f"{ref} missing required key '{key}'")
-            if entry.get("category") not in (
+            # See validate_manifest: skip the value check when the key is absent
+            # to avoid a redundant "got None" alongside the missing-key error.
+            if "category" in entry and entry["category"] not in (
                 Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
             ):
                 errors.append(
                     f"{ref}.category must be one of vuln/penalty/prohibited, "
-                    f"got {entry.get('category')!r}"
+                    f"got {entry['category']!r}"
                 )
             points = entry.get("points")
             if isinstance(points, bool) or not isinstance(points, int):
@@ -308,5 +313,13 @@ def validate_rubric(obj: dict) -> list:
             sla = entry.get("sla")
             if sla is not None and not isinstance(sla, dict):
                 errors.append(f"{ref}.sla must be an object or null")
+            elif isinstance(sla, dict):
+                interval_s = sla.get("interval_s")
+                if (isinstance(interval_s, bool)
+                        or not isinstance(interval_s, (int, float))
+                        or interval_s <= 0):
+                    # interval_s is the divisor for SLA accrual (engine/sla.py);
+                    # zero/negative would divide-by-zero or credit nonsense.
+                    errors.append(f"{ref}.sla.interval_s must be a positive number")
 
     return errors

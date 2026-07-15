@@ -62,7 +62,11 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
         rec.state = "UP"
 
     # Accrual, using the (possibly just-transitioned) new state.
-    if rec.state == "UP":
+    if rec.state == "UP" and sla_params.interval_s > 0:
+        # interval_s <= 0 is a malformed rubric (validate_rubric rejects it at
+        # authoring/upload time); guard here too so a bad record already in the
+        # DB can't divide-by-zero mid-check-in and crash after partial state has
+        # been persisted. No accrual for a non-positive interval.
         elapsed = received_at - rec.last_credited_at
         intervals = math.floor(elapsed / sla_params.interval_s)
         if intervals < 0:

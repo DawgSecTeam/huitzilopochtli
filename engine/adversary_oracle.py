@@ -26,17 +26,40 @@ def due_directives(store: Store, box_id: str, server_secret: bytes,
     directives = []
 
     for index, event in enumerate(event_pool):
-        event_id = f"e{index}"
-        window_s = event["window_s"]
+        if not isinstance(event, dict):
+            # Malformed pool entry: skip rather than crash the whole check-in.
+            continue
+
+        # Prefer an author-assigned stable id so reordering/adding/removing
+        # events in an updated scenario doesn't re-map positional ids onto
+        # different events (which would re-issue already-fired directives).
+        # Fall back to the positional id for id-less pools (back-compat).
+        event_id = str(event.get("id", f"e{index}"))
+
+        window_s = event.get("window_s")
+        if (not isinstance(window_s, (list, tuple)) or len(window_s) != 2
+                or not all(isinstance(b, (int, float)) and not isinstance(b, bool)
+                            for b in window_s)):
+            # Malformed window: can't schedule this event, skip it.
+            continue
+        action = event.get("action")
+        if not isinstance(action, str) or not action:
+            continue
+
         offset = rng.uniform(window_s[0], window_s[1])
         fire_time = t0 + offset
 
         if event_id in issued:
             continue
         if received_at >= fire_time:
-            action = event["action"]
             params = event.get("params", {})
-            store.log_adversary_event(box_id, event_id, action, received_at, params)
-            directives.append(Directive(event_id=event_id, action=action, params=params))
+            # log_adversary_event is idempotent (UNIQUE box_id+event_id); it
+            # returns True only if THIS call recorded the event. Issue the
+            # directive only when we won the insert, so a concurrent check-in
+            # can't also issue the same directive.
+            if store.log_adversary_event(box_id, event_id, action, received_at, params):
+                directives.append(
+                    Directive(event_id=event_id, action=action, params=params)
+                )
 
     return directives
