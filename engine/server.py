@@ -325,7 +325,8 @@ def main() -> None:
         print("WARNING: HUITZILOPOCHTLI_ADMIN_TOKEN not set; /admin/* endpoints disabled (503)")
 
     port = int(os.environ.get("HUITZILOPOCHTLI_PORT", "8080"))
-    httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    bind_host = os.environ.get("HUITZILOPOCHTLI_BIND", "127.0.0.1")
+    httpd = ThreadingHTTPServer((bind_host, port), Handler)
 
     tls_cert = os.environ.get("HUITZILOPOCHTLI_TLS_CERT")
     tls_key = os.environ.get("HUITZILOPOCHTLI_TLS_KEY")
