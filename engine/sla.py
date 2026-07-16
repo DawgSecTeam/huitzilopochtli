@@ -63,14 +63,17 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
         rec.state = "UP"
 
     # Track whether a transition just occurred. If transitioning DOWN -> UP,
-    # do not credit any intervals for this check-in; start fresh.
+    # do not credit any intervals for this check-in. The watermark was already
+    # advanced to the most recent received_at while DOWN; leave it in place
+    # so the next UP check-in accrues from that point.
     transition_to_up = (prev_state == "DOWN" and rec.state == "UP")
 
     # Accrual, using the (possibly just-transitioned) new state.
     if transition_to_up:
-        # DOWN -> UP: set last_credited_at = received_at and do NOT credit
-        # any intervals for this check-in. Let the next check-in start fresh.
-        rec.last_credited_at = received_at
+        # DOWN -> UP: skip accrual entirely. last_credited_at was already
+        # updated to received_at by the DOWN-branch below during the most
+        # recent DOWN check-in, so no stale DOWN period is credited.
+        pass
     elif rec.state == "UP" and sla_params.interval_s > 0:
         # interval_s <= 0 is a malformed rubric (validate_rubric rejects it at
         # authoring/upload time); guard here too so a bad record already in the
