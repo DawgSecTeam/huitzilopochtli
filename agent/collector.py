@@ -37,7 +37,7 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
     results: list = [None] * len(checks)
 
     with concurrent.futures.ThreadPoolExecutor(
-        max_workers=max(1, len(checks)) or 1
+        max_workers=min(20, max(1, len(checks)))
     ) as executor:
         future_to_idx = {}
         for idx, spec in enumerate(checks):

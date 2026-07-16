@@ -17,7 +17,18 @@ class PermissionCheck(Check):
     type_key = "permission"
 
     def collect(self, spec: CheckSpec, ctx) -> Evidence:
-        path = spec.collect_params["path"]
+        path = spec.collect_params.get("path")
+        if path is None:
+            return Evidence(
+                check_id=spec.id,
+                check_type=self.type_key,
+                host_id=spec.host_id,
+                status=CollectorStatus.ERROR,
+                raw={"mode": None, "uid": None, "gid": None, "exists": None},
+                reason="missing 'path' parameter in collect_params",
+                collected_monotonic=time.monotonic(),
+                collected_wall_claim=time.time(),
+            )
         try:
             try:
                 st = os.stat(path)

@@ -269,8 +269,31 @@ class Store:
         concurrent check-in already advanced last_seq to >= seq (so the caller
         should treat this as a replay/stale seq). The `last_seq < ?` guard makes
         the seq check atomic with the write, closing the TOCTOU where two
-        concurrent check-ins both read the same old last_seq."""
+        concurrent check-ins both read the same old last_seq.
+
+        If `boot_id` differs from the stored last_boot_id, this is a new boot
+        session: reset last_seq to 0 and set last_boot_id to the new value
+        before attempting the seq advance, so the new session starts fresh
+        and old-session bundles are rejected.
+        """
         with self._lock:
+            # Check if boot_id has changed — new boot session.
+            cur = self._conn.execute(
+                "SELECT last_boot_id, last_seq FROM boxes WHERE box_id = ?",
+                (box_id,),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                stored_boot_id, stored_seq = row
+                if stored_boot_id is not None and boot_id != stored_boot_id:
+                    # New boot session: reset seq to 0 and update boot_id.
+                    self._conn.execute(
+                        "UPDATE boxes SET last_seq = 0, last_boot_id = ? "
+                        "WHERE box_id = ?",
+                        (boot_id, box_id),
+                    )
+                    self._conn.commit()
+
             cur = self._conn.execute(
                 "UPDATE boxes SET last_seq = ?, last_boot_id = ? "
                 "WHERE box_id = ? AND last_seq < ?",

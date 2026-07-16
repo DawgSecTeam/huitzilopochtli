@@ -83,6 +83,14 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     if bundle.seq <= box.last_seq:
         raise CheckinError(409, "replay/stale seq", last_seq=box.last_seq)
 
+    # 3b. Detect boot_id change. If the bundle's boot_id differs from the
+    # box's last_boot_id, this is a new boot session. Reset the local
+    # last_seq to 0 so the seq guard below accepts the new session's seq
+    # (which should start at 1). The DB-level reset happens in
+    # store.update_box_seq when it sees the new boot_id.
+    if box.last_boot_id is not None and bundle.boot_id != box.last_boot_id:
+        box.last_seq = 0
+
     # 4. Stamp received_at = engine_now(). First check-in for this box sets T0.
     received_at = time.time()
     if box.t0 is None:
