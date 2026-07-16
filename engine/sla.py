@@ -56,13 +56,22 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
         rec.consec_ok = 0
 
     # Hysteresis transition.
+    prev_state = rec.state
     if rec.state == "UP" and rec.consec_fail >= sla_params.hysteresis_fail_n:
         rec.state = "DOWN"
     elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
         rec.state = "UP"
 
+    # Track whether a transition just occurred. If transitioning DOWN -> UP,
+    # do not credit any intervals for this check-in; start fresh.
+    transition_to_up = (prev_state == "DOWN" and rec.state == "UP")
+
     # Accrual, using the (possibly just-transitioned) new state.
-    if rec.state == "UP" and sla_params.interval_s > 0:
+    if transition_to_up:
+        # DOWN -> UP: set last_credited_at = received_at and do NOT credit
+        # any intervals for this check-in. Let the next check-in start fresh.
+        rec.last_credited_at = received_at
+    elif rec.state == "UP" and sla_params.interval_s > 0:
         # interval_s <= 0 is a malformed rubric (validate_rubric rejects it at
         # authoring/upload time); guard here too so a bad record already in the
         # DB can't divide-by-zero mid-check-in and crash after partial state has
