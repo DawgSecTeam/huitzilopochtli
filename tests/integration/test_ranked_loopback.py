@@ -96,15 +96,21 @@ class _EngineProc:
             cwd=REPO_ROOT,
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # engine/server.py's startup/warning lines are plain print()
+            # (stdout), not stderr -- merge streams so the readline loop
+            # below actually sees them. Reading a *separate* stderr pipe
+            # that engine.server never writes to blocks forever (confirmed
+            # empirically: deterministic hang on the first construction of
+            # this class, not a timing-dependent flake).
+            stderr=subprocess.STDOUT,
             text=True,
         )
-        # Read stderr/stdout immediately to check for startup messages
+        # Read combined stdout/stderr immediately to check for startup messages
         # This needs to be done carefully to avoid blocking
         output_buffer = []
         start_time = time.time()
         while time.time() - start_time < 30: # Max 30 seconds for startup message
-            line = self.proc.stderr.readline()
+            line = self.proc.stdout.readline()
             if not line: # EOF reached
                 if self.proc.poll() is not None: # Process exited
                     break
@@ -128,16 +134,30 @@ class _EngineProc:
                         return
             except Exception as e:  # noqa: BLE001 - polling loop, retry on anything
                 last_err = e
-                # Capture and print stdout/stderr here if an exception occurs
-                stdout, stderr = self.proc.communicate()
-                print(f"Engine stdout on error: {stdout}", file=sys.stderr)
-                print(f"Engine stderr on error: {stderr}", file=sys.stderr)
+                # NOTE: do NOT call self.proc.communicate() here. The engine
+                # is normally still alive and running at this point (a
+                # failed poll just means it hasn't started listening yet);
+                # communicate() with no timeout blocks until the process
+                # exits, which it never does on its own -- that deadlocks
+                # the whole test run the instant a single poll fails while
+                # the engine is mid-startup (e.g. under CPU contention from
+                # other work on the box, confirmed empirically). There is
+                # nothing useful to drain yet anyway since the process is
+                # still writing to those pipes.
             time.sleep(0.1)
-        stdout, stderr = self.proc.communicate() # Drain remaining output if process is still alive
+        # Timed out. If the process already exited on its own, draining its
+        # output is safe (communicate() hits EOF immediately). If it's still
+        # running, terminate it first so communicate() can't hang the same
+        # way described above.
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+        stdout, stderr = self.proc.communicate()
         raise TimeoutError(f"engine at {self.base_url} never became healthy: {last_err!r}\nEngine stdout: {stdout}\nEngine stderr: {stderr}")
-
-
-        self.wait_for_health()
 
     def upload_scenario(self, rubric: dict, adversary: dict = None) -> None:
         status, body = _http_json(
@@ -200,9 +220,10 @@ def _query_box(db_path: str, box_id: str, retries: int = 30):
 def _run_agent(config_path: str) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
-    # Open stdout/stderr to files for debugging
-    stdout_file_obj = tempfile.NamedTemporaryFile(mode='w+', delete=False, text=True)
-    stderr_file_obj = tempfile.NamedTemporaryFile(mode='w+', delete=False, text=True)
+    # Open stdout/stderr to files for debugging. mode='w+' already opens in
+    # text mode; NamedTemporaryFile has no separate text= kwarg.
+    stdout_file_obj = tempfile.NamedTemporaryFile(mode='w+', delete=False)
+    stderr_file_obj = tempfile.NamedTemporaryFile(mode='w+', delete=False)
     proc = subprocess.Popen(
         [sys.executable, "-m", "agent", config_path],
         cwd=REPO_ROOT,
@@ -211,7 +232,9 @@ def _run_agent(config_path: str) -> subprocess.Popen:
         stderr=stderr_file_obj,
         text=True,
     )
-    # Store the names for later access
+    # Popen dup()s the underlying fd, so closing our handles here doesn't
+    # affect the child; store the paths so _stop_agent can reopen them for
+    # reading later.
     proc._stdout_path = stdout_file_obj.name
     proc._stderr_path = stderr_file_obj.name
     stdout_file_obj.close()
@@ -228,21 +251,14 @@ def _stop_agent(proc: subprocess.Popen, kill: bool = False, timeout: float = 5.0
         else:
             proc.terminate()
         try:
-            # Wait for process to terminate and capture output
-            proc.wait(timeout=timeout) # Wait for termination
-            proc._stdout_file.seek(0)
-            proc._stderr_file.seek(0)
-            out = proc._stdout_file.read()
-            err = proc._stderr_file.read()
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=timeout) # Wait after kill
-            proc._stdout_file.seek(0)
-            proc._stderr_file.seek(0)
-            out = proc._stdout_file.read()
-            err = proc._stderr_file.read()
-    proc._stdout_file.close()
-    proc._stderr_file.close()
+            proc.wait(timeout=timeout)
+    with open(proc._stdout_path) as f:
+        out = f.read()
+    with open(proc._stderr_path) as f:
+        err = f.read()
     return out, err
 
 

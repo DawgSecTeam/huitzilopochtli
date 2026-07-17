@@ -9,13 +9,13 @@ package, no path hacking needed in individual test files.
 No external processes; mocked `subprocess`/filesystem where the real thing
 would be slow, flaky, or system-dependent (platform layer, package managers).
 Real (but temporary/local) files and sqlite DBs where that's cheap and more
-representative (checks, store). 226 tests, ~40s.
+representative (checks, store). 254 tests, ~40s.
 
 ## `tests/integration/` — real processes, same host
 
 Real subprocesses (`python3 -m agent`, `python3 -m engine.server`), real
 sockets over `127.0.0.1`, real sqlite files, real signing/verification. No
-external VM or network boundary. 22 tests, ~3 minutes — dominated by
+external VM or network boundary. 24 tests, ~90s — dominated by
 `test_ranked_loopback.py`, see the note below.
 
 Run both tiers together (the default):
@@ -59,6 +59,27 @@ goes through the QEMU guest agent API (file-write/file-read/exec), not SSH.
 ```
 pytest -m proxmox
 ```
+
+### `test_all_check_types_live.py` — PASSES (Ubuntu 24.04 full; Fedora 44 partial)
+
+`test_local_honor_distribution.py` only ever exercised `file_regex`. This
+file runs a scenario hitting all seven check types (`file_regex`,
+`permission`, `user_group`, `service_state`, `package`, `http_uptime`,
+`db_query`) in one pass against a real, freshly-cloned VM.
+
+- **Ubuntu 24.04: 70/70.** All seven check types collect and score
+  correctly against real OS state.
+- **Fedora 44: 30/70** (only `file_regex`/`permission`/`user_group`, which
+  need no subprocess or network call, pass). The remaining four score 0 for
+  reasons confirmed to be template/environment facts, not product bugs:
+  `crond` isn't active by default on this minimal cloud image; `rpm` isn't
+  reachable via the guest-agent's exec PATH so `package_installed()`
+  correctly falls back to `(False, None)` instead of erroring; and
+  `http_uptime`/`db_query` both hit `errno 13 Permission denied` on
+  outbound `connect()` — the same SELinux `virt_qemu_ga_t` confinement
+  documented below for `test_ranked_two_machines.py`, now confirmed to block
+  outbound `connect()` from *any* process the guest agent spawns, not just
+  `agent.identity.enroll()`'s call site.
 
 ### `test_local_honor_distribution.py` — PASSES (Ubuntu 24.04 + Fedora 44)
 
@@ -127,6 +148,28 @@ ran into #2 instead. Using Ubuntu for both roles avoids #2 but hits #1.
 None of these were applied without asking first, since they all touch
 shared production infrastructure.
 
+**Update:** the Ubuntu template (vmid 9106) has since been rebuilt with
+working cloud-init, fixing #1 -- confirmed empirically (both roles cloned
+from Ubuntu now get distinct IPs). The test now uses Ubuntu for both roles
+and gets past enrollment. It's still not fully green, though, for a
+*third*, previously-undiscovered reason:
+
+3. **From this dev environment, arbitrary VM ports on the Proxmox host's
+   LAN (`10.0.0.0/24`) are not reachable at all** -- confirmed by testing
+   against several already-running, unrelated production VMs (not just
+   test clones): every port except the Proxmox API's own (`:8006`) gets an
+   immediate TCP RST within ~35ms. Only the Proxmox API and the QEMU
+   guest-agent channel (file-write/file-read/exec) are reachable from here;
+   a raw HTTP client on this machine cannot reach a cloned VM's exposed
+   port directly. This is exactly the network boundary
+   `test_ranked_two_machines.py`'s engine/checkin polling needs (it must
+   `GET /health` and `POST /checkin` from the test process, not just push
+   files via the guest agent), so the test is blocked on network
+   reachability from this specific dev environment rather than on anything
+   in the repo. `test_local_honor_distribution.py` and
+   `test_all_check_types_live.py` are unaffected because they only ever use
+   the guest-agent channel, never a raw connection to a VM's IP.
+
 ### Bugs found and fixed in this test tier itself, along the way
 
 - `proxmox_helper.py::clone_vm` fired `status.start.post()` immediately
@@ -146,6 +189,55 @@ shared production infrastructure.
 - `test_ranked_two_machines.py`'s leaderboard-polling loop didn't catch
   connection exceptions, so a transient hiccup mid-poll crashed the whole
   test instead of retrying.
+- `guest_file_write` rejected any payload over 60KB base64-encoded --
+  confirmed empirically (`400 Bad Request: value may only be 61440
+  characters long`) pushing the ~200KB engine bundle tarball in
+  `test_ranked_two_machines.py`. Proxmox's `agent/file-write` endpoint is a
+  one-shot open+write+close wrapper with no append/offset parameter, so
+  there's no way to send a payload over the cap in one call. Fixed by
+  splitting into ≤45000-byte chunks written to separate temp paths, then
+  reassembled with a guest-side `cat` + cleanup.
+
+### Bugs found live in `tests/integration/` (not the proxmox tier) while debugging the above
+
+While chasing the network-reachability issue above, the *unrelated*
+`tests/unit`/`tests/integration` tiers were run alongside the proxmox work
+and turned up two real, previously-undiscovered process-management bugs of
+their own -- confirmed by tracing an actually-hung `pytest` process (a
+still-running `python3 -m engine.server` child, parent blocked in
+`anon_pipe_read`, via `/proc/<pid>/wchan` and `ps --ppid`), not just
+inferred from reading the code:
+
+- **`tests/integration/test_admin_endpoints.py` and
+  `test_tls_and_secret.py`**: both files' engine-health-check fixtures did
+  `assert ok, "... " + proc.stdout.read()` when the health poll timed out.
+  `proc` is still alive at that point (that's what "never became healthy"
+  means) -- `.read()` with no timeout blocks until EOF, which never comes
+  from a live, still-running process. Any run where engine startup was
+  even slightly slow (confirmed trigger: CPU contention from concurrent
+  Proxmox VM work on the same box) hung the *entire* suite forever, not
+  just the one test. Fixed by terminating the process before reading its
+  output.
+- **`tests/integration/test_ranked_loopback.py`**: `_EngineProc.__init__`
+  waited for the "listening on" startup line via a blocking
+  `self.proc.stderr.readline()` loop -- but `engine/server.py` prints that
+  line (and its two warning lines) with plain `print()`, which goes to
+  **stdout**, not stderr. Reading a separate stderr pipe the engine never
+  writes to blocks forever, deterministically, on the very first
+  `_EngineProc` construction (not a timing-dependent flake -- this is why
+  three separate full-suite attempts all stalled at the exact same
+  progress percentage). Fixed by merging `stderr=subprocess.STDOUT` and
+  reading `self.proc.stdout` instead. A second, unrelated bug in the same
+  file's `_run_agent`/`_stop_agent` pair surfaced immediately after fixing
+  the hang: `tempfile.NamedTemporaryFile(..., text=True)` -- `text=` isn't
+  a valid kwarg for that function -- and `_stop_agent` read back
+  `proc._stdout_file`/`proc._stderr_file`, attributes that were never set
+  (`_run_agent` only stored `_stdout_path`/`_stderr_path` after closing its
+  handles). Fixed both: dropped the invalid kwarg, and `_stop_agent` now
+  reopens the files by path to read them back.
+
+After both fixes, `pytest tests/unit tests/integration` passes clean:
+**278 passed in ~91s**, with no hangs.
 
 ### Setup used for the runs above
 

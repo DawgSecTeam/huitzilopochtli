@@ -111,10 +111,17 @@ def engine(tmp_path):
     proc = _spawn_engine(env, port)
     try:
         ok = _wait_for_health(port)
-        assert ok, (
-            "engine never became healthy: "
-            + (proc.stdout.read() if proc.stdout else "")
-        )
+        if not ok:
+            # proc is still running here (that's what "never became healthy"
+            # means) -- proc.stdout.read() would block forever waiting for
+            # EOF on a pipe the still-live process never closes. Kill it
+            # first so the pipe closes and the diagnostic read can't hang
+            # the whole test run.
+            _terminate(proc)
+            raise AssertionError(
+                "engine never became healthy: "
+                + (proc.stdout.read() if proc.stdout else "")
+            )
         yield f"http://127.0.0.1:{port}", admin_token, db_path, proc
     finally:
         _terminate(proc)
@@ -135,10 +142,15 @@ def engine_no_admin_token(tmp_path):
     proc = _spawn_engine(env, port)
     try:
         ok = _wait_for_health(port)
-        assert ok, (
-            "engine never became healthy: "
-            + (proc.stdout.read() if proc.stdout else "")
-        )
+        if not ok:
+            # See the `engine` fixture above: must terminate before reading
+            # stdout, or this blocks forever on a pipe the live process
+            # never closes.
+            _terminate(proc)
+            raise AssertionError(
+                "engine never became healthy: "
+                + (proc.stdout.read() if proc.stdout else "")
+            )
         yield f"http://127.0.0.1:{port}", proc
     finally:
         _terminate(proc)
@@ -289,6 +301,91 @@ def test_admin_tokens_and_scenarios_succeed_with_correct_token(engine, tmp_path)
     )
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"ok": True, "scenario_name": scenario_name}
+
+
+# --- BUG-E5: malformed rubric upload must be rejected, not stored ------------
+
+
+def test_admin_scenarios_rejects_invalid_rubric_with_400(engine, tmp_path):
+    """POST /admin/scenarios used to store body['rubric'] verbatim with no
+    validation, so a malformed rubric landed in the DB and later crashed
+    /checkin with an unhandled 500. The handler now runs validate_rubric and
+    rejects the upload with 400 + a details list."""
+    base_url, admin_token, _db_path, _proc = engine
+    # A rubric missing the required 'matcher' key on its entry (validate_rubric
+    # flags this) AND a bad category -- either is enough to be rejected.
+    bad_record = {
+        "rubric": {
+            "schema_version": 1,
+            "scenario_name": "scenario-bad-rubric",
+            "scenario_version": 1,
+            "entries": [
+                {"check_id": "c1", "category": "bogus", "points": 5}  # no matcher, bad category
+            ],
+        },
+        "adversary": {},
+    }
+
+    resp = requests.post(
+        f"{base_url}/admin/scenarios",
+        json=bad_record,
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
+        timeout=REQUEST_TIMEOUT,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert "details" in body
+    assert any("matcher" in d for d in body["details"])
+
+
+def test_checkin_with_malformed_stored_rubric_returns_clean_500(engine, tmp_path):
+    """If a bad rubric is already in the DB (e.g. from an older, unvalidated
+    build), /checkin must return a clean JSON 500 rather than an unhandled
+    traceback. We bypass the (now-validating) upload and inject a bad record
+    directly into the scenarios table, then enroll a box against it and
+    check in: the handler maps the parse failure to a clean 500 instead of
+    crashing."""
+    base_url, admin_token, db_path, _proc = engine
+    scenario_name = "scenario-corrupt-stored"
+
+    # Inject a malformed rubric straight into the scenarios table the way an
+    # older build (pre-validation) could have left it: a category the enum
+    # rejects, which makes _rubric_from_dict raise ValueError.
+    import json as _json
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO scenarios (scenario_name, rubric_json, adversary_json, uploaded_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                scenario_name,
+                _json.dumps({
+                    "schema_version": 1,
+                    "scenario_name": scenario_name,
+                    "scenario_version": 1,
+                    "entries": [
+                        {"check_id": "c1", "category": "not-a-real-category",
+                         "matcher": {}, "points": 5}
+                    ],
+                }),
+                _json.dumps({}),
+                time.time(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Enroll a box against this scenario, then check in. Enrollment binds the
+    # box to the scenario name and does not need the rubric to parse.
+    priv_key, _pub = _enroll_box(base_url, admin_token, scenario_name, box_id="box-corrupt")
+    body = _make_checkin_body("box-corrupt", scenario_name, seq=1, matched_value="yes")
+
+    resp = _signed_checkin(base_url, priv_key, body)
+    assert resp.status_code == 500, resp.text
+    body = resp.json()
+    assert "malformed rubric" in body["error"]
 
 
 # --- 2. admin auth: wrong/missing token is rejected with 403 ----------------

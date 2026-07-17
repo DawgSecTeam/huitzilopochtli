@@ -196,3 +196,32 @@ def test_watermark_jumps_to_received_at_while_down(store):
     # elapsed since last_credited_at (1550) is only 50s < interval_s -> no credit yet.
     assert rec.accrued_points == 0
     assert rec.last_credited_at == 1550.0
+
+
+# --- concurrency: update_sla must not lose updates (BUG-E3) ----------------
+
+
+def test_update_sla_consecutive_counter_survives_concurrent_updaters(store):
+    """Two threads calling update_sla for the same (box, check) concurrently
+    must both increment consec_ok -- the old unlocked get/mutate/save sequence
+    lost one update under this exact race. update_sla now delegates to
+    Store.update_sla_atomic, which holds the lock across the whole RMW."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    params = SlaParams(interval_s=100, points_per_interval=1)
+    # First observation seeds consec_ok=1.
+    update_sla(store, "box1", "check1", params, is_up=True, received_at=1000.0)
+
+    barrier = threading.Barrier(8)
+
+    def one_up():
+        barrier.wait()  # line up BEFORE entering the locked RMW (else deadlock)
+        update_sla(store, "box1", "check1", params, is_up=True, received_at=1001.0)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: one_up(), range(8)))
+
+    # If the RMW were non-atomic, lost updates would leave this below 9.
+    rec = store.get_sla_state("box1", "check1")
+    assert rec.consec_ok == 9

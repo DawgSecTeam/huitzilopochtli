@@ -48,7 +48,7 @@ def _build_engine_bundle_tar() -> bytes:
     return buf.getvalue()
 
 
-def _wait_for_http(url: str, timeout_s: float = 60) -> None:
+def _wait_for_http(url: str, timeout_s: float = 180) -> None:
     deadline = time.time() + timeout_s
     last_exc = None
     while time.time() < deadline:
@@ -63,19 +63,16 @@ def _wait_for_http(url: str, timeout_s: float = 60) -> None:
 
 
 def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
-    # Deliberately DIFFERENT templates for the two roles: cloning the same
-    # template twice was found (empirically, see tests/README.md) to yield
-    # two VMs with an identical DHCP-assigned IP -- almost certainly the
-    # Ubuntu template's /etc/machine-id (and thus DHCP client-id) was never
-    # reset before it was converted to a template, so every clone presents
-    # the same client-id to the DHCP server regardless of MAC address. Using
-    # two different OS templates sidesteps this without touching the shared
-    # production template. The engine role needs Ubuntu specifically (it
-    # must bind/listen -- confirmed working there; Fedora's guest-agent is
-    # SELinux-confined in a way that may block port binding, untested here
-    # since the agent role never binds a port, only makes outbound calls).
+    # Both roles clone the Ubuntu template. Previously this collided onto a
+    # shared DHCP-assigned IP (stale /etc/machine-id baked into the template
+    # image); that template has since been rebuilt with cloud-init producing
+    # a fresh machine-id per clone, confirmed empirically here to yield
+    # distinct IPs. Fedora was ruled out for the agent role separately: its
+    # guest-agent runs SELinux-confined (virt_qemu_ga_t) and denies outbound
+    # connect() for anything it spawns, which breaks agent.identity.enroll()'s
+    # plain urllib POST.
     engine_vmid = ph.clone_vm(proxmox, int(os.environ["TEST_TEMPLATE_VMID_UBUNTU"]), "engine")
-    agent_vmid = ph.clone_vm(proxmox, int(os.environ["TEST_TEMPLATE_VMID_FEDORA"]), "agent")
+    agent_vmid = ph.clone_vm(proxmox, int(os.environ["TEST_TEMPLATE_VMID_UBUNTU"]), "agent")
     try:
         ph.wait_for_agent(proxmox, engine_vmid, timeout_s=180)
         ph.wait_for_agent(proxmox, agent_vmid, timeout_s=180)
@@ -102,7 +99,7 @@ def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
         assert start_result["exitcode"] == 0, start_result
 
         engine_base = f"http://{engine_ip}:{ENGINE_PORT}"
-        _wait_for_http(f"{engine_base}/health", timeout_s=60)
+        _wait_for_http(f"{engine_base}/health", timeout_s=180)
 
         # --- compile a ranked-mode scenario against the engine's real IP ---
         sys.path.insert(0, REPO_ROOT)

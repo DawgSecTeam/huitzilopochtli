@@ -137,12 +137,13 @@ class Store:
     def get_token(self, token: str) -> Optional[dict]:
         """Returns {"scenario_name": str, "expires_at": float,
         "consumed_at": float | None} or None if the token is unknown."""
-        cur = self._conn.execute(
-            "SELECT scenario_name, expires_at, consumed_at FROM enrollment_tokens "
-            "WHERE token = ?",
-            (token,),
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT scenario_name, expires_at, consumed_at FROM enrollment_tokens "
+                "WHERE token = ?",
+                (token,),
+            )
+            row = cur.fetchone()
         if row is None:
             return None
         return {
@@ -237,12 +238,13 @@ class Store:
     # --- checkin.py ----------------------------------------------------------
 
     def get_box(self, box_id: str) -> Optional[BoxRecord]:
-        cur = self._conn.execute(
-            "SELECT box_id, public_key, scenario_name, enrolled_at, last_seq, "
-            "last_boot_id, t0 FROM boxes WHERE box_id = ?",
-            (box_id,),
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT box_id, public_key, scenario_name, enrolled_at, last_seq, "
+                "last_boot_id, t0 FROM boxes WHERE box_id = ?",
+                (box_id,),
+            )
+            row = cur.fetchone()
         if row is None:
             return None
         return BoxRecord(
@@ -309,13 +311,14 @@ class Store:
     # --- sla.py --------------------------------------------------------------
 
     def get_sla_state(self, box_id: str, check_id: str) -> Optional[SlaStateRecord]:
-        cur = self._conn.execute(
-            "SELECT box_id, check_id, state, consec_ok, consec_fail, "
-            "last_credited_at, accrued_points FROM sla_state "
-            "WHERE box_id = ? AND check_id = ?",
-            (box_id, check_id),
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT box_id, check_id, state, consec_ok, consec_fail, "
+                "last_credited_at, accrued_points FROM sla_state "
+                "WHERE box_id = ? AND check_id = ?",
+                (box_id, check_id),
+            )
+            row = cur.fetchone()
         if row is None:
             return None
         return SlaStateRecord(
@@ -352,13 +355,68 @@ class Store:
             )
             self._conn.commit()
 
+    def update_sla_atomic(
+        self, box_id: str, check_id: str, apply_fn
+    ) -> "SlaStateRecord":
+        """Atomically read-modify-write a SLA state row.
+
+        `apply_fn(rec: SlaStateRecord | None) -> SlaStateRecord` is called with the
+        current row (or None for a first-ever observation); it returns the new
+        record to persist. The lock is held across the read, the apply, and the
+        write, so concurrent check-ins updating the same (box_id, check_id) SLA
+        cannot interleave and clobber each other (the lost-update race that the
+        old get_sla_state -> mutate -> save_sla_state sequence had). This is the
+        single correct write path for SLA state.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT box_id, check_id, state, consec_ok, consec_fail, "
+                "last_credited_at, accrued_points FROM sla_state "
+                "WHERE box_id = ? AND check_id = ?",
+                (box_id, check_id),
+            )
+            row = cur.fetchone()
+            rec = None if row is None else SlaStateRecord(
+                box_id=row["box_id"],
+                check_id=row["check_id"],
+                state=row["state"],
+                consec_ok=row["consec_ok"],
+                consec_fail=row["consec_fail"],
+                last_credited_at=row["last_credited_at"],
+                accrued_points=row["accrued_points"],
+            )
+            new_rec = apply_fn(rec)
+            self._conn.execute(
+                "INSERT INTO sla_state (box_id, check_id, state, consec_ok, "
+                "consec_fail, last_credited_at, accrued_points) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(box_id, check_id) DO UPDATE SET "
+                "state = excluded.state, "
+                "consec_ok = excluded.consec_ok, "
+                "consec_fail = excluded.consec_fail, "
+                "last_credited_at = excluded.last_credited_at, "
+                "accrued_points = excluded.accrued_points",
+                (
+                    new_rec.box_id,
+                    new_rec.check_id,
+                    new_rec.state,
+                    new_rec.consec_ok,
+                    new_rec.consec_fail,
+                    new_rec.last_credited_at,
+                    new_rec.accrued_points,
+                ),
+            )
+            self._conn.commit()
+            return new_rec
+
     # --- adversary_oracle.py ---------------------------------------------------
 
     def get_issued_event_ids(self, box_id: str) -> set:
-        cur = self._conn.execute(
-            "SELECT event_id FROM adversary_log WHERE box_id = ?", (box_id,)
-        )
-        return {row["event_id"] for row in cur.fetchall()}
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT event_id FROM adversary_log WHERE box_id = ?", (box_id,)
+            )
+            return {row["event_id"] for row in cur.fetchall()}
 
     def log_adversary_event(self, box_id: str, event_id: str, action: str,
                              issued_at: float, params: dict) -> bool:
@@ -380,12 +438,21 @@ class Store:
     # --- leaderboard.py --------------------------------------------------------
 
     def get_scores(self, scenario_name: str) -> list:
-        """Returns list[ScoreRow], ranked descending by total."""
-        cur = self._conn.execute(
-            "SELECT box_id, scenario_name, total, updated_at FROM scores "
-            "WHERE scenario_name = ? ORDER BY total DESC",
-            (scenario_name,),
-        )
+        """Returns list[ScoreRow], ranked descending by total.
+
+        Ties are broken deterministically by earliest updated_at then box_id, so
+        the leaderboard is reproducible across runs/DB vacuums (boxes that
+        reached the same total at the same instant sort by a stable id rather
+        than in unspecified SQLite row order).
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT box_id, scenario_name, total, updated_at FROM scores "
+                "WHERE scenario_name = ? "
+                "ORDER BY total DESC, updated_at ASC, box_id ASC",
+                (scenario_name,),
+            )
+            rows = cur.fetchall()
         return [
             ScoreRow(
                 box_id=row["box_id"],
@@ -393,7 +460,7 @@ class Store:
                 total=row["total"],
                 updated_at=row["updated_at"],
             )
-            for row in cur.fetchall()
+            for row in rows
         ]
 
     # --- engine/server.py: multi-scenario support (POST /admin/scenarios) ---
@@ -418,12 +485,13 @@ class Store:
     def get_scenario(self, scenario_name: str) -> Optional[dict]:
         """Returns {"rubric_json": str, "adversary_json": str,
         "uploaded_at": float} or None if the scenario is unknown."""
-        cur = self._conn.execute(
-            "SELECT rubric_json, adversary_json, uploaded_at FROM scenarios "
-            "WHERE scenario_name = ?",
-            (scenario_name,),
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT rubric_json, adversary_json, uploaded_at FROM scenarios "
+                "WHERE scenario_name = ?",
+                (scenario_name,),
+            )
+            row = cur.fetchone()
         if row is None:
             return None
         return {
@@ -435,10 +503,11 @@ class Store:
     # --- engine/server.py: persisted server_secret (§4) ---------------------
 
     def get_meta(self, key: str) -> Optional[str]:
-        cur = self._conn.execute(
-            "SELECT value FROM engine_meta WHERE key = ?", (key,)
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT value FROM engine_meta WHERE key = ?", (key,)
+            )
+            row = cur.fetchone()
         return row["value"] if row is not None else None
 
     def set_meta(self, key: str, value: str) -> None:

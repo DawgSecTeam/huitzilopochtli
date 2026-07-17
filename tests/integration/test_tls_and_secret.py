@@ -107,10 +107,14 @@ def test_server_secret_persists_across_restarts(tmp_path):
 
     proc1 = _spawn_engine(env, port1)
     try:
-        assert _wait_for_health("http://", port1), (
-            "first engine instance never became healthy: "
-            + (proc1.stdout.read() if proc1.stdout else "")
-        )
+        if not _wait_for_health("http://", port1):
+            # proc1 is still alive here; reading its stdout before killing it
+            # would block forever on a pipe the live process never closes.
+            _terminate(proc1)
+            raise AssertionError(
+                "first engine instance never became healthy: "
+                + (proc1.stdout.read() if proc1.stdout else "")
+            )
         # Give the store a brief moment beyond health to ensure the meta
         # row write (which happens before serve_forever) has landed.
         store_after_first_run = Store(db_path)
@@ -122,10 +126,12 @@ def test_server_secret_persists_across_restarts(tmp_path):
     port2 = _free_port()
     proc2 = _spawn_engine(env, port2)
     try:
-        assert _wait_for_health("http://", port2), (
-            "second engine instance never became healthy: "
-            + (proc2.stdout.read() if proc2.stdout else "")
-        )
+        if not _wait_for_health("http://", port2):
+            _terminate(proc2)
+            raise AssertionError(
+                "second engine instance never became healthy: "
+                + (proc2.stdout.read() if proc2.stdout else "")
+            )
         store_after_second_run = Store(db_path)
         secret_2 = store_after_second_run.get_meta("server_secret")
         assert secret_2 is not None
@@ -175,10 +181,12 @@ def test_tls_enabled_serves_https_and_rejects_plain_http(tmp_path):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        assert _wait_for_health("https://", port, use_ssl_ctx=ctx), (
-            "TLS-enabled engine never became healthy over https: "
-            + (proc.stdout.read() if proc.stdout else "")
-        )
+        if not _wait_for_health("https://", port, use_ssl_ctx=ctx):
+            _terminate(proc)
+            raise AssertionError(
+                "TLS-enabled engine never became healthy over https: "
+                + (proc.stdout.read() if proc.stdout else "")
+            )
 
         # A plain HTTP request to the same port should fail: either the
         # connection is refused/reset, or it degrades to a protocol/parsing
@@ -220,9 +228,11 @@ def test_tls_disabled_by_default_serves_plain_http(tmp_path):
 
     proc = _spawn_engine(env, port)
     try:
-        assert _wait_for_health("http://", port), (
-            "plain-HTTP engine never became healthy: "
-            + (proc.stdout.read() if proc.stdout else "")
-        )
+        if not _wait_for_health("http://", port):
+            _terminate(proc)
+            raise AssertionError(
+                "plain-HTTP engine never became healthy: "
+                + (proc.stdout.read() if proc.stdout else "")
+            )
     finally:
         _terminate(proc)

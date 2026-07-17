@@ -164,12 +164,40 @@ def _with_retry(fn, attempts: int = 3, delay_s: float = 3):
     raise last_exc
 
 
+# Proxmox's agent/file-write API rejects any single call whose (already
+# base64-encoded) `content` field exceeds 61440 characters -- confirmed
+# empirically (400 "value may only be 61440 characters long") when pushing
+# a multi-hundred-KB engine bundle tarball. The endpoint is a one-shot
+# open+write+close wrapper with no append/offset parameter, so a payload
+# over this limit must be split into raw chunks small enough that each
+# base64-encodes under the cap, written to separate temp paths, and
+# reassembled with a guest-side `cat` -- there is no way to append via the
+# agent API alone.
+_FILE_WRITE_MAX_CHUNK_BYTES = 45000
+
+
 def guest_file_write(proxmox, vmid: int, path: str, content: bytes) -> None:
     n = node()
-    encoded = base64.b64encode(content).decode("ascii")
-    _with_retry(lambda: proxmox.nodes(n).qemu(vmid).agent("file-write").post(
-        file=path, content=encoded, encode=0
-    ))
+
+    def _write_chunk(dest_path: str, chunk: bytes) -> None:
+        encoded = base64.b64encode(chunk).decode("ascii")
+        _with_retry(lambda: proxmox.nodes(n).qemu(vmid).agent("file-write").post(
+            file=dest_path, content=encoded, encode=0
+        ))
+
+    if len(content) <= _FILE_WRITE_MAX_CHUNK_BYTES:
+        _write_chunk(path, content)
+        return
+
+    part_paths = []
+    for i in range(0, len(content), _FILE_WRITE_MAX_CHUNK_BYTES):
+        part_path = f"{path}.part{len(part_paths)}"
+        _write_chunk(part_path, content[i:i + _FILE_WRITE_MAX_CHUNK_BYTES])
+        part_paths.append(part_path)
+
+    result = guest_exec(proxmox, vmid, ["sh", "-c", f"cat {' '.join(part_paths)} > {path} && rm -f {' '.join(part_paths)}"])
+    if result.get("exitcode") != 0:
+        raise RuntimeError(f"failed to reassemble chunked file {path}: {result}")
 
 
 def guest_file_read(proxmox, vmid: int, path: str) -> bytes:

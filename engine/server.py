@@ -26,6 +26,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from common.schema import (
     Bundle, Category, CollectorStatus, Evidence, Rubric, RubricEntry, SlaParams,
+    validate_rubric,
 )
 from engine import enrollment, leaderboard
 from engine.checkin import CheckinError, handle_checkin
@@ -223,8 +224,23 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        rubric = _rubric_from_dict(json.loads(scenario_row["rubric_json"]))
-        event_pool = json.loads(scenario_row["adversary_json"]).get("events", [])
+        try:
+            rubric = _rubric_from_dict(json.loads(scenario_row["rubric_json"]))
+            event_pool = json.loads(scenario_row["adversary_json"]).get("events", [])
+        except (ValueError, KeyError, TypeError) as e:
+            # A stored rubric that doesn't parse into a valid Rubric means a bad
+            # scenario record reached the DB (validate_rubric on upload should
+            # prevent this, but a pre-existing/older DB could still hold one).
+            # Fail closed with a clean 500 rather than an unhandled traceback.
+            self._send_json(
+                500,
+                {
+                    "error": f"stored scenario {bundle.scenario_name!r} has a "
+                    f"malformed rubric: {e}",
+                    "last_seq": None,
+                },
+            )
+            return
 
         try:
             response = handle_checkin(
@@ -277,6 +293,16 @@ class Handler(BaseHTTPRequestHandler):
                 {"error": "malformed body; expected engine_record.json shape "
                           "{rubric: {..., scenario_name}, adversary: {...}}"},
             )
+            return
+        # Validate the rubric BEFORE persisting: a malformed rubric stored here
+        # would otherwise crash /checkin with an unhandled 500 deep inside
+        # _rubric_from_dict (bad category -> ValueError, missing keys -> KeyError,
+        # bad sla -> TypeError), and every box enrolled against it would be
+        # permanently stuck. validate_rubric is the same structural check
+        # authoring/compile.py applies; reject the upload with a 400 + the list.
+        errors = validate_rubric(rubric)
+        if errors:
+            self._send_json(400, {"error": "invalid rubric", "details": errors})
             return
         adversary = body.get("adversary", {})
         self.store.save_scenario(scenario_name, json.dumps(rubric), json.dumps(adversary))

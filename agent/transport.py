@@ -223,3 +223,19 @@ class TransportClient:
         except _NetworkFailure:
             self._append_queue(canonical_bytes.decode("utf-8"))
             return None
+        except Exception as e:
+            # A permanent (non-transient) rejection of the NEW bundle, e.g. a
+            # 409 replay (the engine already recorded this seq after it accepted
+            # the check-in but before the caller persisted last_seq) or a 403.
+            # Mirrors the queued-bundle path above: it can never succeed, so
+            # drop it and let the loop advance its cadence rather than letting
+            # the exception kill the ranked loop. CRUCIALLY do NOT re-queue it:
+            # that would make the agent crash-loop on every cycle/restart.
+            # The caller has already persisted identity.last_seq before calling
+            # checkin (see agent/__main__.py), so the next cycle builds a fresh,
+            # strictly-greater seq and the run continues.
+            print(
+                f"WARNING: dropping un-sendable bundle (permanent rejection): {e}",
+                file=sys.stderr,
+            )
+            return None

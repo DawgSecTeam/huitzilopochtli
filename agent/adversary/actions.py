@@ -55,23 +55,32 @@ def _flush_firewall(params: dict, ctx: "agent.platform.base.PlatformContext") ->
     Tries iptables first (flush rules + delete custom chains), falls back to
     nft, and does nothing gracefully if neither tool is present. This is not
     itself a security boundary -- it's a best-effort local adversary action.
+
+    The iptables -> nft fallback is per-tool: if iptables is present but the
+    flush call itself raises (PermissionError, the binary vanishing between
+    shutil.which and run, etc.) we still try nft rather than swallowing the
+    error and giving up -- an earlier version wrapped both branches in one
+    try/except, so any iptables failure short-circuited the nft fallback.
     """
-    try:
-        if shutil.which("iptables"):
+    if shutil.which("iptables"):
+        try:
             subprocess.run(["iptables", "-F"], check=False,
                             capture_output=True, timeout=10)
             subprocess.run(["iptables", "-X"], check=False,
                             capture_output=True, timeout=10)
             return
-        if shutil.which("nft"):
+        except Exception:
+            # iptables present but unusable: fall through to nft below rather
+            # than giving up (the box's real firewall may well be nft).
+            pass
+    if shutil.which("nft"):
+        try:
             subprocess.run(["nft", "flush", "ruleset"], check=False,
                             capture_output=True, timeout=10)
-            return
-        # Neither tool present: no-op, not an error.
-    except Exception:
-        # Best-effort action; a failure here just means the box is more
-        # secure than expected, not an executor error.
-        pass
+        except Exception:
+            pass
+        return
+    # Neither tool present: no-op, not an error.
 
 
 @register("kill_service")
