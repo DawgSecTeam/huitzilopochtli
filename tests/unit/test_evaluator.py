@@ -5,6 +5,8 @@ Verifies the current award logic, which keys off RubricEntry.category
 convention. See common/evaluator.py module docstring / evaluate() docstring
 for the authoritative rules being tested here.
 """
+import pytest
+
 from common.evaluator import evaluate
 from common.schema import (
     Category,
@@ -312,3 +314,54 @@ def test_check_result_category_matches_rubric_entry_category_verbatim():
     result2 = score2.results[0]
     assert result2.category == Category.PROHIBITED
     assert result2.awarded_points == 20
+
+
+# --- undetermined evidence must never award VULN points (BUG-E1) -----------
+#
+# A collector that returns status=ERROR/TIMEOUT may still leave a value in
+# ev.raw that happens to satisfy the matcher. Before the fix, the evaluator
+# ran the matcher against that raw and awarded full VULN points for a finding
+# that was never confirmed present -- contradicting the module docstring
+# ("Missing/ERROR/TIMEOUT evidence is scored as 'not satisfied' for VULN")
+# and inflating the score. For all categories the awarded points must be 0
+# when the evidence is undetermined, regardless of what the matcher says.
+
+
+@pytest.mark.parametrize("bad_status", [CollectorStatus.ERROR, CollectorStatus.TIMEOUT])
+def test_vuln_awards_zero_on_error_or_timeout_evidence_even_when_raw_matches(bad_status):
+    entry = RubricEntry(
+        check_id="vuln-1",
+        category=Category.VULN,
+        matcher=equals_matcher(value="present"),
+        points=10,
+    )
+    # raw MATCHES, but the evidence status is not OK -> must NOT award points.
+    evidence = [make_evidence("vuln-1", {"matched": "present"}, status=bad_status)]
+    score = evaluate(evidence, make_rubric([entry]), FakeClock(SENTINEL_TIME))
+
+    result = score.results[0]
+    assert result.awarded_points == 0
+    assert result.passed is False
+    assert "not satisfied" in result.reason
+    assert score.total == 0
+
+
+@pytest.mark.parametrize("bad_status", [CollectorStatus.ERROR, CollectorStatus.TIMEOUT])
+def test_penalty_and_prohibited_award_zero_on_undetermined_evidence(bad_status):
+    # Penalty/prohibited already short-circuited to 0 on undetermined evidence
+    # before the fix; this pins the behavior (no negative points for a fault
+    # the box didn't cause) and guards the restructured branch.
+    pen = RubricEntry("pen-1", Category.PENALTY, equals_matcher(value="intact"), -5)
+    proh = RubricEntry(
+        "proh-1", Category.PROHIBITED, equals_matcher(value="forbidden-thing"), -20
+    )
+    evidence = [
+        make_evidence("pen-1", {"matched": "broken"}, status=bad_status),
+        make_evidence("proh-1", {"matched": "forbidden-thing"}, status=bad_status),
+    ]
+    score = evaluate(evidence, make_rubric([pen, proh]), FakeClock(SENTINEL_TIME))
+    by_id = {r.check_id: r for r in score.results}
+
+    assert by_id["pen-1"].awarded_points == 0
+    assert by_id["proh-1"].awarded_points == 0
+    assert score.total == 0

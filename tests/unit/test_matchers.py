@@ -291,3 +291,95 @@ def test_evaluate_matcher_explicit_unknown_tag_raises_keyerror():
     # Explicit but unregistered "tag" -> direct dict lookup in MATCHERS raises.
     with pytest.raises(KeyError):
         evaluate_matcher({"tag": "does_not_exist"}, {})
+
+
+# --- None / wrong-type raw values must not raise (BUG-E2) -------------------
+#
+# A collector that fails enumeration may emit {"users": null} or a list where
+# a dict was expected. Before the fix these crashed the matcher (TypeError/
+# AttributeError), and since evaluate_matcher has no try/except the whole
+# scoring pass aborted. These now degrade to a clean not-matched result,
+# matching how the sibling `contains` predicate guards non-containers.
+
+
+def test_user_absent_users_none_does_not_raise():
+    passed, reason = evaluate_matcher(
+        {"tag": "user_absent", "username": "root"}, {"users": None}
+    )
+    assert not passed
+    assert "not a container" in reason
+
+
+def test_user_present_users_none_does_not_raise():
+    passed, reason = evaluate_matcher(
+        {"tag": "user_present", "username": "root"}, {"users": None}
+    )
+    assert not passed
+    assert "not a container" in reason
+
+
+def test_user_absent_users_non_iterable_int_does_not_raise():
+    passed, reason = evaluate_matcher(
+        {"tag": "user_absent", "username": "root"}, {"users": 42}
+    )
+    assert not passed
+    assert "not a container" in reason
+
+
+def test_group_members_subset_of_group_members_none_does_not_raise():
+    matcher = {"tag": "group_members_subset_of", "group": "wheel", "allowed": ["root"]}
+    passed, reason = evaluate_matcher(matcher, {"group_members": None})
+    assert not passed
+    assert "must be an object" in reason
+
+
+def test_group_members_subset_of_group_members_list_does_not_raise():
+    # A list where a dict-of-group->members was expected.
+    matcher = {"tag": "group_members_subset_of", "group": "wheel", "allowed": ["root"]}
+    passed, reason = evaluate_matcher(matcher, {"group_members": ["root"]})
+    assert not passed
+    assert "must be an object" in reason
+
+
+def test_group_members_subset_of_members_none_does_not_raise():
+    # A group mapped to JSON null is treated as "not present" (safe: the
+    # original `members is None` guard already covered this). Asserting that
+    # path here pins that it stays a clean not-matched result.
+    matcher = {"tag": "group_members_subset_of", "group": "wheel", "allowed": ["root"]}
+    passed, reason = evaluate_matcher(
+        matcher, {"group_members": {"wheel": None}}
+    )
+    assert not passed
+    assert "not present" in reason
+
+
+def test_group_members_subset_of_members_non_iterable_does_not_raise():
+    # THE actual crash vector before the fix: members present but a
+    # non-iterable (e.g. int) made `for m in members` raise TypeError. Now it
+    # degrades to a clean not-matched reason.
+    matcher = {"tag": "group_members_subset_of", "group": "wheel", "allowed": ["root"]}
+    passed, reason = evaluate_matcher(
+        matcher, {"group_members": {"wheel": 42}}
+    )
+    assert not passed
+    assert "not iterable" in reason
+
+
+# --- regex ReDoS / input guards (BUG-A4) ------------------------------------
+
+
+def test_regex_oversized_haystack_is_not_evaluated():
+    # A huge collector output can't be used to amplify a sloppy trusted pattern.
+    passed, reason = evaluate_matcher(
+        {"tag": "regex", "field": "x", "pattern": "a"}, {"x": "b" * 2_000_000}
+    )
+    assert not passed
+    assert "length limit" in reason
+
+
+def test_regex_invalid_pattern_does_not_raise():
+    passed, reason = evaluate_matcher(
+        {"tag": "regex", "field": "x", "pattern": "("}, {"x": "hi"}
+    )
+    assert not passed
+    assert "invalid regex" in reason

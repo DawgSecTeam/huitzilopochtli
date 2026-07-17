@@ -33,12 +33,22 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
     """Run every CheckSpec concurrently (thread pool), each wrapped with its
     own timeout_s. A hung check yields Evidence(status=TIMEOUT) and never
     stalls the run. Returns list[Evidence] in the same order as `checks`.
+
+    NOTE on the timeout guarantee: a hung check is recorded as TIMEOUT and the
+    result is returned promptly, but CPython cannot forcibly kill the worker
+    thread running it (a blocked syscall or a runaway C-level regex will keep
+    running). We therefore shut the executor down with wait=False and
+    cancel_futures=True so a not-yet-started or runaway worker never blocks
+    run_all's return (an earlier `with ... as executor:` form called
+    shutdown(wait=True) on exit and could hang here indefinitely). The leaked
+    worker is a daemon-by-nature pool thread that dies with the process.
     """
     results: list = [None] * len(checks)
 
-    with concurrent.futures.ThreadPoolExecutor(
+    executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=max(1, len(checks)) or 1
-    ) as executor:
+    )
+    try:
         future_to_idx = {}
         for idx, spec in enumerate(checks):
             if spec.type not in CHECKS:
@@ -84,5 +94,11 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
                     collected_monotonic=time.monotonic(),
                     collected_wall_claim=time.time(),
                 )
+    finally:
+        # wait=False: do NOT block on runaway worker threads here. Cancel any
+        # not-yet-started futures so they never begin. A genuinely stuck worker
+        # (blocked syscall / runaway regex) keeps running but cannot delay this
+        # function's return -- exactly the "never stalls the run" contract.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     return results

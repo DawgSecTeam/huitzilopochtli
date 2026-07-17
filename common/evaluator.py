@@ -39,8 +39,11 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
     SLA entries (rubric entry with .sla set) are ignored here entirely — they
     are scored statefully by engine/sla.py, never by this pure pass (§10.3).
 
-    Missing/ERROR/TIMEOUT evidence is scored as "not satisfied" for VULN, and
-    handled explicitly per matcher for PENALTY/PROHIBITED.
+    Missing/ERROR/TIMEOUT evidence is scored as "not satisfied" for every
+    category (VULN scores 0, PENALTY/PROHIBITED apply no negative points): a
+    collector fault is never treated as a confirmed observation. The matcher
+    still runs for an informative reason, but its result is overridden to
+    not-matched when the evidence is undetermined.
     """
     evidence_by_check_id = {e.check_id: e for e in evidence}
 
@@ -55,16 +58,25 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
 
         matched, matcher_reason = evaluate_matcher(entry.matcher, raw)
 
-        if not evidence_ok and entry.category in (Category.PENALTY, Category.PROHIBITED):
-            # Undetermined evidence (missing / ERROR / TIMEOUT) must NOT trigger a
-            # penalty: a collector failure is not proof that the box's required
-            # state is broken (PENALTY) or that a forbidden state is present
-            # (PROHIBITED). Awarding the negative points here would punish the box
-            # for a collector fault it didn't cause. Score 0 and say why. (VULN
-            # already scores undetermined evidence as "not satisfied" → 0, which
-            # is the correct fail-closed behavior for a positive-points check.)
+        if not evidence_ok:
+            # Undetermined evidence (missing / ERROR / TIMEOUT) must NOT be
+            # treated as a confirmed observation, for ANY category:
+            #   - VULN: a positive-points check can't pass on evidence we
+            #     couldn't actually collect, so score 0 ("not satisfied" --
+            #     fail-closed, per the module docstring) even if ev.raw
+            #     happens to satisfy the matcher.
+            #   - PENALTY: a collector fault is not proof the required state
+            #     is broken; don't apply the negative points.
+            #   - PROHIBITED: a collector fault is not proof a forbidden state
+            #     is present; don't apply the negative points.
+            # The matcher still runs (so `matched`/reason stay informative),
+            # but it is overridden to "not satisfied" with awarded=0.
             awarded = 0
-            matcher_reason = f"evidence unavailable; penalty not applied ({matcher_reason})"
+            if entry.category == Category.VULN:
+                matched = False
+            matcher_reason = (
+                f"evidence unavailable; scored as not satisfied ({matcher_reason})"
+            )
         elif entry.category == Category.PENALTY:
             awarded = entry.points if not matched else 0
         else:

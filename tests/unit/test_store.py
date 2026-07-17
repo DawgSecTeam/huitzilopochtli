@@ -121,6 +121,22 @@ def test_get_scores_ordering_descending(store):
     assert [s.total for s in scores] == [90, 50, 10]
 
 
+def test_get_scores_ties_break_deterministically_by_updated_at_then_box_id(store):
+    # BUG-E4: ORDER BY total DESC alone left tied totals in unspecified order.
+    # Ties must now break by earliest updated_at, then box_id, so the
+    # leaderboard is reproducible across runs/DB vacuums.
+    # Insert so that box_id ascending != updated_at ascending, to prove BOTH
+    # tiebreak keys are exercised and neither dominates incorrectly.
+    store.upsert_score("box-b", "scenario-a", 50)   # updated_at ~ t0
+    store.upsert_score("box-a", "scenario-a", 50)   # updated_at ~ t0 + tiny
+    store.upsert_score("box-c", "scenario-a", 50)   # updated_at ~ t0 + 2 tiny
+
+    scores = store.get_scores("scenario-a")
+    # All tied on total; earliest updated_at first -> box-b (inserted first).
+    assert [s.box_id for s in scores] == ["box-b", "box-a", "box-c"]
+    assert [s.total for s in scores] == [50, 50, 50]
+
+
 def test_get_scores_scoped_to_scenario(store):
     store.upsert_score("box-1", "scenario-a", 10)
     store.upsert_score("box-2", "scenario-b", 20)
@@ -198,6 +214,59 @@ def test_save_sla_state_distinct_check_ids_coexist(store):
 
     assert store.get_sla_state("box-1", "check-a") == rec_a
     assert store.get_sla_state("box-1", "check-b") == rec_b
+
+
+# --- update_sla_atomic: no lost updates under concurrency (BUG-E3) ----------
+
+
+def test_update_sla_atomic_concurrent_increments_all_land(store):
+    # BUG-E3: the old get_sla_state -> mutate -> save_sla_state sequence held no
+    # lock across the read-modify-write, so N concurrent updaters each read the
+    # same base value and the last writer clobbered the rest. update_sla_atomic
+    # holds the lock for the whole RMW, so every increment must land.
+    store.save_sla_state(SlaStateRecord("box-1", "check-a", "UP", 0, 0, 0.0, 0))
+    barrier = threading.Barrier(20)
+
+    def bump(rec):
+        # NOTE: do NOT wait on the barrier here -- bump runs INSIDE the locked
+        # critical section of update_sla_atomic. If it blocked here, the
+        # lock-holding thread would wait for 19 others that are themselves
+        # blocked acquiring the lock -> deadlock. The barrier is hit before the
+        # submit below, outside any lock.
+        assert rec is not None
+        rec.consec_ok += 1
+        rec.accrued_points += 1
+        return rec
+
+    def race():
+        barrier.wait()  # line up BEFORE entering the locked RMW
+        return store.update_sla_atomic("box-1", "check-a", bump)
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(race) for _ in range(20)]
+        for f in futures:
+            f.result()
+
+    rec = store.get_sla_state("box-1", "check-a")
+    # If the RMW were non-atomic, lost updates would leave this well below 20.
+    assert rec.consec_ok == 20
+    assert rec.accrued_points == 20
+
+
+def test_update_sla_atomic_first_observation_initializes(store):
+    # apply_fn receives None for a first-ever (box, check_id) observation.
+    seen = []
+    def bump(rec):
+        seen.append(rec)
+        if rec is None:
+            return SlaStateRecord("box-new", "check-x", "UP", 1, 0, 99.0, 0)
+        rec.consec_ok += 1
+        return rec
+
+    out = store.update_sla_atomic("box-new", "check-x", bump)
+    assert seen == [None]
+    assert out.consec_ok == 1
+    assert store.get_sla_state("box-new", "check-x").accrued_points == 0
 
 
 # --- adversary_log --------------------------------------------------------

@@ -175,6 +175,31 @@ def test_flush_firewall_swallows_subprocess_exception():
         ACTIONS["flush_firewall"]({}, ctx)
 
 
+def test_flush_firewall_falls_back_to_nft_when_iptables_raises():
+    # BUG-A3: when iptables is present but its subprocess.run raises (Permission
+    # error, binary removed in a TOCTOU, etc.), the old single-try/except
+    # swallowed it and returned WITHOUT trying nft. The fix makes the iptables
+    # failure fall through to the nft attempt. Here both tools are present but
+    # iptables blows up -> nft flush MUST still be invoked.
+    ctx = FakeCtx()
+
+    runs = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(list(cmd))
+        if cmd[0] == "iptables":
+            raise PermissionError("no caps")
+        # nft succeeds (returns CompletedProcess-like; check=False so unused)
+
+    with patch("agent.adversary.actions.shutil.which", return_value="/usr/sbin/x"), \
+         patch("agent.adversary.actions.subprocess.run", side_effect=fake_run):
+        ACTIONS["flush_firewall"]({}, ctx)
+
+    cmds = [r[0] for r in runs]
+    assert "iptables" in cmds
+    assert "nft" in cmds, "nft fallback was not attempted after iptables failed"
+
+
 # ---------------------------------------------------------------------------
 # executor.execute dispatch
 # ---------------------------------------------------------------------------

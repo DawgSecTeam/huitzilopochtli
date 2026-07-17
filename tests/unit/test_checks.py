@@ -81,6 +81,49 @@ def test_file_regex_missing_file(tmp_path):
     assert ev.raw == {"matched": None, "present": False}
 
 
+def test_file_regex_missing_path_param_returns_clear_error():
+    # BUG: a missing 'path' used to raise TypeError("open(None)") surfaced as a
+    # confusing "unexpected error"; sibling checks validate required params, so
+    # mirror that. Now returns a clear ERROR reason naming the missing key.
+    spec = make_spec("file_regex", {"extract": r"(\w+)"})  # no 'path'
+    ev = FileRegexCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "missing required 'path'" in ev.reason
+
+
+def test_file_regex_missing_extract_param_returns_clear_error():
+    spec = make_spec("file_regex", {"path": "/etc/hostname"})  # no 'extract'
+    ev = FileRegexCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "missing required 'extract'" in ev.reason
+
+
+def test_file_regex_oversized_file_not_evaluated(tmp_path, monkeypatch):
+    # BUG-A4: a huge file can amplify a sloppy pattern; cap the read.
+    from agent.checks import file_regex as fr
+
+    monkeypatch.setattr(fr, "_CONTENT_LIMIT", 16)
+    f = tmp_path / "huge"
+    f.write_text("x" * 1024)
+    spec = make_spec("file_regex", {"path": str(f), "extract": r"(x)"})
+    ev = FileRegexCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "exceeds" in ev.reason
+
+
+def test_file_regex_invalid_pattern_returns_clear_error(tmp_path):
+    f = tmp_path / "c"
+    f.write_text("hi")
+    spec = make_spec("file_regex", {"path": str(f), "extract": "("})
+    ev = FileRegexCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "invalid extract regex" in ev.reason
+
+
 # --- permission ----------------------------------------------------------------
 
 def test_permission_existing_file(tmp_path):

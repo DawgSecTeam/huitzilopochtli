@@ -30,52 +30,53 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
     Invariant: only `received_at` (the engine's receipt timestamp) is ever
     used for timing; the box's self-reported clock never influences accrual.
     """
-    rec = store.get_sla_state(box_id, check_id)
+    def _apply(rec):
+        if rec is None:
+            # First-ever observation for this (box, check_id): initialize state
+            # from the single observation, no elapsed interval to credit yet.
+            return SlaStateRecord(
+                box_id=box_id,
+                check_id=check_id,
+                state="UP" if is_up else "DOWN",
+                consec_ok=1 if is_up else 0,
+                consec_fail=0 if is_up else 1,
+                last_credited_at=received_at,
+                accrued_points=0,
+            )
 
-    if rec is None:
-        # First-ever observation for this (box, check_id): initialize state
-        # from the single observation, no elapsed interval to credit yet.
-        rec = SlaStateRecord(
-            box_id=box_id,
-            check_id=check_id,
-            state="UP" if is_up else "DOWN",
-            consec_ok=1 if is_up else 0,
-            consec_fail=0 if is_up else 1,
-            last_credited_at=received_at,
-            accrued_points=0,
-        )
-        store.save_sla_state(rec)
+        # Update consecutive counters.
+        if is_up:
+            rec.consec_ok += 1
+            rec.consec_fail = 0
+        else:
+            rec.consec_fail += 1
+            rec.consec_ok = 0
+
+        # Hysteresis transition.
+        if rec.state == "UP" and rec.consec_fail >= sla_params.hysteresis_fail_n:
+            rec.state = "DOWN"
+        elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
+            rec.state = "UP"
+
+        # Accrual, using the (possibly just-transitioned) new state.
+        if rec.state == "UP" and sla_params.interval_s > 0:
+            # interval_s <= 0 is a malformed rubric (validate_rubric rejects it at
+            # authoring/upload time); guard here too so a bad record already in the
+            # DB can't divide-by-zero mid-check-in and crash after partial state has
+            # been persisted. No accrual for a non-positive interval.
+            elapsed = received_at - rec.last_credited_at
+            intervals = math.floor(elapsed / sla_params.interval_s)
+            if intervals < 0:
+                intervals = 0
+            intervals = min(intervals, sla_params.max_intervals_per_checkin)
+            rec.accrued_points += intervals * sla_params.points_per_interval
+            rec.last_credited_at += intervals * sla_params.interval_s
+        else:
+            rec.last_credited_at = received_at
         return rec
 
-    # Update consecutive counters.
-    if is_up:
-        rec.consec_ok += 1
-        rec.consec_fail = 0
-    else:
-        rec.consec_fail += 1
-        rec.consec_ok = 0
-
-    # Hysteresis transition.
-    if rec.state == "UP" and rec.consec_fail >= sla_params.hysteresis_fail_n:
-        rec.state = "DOWN"
-    elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
-        rec.state = "UP"
-
-    # Accrual, using the (possibly just-transitioned) new state.
-    if rec.state == "UP" and sla_params.interval_s > 0:
-        # interval_s <= 0 is a malformed rubric (validate_rubric rejects it at
-        # authoring/upload time); guard here too so a bad record already in the
-        # DB can't divide-by-zero mid-check-in and crash after partial state has
-        # been persisted. No accrual for a non-positive interval.
-        elapsed = received_at - rec.last_credited_at
-        intervals = math.floor(elapsed / sla_params.interval_s)
-        if intervals < 0:
-            intervals = 0
-        intervals = min(intervals, sla_params.max_intervals_per_checkin)
-        rec.accrued_points += intervals * sla_params.points_per_interval
-        rec.last_credited_at += intervals * sla_params.interval_s
-    else:
-        rec.last_credited_at = received_at
-
-    store.save_sla_state(rec)
-    return rec
+    # The whole read-modify-write runs under Store's lock (update_sla_atomic),
+    # so two concurrent check-ins for the same (box_id, check_id) cannot
+    # interleave their get/mutate/save and clobber each other's accrual or
+    # consecutive counters.
+    return store.update_sla_atomic(box_id, check_id, _apply)
