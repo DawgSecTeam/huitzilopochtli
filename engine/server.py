@@ -69,6 +69,36 @@ def _load_engine_record(path: str) -> dict:
         return json.load(f)
 
 
+def _validate_adversary_pool(adversary: dict) -> None:
+    """Validate the adversary pool at upload time (§12.1).
+
+    Each event must have:
+      - window_s: [min_s, max_s] numeric pair
+      - action: non-empty string
+    Missing or malformed events cause a 400 rejection so the engine never
+    silently ignores a broken pool at check-in time.
+    """
+    events = adversary.get("events", [])
+    if not isinstance(events, list):
+        raise ValueError("adversary.events must be a list")
+    for idx, event in enumerate(events):
+        if not isinstance(event, dict):
+            raise ValueError(f"adversary.events[{idx}] must be an object")
+        window_s = event.get("window_s")
+        if (not isinstance(window_s, (list, tuple)) or len(window_s) != 2
+                or not all(isinstance(b, (int, float)) and not isinstance(b, bool)
+                            for b in window_s)):
+            raise ValueError(
+                f"adversary.events[{idx}].window_s must be [min_s, max_s] "
+                f"(numeric pair), got {window_s!r}"
+            )
+        action = event.get("action")
+        if not isinstance(action, str) or not action:
+            raise ValueError(
+                f"adversary.events[{idx}].action must be a non-empty string"
+            )
+
+
 def _bundle_from_dict(d: dict) -> Bundle:
     evidence = []
     for ev in d.get("evidence", []):
@@ -128,8 +158,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    _MAX_BODY_BYTES = 1 << 20  # 1 MiB hard cap (§11.1)
+
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or "0")
+        if length > self._MAX_BODY_BYTES:
+            raise ValueError(f"body too large ({length} > {self._MAX_BODY_BYTES})")
         raw = self.rfile.read(length) if length else b""
         if not raw:
             return {}
@@ -279,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         adversary = body.get("adversary", {})
+        _validate_adversary_pool(adversary)
         self.store.save_scenario(scenario_name, json.dumps(rubric), json.dumps(adversary))
         self._send_json(200, {"ok": True, "scenario_name": scenario_name})
 

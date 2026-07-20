@@ -23,6 +23,7 @@ _REQUIRED_FIELDS = {
     "public_key": str,
     "agent_version": str,
     "scenario_name": str,
+    "scenario_version": int,
 }
 
 
@@ -88,6 +89,7 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
         body["box_id"],
         body["public_key"],
         body["scenario_name"],
+        body["scenario_version"],
     )
     if status == "unknown_token":
         raise EnrollError(400, "unknown token")

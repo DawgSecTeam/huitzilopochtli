@@ -165,6 +165,8 @@ def checkvalid(s, m, pk):
     R = decodepoint(s[0 : b // 8])
     A = decodepoint(pk)
     S = decodeint(s[b // 8 : b // 4])
+    if S >= l:
+        raise ValueError("signature S component >= l (malleable)")
     h = Hint(encodepoint(R) + pk + m)
     (x1, y1) = scalarmult(B, S)
     (x2, y2) = edwards(R, scalarmult(A, h))

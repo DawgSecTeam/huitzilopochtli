@@ -51,7 +51,7 @@ def load_or_create(identity_path: str) -> Identity:
 
 
 def enroll(engine_url: str, enrollment_token: str, identity: Identity,
-           agent_version: str, scenario_name: str) -> dict:
+           agent_version: str, scenario_name: str, scenario_version: int) -> dict:
     """POST /enroll (signed by the box key) per §14.1. Returns the parsed
     EnrollResponse-shaped dict, or raises on 400/409/410."""
     body = {
@@ -60,6 +60,7 @@ def enroll(engine_url: str, enrollment_token: str, identity: Identity,
         "public_key": base64.b64encode(identity.public_key).decode("ascii"),
         "agent_version": agent_version,
         "scenario_name": scenario_name,
+        "scenario_version": scenario_version,
     }
     canonical_bytes = canonicalize(body)
     signature = signing.sign(identity.private_key, canonical_bytes)
