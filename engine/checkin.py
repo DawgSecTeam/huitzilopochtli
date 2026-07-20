@@ -73,6 +73,12 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     if box.scenario_name != bundle.scenario_name:
         raise CheckinError(400, "scenario_name does not match the box's enrolled scenario")
 
+    # 1c. The box is bound to one scenario_version at enrollment. A mismatched
+    # version means the agent is running a stale config or was re-provisioned
+    # for a different track (§14.3).
+    if box.scenario_version != bundle.scenario_version:
+        raise CheckinError(409, "scenario_version does not match the box's enrolled version")
+
     # 2. Verify signature over the canonical body. Bad signature -> 403.
     canonical_bytes = canon.canonicalize(dataclasses.asdict(bundle))
     public_key = base64.b64decode(box.public_key)
@@ -127,6 +133,10 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         if entry.sla is None:
             continue
         ev = evidence_by_check_id.get(entry.check_id)
+        if ev is not None and ev.status != "ok":
+            # Only feed SLA ledger on OK status. ERROR/TIMEOUT evidence
+            # should not advance the SLA clock (§11.3).
+            continue
         raw = ev.raw if ev is not None else {}
         is_up, _reason = evaluate_matcher(entry.matcher, raw)
         sla_rec = sla.update_sla(
@@ -162,10 +172,16 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
 
     store.upsert_score(bundle.box_id, rubric.scenario_name, final_total)
 
+    # Derive next_checkin_s from the minimum SLA interval across rubric
+    # entries so the agent paces its check-ins to the tightest SLA window.
+    min_sla_interval = min(
+        (entry.sla.interval_s for entry in rubric.entries if entry.sla is not None),
+        default=60,
+    )
     return CheckinResponse(
         server_time=received_at,
         score=score,
         directives=directives,
-        next_checkin_s=60,
+        next_checkin_s=min_sla_interval,
         last_seq=bundle.seq,
     )
