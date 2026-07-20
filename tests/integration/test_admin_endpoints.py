@@ -227,6 +227,7 @@ def _enroll_box(base_url: str, admin_token: str, scenario_name: str, box_id: str
         "public_key": pub_key_b64,
         "agent_version": "test-agent-1.0",
         "scenario_name": scenario_name,
+        "scenario_version": 1,
     }
     sig = signing.sign(priv_key, canon.canonicalize(body))
     resp = requests.post(
@@ -557,8 +558,8 @@ def test_leaderboard_reflects_score_after_checkin(engine, tmp_path):
         f"{base_url}/leaderboard", params={"scenario": scenario_name}, timeout=REQUEST_TIMEOUT
     )
     assert resp.status_code == 200, resp.text
-    before_ids = {row["box_id"] for row in resp.json()}
-    assert "board-box-1" not in before_ids
+    before_rows = resp.json()
+    assert len(before_rows) == 0
 
     body = _make_checkin_body(box_id="board-box-1", scenario_name=scenario_name, seq=1,
                                matched_value="yes")
@@ -570,7 +571,8 @@ def test_leaderboard_reflects_score_after_checkin(engine, tmp_path):
         f"{base_url}/leaderboard", params={"scenario": scenario_name}, timeout=REQUEST_TIMEOUT
     )
     assert resp.status_code == 200, resp.text
-    rows = {row["box_id"]: row for row in resp.json()}
-    assert "board-box-1" in rows
-    assert rows["board-box-1"]["total"] == 15
-    assert rows["board-box-1"]["scenario_name"] == scenario_name
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["rank"] == 1
+    assert rows[0]["total"] == 15
+    assert rows[0]["scenario_name"] == scenario_name

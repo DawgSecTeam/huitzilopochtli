@@ -185,29 +185,44 @@ def _run_honor(config, manifest, ctx) -> None:
         f.write(html)
 
 
-def _enroll_if_first_boot(config, manifest, identity) -> None:
-    """Enrollment is a first-boot-only step (§9.6): call it once, before the
-    box's first check-in, using the one-time token provisioned into its
-    config. Never called again once an identity file exists on disk."""
+def _enrolled_marker_path(identity_path: str) -> str:
+    """Return the path of the .enrolled marker file adjacent to the identity."""
+    return identity_path + ".enrolled"
+
+
+def _ensure_enrolled(config, manifest, identity) -> None:
+    """Enrollment must succeed before the first check-in. Unlike the old
+    first-boot-only gate, we retry every boot until a .enrolled marker
+    exists, so a transient /enroll failure (network glitch, engine downtime,
+    503) does not permanently brick the box."""
+    marker = _enrolled_marker_path(config.identity_path)
+    if os.path.exists(marker):
+        return
+
     if config.enrollment_token is None:
         raise ValueError(
-            "ranked mode requires enrollment_token in agent_config.json for "
-            "a box's first boot (no identity file existed yet)"
+            "ranked mode requires enrollment_token in agent_config.json "
+            "(enrollment has not completed yet)"
         )
+
     agent.identity.enroll(
         manifest.engine_url, config.enrollment_token, identity,
-        AGENT_VERSION, manifest.scenario_name,
+        AGENT_VERSION, manifest.scenario_name, manifest.scenario_version,
     )
+
+    # Persist the marker atomically so a crash mid-enroll retries next boot.
+    tmp = marker + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("ok")
+    os.rename(tmp, marker)
 
 
 def _run_ranked(config, manifest, ctx) -> None:
     queue_path = config.identity_path + ".queue"
     last_response = None  # cached CheckinResponse across loop iterations
 
-    is_first_boot = not os.path.exists(config.identity_path)
     identity = agent.identity.load_or_create(config.identity_path)
-    if is_first_boot:
-        _enroll_if_first_boot(config, manifest, identity)
+    _ensure_enrolled(config, manifest, identity)
 
     while True:
         evidence = agent.collector.run_all(manifest.checks, ctx)
