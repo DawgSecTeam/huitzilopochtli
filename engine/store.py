@@ -21,6 +21,7 @@ class BoxRecord:
     box_id: str
     public_key: str
     scenario_name: str
+    scenario_version: int
     enrolled_at: float
     last_seq: int
     last_boot_id: Optional[str]
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS boxes (
     box_id TEXT PRIMARY KEY,
     public_key TEXT NOT NULL,
     scenario_name TEXT NOT NULL,
+    scenario_version INTEGER NOT NULL DEFAULT 0,
     enrolled_at REAL NOT NULL,
     last_seq INTEGER NOT NULL,
     last_boot_id TEXT,
@@ -162,20 +164,22 @@ class Store:
             )
             self._conn.commit()
 
-    def create_box(self, box_id: str, public_key: str, scenario_name: str) -> None:
+    def create_box(self, box_id: str, public_key: str, scenario_name: str,
+                    scenario_version: int = 0) -> None:
         import time
 
         now = time.time()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO boxes (box_id, public_key, scenario_name, enrolled_at, "
-                "last_seq, last_boot_id, t0) VALUES (?, ?, ?, ?, 0, NULL, NULL)",
-                (box_id, public_key, scenario_name, now),
+                "INSERT INTO boxes (box_id, public_key, scenario_name, scenario_version, "
+                "enrolled_at, last_seq, last_boot_id, t0) "
+                "VALUES (?, ?, ?, ?, ?, 0, NULL, NULL)",
+                (box_id, public_key, scenario_name, scenario_version, now),
             )
             self._conn.commit()
 
     def enroll_box_atomic(self, token: str, box_id: str, public_key: str,
-                           scenario_name: str) -> str:
+                            scenario_name: str, scenario_version: int = 0) -> str:
         """Atomically validate+consume an enrollment token and create the box.
 
         Holds `self._lock` across the entire check-and-mutate so two concurrent
@@ -210,9 +214,9 @@ class Store:
             try:
                 self._conn.execute(
                     "INSERT INTO boxes (box_id, public_key, scenario_name, "
-                    "enrolled_at, last_seq, last_boot_id, t0) "
-                    "VALUES (?, ?, ?, ?, 0, NULL, NULL)",
-                    (box_id, public_key, row["scenario_name"], now),
+                    "scenario_version, enrolled_at, last_seq, last_boot_id, t0) "
+                    "VALUES (?, ?, ?, ?, ?, 0, NULL, NULL)",
+                    (box_id, public_key, row["scenario_name"], scenario_version, now),
                 )
             except sqlite3.IntegrityError:
                 self._conn.rollback()
@@ -240,8 +244,8 @@ class Store:
     def get_box(self, box_id: str) -> Optional[BoxRecord]:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT box_id, public_key, scenario_name, enrolled_at, last_seq, "
-                "last_boot_id, t0 FROM boxes WHERE box_id = ?",
+                "SELECT box_id, public_key, scenario_name, scenario_version, enrolled_at, "
+                "last_seq, last_boot_id, t0 FROM boxes WHERE box_id = ?",
                 (box_id,),
             )
             row = cur.fetchone()
@@ -251,6 +255,7 @@ class Store:
             box_id=row["box_id"],
             public_key=row["public_key"],
             scenario_name=row["scenario_name"],
+            scenario_version=row["scenario_version"],
             enrolled_at=row["enrolled_at"],
             last_seq=row["last_seq"],
             last_boot_id=row["last_boot_id"],

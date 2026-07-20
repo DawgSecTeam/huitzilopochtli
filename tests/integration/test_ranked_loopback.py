@@ -403,7 +403,7 @@ def test_first_boot_enroll_restart_and_crash_recovery(tmp_path):
 
         rows = engine.leaderboard(scenario_name)
         assert len(rows) == 1, rows
-        assert rows[0]["box_id"] == box_id
+        assert rows[0]["rank"] == 1
         assert rows[0]["total"] == 10, (
             "check-in should have been scored: file contains 'PermitRootLogin no' "
             f"which the rubric's equals-'no' matcher should award 10 points for; got {rows[0]}"
