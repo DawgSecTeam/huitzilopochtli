@@ -339,7 +339,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid rubric", "details": errors})
             return
         adversary = body.get("adversary", {})
-        _validate_adversary_pool(adversary)
+        # Validate the adversary pool BEFORE persisting, mirroring the rubric
+        # path above. _validate_adversary_pool raises ValueError on a malformed
+        # pool (bad window_s / action); without this catch the handler would
+        # surface an unhandled 500 instead of the documented 400 rejection.
+        try:
+            _validate_adversary_pool(adversary)
+        except ValueError as exc:
+            self._send_json(400, {"error": "invalid adversary pool", "detail": str(exc)})
+            return
         self.store.save_scenario(scenario_name, json.dumps(rubric), json.dumps(adversary))
         self._send_json(200, {"ok": True, "scenario_name": scenario_name})
 
