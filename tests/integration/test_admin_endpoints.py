@@ -339,6 +339,32 @@ def test_admin_scenarios_rejects_invalid_rubric_with_400(engine, tmp_path):
     assert any("matcher" in d for d in body["details"])
 
 
+def test_admin_scenarios_rejects_invalid_adversary_pool_with_400(engine, tmp_path):
+    """A malformed adversary pool (bad window_s / action) must be rejected at
+    upload with 400, not surface as an unhandled 500. _validate_adversary_pool
+    raises ValueError; the handler catches it and maps to a clean 400, mirroring
+    the validate_rubric path."""
+    base_url, admin_token, _db_path, _proc = engine
+    # A valid rubric paired with an adversary event whose action is empty
+    # (_validate_adversary_pool flags this). Built via _build_engine_record so
+    # the rubric itself is well-formed (isolates the adversary rejection).
+    record = _build_engine_record(tmp_path, "scenario-bad-adversary")
+    record["adversary"] = {
+        "events": [{"action": "", "window_s": [1, 2]}]  # empty action -> rejected
+    }
+
+    resp = requests.post(
+        f"{base_url}/admin/scenarios",
+        json=record,
+        headers={"X-HUITZILOPOCHTLI-Admin-Token": admin_token},
+        timeout=REQUEST_TIMEOUT,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body.get("error") == "invalid adversary pool"
+    assert "action" in body.get("detail", "")
+
+
 def test_checkin_with_malformed_stored_rubric_returns_clean_500(engine, tmp_path):
     """If a bad rubric is already in the DB (e.g. from an older, unvalidated
     build), /checkin must return a clean JSON 500 rather than an unhandled
