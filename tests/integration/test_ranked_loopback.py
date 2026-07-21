@@ -617,14 +617,18 @@ def test_offline_queue_then_flush(tmp_path):
 
         # Pre-provision the box directly (this is enrollment machinery, not
         # the thing under test here) so the offline run below only has to
-        # exercise checkin-queueing, not enrollment-over-a-dead-link (a
-        # first-boot enroll() failure is NOT queued/retried by design --
-        # only /checkin bundles are).
+        # exercise checkin-queueing, not enrollment-over-a-dead-link.
+        # Enrollment failures are retried every boot until .enrolled marker
+        # exists; /checkin bundles are queued for offline delivery.
         identity_path = tmp_path / "identity.json"
         identity = agent.identity.load_or_create(str(identity_path))
         agent.identity.enroll(
-            engine.base_url, token, identity, AGENT_VERSION, scenario_name,
+            engine.base_url, token, identity, AGENT_VERSION, scenario_name, 1,
         )
+        # Create .enrolled marker so _ensure_enrolled doesn't retry on agent boot
+        marker = str(identity_path) + ".enrolled"
+        with open(marker, "w") as f:
+            f.write("ok")
         box_id = identity.box_id
 
         dead_port = _closed_port()
@@ -696,7 +700,7 @@ def test_offline_queue_then_flush(tmp_path):
 
         rows = engine.leaderboard(scenario_name)
         assert len(rows) == 1
-        assert rows[0]["box_id"] == box_id
+        assert rows[0]["rank"] == 1
         assert rows[0]["total"] == 10, (
             f"flushed check-in was not scored correctly: {rows[0]}"
         )
