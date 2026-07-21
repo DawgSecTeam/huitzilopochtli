@@ -171,3 +171,40 @@ def test_run_all_returns_results_in_input_order():
     assert [r.check_id for r in results] == ["f0", "f1", "f2"]
     assert all(r.status == CollectorStatus.OK for r in results)
     assert [r.raw["id"] for r in results] == ["f0", "f1", "f2"]
+
+
+def test_run_all_caps_workers_at_20():
+    # Without a cap, max_workers scaled 1:1 with len(checks), so a scenario
+    # with hundreds of checks would spin up hundreds of threads. Cap at 20.
+    # Uses a wrapper that records max_workers then delegates to the real
+    # ThreadPoolExecutor so the run completes normally.
+    class _Echo:
+        type_key = "_echo_for_cap_test"
+        def collect(self, spec, ctx):
+            return Evidence(
+                check_id=spec.id, check_type=spec.type, host_id=spec.host_id,
+                status=CollectorStatus.OK, raw={}, reason="ok",
+                collected_monotonic=time.monotonic(), collected_wall_claim=time.time(),
+            )
+
+    captured = {}
+    real_tpe = collector.concurrent.futures.ThreadPoolExecutor
+
+    class _RecordingTPE(real_tpe):
+        def __init__(self, *args, **kwargs):
+            captured["max_workers"] = kwargs.get("max_workers")
+            super().__init__(*args, **kwargs)
+
+    specs = [
+        CheckSpec(id=f"c{i}", type="_echo_for_cap_test", category=Category.VULN,
+                  host_id="h", collect_params={}, display_title="t",
+                  display_max_points=1, timeout_s=2.0)
+        for i in range(50)  # 50 checks would otherwise spawn 50 threads
+    ]
+    with patch.dict(collector.CHECKS, {"_echo_for_cap_test": _Echo}, clear=False):
+        with patch.object(collector.concurrent.futures, "ThreadPoolExecutor", _RecordingTPE):
+            results = collector.run_all(specs, ctx=None)
+
+    assert captured["max_workers"] == 20
+    assert len(results) == 50
+    assert all(r.status == CollectorStatus.OK for r in results)
