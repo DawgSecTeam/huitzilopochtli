@@ -151,6 +151,18 @@ def test_permission_nonexistent_path_is_ok(tmp_path):
     assert ev.raw == {"mode": None, "uid": None, "gid": None, "exists": False}
 
 
+def test_permission_missing_path_param_returns_error():
+    # A check spec missing the required 'path' param must return a structured
+    # ERROR with an actionable reason, not raise KeyError (which the outer
+    # run_all would catch as a generic "collection error: 'path'").
+    spec = make_spec("permission", {})  # no 'path'
+    ev = PermissionCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "path" in ev.reason
+    assert ev.raw == {"mode": None, "uid": None, "gid": None, "exists": None}
+
+
 # --- user_group ------------------------------------------------------------------
 
 def test_user_group_parses_real_files():
