@@ -29,7 +29,7 @@ class DbQueryCheck(Check):
                 sock = socket.create_connection((host, port), timeout=spec.timeout_s)
             except socket.gaierror as exc:
                 raw = {"ok": False, "error": str(exc)}
-                reason = f"could not resolve host {host!r} for {host}:{port}: {exc}"
+                reason = f"could not resolve host {host!r} (port {port}): {exc}"
                 return Evidence(
                     check_id=spec.id,
                     check_type=self.type_key,

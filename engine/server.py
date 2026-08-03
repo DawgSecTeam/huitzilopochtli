@@ -74,14 +74,18 @@ def _validate_adversary_pool(adversary: dict) -> None:
     """Validate the adversary pool at upload time (§12.1).
 
     Each event must have:
-      - window_s: [min_s, max_s] numeric pair
+      - window_s: [min_s, max_s] numeric pair, with min_s <= max_s
       - action: non-empty string
+      - id (optional): unique across the pool if provided; two events
+        sharing an explicit id collide on the (box_id, event_id) store
+        index and the later one would silently never fire
     Missing or malformed events cause a 400 rejection so the engine never
     silently ignores a broken pool at check-in time.
     """
     events = adversary.get("events", [])
     if not isinstance(events, list):
         raise ValueError("adversary.events must be a list")
+    seen_ids = set()
     for idx, event in enumerate(events):
         if not isinstance(event, dict):
             raise ValueError(f"adversary.events[{idx}] must be an object")
@@ -93,11 +97,22 @@ def _validate_adversary_pool(adversary: dict) -> None:
                 f"adversary.events[{idx}].window_s must be [min_s, max_s] "
                 f"(numeric pair), got {window_s!r}"
             )
+        if window_s[0] > window_s[1]:
+            raise ValueError(
+                f"adversary.events[{idx}].window_s must have min_s <= max_s, "
+                f"got {window_s!r}"
+            )
         action = event.get("action")
         if not isinstance(action, str) or not action:
             raise ValueError(
                 f"adversary.events[{idx}].action must be a non-empty string"
             )
+        event_id = str(event.get("id", f"e{idx}"))
+        if event_id in seen_ids:
+            raise ValueError(
+                f"adversary.events[{idx}] has duplicate event id {event_id!r}"
+            )
+        seen_ids.add(event_id)
 
 
 def _bundle_from_dict(d: dict) -> Bundle:
@@ -148,6 +163,15 @@ class Handler(BaseHTTPRequestHandler):
     server_secret: bytes = b""
     admin_token: str = ""
 
+    # Bound how long any single read (request line, headers, or body) may
+    # stall. socketserver.StreamRequestHandler.setup() applies this to the
+    # connection socket, and BaseHTTPRequestHandler.handle_one_request()
+    # already catches the resulting TimeoutError and closes the connection.
+    # Without this, a client that sends a large Content-Length and then
+    # withholds bytes pins a ThreadingHTTPServer worker thread forever —
+    # a handful of such connections exhausts the thread pool (§11.1).
+    timeout = 30
+
     def log_message(self, fmt, *args):  # quiet down default stderr access log
         pass
 
@@ -163,6 +187,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or "0")
+        if length < 0:
+            raise ValueError(f"negative Content-Length ({length})")
         if length > self._MAX_BODY_BYTES:
             raise ValueError(f"body too large ({length} > {self._MAX_BODY_BYTES})")
         raw = self.rfile.read(length) if length else b""

@@ -24,6 +24,18 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
     while DOWN, last_credited_at is advanced to received_at so a later UP
     transition does not retroactively credit the DOWN period.
 
+    Deliberately fail-closed on the UP->DOWN transitioning check-in itself:
+    accrual below checks the state *after* this observation's hysteresis
+    update, so the trailing UP window between last_credited_at and this
+    failing observation is not credited, even though the box may well have
+    still been UP for most of it. The first observed failure halts crediting
+    immediately rather than waiting for hysteresis to confirm the box is
+    really down — a box that is actually flapping should not keep accruing
+    UP credit through fail_n-1 failing observations before the state catches
+    up. See tests/unit/test_sla.py::test_two_consecutive_fails_flip_to_down_and_stop_accrual
+    and ::test_watermark_jumps_to_received_at_while_down, which pin this
+    behavior.
+
     Persists the updated SlaStateRecord via store.save_sla_state and returns
     it.
 

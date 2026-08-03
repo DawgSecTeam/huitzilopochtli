@@ -72,8 +72,7 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
             # The matcher still runs (so `matched`/reason stay informative),
             # but it is overridden to "not satisfied" with awarded=0.
             awarded = 0
-            if entry.category == Category.VULN:
-                matched = False
+            matched = False
             matcher_reason = (
                 f"evidence unavailable; scored as not satisfied ({matcher_reason})"
             )

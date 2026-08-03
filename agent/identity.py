@@ -50,10 +50,17 @@ def load_or_create(identity_path: str) -> Identity:
     return identity
 
 
+class EnrollmentTokenConsumed(Exception):
+    """Raised on HTTP 409: the engine already has this box enrolled under
+    this token. Callers should treat this as success (idempotent retry),
+    not as a fatal enrollment failure."""
+
+
 def enroll(engine_url: str, enrollment_token: str, identity: Identity,
            agent_version: str, scenario_name: str, scenario_version: int) -> dict:
     """POST /enroll (signed by the box key) per §14.1. Returns the parsed
-    EnrollResponse-shaped dict, or raises on 400/409/410."""
+    EnrollResponse-shaped dict, or raises on 400/409/410 (409 raises the more
+    specific EnrollmentTokenConsumed)."""
     body = {
         "enrollment_token": enrollment_token,
         "box_id": identity.box_id,
@@ -96,6 +103,8 @@ def enroll(engine_url: str, enrollment_token: str, identity: Identity,
         400: "malformed enrollment request",
     }
     reason = reasons.get(status, "unexpected response")
+    if status == 409:
+        raise EnrollmentTokenConsumed(f"enrollment failed: HTTP {status} ({reason})")
     raise Exception(f"enrollment failed: HTTP {status} ({reason})")
 
 

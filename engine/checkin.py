@@ -66,24 +66,29 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     if box is None:
         raise CheckinError(403, "unknown box")
 
-    # 1b. The box is bound to one scenario at enrollment; it may only score
+    # 2. Verify signature over the canonical body. Bad signature -> 403.
+    # This must run before any scenario-binding check below: those checks
+    # reveal which scenario/version a box is enrolled against, and running
+    # them first would let an unauthenticated caller (no valid private key)
+    # probe a box_id and learn that information without proving box
+    # ownership (§14.2 fail-closed ordering).
+    canonical_bytes = canon.canonicalize(dataclasses.asdict(bundle))
+    public_key = base64.b64decode(box.public_key)
+    if not signing.verify(public_key, canonical_bytes, sig):
+        raise CheckinError(403, "bad signature")
+
+    # 2b. The box is bound to one scenario at enrollment; it may only score
     # against that scenario. Without this a box enrolled in scenario A could
     # submit a bundle claiming scenario B and be scored against B's rubric
     # (the caller loads the rubric by the client-supplied bundle.scenario_name).
     if box.scenario_name != bundle.scenario_name:
         raise CheckinError(400, "scenario_name does not match the box's enrolled scenario")
 
-    # 1c. The box is bound to one scenario_version at enrollment. A mismatched
+    # 2c. The box is bound to one scenario_version at enrollment. A mismatched
     # version means the agent is running a stale config or was re-provisioned
     # for a different track (§14.3).
     if box.scenario_version != bundle.scenario_version:
         raise CheckinError(409, "scenario_version does not match the box's enrolled version")
-
-    # 2. Verify signature over the canonical body. Bad signature -> 403.
-    canonical_bytes = canon.canonicalize(dataclasses.asdict(bundle))
-    public_key = base64.b64decode(box.public_key)
-    if not signing.verify(public_key, canonical_bytes, sig):
-        raise CheckinError(403, "bad signature")
 
     # 3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
     if bundle.seq <= box.last_seq:
@@ -133,11 +138,13 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         if entry.sla is None:
             continue
         ev = evidence_by_check_id.get(entry.check_id)
-        if ev is not None and ev.status != "ok":
-            # Only feed SLA ledger on OK status. ERROR/TIMEOUT evidence
-            # should not advance the SLA clock (§11.3).
+        if ev is None or ev.status != "ok":
+            # Only feed SLA ledger on OK status. Missing (bundle omits the
+            # check) and ERROR/TIMEOUT evidence should not advance the SLA
+            # clock (§11.3) — neither is a genuine observation of the box's
+            # state, so neither should push it toward a DOWN transition.
             continue
-        raw = ev.raw if ev is not None else {}
+        raw = ev.raw
         is_up, _reason = evaluate_matcher(entry.matcher, raw)
         sla_rec = sla.update_sla(
             store, bundle.box_id, entry.check_id, entry.sla, is_up, received_at
