@@ -205,10 +205,16 @@ def _ensure_enrolled(config, manifest, identity) -> None:
             "(enrollment has not completed yet)"
         )
 
-    agent.identity.enroll(
-        manifest.engine_url, config.enrollment_token, identity,
-        AGENT_VERSION, manifest.scenario_name, manifest.scenario_version,
-    )
+    try:
+        agent.identity.enroll(
+            manifest.engine_url, config.enrollment_token, identity,
+            AGENT_VERSION, manifest.scenario_name, manifest.scenario_version,
+        )
+    except agent.identity.EnrollmentTokenConsumed:
+        # The engine already has this box enrolled under this token (e.g. we
+        # crashed after enroll succeeded but before the marker was written).
+        # Treat as success instead of crash-looping on every restart.
+        pass
 
     # Persist the marker atomically so a crash mid-enroll retries next boot.
     tmp = marker + ".tmp"

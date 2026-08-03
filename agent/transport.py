@@ -87,6 +87,16 @@ class _NetworkFailure(Exception):
     """Internal marker: a send attempt failed for transient/network reasons."""
 
 
+class _ResponseParseFailure(Exception):
+    """Internal marker: the engine returned HTTP 200 but the body didn't
+    parse into a CheckinResponse (missing/renamed field, malformed JSON).
+
+    This is NOT a rejection of the bundle — the engine may well have
+    accepted and scored it. Treated like _NetworkFailure (retry later)
+    rather than a permanent rejection, so a transient/format bug on the
+    engine side doesn't silently drop scored evidence."""
+
+
 class TransportClient:
     def __init__(self, engine_url: str, identity: "agent.identity.Identity",
                  queue_path: str):
@@ -169,8 +179,11 @@ class TransportClient:
         if status != 200:
             raise Exception(f"checkin failed: HTTP {status}: {resp_body!r}")
 
-        data = json.loads(resp_body.decode("utf-8"))
-        return _parse_checkin_response(data)
+        try:
+            data = json.loads(resp_body.decode("utf-8"))
+            return _parse_checkin_response(data)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            raise _ResponseParseFailure(str(e)) from e
 
     # -- public API -----------------------------------------------------
 
@@ -182,17 +195,26 @@ class TransportClient:
         On network failure: append `bundle` to the queue file and return None.
         """
         queued = self._read_queue()
+        # Work on a copy and persist it once at the end (or once on early
+        # exit below), rather than rewriting + fsyncing the whole queue file
+        # after every single entry. The old per-pop write made draining an
+        # N-bundle backlog O(n^2) file I/O; a batch write is O(n).
+        remaining = list(queued)
 
-        while queued:
-            line = queued[0]
+        while remaining:
+            line = remaining[0]
             canonical_bytes = line.encode("utf-8")
             try:
                 self._send_canonical(canonical_bytes)
-            except _NetworkFailure:
+            except (_NetworkFailure, _ResponseParseFailure):
                 # Stop flushing; queue the new bundle behind what's left
-                # (don't send it out of order), persist, and bail out.
+                # (don't send it out of order), persist, and bail out. A
+                # parse failure means we can't tell whether the engine
+                # accepted this bundle, so retry it rather than drop it —
+                # if it was already accepted, the retry will cleanly hit a
+                # 409 replay and get dropped by the branch below instead.
                 new_canonical = canonicalize(dataclasses.asdict(bundle))
-                self._write_queue(queued)
+                self._write_queue(remaining)
                 self._append_queue(new_canonical.decode("utf-8"))
                 return None
             except Exception as e:
@@ -208,19 +230,25 @@ class TransportClient:
                     f"rejection): {e}",
                     file=sys.stderr,
                 )
-                queued.pop(0)
-                self._write_queue(queued)
+                remaining.pop(0)
                 continue
 
-            # Successfully flushed; drop it from the queue file and move on.
-            queued.pop(0)
-            self._write_queue(queued)
+            # Successfully flushed; drop it and move on.
+            remaining.pop(0)
+
+        # Queue fully drained (everything sent or dropped as poison): persist
+        # the (now-empty) queue once, if anything changed.
+        if remaining != queued:
+            self._write_queue(remaining)
 
         # Queue empty (or fully flushed): send the new bundle.
         canonical_bytes = canonicalize(dataclasses.asdict(bundle))
         try:
             return self._send_canonical(canonical_bytes)
-        except _NetworkFailure:
+        except (_NetworkFailure, _ResponseParseFailure):
+            # See the matching comment in the flush loop above: a parse
+            # failure doesn't tell us whether the engine accepted this
+            # bundle, so queue it for retry instead of dropping it.
             self._append_queue(canonical_bytes.decode("utf-8"))
             return None
         except Exception as e:

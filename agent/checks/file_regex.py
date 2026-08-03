@@ -47,6 +47,12 @@ class FileRegexCheck(Check):
                 compiled = _compile_pattern(pattern)
             except re.error as exc:
                 return self._error(spec, f"invalid extract regex {pattern!r}: {exc}")
+            if compiled.groups < 1:
+                return self._error(
+                    spec,
+                    f"extract regex {pattern!r} must have a capturing group "
+                    f"(e.g. wrap the part to extract in parentheses)",
+                )
             try:
                 match = compiled.search(content)
             except RecursionError:

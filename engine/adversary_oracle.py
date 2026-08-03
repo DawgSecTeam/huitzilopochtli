@@ -39,8 +39,11 @@ def due_directives(store: Store, box_id: str, server_secret: bytes,
         window_s = event.get("window_s")
         if (not isinstance(window_s, (list, tuple)) or len(window_s) != 2
                 or not all(isinstance(b, (int, float)) and not isinstance(b, bool)
-                            for b in window_s)):
-            # Malformed window: can't schedule this event, skip it.
+                            for b in window_s)
+                or window_s[0] > window_s[1]):
+            # Malformed/reversed window: can't schedule this event, skip it.
+            # _validate_adversary_pool rejects this at upload time; this is a
+            # defense-in-depth guard for a pre-existing/older DB record.
             continue
         action = event.get("action")
         if not isinstance(action, str) or not action:

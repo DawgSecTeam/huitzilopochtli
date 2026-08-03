@@ -321,5 +321,24 @@ def validate_rubric(obj: dict) -> list:
                     # interval_s is the divisor for SLA accrual (engine/sla.py);
                     # zero/negative would divide-by-zero or credit nonsense.
                     errors.append(f"{ref}.sla.interval_s must be a positive number")
+                # points_per_interval and max_intervals_per_checkin feed
+                # `accrued_points += intervals * points_per_interval` directly
+                # in engine/sla.py, with `intervals` capped at
+                # max_intervals_per_checkin. A non-positive value corrupts
+                # accrual: negative points_per_interval shrinks a box's total
+                # over time, and max_intervals_per_checkin <= 0 either kills
+                # accrual entirely or (if negative) also shrinks it via min().
+                ppi = sla.get("points_per_interval")
+                if isinstance(ppi, bool) or not isinstance(ppi, int) or ppi <= 0:
+                    errors.append(
+                        f"{ref}.sla.points_per_interval must be a positive integer"
+                    )
+                if "max_intervals_per_checkin" in sla:
+                    mipc = sla.get("max_intervals_per_checkin")
+                    if (isinstance(mipc, bool) or not isinstance(mipc, int)
+                            or mipc <= 0):
+                        errors.append(
+                            f"{ref}.sla.max_intervals_per_checkin must be a positive integer"
+                        )
 
     return errors

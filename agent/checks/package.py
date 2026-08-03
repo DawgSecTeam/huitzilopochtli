@@ -18,6 +18,17 @@ class PackageCheck(Check):
 
     def collect(self, spec: CheckSpec, ctx) -> Evidence:
         name = spec.collect_params.get("package")
+        if not name:
+            return Evidence(
+                check_id=spec.id,
+                check_type=self.type_key,
+                host_id=spec.host_id,
+                status=CollectorStatus.ERROR,
+                raw={"installed": False, "version": None},
+                reason="collect_params missing required 'package'",
+                collected_monotonic=time.monotonic(),
+                collected_wall_claim=time.time(),
+            )
 
         try:
             installed, version = ctx.package_installed(name)
