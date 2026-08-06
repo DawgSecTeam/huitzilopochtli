@@ -1,0 +1,19 @@
+# Example box spec — ties the two agent-authored files together and tells
+# boxbuilder how to reach/package the box. See boxbuilder/README.md.
+#
+#   scenario:     the huitz checks (awards points for HARDENING)
+#   nakon_config: the vulns to PLANT (from the vulndb catalog)
+#   provider:     how to reach + package the box (v1: ssh, box already running)
+#
+# Run: python3 -m boxbuilder build --spec boxbuilder/examples/linux-fundamentals.box.yaml \
+#         --image-out /tmp/linux-fundamentals.ova --json
+
+scenario: linux-fundamentals.scenario.yaml
+nakon_config: nakon-config.json
+provider:
+  name: ssh
+  host: 192.168.50.10        # the box you've already booted
+  port: 22
+  user: ubuntu
+  password: ubuntu
+# authoring_key: ./authoring.key   # optional; auto-generated if omitted

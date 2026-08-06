@@ -8,3 +8,8 @@ dist/
 *.swp
 .pytest_cache/
 tests/proxmox/.env
+
+# boxbuilder artifacts: contain the authoring private key (signs manifests),
+# compiled rubric, and the agent zipapp -- all build outputs, never source.
+artifacts/
+*.key
