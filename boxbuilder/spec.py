@@ -53,6 +53,26 @@ class BoxSpec:
         return list(self.nakon_config.get("machines", []))
 
 
+def validate_inputs(scenario: dict, nakon_config: dict) -> None:
+    """Structural validation of the two agent-authored inputs.
+
+    Shared by load_spec() (spec-file path) and cli._spec_from_args() (direct
+    flags), so both routes fail early on malformed inputs with the same clear
+    messages instead of surfacing a cryptic error mid-pipeline.
+    """
+    if not isinstance(scenario, dict) or "scenario" not in scenario:
+        raise ValueError("not a valid huitz scenario (missing 'scenario')")
+    if scenario["scenario"].get("mode") not in ("honor", "ranked"):
+        raise ValueError(
+            f"scenario.mode must be 'honor' or 'ranked', got "
+            f"{scenario['scenario'].get('mode')!r}"
+        )
+    if scenario["scenario"]["mode"] == "ranked" and not scenario["scenario"].get("engine_url"):
+        raise ValueError("ranked mode requires scenario.engine_url")
+    if not isinstance(nakon_config, dict) or not isinstance(nakon_config.get("machines"), list):
+        raise ValueError("nakon config must have a 'machines' list")
+
+
 def _resolve(path: str, base_dir: str) -> str:
     return path if os.path.isabs(path) else os.path.normpath(os.path.join(base_dir, path))
 
@@ -91,17 +111,7 @@ def load_spec(spec_path: str) -> BoxSpec:
     with open(nakon_config_path, "r", encoding="utf-8") as f:
         nakon_config = json.load(f)
 
-    if not isinstance(scenario, dict) or "scenario" not in scenario:
-        raise ValueError(f"{scenario_path}: not a valid huitz scenario (missing 'scenario')")
-    if scenario["scenario"].get("mode") not in ("honor", "ranked"):
-        raise ValueError(
-            f"{scenario_path}: scenario.mode must be 'honor' or 'ranked', got "
-            f"{scenario['scenario'].get('mode')!r}"
-        )
-    if scenario["scenario"]["mode"] == "ranked" and not scenario["scenario"].get("engine_url"):
-        raise ValueError(f"{scenario_path}: ranked mode requires scenario.engine_url")
-    if not isinstance(nakon_config, dict) or not isinstance(nakon_config.get("machines"), list):
-        raise ValueError(f"{nakon_config_path}: nakon config must have a 'machines' list")
+    validate_inputs(scenario, nakon_config)
 
     authoring_key_path = raw.get("authoring_key")
     if authoring_key_path:

@@ -88,15 +88,18 @@ class SshHandle(BoxHandle):
 
     # --- BoxHandle API ---------------------------------------------------
     def run(self, cmd: str, *, timeout: int = 1800, sudo: bool = True) -> RunResult:
+        # Use /bin/sh (POSIX), NOT bash: minimal Alpine ships only busybox /bin/sh,
+        # and the openrc init script targets exactly those boxes. Every command we
+        # issue here is POSIX; shlex.quote() emits POSIX-safe quoting.
         if sudo and self.user != "root":
             # Feed the password to sudo -S over stdin (paramiko exec can write
             # to the channel stdin). Avoids tty allocation needed for -S.
-            full = f"sudo -S -p '' bash -lc {shlex.quote(cmd)}"
+            full = f"sudo -S -p '' /bin/sh -c {shlex.quote(cmd)}"
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
             stdin.write(self.password + "\n")
             stdin.flush()
         else:
-            full = f"bash -lc {shlex.quote(cmd)}"
+            full = f"/bin/sh -c {shlex.quote(cmd)}"
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
         exit_status = stdout.channel.recv_exit_status()
         return RunResult(
@@ -120,11 +123,15 @@ class SshHandle(BoxHandle):
         # Ensure the install dir exists, then copy + enable the unit. We SFTP the
         # template up and let the box's own init system install it, per
         # packaging/README.md:118-133.
+        # The target dirs (/etc/systemd/system, /etc/init.d) are root-owned, so a
+        # non-root SSH user cannot SFTP into them. Stage the unit under /tmp (any
+        # user can write there), then sudo-install it into place.
         if kind == "systemd":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.service")
-            remote_unit = "/etc/systemd/system/huitzilopochtli-agent.service"
-            self.put(local, remote_unit)
+            tmp = "/tmp/huitzilopochtli-agent.service"
+            self.put(local, tmp)
             res = self.run(
+                f"install -m 644 {tmp} /etc/systemd/system/huitzilopochtli-agent.service && "
                 "systemctl daemon-reload && "
                 "systemctl enable --now huitzilopochtli-agent.service"
             )
@@ -132,9 +139,10 @@ class SshHandle(BoxHandle):
                 raise RuntimeError(f"failed to enable systemd unit: {res.stderr.strip()}")
         elif kind == "openrc":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.openrc")
-            remote_unit = "/etc/init.d/huitzilopochtli-agent"
-            self.put(local, remote_unit, mode=0o755)
+            tmp = "/tmp/huitzilopochtli-agent"
+            self.put(local, tmp)
             res = self.run(
+                f"install -m 755 {tmp} /etc/init.d/huitzilopochtli-agent && "
                 "rc-update add huitzilopochtli-agent default && "
                 "rc-service huitzilopochtli-agent start"
             )

@@ -8,10 +8,18 @@
 # Pairing in this example (vuln -> check that verifies the hardening):
 #   nginx (service)              -> nginx_up      (SLA: service stays up)
 #   ssh-root-login (misconfig)   -> ssh_no_root   (PermitRootLogin must be "no")
-#   suid-find (misconfig)        -> no_suid_find  (no world-writable suid files)
+#   suid-find (misconfig)        -> no_suid_find  (SUID bit removed from `find`)
 #
 # Run `nakon catalog show nginx ssh-root-login suid-find --json` to inspect the
 # planting scripts these checks correspond to.
+#
+# IMPORTANT for authors copying this file: `expect`'s equals/not_equals/
+# contains/regex predicates default `field` to "matched" (the raw evidence key
+# `file_regex` happens to use). Every OTHER check type uses its own field
+# names (see each collector's docstring in agent/checks/) and MUST set
+# `field:` explicitly in `expect`, or the check silently fails with
+# "raw evidence missing field 'matched'" regardless of box state. This bit
+# both `nginx_up` and `no_suid_find` below until `field:` was added.
 
 scenario:
   name: "Linux Fundamentals"
@@ -28,9 +36,13 @@ checks:
     max_points: 10
     collect:
       service: nginx
-      expect_state: active
     expect:
-      equals: "active"
+      # service_state's raw evidence is {"active": bool, "enabled": bool}
+      # (agent/checks/service_state.py) -- no "matched" key, so `field` must
+      # be set explicitly, and the expected value must be a real bool, not
+      # the string "active".
+      equals: true
+      field: active
       points: 10
       # SLA (continuous uptime scoring) applies ONLY in ranked mode, where the
       # engine supplies a trusted clock. In honor mode (offline) it is ignored.
@@ -55,12 +67,19 @@ checks:
   - id: no_suid_find
     type: permission
     category: vuln
-    display: "No world-writable SUID binaries"
+    display: "SUID bit removed from find"
     max_points: 5
     collect:
-      # Collects SUID binaries; the evaluator checks none are world-writable.
-      path: /usr/bin
-      mode_mask: "u+s"
+      # suid-find plants the setuid bit on the `find` binary itself (chmod +s
+      # $(which find)) -- stat the binary directly, not its containing dir.
+      path: /usr/bin/find
     expect:
-      contains: ""        # no world-writable SUID files expected
+      # permission's raw evidence is {"mode": "0NNNN", "uid", "gid", "exists"}
+      # -- again no "matched" key, so `field` must be explicit. mode_at_most
+      # passes when actual has no bits set beyond max_mode; 0755 excludes the
+      # setuid bit (04000), so this fails while planted and passes once the
+      # author removes it (chmod -s /usr/bin/find).
+      mode_at_most: true
+      field: mode
+      max_mode: "0755"
       points: 5

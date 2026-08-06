@@ -107,7 +107,13 @@ def mint_enrollment_token(engine_url: str, admin_token: str, scenario_name: str,
     scheme, host, port = _split_url(engine_url)
     resp = _request(scheme, host, port, "POST", "/admin/tokens", admin_token,
                     body={"scenario_name": scenario_name, "ttl_s": ttl_s}, timeout=timeout)
-    return resp["token"]
+    token = resp.get("token")
+    if not token:
+        raise EngineError(
+            f"engine returned no enrollment token for scenario {scenario_name!r}: {resp!r}",
+            status_code=200, body=str(resp),
+        )
+    return token
 
 
 def resolve_admin_token(explicit: Optional[str]) -> str:

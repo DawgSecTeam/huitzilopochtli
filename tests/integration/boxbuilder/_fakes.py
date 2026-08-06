@@ -37,6 +37,12 @@ class FakeHandle:
             if substr in cmd:
                 out, rc = s, r
                 break
+        else:
+            # install_box now resolves the connecting user's uid:gid (id -u; id -g)
+            # so it can chown the install dir for non-root SSH users; give it a
+            # plausible uid:gid by default.
+            if "id -u" in cmd and "id -g" in cmd:
+                out, rc = "1000\n1000", 0
         from boxbuilder.providers.base import RunResult
         return RunResult(exit_status=rc, stdout=out, stderr="")
 

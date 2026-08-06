@@ -125,6 +125,71 @@ def test_deploy_bundle_parses_outcome(tmp_path, monkeypatch):
     assert out["failures"] == 0
 
 
+def test_deploy_bundle_handles_pretty_multiline_json(tmp_path, monkeypatch):
+    """Real nakon `cmd_deploy --json` (pre-fix) printed
+    `json.dumps(outcomes_to_dict(...), indent=2, sort_keys=True)` -- pretty,
+    multi-line -- unlike `build`'s compact single line. The fake harness used
+    by the tests above always emits compact JSON for both build and deploy,
+    so it never reproduced that shape and gave false confidence.
+
+    This test installs a fake nakon whose deploy branch emits the REAL
+    pre-fix pretty-printed shape (captured from a live `nakon deploy --json`
+    run; see scratchpad `nakon_deploy_raw_stdout.log`) and asserts
+    `deploy_bundle()` still parses it via the `json.loads(stdout.strip())`
+    fallback after `json.loads(stdout.splitlines()[-1])` fails on the
+    trailing `"}"` line.
+    """
+    deploy_json = {
+        "bundle_id": "e3b66c7ba68065e4db456188c108d560eedc0a2e3bac5e5ca939bd5ff6714dfd",
+        "failures": 0,
+        "log_dir": "/home/hna/dev/dawgsec/nakon/bundles/e3b66c7ba68065e4/runs/20260806-151830",
+        "machines": [
+            {
+                "error": None,
+                "exit_status": 0,
+                "failures": [],
+                "ip": "10.0.0.138",
+                "name": "web01",
+                "plan_id": "e6fbf0c7dfba3f480f5d11a61f250d483a2f0ca81254219616dea7f38eb9d6fb",
+                "steps": [
+                    {"index": "000", "kind": "config", "name": "nginx", "rc": 0, "seconds": 2},
+                    {"index": "001", "kind": "config", "name": "ssh", "rc": 0, "seconds": 2},
+                    {"index": "002", "kind": "config", "name": "ssh-root-login", "rc": 0, "seconds": 0},
+                    {"index": "003", "kind": "config", "name": "suid-find", "rc": 0, "seconds": 0},
+                ],
+            }
+        ],
+        "ok": True,
+    }
+
+    ndir = tmp_path / "nakon"
+    pkg = ndir / "nakon"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "cli.py").write_text("# marker for resolve_nakon_dir\n")
+    pretty_blob = json.dumps(deploy_json, indent=2, sort_keys=True)
+    (pkg / "__main__.py").write_text(
+        "import sys, json\n"
+        "sys.stderr.write('[nakon] deploying...\\n')\n"
+        f"print({pretty_blob!r})\n"
+        "sys.exit(0)\n"
+    )
+    monkeypatch.setenv("NAKON_DIR", str(ndir))
+
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text("{}")
+    out = nakon.deploy_bundle(str(ndir), "/bundle", str(cfg))
+    assert out["ok"] is True
+    assert out["failures"] == 0
+    assert out["bundle_id"] == deploy_json["bundle_id"]
+    assert out["log_dir"] == deploy_json["log_dir"]
+    assert out["machines"][0]["name"] == "web01"
+    assert out["machines"][0]["exit_status"] == 0
+    assert [s["name"] for s in out["machines"][0]["steps"]] == [
+        "nginx", "ssh", "ssh-root-login", "suid-find",
+    ]
+
+
 def test_deploy_bundle_strict_failure_raises(tmp_path, monkeypatch):
     ndir = _install_fake_nakon(
         tmp_path, monkeypatch,
