@@ -153,6 +153,37 @@ def test_install_requires_provider(tmp_path):
                     init_kind="none", log=lambda *a: None)
 
 
+def test_install_chowns_install_dir_for_non_root_user(tmp_path, fake_provider_factory,
+                                                      fake_provider):
+    """The install dir is created root-owned (sudo mkdir); for a non-root SSH
+    user it must be chown'd to that user so the SFTP puts succeed. This is the
+    fix for the EACCES failure that otherwise breaks the documented `user: ubuntu`
+    flow."""
+    cr = _compile_result(tmp_path, "honor")
+    result = install_box(
+        _spec("honor"), artifacts_dir=str(tmp_path), compile_result=cr,
+        provider_factory=fake_provider_factory, init_kind="none", log=lambda *a: None,
+    )
+    assert result["ok"] is True
+    handle = fake_provider.last_handle
+    assert any("id -u" in c and "id -g" in c for c in handle.runs)   # uid:gid lookup
+    assert any("chown 1000:1000 /opt/huitzilopochtli" in c for c in handle.runs)
+
+
+def test_install_skips_chown_when_root_user(tmp_path, fake_provider_factory, fake_provider):
+    """A root SSH user already owns the install dir; no chown should be issued."""
+    cr = _compile_result(tmp_path, "honor")
+    spec = _spec("honor")
+    spec.provider = {"name": "fake", "host": "10.0.0.99", "user": "root", "password": "p"}
+    result = install_box(
+        spec, artifacts_dir=str(tmp_path), compile_result=cr,
+        provider_factory=fake_provider_factory, init_kind="none", log=lambda *a: None,
+    )
+    assert result["ok"] is True
+    handle = fake_provider.last_handle
+    assert not any("chown" in c for c in handle.runs)
+
+
 def test_install_ranked_requires_admin_token(tmp_path, fake_provider_factory, monkeypatch):
     monkeypatch.delenv("HUITZILOPOCHTLI_ADMIN_TOKEN", raising=False)
     # resolve_admin_token returns "" -> upload_scenario raises EngineError.

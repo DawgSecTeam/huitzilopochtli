@@ -86,9 +86,10 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
         json.dump(spec.nakon_config, f, indent=2)
     bundle = nakon.build_bundle(ndir, nakon_cfg_path, out_dir="bundles",
                                 rebuild=rebuild_bundle)
-    log(f"[boxbuilder] nakon bundle {bundle['bundle_id'][:12]} "
-        f"({'cached' if bundle['cached'] else 'fresh'}, "
-        f"{bundle['plans']} plan(s), {bundle['machines']} machine(s))")
+    bid = bundle.get("bundle_id")
+    log(f"[boxbuilder] nakon bundle {bid[:12] if bid else '?'} "
+        f"({'cached' if bundle.get('cached') else 'fresh'}, "
+        f"{bundle.get('plans', '?')} plan(s), {bundle.get('machines', '?')} machine(s))")
 
     # Record state so plant/install/package can resume without re-deriving it.
     result = {
@@ -169,8 +170,12 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
             port=getattr(handle, "port", 22),
         )
         derived_path = os.path.join(artifacts_dir, "nakon-deploy-config.json")
-        with open(derived_path, "w", encoding="utf-8") as f:
+        # Contains the box's plaintext ssh password; write 0600 like authoring.key.
+        fd = os.open(derived_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             _json.dump(derived, f, indent=2)
+            f.flush()
+        os.chmod(derived_path, 0o600)
         log(f"[boxbuilder] planting vulns on {handle.name} ({handle.addr}) via nakon deploy")
 
         ndir = nakon.resolve_nakon_dir(nakon_dir)
@@ -196,10 +201,9 @@ def _resolve_provider(provider_cfg: dict, provider_factory, log):
     from boxbuilder.providers import load_provider
     name = provider_cfg.get("name")
     provider = load_provider(name, provider_cfg)
-    # Copy non-name keys into the handle config; providers may rename `name` to
-    # the machine name themselves, so don't pass the provider's own name through.
-    cfg = {k: v for k, v in provider_cfg.items() if k != "name"}
-    handle = provider.start(cfg)
+    # Pass the FULL cfg (including `name`) through to start(), exactly like the
+    # test factory does, so SshProvider can use cfg["name"] for the handle name.
+    handle = provider.start(provider_cfg)
     return provider, handle
 
 
@@ -239,16 +243,19 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # --- ranked: wire the engine first so the token can go in agent_config ---
         ranked = None
         enrollment_token = None
+        # Single source for the engine address (compile state wins over spec, but
+        # they derive from the same scenario); used for both the upload and the
+        # on-box agent_config so they can never diverge.
+        resolved_engine_url = compile_result.get("engine_url") or spec.engine_url
         if mode == "ranked":
             from boxbuilder import engine
             token = engine.resolve_admin_token(admin_token)
-            engine_url = compile_result.get("engine_url") or spec.engine_url
-            if not engine_url:
+            if not resolved_engine_url:
                 raise ValueError("ranked mode requires engine_url (in scenario or compile state)")
-            log(f"[boxbuilder] uploading scenario record to engine {engine_url}")
-            engine.upload_scenario(engine_url, token, compile_result["engine_record"])
+            log(f"[boxbuilder] uploading scenario record to engine {resolved_engine_url}")
+            engine.upload_scenario(resolved_engine_url, token, compile_result["engine_record"])
             enrollment_token = engine.mint_enrollment_token(
-                engine_url, token,
+                resolved_engine_url, token,
                 scenario_name=compile_result.get("scenario_name") or spec.scenario["scenario"]["name"],
                 ttl_s=enrollment_ttl_s,
             )
@@ -260,7 +267,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         scenario_name = compile_result.get("scenario_name") or spec.scenario["scenario"]["name"]
         agent_cfg = artifacts_mod.agent_config_dict(
             scenario_name=scenario_name, mode=mode,
-            engine_url=(spec.engine_url if mode == "ranked" else None),
+            engine_url=(resolved_engine_url if mode == "ranked" else None),
             checkin_interval_s=(checkin_interval_s if mode == "ranked" else None),
             enrollment_token=enrollment_token,
         )
@@ -268,10 +275,26 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
 
         # --- place files ---
         log(f"[boxbuilder] installing agent ({mode}) on {handle.name} ({handle.addr})")
-        # Ensure the install dir exists first.
+        # Ensure the install dir exists first. It is created root-owned (via
+        # sudo); if the connecting user is not root, hand the dir to them so the
+        # SFTP puts below succeed (SFTP runs as the SSH user, not via sudo).
         mk = handle.run(f"mkdir -p {artifacts_mod.INSTALL_DIR}")
         if not mk.ok:
             raise RuntimeError(f"could not create {artifacts_mod.INSTALL_DIR}: {mk.stderr.strip()}")
+        if getattr(handle, "user", "root") != "root":
+            ids = handle.run("id -u; id -g", sudo=False)
+            parts = ids.stdout.split()
+            if not ids.ok or len(parts) < 2:
+                raise RuntimeError(
+                    f"could not determine uid:gid for {handle.user} on {handle.addr}; "
+                    f"cannot make {artifacts_mod.INSTALL_DIR} writable"
+                )
+            ch = handle.run(f"chown {parts[0]}:{parts[1]} {artifacts_mod.INSTALL_DIR}")
+            if not ch.ok:
+                raise RuntimeError(
+                    f"could not chown {artifacts_mod.INSTALL_DIR} to {parts[0]}:{parts[1]}: "
+                    f"{ch.stderr.strip()}"
+                )
         placed = []
         for f in files:
             handle.put(f.local, f.remote, mode=f.mode)
@@ -285,7 +308,12 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             try:
                 from boxbuilder.providers.ssh import detect_init
                 init_kind = detect_init(handle)
-            except Exception:
+            except Exception as e:
+                # Fail-open to "none" is intentional (best-effort detection), but
+                # it silently produces a box whose agent never auto-starts, so
+                # surface it loudly instead of swallowing it.
+                log(f"[boxbuilder] WARNING: could not detect init system ({e}); "
+                    f"the agent will not auto-start -- pass --init or enable it manually")
                 init_kind = "none"
         handle.install_init(init_kind)
         log(f"[boxbuilder] init unit: {init_kind}")

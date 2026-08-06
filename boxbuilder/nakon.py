@@ -102,9 +102,12 @@ def build_bundle(
     try:
         info = json.loads(stdout.splitlines()[-1])
     except json.JSONDecodeError as e:
-        raise NakonError(
-            f"nakon build emitted unparseable JSON: {e}", stderr=result.stderr
-        ) from e
+        try:
+            info = json.loads(stdout)
+        except json.JSONDecodeError:
+            raise NakonError(
+                f"nakon build emitted unparseable JSON: {e}", stderr=result.stderr
+            ) from e
 
     # nakon's `path` is relative to its cwd; make it absolute for the caller.
     if info.get("path") and not os.path.isabs(info["path"]):
@@ -142,9 +145,12 @@ def deploy_bundle(
     try:
         return json.loads(stdout.splitlines()[-1])
     except json.JSONDecodeError as e:
-        raise NakonError(
-            f"nakon deploy emitted unparseable JSON: {e}", stderr=result.stderr
-        ) from e
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError:
+            raise NakonError(
+                f"nakon deploy emitted unparseable JSON: {e}", stderr=result.stderr
+            ) from e
 
 
 def derive_deploy_config(agent_nakon_config: dict, machine_name: str, host: str,

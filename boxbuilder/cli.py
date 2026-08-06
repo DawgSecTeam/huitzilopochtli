@@ -24,7 +24,7 @@ from boxbuilder import nakon as nakon_mod
 from boxbuilder.pipeline import (
     build_all, compile_box, install_box, package_box, plant_box,
 )
-from boxbuilder.spec import BoxSpec, load_spec
+from boxbuilder.spec import BoxSpec, load_spec, validate_inputs
 
 _STEPS = ("compile", "plant", "install", "package")
 
@@ -73,6 +73,7 @@ def _spec_from_args(args) -> BoxSpec:
         scenario = yaml.safe_load(f)
     with open(args.nakon_config, "r", encoding="utf-8") as f:
         nakon_config = json.load(f)
+    validate_inputs(scenario, nakon_config)
     provider = {}
     if getattr(args, "provider", None):
         provider["name"] = args.provider
@@ -84,8 +85,6 @@ def _spec_from_args(args) -> BoxSpec:
             provider["user"] = args.provider_user
         if args.provider_password:
             provider["password"] = args.provider_password
-    elif getattr(args, "provider_name", None):
-        provider = {"name": args.provider_name}
     return BoxSpec(
         scenario_path=os.path.abspath(args.scenario),
         nakon_config_path=os.path.abspath(args.nakon_config),
