@@ -80,6 +80,7 @@ def _manifest_from_dict(d: dict) -> Manifest:
         engine_url=d.get("engine_url"),
         hosts=d.get("hosts", []),
         checks=[_check_spec_from_dict(c) for c in d.get("checks", [])],
+        theme=d.get("theme"),
     )
 
 
@@ -180,7 +181,7 @@ def _run_honor(config, manifest, ctx) -> None:
     rubric = _rubric_from_dict(rubric_dict)
 
     score = common.evaluator.evaluate(evidence, rubric, _WallClock())
-    html = agent.reporter.render_report(score, Mode.HONOR, None)
+    html = agent.reporter.render_report(score, Mode.HONOR, None, theme=manifest.theme)
     with open(config.report_path, "w", encoding="utf-8") as f:
         f.write(html)
 
@@ -267,7 +268,7 @@ def _run_ranked(config, manifest, ctx) -> None:
             for directive in response.directives:
                 agent.adversary.executor.execute(directive, ctx)
             html = agent.reporter.render_report(
-                response.score, Mode.RANKED, response.server_time
+                response.score, Mode.RANKED, response.server_time, theme=manifest.theme
             )
         else:
             last_confirmed_at = (
@@ -276,7 +277,7 @@ def _run_ranked(config, manifest, ctx) -> None:
             score = last_response.score if last_response is not None else None
             if score is not None:
                 html = agent.reporter.render_report(
-                    score, Mode.RANKED, last_confirmed_at
+                    score, Mode.RANKED, last_confirmed_at, theme=manifest.theme
                 )
             else:
                 # No prior confirmed response at all yet: render_report needs
@@ -293,7 +294,9 @@ def _run_ranked(config, manifest, ctx) -> None:
                     sla_status=[],
                     computed_at=time.time(),
                 )
-                html = agent.reporter.render_report(placeholder, Mode.RANKED, None)
+                html = agent.reporter.render_report(
+                    placeholder, Mode.RANKED, None, theme=manifest.theme
+                )
 
         with open(config.report_path, "w", encoding="utf-8") as f:
             f.write(html)

@@ -1,9 +1,10 @@
 """Unit tests for common/schema.py validate_manifest() and validate_rubric()."""
 import copy
+import dataclasses
 
 import pytest
 
-from common.schema import validate_manifest, validate_rubric, SCHEMA_VERSION
+from common.schema import Manifest, Mode, validate_manifest, validate_rubric, SCHEMA_VERSION
 
 
 def minimal_manifest():
@@ -266,3 +267,47 @@ def test_rubric_entry_sla_dict_is_fine():
     entry["sla"] = {"interval_s": 60, "points_per_interval": 1}
     rubric["entries"] = [entry]
     assert validate_rubric(rubric) == []
+
+
+# --- Manifest.theme (additive field) -----------------------------------------------
+
+def test_manifest_theme_absent_is_fine():
+    """theme is not in _REQUIRED_MANIFEST_KEYS -- an old-shape manifest dict compiled
+    before theme existed, with no 'theme' key at all, must still validate."""
+    manifest = minimal_manifest()
+    assert "theme" not in manifest
+    assert validate_manifest(manifest) == []
+
+
+def test_manifest_theme_null_is_fine():
+    manifest = minimal_manifest()
+    manifest["theme"] = None
+    assert validate_manifest(manifest) == []
+
+
+def test_manifest_theme_present_is_fine():
+    """validate_manifest doesn't validate theme's internal shape -- that's
+    authoring/validate.py's _validate_theme, at authoring time, before compile."""
+    manifest = minimal_manifest()
+    manifest["theme"] = {"title": "Op X", "organization": "DawgSec", "accent": "#c8102e"}
+    assert validate_manifest(manifest) == []
+
+
+def test_manifest_dataclass_theme_defaults_to_none():
+    """Old-style construction (no theme kwarg) must still work, and dataclasses.asdict
+    must produce a manifest dict that still validates -- the field is purely additive."""
+    m = Manifest(schema_version=SCHEMA_VERSION, scenario_name="s", scenario_version=1,
+                 mode=Mode.HONOR, engine_url=None, hosts=["h"], checks=[])
+    assert m.theme is None
+    d = dataclasses.asdict(m)
+    assert d["theme"] is None
+    assert validate_manifest(d) == []
+
+
+def test_manifest_dataclass_theme_round_trips():
+    theme = {"title": "Op X", "accent": "#c8102e", "logo_b64": None}
+    m = Manifest(schema_version=SCHEMA_VERSION, scenario_name="s", scenario_version=1,
+                 mode=Mode.HONOR, engine_url=None, hosts=["h"], checks=[], theme=theme)
+    d = dataclasses.asdict(m)
+    assert d["theme"] == theme
+    assert validate_manifest(d) == []

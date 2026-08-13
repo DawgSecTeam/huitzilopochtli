@@ -8,6 +8,7 @@ import base64
 import dataclasses
 import json
 import os
+from typing import Optional
 
 import yaml
 
@@ -29,6 +30,48 @@ from common.schema import (
 
 _DEFAULT_TIMEOUT_S = 5.0
 _DEFAULT_HOST_ID = "localhost"
+
+# Keeps the signed manifest small -- report.html embeds the logo as a data: URI, not a
+# size a competitor should be waiting on over a box's network either way.
+_MAX_LOGO_BYTES = 150 * 1024
+
+
+def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional[dict]:
+    """The small, cosmetic subset of `theme` that ships in the signed Manifest: title /
+    organization / accent / logo (base64-embedded). Everything else in `theme`
+    (wallpaper / readme / motd / issue / forensics_questions / desktop_shortcuts) is
+    large/binary box-decoration content the agent process never needs -- it flows to
+    nakon via boxbuilder/theme.py instead, never through here. Structural shape of
+    `theme_raw` is already guaranteed by authoring.validate's `_validate_theme` (called
+    from validate_scenario_yaml, above compile_scenario in the pipeline); this is the one
+    place that touches the filesystem for it (reading+encoding `logo`), matching the
+    existing split where validate.py is pure-structural and compile.py does all the I/O.
+    """
+    if not theme_raw:
+        return None
+
+    manifest_theme = {
+        "title": theme_raw.get("title"),
+        "organization": theme_raw.get("organization"),
+        "accent": theme_raw.get("accent"),
+        "logo_b64": None,
+    }
+
+    logo = theme_raw.get("logo")
+    if logo:
+        logo_path = logo if os.path.isabs(logo) else os.path.join(os.path.dirname(yaml_path), logo)
+        if not os.path.isfile(logo_path):
+            raise ValueError(f"theme.logo not found: {logo_path}")
+        with open(logo_path, "rb") as f:
+            data = f.read()
+        if len(data) > _MAX_LOGO_BYTES:
+            raise ValueError(
+                f"theme.logo is {len(data)} bytes, over the {_MAX_LOGO_BYTES}-byte cap "
+                f"for embedding in the signed manifest: {logo_path}"
+            )
+        manifest_theme["logo_b64"] = base64.b64encode(data).decode("ascii")
+
+    return manifest_theme
 
 
 def _build_check_spec(check: dict) -> CheckSpec:
@@ -130,6 +173,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
 
     check_specs = [_build_check_spec(c) for c in checks]
     rubric_entries = [_build_rubric_entry(c) for c in checks]
+    manifest_theme = _build_manifest_theme(parsed.get("theme"), yaml_path)
 
     manifest = Manifest(
         schema_version=SCHEMA_VERSION,
@@ -139,6 +183,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         engine_url=scenario.get("engine_url"),
         hosts=scenario["hosts"],
         checks=check_specs,
+        theme=manifest_theme,
     )
 
     rubric = Rubric(

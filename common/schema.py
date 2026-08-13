@@ -88,6 +88,12 @@ class Manifest:
     hosts: list
     checks: list  # list[CheckSpec]
     # NOTE: no rubric, no adversary schedule, no seed.
+    # Cosmetic box-theming subset only ({"title","organization","accent","logo_b64"} --
+    # see authoring/compile.py) -- purely additive, so old manifests without it still pass
+    # validate_manifest (not in _REQUIRED_MANIFEST_KEYS) and old callers still work
+    # unchanged (readers use .get("theme"), same pattern as the existing optional
+    # engine_url). No SCHEMA_VERSION bump needed for the same reason.
+    theme: Optional[dict] = None
 
 
 # --- §6.5 Rubric -------------------------------------------------------------

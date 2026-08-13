@@ -1,0 +1,15 @@
+# Themed variant of linux-fundamentals.box.yaml -- same target box, checks, and vulns;
+# points at the themed scenario instead. See boxbuilder/README.md "Theming".
+#
+# Run: python3 -m boxbuilder build --spec boxbuilder/examples/linux-fundamentals-themed.box.yaml \
+#         --image-out /tmp/linux-fundamentals-themed.ova --json
+
+scenario: linux-fundamentals-themed.scenario.yaml
+nakon_config: nakon-config.json
+provider:
+  name: ssh
+  host: 192.168.50.10        # the box you've already booted
+  port: 22
+  user: ubuntu
+  password: ubuntu
+# authoring_key: ./authoring.key   # optional; auto-generated if omitted

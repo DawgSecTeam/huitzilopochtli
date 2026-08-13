@@ -4,6 +4,7 @@ FROZEN signature; body is a PHASE 1 TASK. Pure function — no I/O; caller
 writes the returned HTML string to report_path.
 """
 import html
+import re
 import time
 
 from common.schema import Mode, ScoreBreakdown
@@ -11,6 +12,13 @@ from common.schema import Mode, ScoreBreakdown
 # Display refresh cadence only — this number is never a scoring input, it
 # just tells the browser how often to reload the static HTML page.
 REFRESH_SECONDS = 30
+
+# Re-validated here even though authoring/validate.py already checks this shape at
+# authoring time -- theme reaches this function via a signed-but-still-external
+# manifest field, and this is a <style> interpolation context, not HTML text, so it gets
+# its own defensive check rather than relying on html.escape (which is the wrong
+# protection for a CSS value position anyway).
+_ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def _fmt_time(ts: float) -> str:
@@ -77,9 +85,12 @@ def _render_sla_table(sla_status) -> str:
 _STYLE = """
 body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
        margin: 2rem; background: #0b0d10; color: #e6e6e6; }
-h1 { margin-bottom: 0.2rem; }
-.sub { color: #9aa0a6; margin-top: 0; }
-.total { font-size: 2.5rem; font-weight: bold; margin: 1rem 0; }
+.masthead { display: flex; align-items: center; gap: 0.75rem; }
+.logo { height: 2.2rem; width: auto; }
+h1 { margin-bottom: 0.2rem; border-bottom: 3px solid var(--accent, transparent);
+     padding-bottom: 0.2rem; display: inline-block; }
+.sub, .org { color: #9aa0a6; margin-top: 0; }
+.total { font-size: 2.5rem; font-weight: bold; margin: 1rem 0; color: var(--accent, inherit); }
 table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
 caption { text-align: left; font-weight: bold; margin-bottom: 0.5rem; }
 th, td { border: 1px solid #333; padding: 0.4rem 0.6rem; text-align: left; }
@@ -94,7 +105,7 @@ th { background: #1a1d21; }
 
 
 def render_report(score: ScoreBreakdown, mode: Mode,
-                   last_confirmed_at: float | None) -> str:
+                   last_confirmed_at: float | None, theme: dict | None = None) -> str:
     """Render ScoreBreakdown to a self-contained HTML string.
 
     Includes a <meta http-equiv="refresh" content="N"> tag (display cadence
@@ -104,9 +115,27 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     engine at <last_confirmed_at>" stamp. In ranked mode before the first
     engine response, last_confirmed_at is None and the report should show
     "submitted — awaiting engine" instead of a score.
+
+    `theme` (new, optional, trailing -- every existing call site is unaffected) is the
+    small cosmetic subset Manifest.theme carries: {"title", "organization", "accent",
+    "logo_b64"}, any of which may be absent/None. When given, it re-brands the masthead
+    (title text, org subtitle, logo) and the accent color used for the title underline
+    and the total-points figure; it never touches the pass/fail UP/DOWN colors, which
+    stay semantic regardless of theme.
     """
-    scenario_name = html.escape(str(score.scenario_name))
+    theme = theme or {}
     scenario_version = html.escape(str(score.scenario_version))
+
+    display_title = html.escape(str(theme.get("title") or score.scenario_name))
+    organization = theme.get("organization")
+    org_html = f'<p class="org">{html.escape(str(organization))}</p>' if organization else ""
+    logo_b64 = theme.get("logo_b64")
+    logo_html = (
+        f'<img class="logo" src="data:image/png;base64,{html.escape(str(logo_b64))}" alt="">'
+        if logo_b64 else ""
+    )
+    accent = theme.get("accent")
+    accent_css = f":root {{ --accent: {accent}; }}\n" if accent and _ACCENT_RE.match(accent) else ""
 
     is_ranked = mode == Mode.RANKED
     awaiting_engine = is_ranked and last_confirmed_at is None
@@ -142,11 +171,12 @@ def render_report(score: ScoreBreakdown, mode: Mode,
 <!-- Display cadence only, never a scoring input: the browser reloads this
      static page every REFRESH_SECONDS seconds so it looks "live". -->
 <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
-<title>HUITZILOPOCHTLI &mdash; {scenario_name}</title>
-<style>{_STYLE}</style>
+<title>HUITZILOPOCHTLI &mdash; {display_title}</title>
+<style>{accent_css}{_STYLE}</style>
 </head>
 <body>
-<h1>{scenario_name}</h1>
+<div class="masthead">{logo_html}<h1>{display_title}</h1></div>
+{org_html}
 <p class="sub">scenario version {scenario_version} &middot; mode: {mode_label}</p>
 {body_main}
 </body>
