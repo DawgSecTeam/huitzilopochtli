@@ -48,6 +48,13 @@ class BoxSpec:
     def engine_url(self) -> Optional[str]:
         return self.scenario["scenario"].get("engine_url")
 
+    @property
+    def theme(self) -> dict:
+        """The optional top-level `theme` block (box theming), read through to the
+        scenario -- same pattern as .mode/.engine_url. Empty dict, not None, when
+        absent, so callers can check truthiness without a None-guard."""
+        return self.scenario.get("theme") or {}
+
     def nakon_machines(self) -> list:
         """The machine list from the agent's nakon config (vulns live here)."""
         return list(self.nakon_config.get("machines", []))

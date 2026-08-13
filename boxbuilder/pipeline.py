@@ -11,6 +11,7 @@ from typing import Optional
 
 from boxbuilder import keys, nakon
 from boxbuilder.spec import BoxSpec
+from boxbuilder.theme import resolve_theme_configurations
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -36,12 +37,18 @@ INSTALL_DIR = "/opt/huitzilopochtli"
 
 
 def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = None,
-                rebuild_bundle: bool = False, log=print) -> dict:
+                rebuild_bundle: bool = False, vulndb_url: Optional[str] = None,
+                log=print) -> dict:
     """Step 1: compile the scenario + build the agent.pyz + build the nakon bundle.
 
     Reuses authoring/compile.py::compile_scenario (signs the manifest), and
     packaging/build_zipapp.py::build (the agent artifact). Then shells out to
     `nakon build` to produce the vuln bundle (needs vulndb reachable).
+
+    `vulndb_url` is only consulted when the scenario has a `theme` block that
+    references a wallpaper/README/motd/shortcuts (see boxbuilder/theme.py); an
+    untheme'd scenario never touches vulndb-ui at all. Defaults via
+    boxbuilder.vulndb.resolve_vulndb_url() ($VULNDB_UI_URL, else http://127.0.0.1:3000).
 
     Returns:
       {
@@ -80,10 +87,27 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
     # 1d. Build the nakon bundle (vuln planting payload). We write a copy of the
     # agent's nakon config into the artifacts dir so the build input is captured
     # alongside its outputs; address reconciliation happens at deploy time.
+    #
+    # Theme (box decoration -- wallpaper/readme/motd/shortcuts) is folded in here, not
+    # at plant/install time, as extra entries appended to every machine's
+    # `configurations` list -- nakon's own, unmodified `depends_on`/vars/attachment
+    # mechanism does the rest (see boxbuilder/theme.py). This is nakon's normal
+    # config.json shape; there is no separate "theme" key in it. A scenario with no
+    # `theme` block resolves to an empty entry list and writes spec.nakon_config
+    # unchanged -- fully backward compatible, and touches vulndb-ui not at all.
     ndir = nakon.resolve_nakon_dir(nakon_dir)
+    nakon_cfg = dict(spec.nakon_config)
+    theme_entries = resolve_theme_configurations(spec, vulndb_url=vulndb_url)
+    if theme_entries:
+        machines = []
+        for m in nakon_cfg.get("machines", []):
+            m = dict(m)
+            m["configurations"] = list(m.get("configurations", [])) + list(theme_entries)
+            machines.append(m)
+        nakon_cfg["machines"] = machines
     nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
     with open(nakon_cfg_path, "w", encoding="utf-8") as f:
-        json.dump(spec.nakon_config, f, indent=2)
+        json.dump(nakon_cfg, f, indent=2)
     bundle = nakon.build_bundle(ndir, nakon_cfg_path, out_dir="bundles",
                                 rebuild=rebuild_bundle)
     bid = bundle.get("bundle_id")
@@ -378,6 +402,7 @@ _BUILD_STEPS = ("compile", "plant", "install", "package")
 def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None,
               fmt: str = "ova", from_step: str = "compile",
               nakon_dir: Optional[str] = None, rebuild_bundle: bool = False,
+              vulndb_url: Optional[str] = None,
               provider_factory=None, init_kind: Optional[str] = None,
               admin_token: Optional[str] = None, checkin_interval_s: int = 60,
               enrollment_ttl_s: int = 86400, log=print) -> dict:
@@ -398,7 +423,8 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
     if start_idx <= 0:
         log("[boxbuilder] === step 1/4: compile ===")
         results["compile"] = compile_box(
-            spec, artifacts_dir, nakon_dir=nakon_dir, rebuild_bundle=rebuild_bundle, log=log,
+            spec, artifacts_dir, nakon_dir=nakon_dir, rebuild_bundle=rebuild_bundle,
+            vulndb_url=vulndb_url, log=log,
         )
     else:
         state = _load_state(artifacts_dir)

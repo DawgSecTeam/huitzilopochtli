@@ -104,6 +104,8 @@ def _add_spec_inputs(p: argparse.ArgumentParser) -> None:
     p.add_argument("--nakon-config", help="nakon config JSON (direct-flag path)")
     p.add_argument("--authoring-key", help="path to a 32-byte Ed25519 authoring key seed")
     p.add_argument("--nakon-dir", help="nakon repo dir (default: $NAKON_DIR then ../nakon)")
+    p.add_argument("--vulndb-url", help="vulndb-ui base URL, for themed scenarios only "
+                                        "(default: $VULNDB_UI_URL then http://127.0.0.1:3000)")
     # Provider flags (consumed by plant/install/package; ignored by compile).
     p.add_argument("--provider", choices=("ssh",), help="box provider (v1: ssh)")
     p.add_argument("--provider-host")
@@ -123,6 +125,7 @@ def cmd_compile(args) -> int:
             artifacts_dir=out,
             nakon_dir=args.nakon_dir,
             rebuild_bundle=args.rebuild_bundle,
+            vulndb_url=args.vulndb_url,
             log=_eprint,
         )
     except Exception as e:
@@ -163,7 +166,8 @@ def cmd_build(args) -> int:
         result = build_all(
             spec, artifacts_dir=out, image_out=args.image_out, fmt=args.format,
             from_step=args.from_step, nakon_dir=args.nakon_dir,
-            rebuild_bundle=args.rebuild_bundle, init_kind=args.init,
+            rebuild_bundle=args.rebuild_bundle, vulndb_url=args.vulndb_url,
+            init_kind=args.init,
             admin_token=args.admin_token, checkin_interval_s=args.checkin_interval,
             enrollment_ttl_s=args.enrollment_ttl, log=_eprint,
         )

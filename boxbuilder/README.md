@@ -172,6 +172,46 @@ shows one concrete pairing. An agent authoring a box should:
 2. Write a check that awards points for the *opposite* (hardened) state.
 3. `nakon catalog check` the selection before building.
 
+## Theming
+
+An optional top-level `theme:` block in the scenario YAML (sibling of `scenario`/
+`checks`/`adversary`) decorates the box the way a CyberPatriot/CCDC image is themed —
+wallpaper, a desktop README, an MOTD/login banner, and desktop launchers — on top of
+whatever vulns get planted:
+
+```yaml
+theme:
+  title: "Operation Featherstorm"        # report masthead + shortcut label fallback
+  organization: "DawgSec"                 # report subtitle
+  accent: "#c8102e"                       # report accent color (#rrggbb)
+  logo: ./assets/logo.png                 # embedded in report.html as base64 (size-capped)
+  wallpaper: ./assets/wallpaper.png       # file path, resolved relative to the scenario file
+  readme: ./assets/README.md              # file path; copied to every user's Desktop
+  motd: "Authorized use only."            # -> /etc/motd (+ /etc/issue if `issue` absent)
+  forensics_questions: ["What port is the mail server on?"]  # cosmetic only, not scored
+  desktop_shortcuts: [{name: "Wiki", exec: "xdg-open https://..."}]
+```
+
+`title`/`organization`/`accent`/`logo` are small and cosmetic — they're compiled straight
+into the **signed manifest** (`authoring/compile.py::_build_manifest_theme`) and read by
+the agent to brand `report.html` (`agent/reporter.py`). Everything else — the actual
+on-box decoration — is **entirely vulndb-catalog-driven, with zero nakon source
+changes**: `boxbuilder/theme.py` turns it into extra entries appended to every machine's
+`configurations` list, referencing four small, generic, reusable catalog configurations
+(`theme-wallpaper`, `theme-motd`, `theme-readme`, `theme-shortcuts` — static definitions
+in `boxbuilder/vulndb_theme_configs/`) that `boxbuilder/vulndb.py` auto-creates
+idempotently the first time they're needed. Free text (motd/issue/forensics questions/
+shortcut name+exec) rides as ordinary nakon `vars`; the wallpaper/README files go through
+one content-addressed attachment per distinct file — uploaded once, reused by every
+scenario that references identical bytes, using nakon's own existing MinIO-backed
+attachment fetcher unmodified.
+
+This means a **themed** `compile` needs vulndb-ui reachable (`--vulndb-url` or
+`$VULNDB_UI_URL`, default `http://127.0.0.1:3000` — same env var and default
+`vulndb-cli` uses) *in addition to* the usual nakon/vulndb reachability `nakon build`
+already needs; an **untheme'd** scenario never touches vulndb-ui at all. See
+`boxbuilder/examples/linux-fundamentals-themed.{scenario,box}.yaml` for a worked example.
+
 ## Artifacts
 
 `compile` writes to `artifacts/` (gitignored — contains the authoring key, rubric,
@@ -198,9 +238,10 @@ pytest tests/unit/test_boxbuilder_*.py tests/integration/boxbuilder/
 ```
 
 Unit tests cover spec parsing, key handling, nakon wrappers, per-mode artifact
-generation, and the provider registry. Integration tests drive `plant`/`install`/
-`package`/`build` end-to-end with a FakeProvider + a fake nakon (no real VM,
-no real vulndb), and exercise `engine.py` against the **real** engine server.
+generation, the provider registry, and theming (`vulndb.py` against a fake
+`http.server`, `theme.py` with `vulndb.ensure_*` monkeypatched). Integration tests drive
+`plant`/`install`/`package`/`build` end-to-end with a FakeProvider + a fake nakon (no
+real VM, no real vulndb), and exercise `engine.py` against the **real** engine server.
 
 ## Out of scope
 

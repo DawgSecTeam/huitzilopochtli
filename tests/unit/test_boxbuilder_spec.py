@@ -72,6 +72,17 @@ def test_mode_is_read_from_scenario_not_spec(tmp_path):
     assert spec.scenario["scenario"]["mode"] == spec.mode
 
 
+def test_theme_absent_is_empty_dict(tmp_path):
+    spec = load_spec(str(_write_box(tmp_path)))
+    assert spec.theme == {}
+
+
+def test_theme_reads_through_to_scenario(tmp_path):
+    themed = HONOR_SCENARIO + '\ntheme:\n  title: "Op X"\n  accent: "#c8102e"\n'
+    spec = load_spec(str(_write_box(tmp_path, themed)))
+    assert spec.theme == {"title": "Op X", "accent": "#c8102e"}
+
+
 def test_relative_paths_resolve_against_spec_dir(tmp_path):
     sub = tmp_path / "deep"
     sub.mkdir()

@@ -4,12 +4,22 @@ PHASE 1 TASK: implement. Wraps common.schema.validate_manifest /
 validate_rubric (structural validation of compiled JSON) with YAML-source
 line-number mapping so build failures are line-referenced for the author.
 """
+import re
 
 _VALID_MODES = ("honor", "ranked")
 _VALID_CATEGORIES = ("vuln", "penalty", "prohibited")
 
 # Required keys on each `checks[]` entry, per architecture.md §8.
 _REQUIRED_CHECK_KEYS = ("id", "type", "category", "display", "max_points", "collect", "expect")
+
+# Optional top-level `theme` block (box theming -- see boxbuilder/theme.py and
+# nakon/theme/). Every key is independently optional; only `wallpaper`/`readme`/`logo`
+# are file paths, everything else is inline text. Pure structural/shape checks only --
+# no filesystem access here (consistent with the rest of this file); path existence is
+# checked later where the paths are actually resolved (boxbuilder/theme.py for
+# wallpaper/readme, authoring/compile.py for logo).
+_THEME_STRING_KEYS = ("title", "organization", "accent", "logo", "wallpaper", "readme", "motd", "issue")
+_ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
@@ -87,12 +97,72 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                 errors.append(f"{source_path}: {ref}.collect must be a mapping")
 
             # `expect` is a required key (checked above). A present-but-null
-            # `expect:` (YAML null) satisfied the required-key check but compiled
-            # to an empty matcher {} that later crashes the evaluator with
-            # KeyError('tag'); reject it here at authoring time. Only enforce when
-            # the key is present so the earlier "missing required key" message
-            # stands on its own when it's absent.
-            if "expect" in check and not isinstance(check.get("expect"), dict):
-                errors.append(f"{source_path}: {ref}.expect must be a non-null mapping")
+            # `expect:` (YAML null) satisfied the required-key check, and an
+            # explicit `expect: {}` is also a valid dict -- but both compile to
+            # an empty matcher {} that later crashes the evaluator with
+            # KeyError('tag'); reject them here at authoring time. Only enforce
+            # when the key is present so the earlier "missing required key"
+            # message stands on its own when it's absent.
+            if "expect" in check:
+                expect = check.get("expect")
+                if not isinstance(expect, dict) or len(expect) == 0:
+                    errors.append(
+                        f"{source_path}: {ref}.expect must be a non-null, "
+                        f"non-empty mapping (an empty matcher crashes the evaluator)"
+                    )
+
+    # --- theme (optional, top-level, sibling of scenario/checks/adversary) -----------
+    if "theme" in parsed_yaml:
+        errors.extend(_validate_theme(parsed_yaml.get("theme"), source_path))
+
+    return errors
+
+
+def _validate_theme(theme, source_path: str) -> list:
+    """Structural checks only for the optional `theme` block -- no filesystem access.
+    Every key is independently optional; presence-checking a key only validates its
+    *shape*, never that a referenced file exists (see module docstring above)."""
+    errors = []
+
+    if theme is None or (isinstance(theme, dict) and len(theme) == 0):
+        # `theme:` present but null/empty is a no-op, not an error -- unlike `expect`,
+        # nothing downstream crashes on an empty theme.
+        return errors
+    if not isinstance(theme, dict):
+        return [f"{source_path}: 'theme' must be a mapping"]
+
+    for key in _THEME_STRING_KEYS:
+        if key in theme and not isinstance(theme[key], str):
+            errors.append(f"{source_path}: theme.{key} must be a string")
+
+    accent = theme.get("accent")
+    if isinstance(accent, str) and not _ACCENT_RE.match(accent):
+        errors.append(
+            f"{source_path}: theme.accent must match ^#[0-9a-fA-F]{{6}}$, got {accent!r}"
+        )
+
+    questions = theme.get("forensics_questions")
+    if questions is not None:
+        if not isinstance(questions, list) or not all(isinstance(q, str) for q in questions):
+            errors.append(f"{source_path}: theme.forensics_questions must be a list of strings")
+
+    shortcuts = theme.get("desktop_shortcuts")
+    if shortcuts is not None:
+        if not isinstance(shortcuts, list):
+            errors.append(f"{source_path}: theme.desktop_shortcuts must be a list")
+        else:
+            for idx, sc in enumerate(shortcuts):
+                ref = f"theme.desktop_shortcuts[{idx}]"
+                if not isinstance(sc, dict):
+                    errors.append(f"{source_path}: {ref} must be a mapping")
+                    continue
+                for key in ("name", "exec"):
+                    if key not in sc:
+                        errors.append(f"{source_path}: {ref} missing required key '{key}'")
+                    elif not isinstance(sc[key], str):
+                        errors.append(f"{source_path}: {ref}.{key} must be a string")
+
+    if "include_report_shortcut" in theme and not isinstance(theme["include_report_shortcut"], bool):
+        errors.append(f"{source_path}: theme.include_report_shortcut must be a boolean")
 
     return errors

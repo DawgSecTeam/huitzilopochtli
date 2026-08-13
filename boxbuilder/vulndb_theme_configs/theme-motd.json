@@ -1,0 +1,10 @@
+{
+  "name": "theme-motd",
+  "description": "Box theming: writes /etc/motd, /etc/issue(.net), and the sshd Banner directive from $MOTD_TEXT / $ISSUE_TEXT vars (each independently optional). No attachment. Auto-created idempotently by boxbuilder/vulndb.py.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\n# theme-motd -- writes /etc/motd, /etc/issue(.net), and wires the sshd Banner directive.\n# Reads $MOTD_TEXT and/or $ISSUE_TEXT, each independently optional. Both arrive as\n# already shell-quoted vars (nakon's render_vars() shlex.quotes every value when it\n# writes vars.env), so `printf '%s\\n' \"$VAR\"` below is the only quoting needed -- no\n# risk of a value containing $ or backticks being re-interpreted, since double-quoted\n# variable expansion never re-parses the string it substitutes.\nset -e\n\n[ -n \"$MOTD_TEXT\" ] && printf '%s\\n' \"$MOTD_TEXT\" > /etc/motd\n\nif [ -n \"$ISSUE_TEXT\" ]; then\n    printf '%s\\n' \"$ISSUE_TEXT\" > /etc/issue\n    cp /etc/issue /etc/issue.net\nfi\n\nsshd_config=/etc/ssh/sshd_config\nif [ -f \"$sshd_config\" ]; then\n    if ! grep -qi '^[[:space:]]*Banner[[:space:]]' \"$sshd_config\"; then\n        { echo ''; echo 'Banner /etc/issue.net'; } >> \"$sshd_config\"\n    fi\n    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || \\\n        service sshd reload 2>/dev/null || rc-service sshd reload 2>/dev/null || true\nfi\n\nexit 0\n",
+  "depends_on": []
+}
