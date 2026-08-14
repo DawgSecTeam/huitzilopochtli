@@ -1,8 +1,8 @@
 """Thin subprocess wrappers around the nakon CLI.
 
 boxbuilder treats nakon as a CLI dependency (never imports it as a library) --
-consistent with how tezcatlipoca consumes nakon (create-competition.py:431-508)
-and with nakon's documented embed contract (nakon/README.md:257-272).
+consistent with how tezcatlipoca consumes nakon and with nakon's documented CLI contract
+(see the pinned `vendor/nakon/README.md` submodule).
 
 Contract (mirrors tezcatlipoca):
   - `nakon build --json` prints exactly ONE JSON line on stdout (the summary),
@@ -31,19 +31,25 @@ class NakonError(Exception):
 
 
 def resolve_nakon_dir(explicit: str = None) -> str:
-    """Find the nakon repo dir: explicit arg > $NAKON_DIR > ../nakon."""
+    """Find the nakon repo dir: explicit arg > $NAKON_DIR > vendor/nakon submodule >
+    sibling ../nakon checkout (dev). Validates nakon/cli.py."""
     if explicit:
-        path = explicit
+        candidates = [explicit]
     elif os.environ.get("NAKON_DIR"):
-        path = os.environ["NAKON_DIR"]
+        candidates = [os.environ["NAKON_DIR"]]
     else:
-        path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "nakon"))
-    if not os.path.isfile(os.path.join(path, "nakon", "cli.py")):
-        raise NakonError(
-            f"nakon repo not found at {path!r} (looked for nakon/cli.py). "
-            "Set --nakon-dir or $NAKON_DIR."
-        )
-    return path
+        here = os.path.dirname(__file__)
+        candidates = [
+            os.path.normpath(os.path.join(here, "..", "vendor", "nakon")),  # submodule
+            os.path.normpath(os.path.join(here, "..", "..", "nakon")),       # sibling checkout
+        ]
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "nakon", "cli.py")):
+            return path
+    raise NakonError(
+        f"nakon repo not found (looked for nakon/cli.py in {candidates}). "
+        "Set --nakon-dir or $NAKON_DIR."
+    )
 
 
 def _run_nakon(args: list, nakon_dir: str, timeout: int) -> subprocess.CompletedProcess:

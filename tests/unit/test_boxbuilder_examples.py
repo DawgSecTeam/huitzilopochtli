@@ -48,6 +48,24 @@ def test_example_scenario_validates():
     assert errors == [], errors
 
 
+def test_validate_rejects_empty_expect_mapping():
+    # BUG-V1: `expect: {}` (and null `expect:`) passed the required-key +
+    # isinstance-dict guards but compiled to an empty matcher {} that crashed
+    # the evaluator with KeyError('tag') at scoring time. Authoring-time
+    # validation must reject it.
+    parsed = _load()
+    parsed["checks"][0]["expect"] = {}
+    errors = validate_scenario_yaml(parsed, _EXAMPLE_PATH)
+    assert any("expect" in e and "non-empty" in e for e in errors), errors
+
+
+def test_validate_rejects_null_expect():
+    parsed = _load()
+    parsed["checks"][0]["expect"] = None
+    errors = validate_scenario_yaml(parsed, _EXAMPLE_PATH)
+    assert any("expect" in e for e in errors), errors
+
+
 def test_nginx_up_matches_service_state_raw_shape():
     # agent/checks/service_state.py raw shape: {"active": bool, "enabled": bool}
     matcher = _matcher(_checks_by_id(_load())["nginx_up"])

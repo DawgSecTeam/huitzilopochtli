@@ -1,0 +1,6 @@
+[submodule "vendor/nakon"]
+	path = vendor/nakon
+	url = git@github.com:DawgSecTeam/nakon.git
+[submodule "vendor/vulndb-cli"]
+	path = vendor/vulndb-cli
+	url = git@github.com:DawgSecTeam/vulndb-cli.git

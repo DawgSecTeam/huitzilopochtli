@@ -1,88 +1,29 @@
-"""Unit tests for boxbuilder.vulndb against a minimal fake vulndb-ui (stdlib
-http.server, in-process) -- no real vulndb-ui/MySQL/MinIO needed to run these.
+"""Unit tests for boxbuilder.vulndb against a fake vulndb-cli (a generated, stateful
+`python3 -m vulndb_cli`) — no real vulndb-ui/MySQL/MinIO needed.
 
-The real wire-format compatibility (multipart upload field name, response shapes) was
-additionally verified live against a real vulndb-ui during development; this fake server
-exists to exercise ensure_configuration/ensure_attachment's idempotency logic offline.
+boxbuilder/vulndb.py now shells out to vulndb-cli instead of doing raw HTTP, so the test double
+is a fake CLI package (install_fake_vulndb_cli) rather than a fake HTTP server. It exercises
+ensure_configuration/ensure_attachment's idempotency and content-addressing logic offline.
 """
-import http.server
 import json
-import re
-import threading
 
 import pytest
 
 from boxbuilder import vulndb
-
-
-class _FakeVulndbHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass  # silence request logging in test output
-
-    def _send_json(self, status, obj):
-        body = json.dumps(obj).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path == "/api/configurations":
-            self._send_json(200, self.server.state["configurations"])
-        else:
-            self._send_json(404, {"error": "not found"})
-
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length)
-        state = self.server.state
-
-        if self.path == "/api/configurations":
-            definition = json.loads(raw.decode("utf-8"))
-            if any(c["name"] == definition["name"] for c in state["configurations"]):
-                self._send_json(500, {"error": f"Duplicate entry '{definition['name']}'"})
-                return
-            state["next_id"] += 1
-            row = {**definition, "id": state["next_id"]}
-            state["configurations"].append(row)
-            self._send_json(201, row)
-            return
-
-        m = re.match(r"^/api/configurations/(\d+)/attachments$", self.path)
-        if m:
-            config_id = int(m.group(1))
-            match = re.search(rb'filename="([^"]*)"', raw)
-            filename = match.group(1).decode("utf-8") if match else "unknown"
-            for c in state["configurations"]:
-                if c["id"] == config_id:
-                    c.setdefault("attachments", [])
-                    attachment = {
-                        "id": len(c["attachments"]) + 1, "configuration_id": config_id,
-                        "original_name": filename, "mime_type": "application/octet-stream",
-                        "size_bytes": len(raw),
-                    }
-                    c["attachments"].append(attachment)
-                    self._send_json(201, attachment)
-                    return
-            self._send_json(404, {"error": "no such configuration"})
-            return
-
-        self._send_json(404, {"error": "not found"})
+from tests.integration.boxbuilder._fakes import install_fake_vulndb_cli
 
 
 @pytest.fixture
-def fake_vulndb_server():
-    server = http.server.HTTPServer(("127.0.0.1", 0), _FakeVulndbHandler)
-    server.state = {"configurations": [], "next_id": 0}
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    base_url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        yield base_url, server.state
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
+def fake_vulndb(tmp_path, monkeypatch):
+    """Install the fake vulndb-cli; yield (base_url, state_file_path). base_url is ignored by
+    the fake but threaded through so resolve_vulndb_url stays in the call path."""
+    monkeypatch.delenv("VULNDB_UI_URL", raising=False)
+    state_file = install_fake_vulndb_cli(tmp_path, monkeypatch)
+    yield "http://fake.invalid", state_file
+
+
+def _state(state_file):
+    return json.loads(state_file.read_text())
 
 
 _DEFINITION = {
@@ -100,6 +41,13 @@ def test_resolve_vulndb_url_precedence(monkeypatch):
     assert vulndb.resolve_vulndb_url("http://explicit:9000") == "http://explicit:9000"
 
 
+def test_resolve_vulndb_cli_dir_missing_raises(monkeypatch, tmp_path):
+    # Point VULNDB_CLI_DIR at an empty dir so neither candidate matches.
+    monkeypatch.setenv("VULNDB_CLI_DIR", str(tmp_path / "nope"))
+    with pytest.raises(vulndb.VulndbError, match="vulndb-cli repo not found"):
+        vulndb.resolve_vulndb_cli_dir()
+
+
 def test_load_seed_definition_all_four_present():
     for name in ("theme-wallpaper", "theme-motd", "theme-readme", "theme-shortcuts"):
         d = vulndb.load_seed_definition(name)
@@ -109,44 +57,38 @@ def test_load_seed_definition_all_four_present():
         assert d["script"].startswith("#!/bin/sh")
 
 
-def test_unreachable_url_raises_vulndberror():
-    with pytest.raises(vulndb.VulndbError, match="could not reach vulndb-ui"):
-        vulndb.list_configurations("http://127.0.0.1:1", timeout=2)
-
-
-def test_list_configurations_empty(fake_vulndb_server):
-    base_url, _ = fake_vulndb_server
+def test_list_configurations_empty(fake_vulndb):
+    base_url, _ = fake_vulndb
     assert vulndb.list_configurations(base_url) == []
 
 
-def test_create_configuration(fake_vulndb_server):
-    base_url, _ = fake_vulndb_server
+def test_create_configuration(fake_vulndb):
+    base_url, _ = fake_vulndb
     row = vulndb.create_configuration(base_url, _DEFINITION)
     assert row["id"] == 1
     assert row["name"] == "theme-motd"
 
 
-def test_ensure_configuration_idempotent(fake_vulndb_server):
-    base_url, state = fake_vulndb_server
+def test_ensure_configuration_idempotent(fake_vulndb):
+    base_url, state_file = fake_vulndb
     c1 = vulndb.ensure_configuration(base_url, _DEFINITION)
     c2 = vulndb.ensure_configuration(base_url, _DEFINITION)
     assert c1["id"] == c2["id"]
-    assert len(state["configurations"]) == 1
+    assert len(_state(state_file)["configurations"]) == 1
 
 
-def test_ensure_configuration_never_overwrites_existing(fake_vulndb_server):
-    base_url, state = fake_vulndb_server
+def test_ensure_configuration_never_overwrites_existing(fake_vulndb):
+    base_url, state_file = fake_vulndb
     vulndb.ensure_configuration(base_url, _DEFINITION)
     modified = dict(_DEFINITION, script="#!/bin/sh\necho different\n")
     vulndb.ensure_configuration(base_url, modified)
+    state = _state(state_file)
     assert len(state["configurations"]) == 1
     assert state["configurations"][0]["script"] == _DEFINITION["script"]
 
 
-def test_ensure_attachment_uploads_and_returns_content_addressed_filename(
-    fake_vulndb_server, tmp_path,
-):
-    base_url, _ = fake_vulndb_server
+def test_ensure_attachment_uploads_and_returns_content_addressed_filename(fake_vulndb, tmp_path):
+    base_url, _ = fake_vulndb
     config = vulndb.ensure_configuration(base_url, vulndb.load_seed_definition("theme-wallpaper"))
     f = tmp_path / "wallpaper.png"
     f.write_bytes(b"some wallpaper bytes")
@@ -156,8 +98,8 @@ def test_ensure_attachment_uploads_and_returns_content_addressed_filename(
     assert len(filename.split("-", 1)[0]) == 16  # sha256[:16] prefix
 
 
-def test_ensure_attachment_idempotent_same_content(fake_vulndb_server, tmp_path):
-    base_url, _ = fake_vulndb_server
+def test_ensure_attachment_idempotent_same_content(fake_vulndb, tmp_path):
+    base_url, _ = fake_vulndb
     config = vulndb.ensure_configuration(base_url, vulndb.load_seed_definition("theme-wallpaper"))
     f = tmp_path / "wallpaper.png"
     f.write_bytes(b"identical bytes")
@@ -173,8 +115,8 @@ def test_ensure_attachment_idempotent_same_content(fake_vulndb_server, tmp_path)
     assert len(row["attachments"]) == 1
 
 
-def test_ensure_attachment_different_content_uploads_new(fake_vulndb_server, tmp_path):
-    base_url, _ = fake_vulndb_server
+def test_ensure_attachment_different_content_uploads_new(fake_vulndb, tmp_path):
+    base_url, _ = fake_vulndb
     config = vulndb.ensure_configuration(base_url, vulndb.load_seed_definition("theme-wallpaper"))
     f1 = tmp_path / "a.png"
     f1.write_bytes(b"content one")
