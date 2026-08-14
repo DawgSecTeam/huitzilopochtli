@@ -63,16 +63,26 @@ def _flush_firewall(params: dict, ctx: "agent.platform.base.PlatformContext") ->
     try/except, so any iptables failure short-circuited the nft fallback.
     """
     if shutil.which("iptables"):
+        flush_ok = False
         try:
-            subprocess.run(["iptables", "-F"], check=False,
-                            capture_output=True, timeout=10)
-            subprocess.run(["iptables", "-X"], check=False,
-                            capture_output=True, timeout=10)
-            return
+            flush = subprocess.run(["iptables", "-F"], check=False,
+                                   capture_output=True, timeout=10)
+            # check=False means a non-zero exit does NOT raise -- that's the
+            # most common "present but unusable" signal (permission denied,
+            # kernel without iptables support, box actually using nft). Only
+            # treat a clean rc==0 flush as iptables having done its job; any
+            # other outcome falls through to nft below.
+            flush_ok = flush.returncode == 0
+            if flush_ok:
+                subprocess.run(["iptables", "-X"], check=False,
+                               capture_output=True, timeout=10)
         except Exception:
-            # iptables present but unusable: fall through to nft below rather
+            # iptables present but the call itself raised (binary vanished
+            # between which and run, etc.): fall through to nft below rather
             # than giving up (the box's real firewall may well be nft).
-            pass
+            flush_ok = False
+        if flush_ok:
+            return
     if shutil.which("nft"):
         try:
             subprocess.run(["nft", "flush", "ruleset"], check=False,

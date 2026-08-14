@@ -64,3 +64,13 @@ def test_non_ascii_round_trip_bytes():
     result = canonicalize({"emoji": "🔥"})
     assert "🔥".encode("utf-8") in result
     assert b"\\u" not in result
+
+
+def test_decomposed_vs_composed_dict_key_canonicalizes_identically():
+    # BUG-C1: dict KEYS were not NFC-normalized (only values were), so an
+    # agent and engine that disagree on a key's Unicode form (e\u0301 vs é)
+    # produced different canonical bytes and a broken §7 signature. Both forms
+    # must canonicalize identically.
+    decomposed = {"e\u0301": "value"}   # e + combining acute accent
+    composed = {"\u00e9": "value"}      # é precomposed
+    assert canonicalize(decomposed) == canonicalize(composed)

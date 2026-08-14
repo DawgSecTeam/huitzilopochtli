@@ -170,6 +170,19 @@ class TestOpenRCServiceEnabled:
                    return_value=_completed("cron | default\n", 0)):
             assert ctx.service_enabled("sshd") is False
 
+    def test_substring_of_enabled_service_does_not_false_positive(self):
+        # "ssh" must NOT pass because "sshd" is enabled -- a substring match
+        # would award points for a service that isn't the one actually enabled.
+        ctx = OpenRCContext()
+        with patch("agent.platform.openrc.subprocess.run",
+                   return_value=_completed("sshd | default\ncron | default\n", 0)):
+            assert ctx.service_enabled("ssh") is False
+            assert ctx.service_enabled("sshd") is True
+        # Runlevel tokens are not service names.
+        with patch("agent.platform.openrc.subprocess.run",
+                   return_value=_completed("cron | default\n", 0)):
+            assert ctx.service_enabled("default") is False
+
     def test_empty_output_returns_false(self):
         ctx = OpenRCContext()
         with patch("agent.platform.openrc.subprocess.run",

@@ -17,7 +17,14 @@ def _normalize_strings(obj):
     if isinstance(obj, str):
         return unicodedata.normalize("NFC", obj)
     if isinstance(obj, dict):
-        return {k: _normalize_strings(v) for k, v in obj.items()}
+        # Normalize keys AND values: a decomposed vs composed Unicode dict key
+        # (e.g. a user-supplied key in raw evidence / collect_params) must
+        # canonicalize identically on both sides of the wire, or the §7
+        # byte-identical-signature contract silently breaks.
+        return {
+            _normalize_strings(k): _normalize_strings(v)
+            for k, v in obj.items()
+        }
     if isinstance(obj, (list, tuple)):
         return [_normalize_strings(v) for v in obj]
     return obj

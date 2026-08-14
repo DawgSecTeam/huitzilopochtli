@@ -83,6 +83,14 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
     )
 
 
+def _is_retryable_status(status: int) -> bool:
+    """A transient server/rate-limit response is retryable (queue-and-forward);
+    4xx codes (403 bad sig, 409 replay, 410 expired, 400 malformed, §14.2) are
+    permanent logic rejections and must NOT be re-queued (they can never
+    succeed)."""
+    return status >= 500 or status == 429
+
+
 class _NetworkFailure(Exception):
     """Internal marker: a send attempt failed for transient/network reasons."""
 
@@ -159,8 +167,15 @@ class TransportClient:
                 status = resp.status
                 resp_body = resp.read()
         except urllib.error.HTTPError as e:
-            # Non-200: a logic/identity bug (403 bad sig, 409 replay, etc.)
+            # Non-200. A 5xx/429 is transient (engine restart/overload) and
+            # must be queued-and-retried, NOT dropped. Only genuine logic/
+            # identity rejections (403 bad sig, 409 replay, 410 expired, 400
+            # malformed -- §14.2) are permanent.
             body = e.read()
+            if _is_retryable_status(e.code):
+                raise _NetworkFailure(
+                    f"checkin failed: transient HTTP {e.code}: {body!r}"
+                ) from e
             raise Exception(
                 f"checkin failed: HTTP {e.code}: {body!r}"
             ) from e
@@ -177,6 +192,10 @@ class TransportClient:
             raise _NetworkFailure(str(e)) from e
 
         if status != 200:
+            if _is_retryable_status(status):
+                raise _NetworkFailure(
+                    f"checkin failed: transient HTTP {status}: {resp_body!r}"
+                )
             raise Exception(f"checkin failed: HTTP {status}: {resp_body!r}")
 
         try:
