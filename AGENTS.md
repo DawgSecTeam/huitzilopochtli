@@ -11,9 +11,12 @@ scores **correct hardening** — it does *not* deploy vulnerabilities. Two modes
 aggregates signed check-ins; rubric stays off-box). See `architecture.md` (the
 source of truth) and `README.md`.
 
-The thing that *deploys* vulnerabilities is the sibling repo **nakon**; the
-vulnerability catalog is **vulndb-ui**. huitzilopochtli pairs with nakon via
-**boxbuilder** (below) to create practice boxes.
+The thing that *deploys* vulnerabilities is **nakon**; the vulnerability catalog is
+**vulndb-ui** (edited via the **vulndb-cli** client). Both are vendored as **git submodules**
+under `vendor/` (`vendor/nakon`, `vendor/vulndb-cli`, pinned to a release). huitzilopochtli's
+**boxbuilder** pairs with nakon to create practice boxes, and uses vulndb-cli — not raw HTTP —
+to ensure its theme configurations + attachments exist in the catalog. Set them up with
+`git submodule update --init --recursive` after clone.
 
 ## Building a practice box (the boxbuilder workflow)
 

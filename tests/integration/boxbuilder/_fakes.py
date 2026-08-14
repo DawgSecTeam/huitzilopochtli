@@ -105,3 +105,72 @@ def install_fake_nakon(tmp_path, monkeypatch, *, build_json=None, deploy_json=No
     """))
     monkeypatch.setenv("NAKON_DIR", str(ndir))
     return str(ndir)
+
+
+def install_fake_vulndb_cli(tmp_path, monkeypatch, *, initial=None):
+    """Install a fake `python3 -m vulndb_cli` with persistent catalog state.
+
+    Handles `list --json`, `create --file -`, and `upload <ref> <file>` — the commands
+    boxbuilder/vulndb.py uses — persisting to a JSON state file so separate subprocess
+    invocations see each other's writes. Sets $VULNDB_CLI_DIR. Returns the state-file path
+    (a Path) so tests can assert on catalog contents.
+    """
+    vdir = tmp_path / "vulndb-cli"
+    pkg = vdir / "vulndb_cli"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "cli.py").write_text("# marker for resolve_vulndb_cli_dir\n")
+    state_file = tmp_path / "vulndb_state.json"
+    state_file.write_text(json.dumps({"configurations": initial or [], "next_id": 0}))
+
+    template = textwrap.dedent("""\
+        import json, os, sys
+        STATE = {STATE}
+        def _load():
+            with open(STATE) as f:
+                return json.load(f)
+        def _save(s):
+            with open(STATE, "w") as f:
+                json.dump(s, f)
+        clean, skip = [], False
+        for a in sys.argv[1:]:
+            if skip:
+                skip = False; continue
+            if a == "--url":
+                skip = True; continue
+            if a == "--yes":
+                continue
+            clean.append(a)
+        cmd = clean[0] if clean else ""
+        s = _load()
+        if cmd == "list":
+            print(json.dumps(s["configurations"]))
+        elif cmd == "create":
+            defn = json.load(sys.stdin)
+            if any(c["name"] == defn["name"] for c in s["configurations"]):
+                print("duplicate name", file=sys.stderr); sys.exit(1)
+            s["next_id"] += 1
+            row = dict(defn, id=s["next_id"], attachments=[])
+            s["configurations"].append(row); _save(s); print(json.dumps(row))
+        elif cmd == "upload":
+            ref, path = clean[1], clean[2]
+            name = os.path.basename(path)
+            for c in s["configurations"]:
+                if str(c.get("id")) == ref or c.get("name") == ref:
+                    att = {"id": len(c.get("attachments", [])) + 1, "configuration_id": c["id"],
+                           "original_name": name, "size_bytes": os.path.getsize(path)}
+                    c.setdefault("attachments", []).append(att)
+                    _save(s); print(json.dumps(att)); sys.exit(0)
+            print("no such config", file=sys.stderr); sys.exit(1)
+        elif cmd == "get":
+            ref = clean[1]
+            for c in s["configurations"]:
+                if str(c.get("id")) == ref or c.get("name") == ref:
+                    print(json.dumps(c)); sys.exit(0)
+            sys.exit(1)
+        else:
+            sys.exit(1)
+    """).replace("{STATE}", json.dumps(str(state_file)))
+    (pkg / "__main__.py").write_text(template)
+    monkeypatch.setenv("VULNDB_CLI_DIR", str(vdir))
+    return state_file

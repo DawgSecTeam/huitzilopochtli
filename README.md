@@ -21,6 +21,11 @@ pip install --user pytest
 pytest                    # runs the full unit + integration suite
 ```
 
+> **boxbuilder** (the practice-box workflow) needs two submodules — `git submodule update
+> --init --recursive` — which vendor **nakon** (`vendor/nakon`, currently v0.1.1) and **vulndb-cli**
+> (`vendor/vulndb-cli`, currently v0.1.1), the tools it shells out to for planting vulns and theming. The core
+> scoring engine + agent don't need them. See [AGENTS.md](AGENTS.md).
+
 To run the agent on a box and generate a score report:
 
 ```bash

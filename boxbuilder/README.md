@@ -151,14 +151,16 @@ to use the provider's address (vulns still come from your nakon config).
 ## nakon integration
 
 boxbuilder treats nakon as a **CLI dependency** (never imports it as a library),
-consistent with tezcatlipoca and nakon's documented embed contract
-(nakon/README.md §"Embedding"). It shells out:
+consistent with tezcatlipoca and nakon's documented CLI contract
+(`vendor/nakon/README.md`). It shells out:
 
 - `nakon build --json` (cwd = `$NAKON_DIR`, so nakon can read its `.env`/vulndb)
   → parses `{bundle_id, path, cached, plans, machines}` from the final stdout line.
 - `nakon deploy --json` → parses `{ok, failures, machines[].steps}`.
 
-Set `--nakon-dir` or `$NAKON_DIR` (default: `../nakon`).
+Set `--nakon-dir` or `$NAKON_DIR` (default: the `vendor/nakon` submodule, falling back to a
+sibling `../nakon` checkout). Catalog theming goes through the `vendor/vulndb-cli` submodule
+(`$VULNDB_CLI_DIR`), not raw HTTP.
 
 ## How vulns and checks relate (important)
 

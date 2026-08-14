@@ -103,7 +103,7 @@ def _add_spec_inputs(p: argparse.ArgumentParser) -> None:
     src.add_argument("--scenario", help="huitz scenario YAML (direct-flag path)")
     p.add_argument("--nakon-config", help="nakon config JSON (direct-flag path)")
     p.add_argument("--authoring-key", help="path to a 32-byte Ed25519 authoring key seed")
-    p.add_argument("--nakon-dir", help="nakon repo dir (default: $NAKON_DIR then ../nakon)")
+    p.add_argument("--nakon-dir", help="nakon repo dir (default: $NAKON_DIR, then vendor/nakon, then ../nakon)")
     p.add_argument("--vulndb-url", help="vulndb-ui base URL, for themed scenarios only "
                                         "(default: $VULNDB_UI_URL then http://127.0.0.1:3000)")
     # Provider flags (consumed by plant/install/package; ignored by compile).

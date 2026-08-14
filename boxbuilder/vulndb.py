@@ -1,142 +1,143 @@
-"""Thin stdlib HTTP client for vulndb-ui's catalog API (vulndb-interfaces/server.js).
+"""boxbuilder's client for the vulndb catalog — a thin wrapper around the vulndb-cli subprocess.
 
-Mirrors boxbuilder/engine.py's pattern: stdlib http.client only, no requests/urllib3,
-one low-level request helper feeding thin public functions. Unlike the huitz engine's
-admin API, vulndb-ui has NO authentication -- confirmed against its server.js (no auth/
-token middleware at all): "the catalog is shared team state; anything with network
-access can read and write it" (vulndb-interfaces/docs/api.md). So there is no token
-header here, unlike engine.py's X-HUITZILOPOCHTLI-Admin-Token.
+boxbuilder used to talk to vulndb-ui's HTTP API directly with a hand-rolled stdlib http.client
+client. It now shells out to `python3 -m vulndb_cli` instead — vulndb-cli is the sanctioned,
+versioned client for that API (a submodule at vendor/vulndb-cli), so the raw HTTP contract lives
+in exactly one place. No code here opens a socket to vulndb-ui anymore.
 
-boxbuilder uses this to make box theming self-contained in this project + the vulndb
-catalog: it never touches nakon's source. Theming is four small, generic, reusable
-catalog configurations (see boxbuilder/vulndb_theme_configs/) that boxbuilder ensures
-exist (idempotent create-if-missing, never overwrites an existing row) and, for the two
-that take a file (wallpaper/readme), one content-addressed attachment per distinct file
-ever themed (also idempotent -- re-theming with the same bytes uploads nothing new).
-
-Known, accepted growth tradeoff: attachments are never pruned automatically here, so
-theme-wallpaper/theme-readme accumulate one attachment per distinct file across every
-scenario ever compiled. nakon fetches *all* of a configuration's attachments per build
-(unchanged, existing nakon behavior) -- acceptable for now; prune stale ones via
-vulndb-ui/vulndb-cli if it becomes a problem.
+The public surface theme.py relies on is unchanged (resolve_vulndb_url, load_seed_definition,
+list_configurations, create_configuration, ensure_configuration, ensure_attachment, VulndbError),
+and so are the semantics: ensure_configuration is idempotent create-if-missing (never overwrites),
+and ensure_attachment is content-addressed (`<sha256[:16]>-<basename>`) so identical bytes reuse
+one attachment and different bytes always upload a new one.
 """
 import hashlib
 import json
 import os
-import ssl
-from typing import Optional
-from urllib.parse import urlsplit
+import shutil
+import subprocess
+import sys
+import tempfile
 
 _DEFAULT_VULNDB_URL = "http://127.0.0.1:3000"
 _SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vulndb_theme_configs")
 
 
 class VulndbError(Exception):
-    def __init__(self, message: str, *, status_code: int = 0, body: str = ""):
+    """Raised when a vulndb-cli subprocess fails or emits unparseable JSON."""
+
+    def __init__(self, message: str, *, returncode: int = 0, stderr: str = ""):
         super().__init__(message)
-        self.status_code = status_code
-        self.body = body
+        self.returncode = returncode
+        self.stderr = stderr
 
 
-def resolve_vulndb_url(explicit: Optional[str] = None) -> str:
-    """explicit arg > $VULNDB_UI_URL > http://127.0.0.1:3000 -- the same env var name
-    and default vulndb-cli itself uses (vulndb-interfaces/cli.js), so one VULNDB_UI_URL
-    set in the environment already covers both tools."""
+def resolve_vulndb_url(explicit: str = None) -> str:
+    """explicit arg > $VULNDB_UI_URL > http://127.0.0.1:3000 — the same env var name and default
+    vulndb-cli itself uses, so one VULNDB_UI_URL in the environment covers both tools."""
     return explicit or os.environ.get("VULNDB_UI_URL") or _DEFAULT_VULNDB_URL
+
+
+def resolve_vulndb_cli_dir(explicit: str = None) -> str:
+    """Find the vulndb-cli repo dir: explicit arg > $VULNDB_CLI_DIR > vendor/vulndb-cli submodule
+    > sibling ../vulndb-cli checkout (dev). Validates vulndb_cli/cli.py."""
+    if explicit:
+        candidates = [explicit]
+    elif os.environ.get("VULNDB_CLI_DIR"):
+        candidates = [os.environ["VULNDB_CLI_DIR"]]
+    else:
+        here = os.path.dirname(__file__)
+        candidates = [
+            os.path.normpath(os.path.join(here, "..", "vendor", "vulndb-cli")),  # submodule
+            os.path.normpath(os.path.join(here, "..", "..", "vulndb-cli")),       # sibling checkout
+        ]
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "vulndb_cli", "cli.py")):
+            return path
+    raise VulndbError(
+        f"vulndb-cli repo not found (looked for vulndb_cli/cli.py in {candidates}). "
+        "Set $VULNDB_CLI_DIR."
+    )
 
 
 def load_seed_definition(name: str) -> dict:
     """Read one of the bundled static seed definitions (boxbuilder/vulndb_theme_configs/
-    <name>.json) -- the source of truth for the four theme catalog configurations."""
+    <name>.json) — the source of truth for the four theme catalog configurations."""
     path = os.path.join(_SEED_DIR, f"{name}.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def _split_url(url: str):
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise VulndbError(f"vulndb url must be http(s)://, got {url!r}")
-    host = parts.hostname
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    return parts.scheme, host, port
+def _run_vulndb_cli(args: list, base_url: str, stdin_str: str = None,
+                    timeout: int = 60, cli_dir: str = None):
+    """Run `python3 -m vulndb_cli <args> --url <base> --yes` (cwd=cli_dir so a checkout resolves),
+    and return the parsed JSON of the last stdout line, or None for empty output.
 
-
-def _http_request(scheme: str, host: str, port: int, method: str, path: str,
-                  body: bytes, headers: dict, timeout: int):
-    """One raw HTTP request. Returns (status, parsed_json_or_dict)."""
-    import http.client
-
+    --yes is always passed: boxbuilder runs non-interactively (no TTY), and every write vulndb-cli
+    does here is one boxbuilder already decided to make.
+    """
+    cli_dir = cli_dir or resolve_vulndb_cli_dir()
+    cmd = [sys.executable, "-m", "vulndb_cli", *args, "--url", base_url, "--yes"]
     try:
-        if scheme == "https":
-            conn = http.client.HTTPSConnection(host, port, timeout=timeout,
-                                                context=ssl.create_default_context())
-        else:
-            conn = http.client.HTTPConnection(host, port, timeout=timeout)
-        try:
-            conn.request(method, path, body=body, headers=headers)
-            resp = conn.getresponse()
-            raw = resp.read().decode("utf-8", "replace")
-            status = resp.status
-        finally:
-            conn.close()
-    except OSError as e:
-        raise VulndbError(f"could not reach vulndb-ui at {scheme}://{host}:{port}: {e}") from e
+        result = subprocess.run(
+            cmd, cwd=cli_dir, capture_output=True, text=True,
+            input=stdin_str, timeout=timeout,
+        )
+    except FileNotFoundError as e:
+        raise VulndbError(f"failed to invoke vulndb-cli: {e}") from e
+    except subprocess.TimeoutExpired as e:
+        raise VulndbError(f"vulndb-cli timed out after {timeout}s: {' '.join(args)}",
+                          returncode=124) from e
 
+    if result.returncode != 0:
+        raise VulndbError(
+            f"vulndb-cli {' '.join(args)} exited {result.returncode}: "
+            f"{(result.stderr or result.stdout).strip()[:500]}",
+            returncode=result.returncode, stderr=result.stderr,
+        )
+    stdout = result.stdout.strip()
+    if not stdout:
+        return None
     try:
-        parsed = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        parsed = {"raw": raw}
-    return status, parsed
+        return json.loads(stdout.splitlines()[-1])
+    except json.JSONDecodeError as e:
+        raise VulndbError(f"vulndb-cli emitted unparseable JSON: {e}", stderr=result.stderr) from e
 
 
-def _json_request(base_url: str, method: str, path: str, body: Optional[dict] = None,
-                  timeout: int = 30):
-    scheme, host, port = _split_url(base_url)
-    payload = json.dumps(body).encode("utf-8") if body is not None else b""
-    headers = {"Content-Type": "application/json", "Content-Length": str(len(payload))}
-    status, parsed = _http_request(scheme, host, port, method, path, payload, headers, timeout)
-    if status >= 400:
-        msg = parsed.get("error") if isinstance(parsed, dict) else None
-        msg = msg or (parsed.get("raw") if isinstance(parsed, dict) else None) or f"HTTP {status}"
-        raise VulndbError(f"vulndb-ui {method} {path} failed: {msg}",
-                          status_code=status, body=json.dumps(parsed))
-    return parsed
+def list_configurations(base_url: str, timeout: int = 60) -> list:
+    """Every configuration (each with its `attachments` array) via `vulndb-cli list --json`."""
+    result = _run_vulndb_cli(["list", "--json"], base_url, timeout=timeout)
+    return result if isinstance(result, list) else []
 
 
-def list_configurations(base_url: str, timeout: int = 30) -> list:
-    """GET /api/configurations -- the whole table (no ?limit), each row embedding its
-    own `attachments` array (docs/api.md)."""
-    result = _json_request(base_url, "GET", "/api/configurations", timeout=timeout)
-    if isinstance(result, list):
-        return result
-    if isinstance(result, dict) and isinstance(result.get("configurations"), list):
-        return result["configurations"]
-    raise VulndbError(f"unexpected /api/configurations response shape: {result!r}")
+def create_configuration(base_url: str, definition: dict, timeout: int = 60) -> dict:
+    """`vulndb-cli create --file -` (definition on stdin). Returns the inserted row."""
+    row = _run_vulndb_cli(["create", "--file", "-"], base_url,
+                          stdin_str=json.dumps(definition), timeout=timeout)
+    if not isinstance(row, dict):
+        raise VulndbError(f"vulndb-cli create returned no row: {row!r}")
+    return row
 
 
-def create_configuration(base_url: str, definition: dict, timeout: int = 30) -> dict:
-    """POST /api/configurations. Returns the inserted row (no `attachments` key yet --
-    a freshly created configuration has none)."""
-    return _json_request(base_url, "POST", "/api/configurations", body=definition, timeout=timeout)
-
-
-def _find_by_name(configurations: list, name: str) -> Optional[dict]:
+def _find_by_name(configurations: list, name: str):
     for c in configurations:
         if c.get("name") == name:
             return c
     return None
 
 
-def ensure_configuration(base_url: str, definition: dict, timeout: int = 30) -> dict:
-    """Idempotent: find `definition["name"]` in the live catalog; create it from
-    `definition` if absent. Never updates an existing row -- an author who wants to
-    change a seeded script edits it themselves via vulndb-ui/vulndb-cli; boxbuilder only
-    ever ensures presence, never overwrites."""
+def ensure_configuration(base_url: str, definition: dict, timeout: int = 60) -> dict:
+    """Idempotent: find `definition["name"]` in the live catalog; create it if absent. Never
+    updates an existing row — an author who wants to change a seeded script edits it themselves
+    via vulndb-ui/vulndb-cli; boxbuilder only ever ensures presence, never overwrites."""
     existing = _find_by_name(list_configurations(base_url, timeout=timeout), definition["name"])
     if existing is not None:
         return existing
-    return create_configuration(base_url, definition, timeout=timeout)
+    row = create_configuration(base_url, definition, timeout=timeout)
+    # A freshly created row has no attachments yet; normalize so ensure_attachment's check is
+    # uniform whether the row came from list (has attachments) or create (none).
+    row.setdefault("attachments", [])
+    return row
 
 
 def _sha256_file(path: str, chunk_size: int = 1 << 20) -> str:
@@ -147,57 +148,38 @@ def _sha256_file(path: str, chunk_size: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
-def _multipart_body(boundary: str, field_name: str, filename: str, data: bytes) -> bytes:
-    """Hand-built single-part multipart/form-data body -- stdlib has no multipart
-    client. Field name is "file", matching vulndb-ui's server.js exactly
-    (`upload.single('file')`, multer)."""
-    head = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
-        f"Content-Type: application/octet-stream\r\n\r\n"
-    ).encode("utf-8")
-    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
-    return head + data + tail
+def upload_attachment(base_url: str, configuration: dict, local_path: str, filename: str,
+                      timeout: int = 120) -> dict:
+    """Attach local_path's bytes to `configuration`, stored under `filename` (the content-
+    addressed name), via `vulndb-cli upload`.
 
-
-def upload_attachment(base_url: str, configuration_id, local_path: str, filename: str,
-                      timeout: int = 60) -> dict:
-    """POST /api/configurations/{id}/attachments as multipart/form-data. Returns
-    {id, configuration_id, original_name, mime_type, size_bytes}."""
-    with open(local_path, "rb") as f:
-        data = f.read()
-    boundary = "----huitzilopochtliBoundary" + _sha256_file(local_path)[:16]
-    body = _multipart_body(boundary, "file", filename, data)
-    scheme, host, port = _split_url(base_url)
-    headers = {
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Content-Length": str(len(body)),
-    }
-    status, parsed = _http_request(
-        scheme, host, port, "POST", f"/api/configurations/{configuration_id}/attachments",
-        body, headers, timeout,
-    )
-    if status >= 400:
-        msg = parsed.get("error") if isinstance(parsed, dict) else f"HTTP {status}"
-        raise VulndbError(f"upload attachment {filename!r} failed: {msg}",
-                          status_code=status, body=json.dumps(parsed))
-    return parsed
+    vulndb-cli stores the attachment under the uploaded file's basename, so we stage a temp file
+    named `filename` to preserve the content-addressed name (identical bytes always reuse one
+    attachment). `configuration` is the dict from ensure_configuration (needs a name or id).
+    """
+    d = tempfile.mkdtemp(prefix="vulndb-upload-")
+    try:
+        staged = os.path.join(d, filename)
+        with open(local_path, "rb") as src, open(staged, "wb") as dst:
+            dst.write(src.read())
+        ref = configuration.get("name") or str(configuration["id"])
+        return _run_vulndb_cli(["upload", ref, staged], base_url, timeout=timeout)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def ensure_attachment(base_url: str, configuration: dict, local_path: str,
-                      timeout: int = 60) -> str:
-    """Idempotent: filename is content-addressed (`<sha256[:16]>-<basename>`), so
-    identical bytes always reuse the same attachment and different bytes always upload a
-    new one -- the same cache-correctness property as everywhere else in this project's
-    content-addressed caching. `configuration` is the dict returned by
-    ensure_configuration() (must have an "id"; "attachments" is optional/absent on a
-    freshly created row, treated as empty). Returns the filename either way, for use as
-    a `vars` value (e.g. WALLPAPER_FILENAME).
+                      timeout: int = 120) -> str:
+    """Idempotent: filename is content-addressed (`<sha256[:16]>-<basename>`), so identical bytes
+    always reuse the same attachment and different bytes always upload a new one. `configuration`
+    is the dict returned by ensure_configuration() (must have an "id"; "attachments" is optional/
+    absent on a freshly created row, treated as empty). Returns the filename either way, for use
+    as a `vars` value (e.g. WALLPAPER_FILENAME).
     """
     digest = _sha256_file(local_path)
     filename = f"{digest[:16]}-{os.path.basename(local_path)}"
     for a in configuration.get("attachments") or []:
         if a.get("original_name") == filename:
             return filename
-    upload_attachment(base_url, configuration["id"], local_path, filename, timeout=timeout)
+    upload_attachment(base_url, configuration, local_path, filename, timeout=timeout)
     return filename
