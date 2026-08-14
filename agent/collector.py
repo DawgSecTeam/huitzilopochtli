@@ -43,6 +43,21 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
     shutdown(wait=True) on exit and could hang here indefinitely). The leaked
     worker is a daemon-by-nature pool thread that dies with the process.
     """
+    def _timeout_evidence(spec: CheckSpec, elapsed: float) -> Evidence:
+        return Evidence(
+            check_id=spec.id,
+            check_type=spec.type,
+            host_id=spec.host_id,
+            status=CollectorStatus.TIMEOUT,
+            raw={},
+            reason=(
+                f"check {spec.id!r} exceeded timeout_s={spec.timeout_s}s "
+                f"(took {elapsed:.2f}s)"
+            ),
+            collected_monotonic=time.monotonic(),
+            collected_wall_claim=time.time(),
+        )
+
     results: list = [None] * len(checks)
 
     executor = concurrent.futures.ThreadPoolExecutor(
@@ -50,6 +65,7 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
     )
     try:
         future_to_idx = {}
+        submitted_at = {}
         for idx, spec in enumerate(checks):
             if spec.type not in CHECKS:
                 results[idx] = Evidence(
@@ -65,35 +81,57 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
                 continue
             future = executor.submit(_run_one, spec, ctx)
             future_to_idx[future] = idx
+            submitted_at[future] = time.monotonic()
 
-        for future, idx in future_to_idx.items():
+        # Bound the whole run to ~max(timeout_s) (§9.1 "never stalls the run"):
+        # a hung check is recorded TIMEOUT, but the run as a whole must not
+        # stall for the SUM of the hung checks' timeouts. Each check's budget
+        # is measured from its SUBMISSION time (not from when this loop happens
+        # to collect it), so a check that queued behind the 20-worker cap is not
+        # spuriously marked TIMEOUT before it ever started.
+        deadline = time.monotonic() + max(
+            (c.timeout_s for c in checks if c.type in CHECKS), default=0
+        )
+        pending = set(future_to_idx)
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, pending = concurrent.futures.wait(pending, timeout=remaining)
+            for future in done:
+                idx = future_to_idx[future]
+                spec = checks[idx]
+                elapsed = time.monotonic() - submitted_at[future]
+                if elapsed >= spec.timeout_s:
+                    # Ran past its own budget (or only surfaced at the global
+                    # deadline after never starting): a hung check.
+                    results[idx] = _timeout_evidence(spec, elapsed)
+                    continue
+                try:
+                    results[idx] = future.result(timeout=0)
+                except Exception as exc:
+                    results[idx] = Evidence(
+                        check_id=spec.id,
+                        check_type=spec.type,
+                        host_id=spec.host_id,
+                        status=CollectorStatus.ERROR,
+                        raw={},
+                        reason=f"check {spec.id!r} raised: {exc}",
+                        collected_monotonic=time.monotonic(),
+                        collected_wall_claim=time.time(),
+                    )
+            if not done:
+                # The deadline elapsed with nothing newly finished.
+                break
+
+        # Anything still pending when the global deadline hit never finished in
+        # time -- record TIMEOUT rather than leaving a hole in the results.
+        for future in pending:
+            idx = future_to_idx[future]
             spec = checks[idx]
-            try:
-                results[idx] = future.result(timeout=spec.timeout_s)
-            except concurrent.futures.TimeoutError:
-                results[idx] = Evidence(
-                    check_id=spec.id,
-                    check_type=spec.type,
-                    host_id=spec.host_id,
-                    status=CollectorStatus.TIMEOUT,
-                    raw={},
-                    reason=(
-                        f"check {spec.id!r} exceeded timeout_s={spec.timeout_s}s"
-                    ),
-                    collected_monotonic=time.monotonic(),
-                    collected_wall_claim=time.time(),
-                )
-            except Exception as exc:
-                results[idx] = Evidence(
-                    check_id=spec.id,
-                    check_type=spec.type,
-                    host_id=spec.host_id,
-                    status=CollectorStatus.ERROR,
-                    raw={},
-                    reason=f"check {spec.id!r} raised: {exc}",
-                    collected_monotonic=time.monotonic(),
-                    collected_wall_claim=time.time(),
-                )
+            results[idx] = _timeout_evidence(
+                spec, time.monotonic() - submitted_at[future]
+            )
     finally:
         # wait=False: do NOT block on runaway worker threads here. Cancel any
         # not-yet-started futures so they never begin. A genuinely stuck worker

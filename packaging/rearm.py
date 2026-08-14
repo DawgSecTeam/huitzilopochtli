@@ -47,6 +47,14 @@ if _REPO_ROOT not in sys.path:
 import agent.config  # noqa: E402
 
 
+def _enrolled_marker_path(identity_path: str) -> str:
+    """Path of the .enrolled first-boot gate marker, adjacent to the identity
+    file. Mirrors agent/__main__.py::_enrolled_marker_path exactly -- rearm.py
+    is a stdlib-only script and must not import agent/__main__ (it pulls the
+    whole agent runtime)."""
+    return identity_path + ".enrolled"
+
+
 def _maybe_remove(path: str) -> bool:
     """Remove `path` if it exists. Returns whether it was removed."""
     if path and os.path.exists(path):
@@ -79,6 +87,15 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
                 actions.append(f"removed queued check-in bundles: {queue_path}")
             else:
                 actions.append(f"no queued check-in bundles at: {queue_path}")
+            # The .enrolled marker must go too: agent/__main__.py::_ensure_enrolled
+            # short-circuits on it, so a leftover marker would make the brand-new
+            # box_id/keypair (above) skip /enroll and be rejected by the engine
+            # with 403 "unknown box" forever (packaging/README.md §17 reset flow).
+            enrolled_marker = _enrolled_marker_path(config.identity_path)
+            if _maybe_remove(enrolled_marker):
+                actions.append(f"removed enrollment marker: {enrolled_marker}")
+            else:
+                actions.append(f"no enrollment marker to remove at: {enrolled_marker}")
         else:
             actions.append(
                 "--reset-identity given but config has no identity_path "

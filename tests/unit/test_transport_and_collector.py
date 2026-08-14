@@ -87,6 +87,63 @@ def test_checkin_success_returns_response(tmp_path):
     assert result is sentinel
 
 
+# --- BUG-A5: 5xx/429 must be queued-and-retried, not dropped -----------------
+
+
+def _http_error(code):
+    """Build a urllib.error.HTTPError whose .read() yields a body, the shape
+    urllib.request.urlopen raises for any non-200 response."""
+    import io
+    import urllib.error
+    return urllib.error.HTTPError(
+        url="http://engine.example/checkin", code=code, msg="boom",
+        hdrs={}, fp=io.BytesIO(b"error body"),
+    )
+
+
+def test_send_canonical_5xx_is_transient_network_failure():
+    # BUG-A5: a 503/504/5xx (engine restart/overload) is transient and must
+    # raise _NetworkFailure so checkin() queues the bundle for retry -- NOT a
+    # permanent rejection that drops the scored evidence.
+    client = TransportClient("http://engine.example", FakeIdentity(),
+                             queue_path="/tmp/unused-q")
+    with patch("agent.transport.urllib.request.urlopen",
+               side_effect=_http_error(503)):
+        try:
+            client._send_canonical(b'{"x":1}')
+            raise AssertionError("expected _NetworkFailure for 503")
+        except _NetworkFailure:
+            pass  # correct: queued-and-retried
+
+
+def test_send_canonical_429_is_transient_network_failure():
+    client = TransportClient("http://engine.example", FakeIdentity(),
+                             queue_path="/tmp/unused-q")
+    with patch("agent.transport.urllib.request.urlopen",
+               side_effect=_http_error(429)):
+        try:
+            client._send_canonical(b'{"x":1}')
+            raise AssertionError("expected _NetworkFailure for 429")
+        except _NetworkFailure:
+            pass
+
+
+def test_send_canonical_4xx_is_permanent_rejection():
+    # A genuine logic/identity rejection (409 replay) stays a bare Exception:
+    # it must NOT be re-queued (it can never succeed).
+    client = TransportClient("http://engine.example", FakeIdentity(),
+                             queue_path="/tmp/unused-q")
+    with patch("agent.transport.urllib.request.urlopen",
+               side_effect=_http_error(409)):
+        try:
+            client._send_canonical(b'{"x":1}')
+            raise AssertionError("expected a permanent rejection for 409")
+        except _NetworkFailure:
+            raise AssertionError("409 must NOT be a _NetworkFailure")
+        except Exception:
+            pass  # correct: permanent
+
+
 # --- BUG-A2: a hung check must not stall run_all -----------------------------
 
 
@@ -132,6 +189,33 @@ def test_run_all_does_not_hang_on_runaway_check(monkeypatch):
     assert len(results) == 1
     assert results[0].status == CollectorStatus.TIMEOUT
     assert "hung-1" in results[0].reason
+
+
+def test_run_all_multiple_hung_checks_do_not_sum_timeouts(monkeypatch):
+    # BUG-A3: timeouts were measured per future.result() call, SEQUENTIALLY, so
+    # N hung checks stalled the run by N×timeout_s (and queued checks could be
+    # marked TIMEOUT before ever running). The global-deadline fix bounds the
+    # whole run to ~max(timeout_s): two hung 0.5s checks must return in ~0.5s,
+    # not ~1.0s.
+    from agent.checks.base import CHECKS
+    monkeypatch.setitem(CHECKS, "_hung_for_test", _HungCheck)
+
+    specs = [
+        CheckSpec(
+            id=f"hung-{i}", type="_hung_for_test", category=Category.VULN,
+            host_id="h", collect_params={}, display_title="t",
+            display_max_points=1, timeout_s=0.5,
+        )
+        for i in range(2)
+    ]
+
+    t0 = time.monotonic()
+    results = collector.run_all(specs, ctx=None)
+    dt = time.monotonic() - t0
+
+    assert dt < 5, f"run_all stalled {dt:.1f}s -- hung checks summed timeouts"
+    assert len(results) == 2
+    assert all(r.status == CollectorStatus.TIMEOUT for r in results)
 
 
 def test_run_all_unknown_check_type_yields_error_without_submitting():

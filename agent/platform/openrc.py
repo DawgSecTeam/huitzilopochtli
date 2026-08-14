@@ -33,7 +33,21 @@ class OpenRCContext(PlatformContext):
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
-        return name in result.stdout
+        # rc-update show emits one line per enabled service:
+        #   "<service> | <runlevel> [<runlevel>...]"
+        # Match the SERVICE NAME COLUMN exactly. A substring match
+        # ("ssh" in "sshd") would false-positive and award points for a
+        # service that is not the one actually enabled.
+        for line in result.stdout.splitlines():
+            if "|" in line:
+                service = line.split("|", 1)[0].strip()
+            else:
+                # Defensive: some rc-update variants omit the "| runlevel"
+                # column and just list service names -- first token is it.
+                service = line.split()[0] if line.split() else ""
+            if service == name:
+                return True
+        return False
 
     def package_installed(self, name: str) -> tuple:
         return _package_installed(name)

@@ -133,9 +133,16 @@ def test_kill_service_swallows_subprocess_exception():
 
 def test_flush_firewall_uses_iptables_when_present():
     ctx = FakeCtx()
+    from types import SimpleNamespace
+
+    def _ok(*_args, **_kwargs):
+        # A successful `iptables -F` returns rc 0; only then does the fix
+        # proceed to `-X` and consider iptables to have done its job.
+        return SimpleNamespace(returncode=0)
+
     with patch("agent.adversary.actions.shutil.which",
                side_effect=lambda tool: "/usr/sbin/iptables" if tool == "iptables" else None), \
-         patch("agent.adversary.actions.subprocess.run") as mock_run:
+         patch("agent.adversary.actions.subprocess.run", side_effect=_ok) as mock_run:
         ACTIONS["flush_firewall"]({}, ctx)
 
     calls = [c.args[0] for c in mock_run.call_args_list]
@@ -198,6 +205,34 @@ def test_flush_firewall_falls_back_to_nft_when_iptables_raises():
     cmds = [r[0] for r in runs]
     assert "iptables" in cmds
     assert "nft" in cmds, "nft fallback was not attempted after iptables failed"
+
+
+def test_flush_firewall_falls_back_to_nft_when_iptables_returns_nonzero():
+    # BUG-A4: with check=False, a NON-ZERO iptables exit does NOT raise, so the
+    # old code returned after `iptables -F`/`-X` silently failed and never tried
+    # nft -- the most common "iptables present but unusable" signal (permission
+    # denied, box actually running nft). The fix checks returncode and falls
+    # through to nft on any non-zero, and only runs `-X` after a clean `-F`.
+    ctx = FakeCtx()
+    from types import SimpleNamespace
+
+    def _run(cmd, **kwargs):
+        if cmd[0] == "iptables":
+            return SimpleNamespace(returncode=1)
+        # nft flush succeeds
+        return SimpleNamespace(returncode=0)
+
+    with patch("agent.adversary.actions.shutil.which",
+               side_effect=lambda tool: "/usr/sbin/iptables" if tool == "iptables"
+                                        else "/usr/sbin/nft" if tool == "nft" else None), \
+         patch("agent.adversary.actions.subprocess.run", side_effect=_run) as mock_run:
+        ACTIONS["flush_firewall"]({}, ctx)
+
+    cmds = [c.args[0] for c in mock_run.call_args_list]
+    assert ["nft", "flush", "ruleset"] in cmds, \
+        "nft fallback was not attempted after iptables returned non-zero"
+    # `-F` failed, so `-X` must not be attempted (and nft is tried instead)
+    assert ["iptables", "-X"] not in cmds
 
 
 # ---------------------------------------------------------------------------

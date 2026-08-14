@@ -98,9 +98,15 @@ class SshHandle(BoxHandle):
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
             stdin.write(self.password + "\n")
             stdin.flush()
+            # Close the write side so the remote shell sees EOF on stdin.
+            # Without this, a command that reads stdin (a prompt, a here-doc)
+            # blocks forever and recv_exit_status() below never returns.
+            stdin.channel.shutdown_write()
         else:
             full = f"/bin/sh -c {shlex.quote(cmd)}"
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
+            # Same latent hang applies to non-sudo commands that read stdin.
+            stdin.channel.shutdown_write()
         exit_status = stdout.channel.recv_exit_status()
         return RunResult(
             exit_status=exit_status,
