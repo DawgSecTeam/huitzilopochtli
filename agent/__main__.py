@@ -1,18 +1,4 @@
-"""Agent entrypoint. See architecture.md §15. PHASE 2 (integration).
-
-Wires: config -> collector -> (honor: evaluator+reporter |
-                                ranked: transport+reporter+adversary executor)
-
-Honor-mode run: load signed manifest -> verify authoring signature -> run all
-checks concurrently -> assemble evidence -> load local rubric ->
-common.evaluate(evidence, rubric, no-op clock) -> write HTML. No network, no
-time axis, no adversary.
-
-Ranked check-in loop: every checkin_interval_s -> collect evidence ->
-assemble+sign bundle (seq++) -> POST /checkin (TLS) -> on success apply score
-to cache/report and execute directives; on network failure queue bundle and
-retry next cycle.
-"""
+"""Agent entrypoint. See architecture.md §15."""
 import base64
 import json
 import os
@@ -48,10 +34,7 @@ _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 
 
 class _WallClock:
-    """Trivial Clock (see common.evaluator.Clock protocol) for honor mode,
-    where there is no engine to supply an authoritative time (§10, §15:
-    "no-op clock"). The box's own wall clock is diagnostic-grade only, but
-    honor mode is untimed anyway so this is fine."""
+    """Clock for honor mode (box wall time; untimed, diagnostic only)."""
 
     def now(self) -> float:
         return time.time()
@@ -130,10 +113,6 @@ def _load_manifest(manifest_path: str, authoring_public_key_path: str | None) ->
     unsigned_dict = {k: v for k, v in manifest_dict.items() if k != "_signature"}
 
     if authoring_public_key_path is None:
-        # Back-compat: existing configs written before verification existed
-        # have no key path configured. Warn loudly rather than silently
-        # trusting an unverified manifest -- this is a config gap, not an
-        # unimplemented feature.
         print(
             "WARNING: no authoring_public_key_path configured; manifest "
             "signature verification SKIPPED. Set authoring_public_key_path "
@@ -151,10 +130,6 @@ def _load_manifest(manifest_path: str, authoring_public_key_path: str | None) ->
                 f"against {authoring_public_key_path}; refusing to run"
             )
 
-    # Structural validation (§16/§7): catch malformed manifests here — missing
-    # checks, duplicate check ids, bad categories, ranked-without-engine_url —
-    # with a clear message, instead of letting them fail confusingly deep in the
-    # collect/evaluate pipeline.
     schema_errors = validate_manifest(unsigned_dict)
     if schema_errors:
         raise ValueError(
@@ -192,10 +167,7 @@ def _enrolled_marker_path(identity_path: str) -> str:
 
 
 def _ensure_enrolled(config, manifest, identity) -> None:
-    """Enrollment must succeed before the first check-in. Unlike the old
-    first-boot-only gate, we retry every boot until a .enrolled marker
-    exists, so a transient /enroll failure (network glitch, engine downtime,
-    503) does not permanently brick the box."""
+    """Ensure enrollment; retry every boot until ``.enrolled`` marker exists."""
     marker = _enrolled_marker_path(config.identity_path)
     if os.path.exists(marker):
         return
@@ -212,12 +184,8 @@ def _ensure_enrolled(config, manifest, identity) -> None:
             AGENT_VERSION, manifest.scenario_name, manifest.scenario_version,
         )
     except agent.identity.EnrollmentTokenConsumed:
-        # The engine already has this box enrolled under this token (e.g. we
-        # crashed after enroll succeeded but before the marker was written).
-        # Treat as success instead of crash-looping on every restart.
         pass
 
-    # Persist the marker atomically so a crash mid-enroll retries next boot.
     tmp = marker + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("ok")
@@ -245,16 +213,7 @@ def _run_ranked(config, manifest, ctx) -> None:
             created_wall_claim=time.time(),
         )
 
-        # Persist the committed seq BEFORE attempting the network round-trip,
-        # not after. seq only needs to be strictly increasing (§9.4), not
-        # gapless, so it's always safe to burn one; what's NOT safe is a
-        # crash between "the engine recorded this seq" and "we saved that
-        # fact locally" -- that would desync local last_seq behind the
-        # engine's and permanently 409 every future check-in (the box can
-        # never resend a seq it's already used). Saving first means local
-        # state is always >= anything the engine could possibly have seen,
-        # even across a hard kill mid-request; a bundle that ends up queued
-        # (network down) keeps this same seq, so no collision on retry.
+        # Persist seq before network so a crash cannot desync local state.
         identity.last_seq = bundle.seq
         agent.identity.save(config.identity_path, identity)
 
@@ -280,10 +239,6 @@ def _run_ranked(config, manifest, ctx) -> None:
                     score, Mode.RANKED, last_confirmed_at, theme=manifest.theme
                 )
             else:
-                # No prior confirmed response at all yet: render_report needs
-                # a ScoreBreakdown even in the "awaiting engine" branch, but
-                # that branch never touches it (see agent/reporter.py), so an
-                # empty placeholder is safe here.
                 from common.schema import ScoreBreakdown
 
                 placeholder = ScoreBreakdown(
@@ -301,13 +256,6 @@ def _run_ranked(config, manifest, ctx) -> None:
         with open(config.report_path, "w", encoding="utf-8") as f:
             f.write(html)
 
-        # Cadence is operator-configured (config.checkin_interval_s). The
-        # protocol carries response.next_checkin_s so the engine *could* drive
-        # cadence, but the engine currently returns a hardcoded placeholder
-        # (checkin.py) rather than a real per-scenario value; obeying that
-        # placeholder would silently override the operator's configured interval
-        # (and stall SLA/multi-check-in flows to 60s). Until the engine computes
-        # a real next_checkin_s, the local interval remains authoritative.
         time.sleep(config.checkin_interval_s)
 
 

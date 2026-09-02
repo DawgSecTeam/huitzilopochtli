@@ -1,14 +1,4 @@
-"""SQLite-backed storage. See architecture.md §11.2.
-
-FROZEN — the Store class and record dataclasses below are the contract every
-other engine/ module (enrollment.py, checkin.py, sla.py, adversary_oracle.py,
-leaderboard.py) is built against. They only need these signatures, not this
-file's implementation, so all of engine/ can be built in parallel.
-
-PHASE 1 TASK: implement every method body against a sqlite3 schema covering
-the tables in §11.2: boxes, enrollment_tokens, checkins, sla_state, scores,
-adversary_log. Do not change method signatures.
-"""
+"""SQLite-backed storage. See architecture.md §11.2."""
 import json
 import sqlite3
 import threading
@@ -100,13 +90,9 @@ CREATE TABLE IF NOT EXISTS adversary_log (
     params_json TEXT NOT NULL
 );
 
--- A directive fires at most once per (box, event). The UNIQUE index lets
--- concurrent check-ins race on INSERT OR IGNORE and lets the loser see it lost
--- (rowcount == 0), so a directive is never issued twice. Created as a separate
--- guarded index (not a table constraint) so it applies to pre-existing DBs
--- where `adversary_log` was created before this invariant existed.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_adversary_log_box_event
-    ON adversary_log (box_id, event_id);
+    -- Ensure a directive fires at most once per (box, event).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_adversary_log_box_event
+        ON adversary_log (box_id, event_id);
 
 CREATE TABLE IF NOT EXISTS scenarios (
     scenario_name TEXT PRIMARY KEY,
@@ -180,19 +166,10 @@ class Store:
 
     def enroll_box_atomic(self, token: str, box_id: str, public_key: str,
                             scenario_name: str, scenario_version: int = 0) -> str:
-        """Atomically validate+consume an enrollment token and create the box.
+        """Atomically validate and consume token and create box.
 
-        Holds `self._lock` across the entire check-and-mutate so two concurrent
-        /enroll requests can never both pass the "consumed_at IS NULL" guard for
-        the same one-time token (the TOCTOU that get_token + consume_token left
-        open). The box row is bound to the *token's* scenario (the token is the
-        authority), and a duplicate box_id is caught rather than surfacing as an
-        unhandled IntegrityError.
-
-        Returns a status string the HTTP layer maps onto an EnrollError code:
-          "ok" | "unknown_token" | "already_consumed" | "expired"
-          | "scenario_mismatch" | "duplicate_box"
-        On "ok" the box exists and the token is marked consumed.
+        Returns one of: ok | unknown_token | already_consumed | expired |
+        scenario_mismatch | duplicate_box.
         """
         import time
 
@@ -229,8 +206,7 @@ class Store:
             return "ok"
 
     def create_token(self, token: str, scenario_name: str, expires_at: float) -> None:
-        """Insert a fresh, unconsumed enrollment token. Used by the
-        POST /admin/tokens endpoint (engine/server.py)."""
+        """Insert a fresh, unconsumed enrollment token."""
         with self._lock:
             self._conn.execute(
                 "INSERT INTO enrollment_tokens (token, scenario_name, expires_at, "
@@ -271,12 +247,7 @@ class Store:
             self._conn.commit()
 
     def update_box_seq(self, box_id: str, seq: int, boot_id: str) -> bool:
-        """Advance the box's last_seq, but only if `seq` is strictly greater
-        than what's stored. Returns True if the row was updated, False if a
-        concurrent check-in already advanced last_seq to >= seq (so the caller
-        should treat this as a replay/stale seq). The `last_seq < ?` guard makes
-        the seq check atomic with the write, closing the TOCTOU where two
-        concurrent check-ins both read the same old last_seq."""
+        """Advance last_seq only if seq is strictly greater. Atomic via guard."""
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE boxes SET last_seq = ?, last_boot_id = ? "
@@ -363,16 +334,7 @@ class Store:
     def update_sla_atomic(
         self, box_id: str, check_id: str, apply_fn
     ) -> "SlaStateRecord":
-        """Atomically read-modify-write a SLA state row.
-
-        `apply_fn(rec: SlaStateRecord | None) -> SlaStateRecord` is called with the
-        current row (or None for a first-ever observation); it returns the new
-        record to persist. The lock is held across the read, the apply, and the
-        write, so concurrent check-ins updating the same (box_id, check_id) SLA
-        cannot interleave and clobber each other (the lost-update race that the
-        old get_sla_state -> mutate -> save_sla_state sequence had). This is the
-        single correct write path for SLA state.
-        """
+        """Atomically read-modify-write an SLA state row via ``apply_fn``."""
         with self._lock:
             cur = self._conn.execute(
                 "SELECT box_id, check_id, state, consec_ok, consec_fail, "
@@ -425,12 +387,7 @@ class Store:
 
     def log_adversary_event(self, box_id: str, event_id: str, action: str,
                              issued_at: float, params: dict) -> bool:
-        """Record that (box_id, event_id) fired. Returns True if this call was
-        the one that logged it, False if it was already logged (by a concurrent
-        check-in or an earlier one). Backed by INSERT OR IGNORE against the
-        UNIQUE(box_id, event_id) index, so only the winner of a race returns
-        True — the caller issues the directive only when it wins, guaranteeing a
-        directive is never issued twice."""
+        """Record directive fire; True if this call won the race."""
         with self._lock:
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO adversary_log (box_id, event_id, action, "
@@ -443,13 +400,7 @@ class Store:
     # --- leaderboard.py --------------------------------------------------------
 
     def get_scores(self, scenario_name: str) -> list:
-        """Returns list[ScoreRow], ranked descending by total.
-
-        Ties are broken deterministically by earliest updated_at then box_id, so
-        the leaderboard is reproducible across runs/DB vacuums (boxes that
-        reached the same total at the same instant sort by a stable id rather
-        than in unspecified SQLite row order).
-        """
+        """Return scores ranked by total (ties by updated_at, box_id)."""
         with self._lock:
             cur = self._conn.execute(
                 "SELECT box_id, scenario_name, total, updated_at FROM scores "
@@ -472,7 +423,7 @@ class Store:
 
     def save_scenario(self, scenario_name: str, rubric_json: str,
                        adversary_json: str) -> None:
-        """Insert or replace the rubric+adversary record for a scenario."""
+        """Insert or replace scenario rubric + adversary record."""
         import time
 
         with self._lock:

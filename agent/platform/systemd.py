@@ -1,9 +1,4 @@
-"""systemd PlatformContext strategy. See architecture.md §9.3.
-
-PHASE 1 TASK: implement using `systemctl is-active <svc>` / `systemctl
-is-enabled <svc>` via subprocess, and agent.platform.pkg.package_installed
-for packages.
-"""
+"""systemd PlatformContext strategy. See architecture.md §9.3."""
 import subprocess
 
 from agent.platform.base import PlatformContext

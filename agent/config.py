@@ -1,4 +1,4 @@
-"""Local on-box config loader. See architecture.md §9.7. PHASE 2 (integration)."""
+"""Local on-box config loader. See architecture.md §9.7."""
 import json
 from dataclasses import dataclass
 from typing import Optional
@@ -27,14 +27,9 @@ def load_config(config_path: str) -> AgentConfig:
             "authoring_public_key_path": str|null,
             "enrollment_token": str|null}
 
-    authoring_public_key_path is optional for backwards compatibility with
-    configs written before manifest signature verification existed; if
-    omitted, the agent falls back to warn-and-proceed-unverified (see
-    agent/__main__.py::_load_manifest).
-
-    enrollment_token is read only on a box's first-ever ranked-mode boot
-    (see agent/__main__.py::_run_ranked) -- once the box has an identity
-    file, this field is never consulted again.
+    authoring_public_key_path is optional; if omitted, verification is
+    skipped with a warning (see _load_manifest). enrollment_token is
+    consumed only on first ranked boot.
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -50,10 +45,6 @@ def load_config(config_path: str) -> AgentConfig:
         enrollment_token=data.get("enrollment_token"),
     )
 
-    # Ranked mode dereferences identity_path (`identity_path + ".queue"`) and
-    # sleeps on checkin_interval_s every loop; a null for either used to surface
-    # as an opaque TypeError deep in _run_ranked. Validate up front with a clear
-    # message instead. (Honor mode uses neither, so only enforce for ranked.)
     if config.mode == Mode.RANKED:
         if not config.identity_path:
             raise ValueError(

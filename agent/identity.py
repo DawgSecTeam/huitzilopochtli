@@ -1,7 +1,4 @@
-"""Box identity & enrollment. Ranked mode only. See architecture.md §9.6.
-
-PHASE 1 TASK: implement.
-"""
+"""Box identity & enrollment. Ranked mode only. See architecture.md §9.6."""
 import base64
 import json
 import os

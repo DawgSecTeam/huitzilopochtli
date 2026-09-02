@@ -1,8 +1,4 @@
-"""Init-system detection. See architecture.md §9.3.
-
-FROZEN mechanism; PHASE 1 implements the concrete PlatformContext subclasses
-this dispatches to (agent/platform/systemd.py, agent/platform/openrc.py).
-"""
+"""Init-system detection. See architecture.md §9.3."""
 import os
 
 from agent.platform.base import PlatformContext

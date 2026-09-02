@@ -1,8 +1,4 @@
-"""Check plugin base class + registry. See architecture.md §9.1.
-
-FROZEN — this is the contract every check-type module builds against.
-Do not change Check or the registry mechanism.
-"""
+"""Check plugin base class + registry. See architecture.md §9.1."""
 from abc import ABC, abstractmethod
 
 from common.schema import CheckSpec, Evidence

@@ -1,12 +1,7 @@
 """Matcher registry. See architecture.md §10.2.
 
-A matcher is a small tagged dict evaluated against a check type's `raw`
-evidence dict. Each predicate is a pure function `(matcher, raw) -> (bool, reason)`.
-
-PHASE 1 TASK: implement the predicates below (equals, not_equals, contains,
-regex, mode_at_most, user_absent, user_present, group_members_subset_of).
-The registry mechanism itself (this scaffold) is frozen — do not change
-MATCHERS / register / evaluate_matcher's signatures.
+A matcher is a small tagged dict evaluated against a check type's ``raw``
+evidence dict. Each predicate is a pure function ``(matcher, raw) -> (bool, reason)``.
 
 --- Matcher dict shapes (convention used throughout this module) ----------
 
@@ -41,18 +36,10 @@ from typing import Callable
 
 MATCHERS: dict[str, Callable[[dict, dict], tuple]] = {}
 
-# ReDoS guard (see _regex). The pattern is trusted (author/rubric-controlled,
-# signature-verified) but the haystack is collector output that can be large
-# or attacker-influenced (a service banner, file contents, ...). Stdlib `re`
-# has NO per-match timeout, and a catastrophic-backtracking pattern holds the
-# GIL without yielding, so neither a worker thread's join(timeout) nor the
-# collector's future.result(timeout) can interrupt it mid-match. The effective
-# pure-stdlib mitigation here is therefore to CAP the haystack length so an
-# attacker cannot amplify a sloppy pattern with a huge input, plus compile-
-# caching and explicit invalid-pattern handling. Hard CPU-bounding of a
-# runaway trusted pattern is left to the operator (don't ship pathological
-# regexes) and to process-level isolation at the collector boundary.
-_REGEX_HAYSTACK_LIMIT = 1_000_000  # 1 MB of str; generous for banners/files
+# Haystack is collector-controlled and may be large; stdlib ``re`` has no
+# per-match timeout and holds the GIL, so cap input length and cache
+# compiled patterns. Pathological trusted patterns are an operator concern.
+_REGEX_HAYSTACK_LIMIT = 1_000_000  # 1 MB
 _REGEX_CACHE: dict[str, "re.Pattern"] = {}
 
 
@@ -204,15 +191,7 @@ def _regex(matcher: dict, raw: dict) -> tuple:
     if actual is None:
         return False, f"{field} is None; cannot match pattern {pattern!r}"
     haystack = str(actual)
-    # Guard against catastrophic backtracking (ReDoS): the pattern is
-    # author/rubric-controlled (trusted), but `actual` is collector output
-    # that can be large or attacker-influenced (a service banner, file
-    # contents, ...). Stdlib `re` has no per-match timeout, and a runaway
-    # C-level match holds the GIL so it can't be interrupted from a worker
-    # thread; the effective pure-stdlib mitigation is to cap the haystack
-    # length (the realistic amplification vector) and validate/compile the
-    # pattern once. Residual risk from a pathological trusted pattern is left
-    # to the operator and process-level isolation at the collector boundary.
+    # Mitigate ReDoS by capping haystack length (see _REGEX_HAYSTACK_LIMIT).
     if len(haystack) > _REGEX_HAYSTACK_LIMIT:
         return False, f"{field} exceeds length limit {_REGEX_HAYSTACK_LIMIT}; not evaluated"
     try:

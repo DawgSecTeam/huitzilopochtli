@@ -1,11 +1,7 @@
 """Pure scorer. See architecture.md §10.
 
-Lives here (not in agent/ or engine/) so honor-agent and engine run
-IDENTICAL scoring logic. Must remain a pure function: no I/O, no clock
-reads other than through the injected Clock.
-
-PHASE 1 TASK: implement evaluate() per §10.1 using common.matchers.evaluate_matcher.
-Do not change the function signature.
+Shared by agent and engine so both run identical scoring. Pure function:
+no I/O, no clock reads except via the injected Clock.
 """
 from typing import Optional, Protocol
 
@@ -59,18 +55,7 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
         matched, matcher_reason = evaluate_matcher(entry.matcher, raw)
 
         if not evidence_ok:
-            # Undetermined evidence (missing / ERROR / TIMEOUT) must NOT be
-            # treated as a confirmed observation, for ANY category:
-            #   - VULN: a positive-points check can't pass on evidence we
-            #     couldn't actually collect, so score 0 ("not satisfied" --
-            #     fail-closed, per the module docstring) even if ev.raw
-            #     happens to satisfy the matcher.
-            #   - PENALTY: a collector fault is not proof the required state
-            #     is broken; don't apply the negative points.
-            #   - PROHIBITED: a collector fault is not proof a forbidden state
-            #     is present; don't apply the negative points.
-            # The matcher still runs (so `matched`/reason stay informative),
-            # but it is overridden to "not satisfied" with awarded=0.
+            # Undetermined evidence is never a confirmed observation.
             awarded = 0
             matched = False
             matcher_reason = (

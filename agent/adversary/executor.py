@@ -1,7 +1,4 @@
-"""Box-side directive executor. See architecture.md §12.2.
-
-PHASE 1 TASK: implement execute().
-"""
+"""Box-side directive executor. See architecture.md §12.2."""
 from agent.adversary.actions import ACTIONS
 from common.schema import Directive
 

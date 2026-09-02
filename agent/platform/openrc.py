@@ -1,9 +1,4 @@
-"""OpenRC PlatformContext strategy. See architecture.md §9.3.
-
-PHASE 1 TASK: implement using `rc-service <svc> status` / `rc-update show |
-grep <svc>` via subprocess, and agent.platform.pkg.package_installed for
-packages.
-"""
+"""OpenRC PlatformContext strategy. See architecture.md §9.3."""
 import subprocess
 
 from agent.platform.base import PlatformContext

@@ -1,14 +1,8 @@
-"""Concurrent check runner. See architecture.md §9.1. PHASE 2 (integration).
-
-Depends on agent.checks.base.CHECKS being populated (Phase 1 check modules
-imported) and a PlatformContext from agent.platform.detect.
-"""
+"""Concurrent check runner. See architecture.md §9.1."""
 import concurrent.futures
 import time
 
-# Importing these modules populates agent.checks.base.CHECKS as a side
-# effect of their @register decorators (§9.1). agent/checks/__init__.py is
-# intentionally empty, so the registrations happen here instead.
+# Populate CHECKS registry via decorator side-effects.
 import agent.checks.db_query  # noqa: F401
 import agent.checks.file_regex  # noqa: F401
 import agent.checks.http_uptime  # noqa: F401
@@ -30,19 +24,7 @@ def _run_one(spec: CheckSpec, ctx: "agent.platform.base.PlatformContext") -> Evi
 
 
 def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
-    """Run every CheckSpec concurrently (thread pool), each wrapped with its
-    own timeout_s. A hung check yields Evidence(status=TIMEOUT) and never
-    stalls the run. Returns list[Evidence] in the same order as `checks`.
-
-    NOTE on the timeout guarantee: a hung check is recorded as TIMEOUT and the
-    result is returned promptly, but CPython cannot forcibly kill the worker
-    thread running it (a blocked syscall or a runaway C-level regex will keep
-    running). We therefore shut the executor down with wait=False and
-    cancel_futures=True so a not-yet-started or runaway worker never blocks
-    run_all's return (an earlier `with ... as executor:` form called
-    shutdown(wait=True) on exit and could hang here indefinitely). The leaked
-    worker is a daemon-by-nature pool thread that dies with the process.
-    """
+    """Run checks concurrently; hung checks yield TIMEOUT and never stall the run."""
     def _timeout_evidence(spec: CheckSpec, elapsed: float) -> Evidence:
         return Evidence(
             check_id=spec.id,
@@ -83,12 +65,6 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
             future_to_idx[future] = idx
             submitted_at[future] = time.monotonic()
 
-        # Bound the whole run to ~max(timeout_s) (§9.1 "never stalls the run"):
-        # a hung check is recorded TIMEOUT, but the run as a whole must not
-        # stall for the SUM of the hung checks' timeouts. Each check's budget
-        # is measured from its SUBMISSION time (not from when this loop happens
-        # to collect it), so a check that queued behind the 20-worker cap is not
-        # spuriously marked TIMEOUT before it ever started.
         deadline = time.monotonic() + max(
             (c.timeout_s for c in checks if c.type in CHECKS), default=0
         )
@@ -121,11 +97,8 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
                         collected_wall_claim=time.time(),
                     )
             if not done:
-                # The deadline elapsed with nothing newly finished.
                 break
 
-        # Anything still pending when the global deadline hit never finished in
-        # time -- record TIMEOUT rather than leaving a hole in the results.
         for future in pending:
             idx = future_to_idx[future]
             spec = checks[idx]
@@ -133,10 +106,6 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
                 spec, time.monotonic() - submitted_at[future]
             )
     finally:
-        # wait=False: do NOT block on runaway worker threads here. Cancel any
-        # not-yet-started futures so they never begin. A genuinely stuck worker
-        # (blocked syscall / runaway regex) keeps running but cannot delay this
-        # function's return -- exactly the "never stalls the run" contract.
         executor.shutdown(wait=False, cancel_futures=True)
 
     return results

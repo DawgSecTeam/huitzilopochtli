@@ -1,9 +1,4 @@
-"""YAML -> (manifest, rubric, engine scenario record) build pipeline.
-See architecture.md §8.
-
-PHASE 1 TASK: implement. May use PyYAML (author-machine only — never
-shipped to the box or bundled into the zipapp).
-"""
+"""YAML -> (manifest, rubric, engine scenario record) build pipeline. See architecture.md §8."""
 import base64
 import dataclasses
 import json
@@ -31,22 +26,11 @@ from common.schema import (
 _DEFAULT_TIMEOUT_S = 5.0
 _DEFAULT_HOST_ID = "localhost"
 
-# Keeps the signed manifest small -- report.html embeds the logo as a data: URI, not a
-# size a competitor should be waiting on over a box's network either way.
-_MAX_LOGO_BYTES = 150 * 1024
+_MAX_LOGO_BYTES = 150 * 1024  # Keep signed manifest small (logo is data: URI).
 
 
 def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional[dict]:
-    """The small, cosmetic subset of `theme` that ships in the signed Manifest: title /
-    organization / accent / logo (base64-embedded). Everything else in `theme`
-    (wallpaper / readme / motd / issue / forensics_questions / desktop_shortcuts) is
-    large/binary box-decoration content the agent process never needs -- it flows to
-    nakon via boxbuilder/theme.py instead, never through here. Structural shape of
-    `theme_raw` is already guaranteed by authoring.validate's `_validate_theme` (called
-    from validate_scenario_yaml, above compile_scenario in the pipeline); this is the one
-    place that touches the filesystem for it (reading+encoding `logo`), matching the
-    existing split where validate.py is pure-structural and compile.py does all the I/O.
-    """
+    """Build the small cosmetic theme subset that ships in the Manifest."""
     if not theme_raw:
         return None
 
@@ -96,25 +80,15 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
     points = expect.pop("points", 0)
     sla_raw = expect.pop("sla", None)
 
-    # Validate the type here, before `-abs(points)` below: a non-int (e.g. the
-    # author wrote `points: "5"`) would otherwise raise a bare TypeError deep in
-    # abs() rather than the clean, actionable message validate_rubric produces.
-    # bool is a subclass of int, so reject it explicitly.
     if isinstance(points, bool) or not isinstance(points, int):
         raise ValueError(
             f"check {check.get('id')!r}: expect.points must be an integer, "
             f"got {points!r}"
         )
 
-    # Whatever remains in `expect` after stripping `points`/`sla` is the
-    # matcher dict passed to common.matchers.evaluate_matcher (§8 example:
-    # expect: {equals: "no", points: 5} -> matcher {"equals": "no"}).
     matcher = expect
 
     if category in ("penalty", "prohibited"):
-        # RubricEntry.points is SIGNED (common/schema.py). Authors write a
-        # positive number in expect.points; penalty/prohibited categories
-        # must be stored as negative regardless of the sign the author used.
         points = -abs(points)
 
     sla = None
@@ -137,28 +111,7 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
 
 
 def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes) -> dict:
-    """Pipeline (§8):
-      1. Parse scenario YAML.
-      2. authoring.validate.validate_scenario_yaml(...) — fail loudly with
-         line-referenced errors.
-      3. Split into: Manifest (public collection instructions + display
-         metadata), Rubric (expected values + points + SLA params), and the
-         engine scenario record (rubric + adversary event pool + RNG seed
-         source) — engine-only, never distributed to boxes.
-      4. Sign the manifest with the authoring private key
-         (authoring.sign_scenario.sign_manifest).
-      5. Emit manifest.signed.json always; for honor mode also emit the
-         rubric to bundle into the box image; for ranked, emit the rubric +
-         engine record for out-of-band upload to the engine.
-
-    `authoring_private_key` is a required parameter (not in the original
-    stub signature): signing (step 4) needs a real key supplied by the
-    caller — compile_scenario must not generate or hold key material of its
-    own, since key custody belongs to the author/CI environment, not to the
-    build tool.
-
-    Returns a dict of output file paths written under out_dir.
-    """
+    """Compile scenario YAML into signed manifest, rubric, and engine record."""
     with open(yaml_path, "r") as f:
         parsed = yaml.safe_load(f.read())
 
@@ -167,8 +120,6 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         raise ValueError("\n".join(errors))
 
     scenario = parsed["scenario"]
-    # NOTE: per the §8 YAML example, `checks` and `adversary` are TOP-LEVEL
-    # keys (siblings of `scenario`), not nested under `scenario`.
     checks = parsed["checks"]
 
     check_specs = [_build_check_spec(c) for c in checks]
@@ -193,8 +144,6 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         entries=rubric_entries,
     )
 
-    # The adversary event pool + seed source live ONLY in the engine scenario
-    # record, never anywhere near the Manifest object (§8, §12).
     engine_record = {
         "rubric": dataclasses.asdict(rubric),
         "adversary": parsed.get("adversary", {}),
@@ -203,7 +152,6 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
     manifest_dict = dataclasses.asdict(manifest)
     rubric_dict = dataclasses.asdict(rubric)
 
-    # Structural validation of the compiled artifacts (fail the build loudly).
     schema_errors = validate_manifest(manifest_dict)
     if schema_errors:
         raise ValueError("\n".join(schema_errors))
@@ -229,18 +177,11 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
             json.dump(rubric_dict, f)
         outputs["rubric"] = rubric_path
 
-    # Emitted for both modes: ranked needs it out-of-band uploaded to the
-    # engine, and it's harmless (not distributed to boxes either way) for
-    # honor mode too.
     engine_record_path = os.path.join(out_dir, "engine_record.json")
     with open(engine_record_path, "w") as f:
         json.dump(engine_record, f)
     outputs["engine_record"] = engine_record_path
 
-    # Distributable verification artifact: the box needs the authoring
-    # PUBLIC key to verify manifest.signed.json's signature (§7, §16). The
-    # public key is always re-derivable from the private key, so no separate
-    # key material needs to be tracked -- just export it here, always.
     public_key = public_key_from_private(authoring_private_key)
     public_key_path = os.path.join(out_dir, "authoring_public_key.b64")
     with open(public_key_path, "w") as f:
