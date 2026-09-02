@@ -18,6 +18,13 @@ under `vendor/` (`vendor/nakon`, `vendor/vulndb-cli`, pinned to a release). huit
 to ensure its theme configurations + attachments exist in the catalog. Set them up with
 `git submodule update --init --recursive` after clone.
 
+Submodule init only brings tracked files, though — `vendor/nakon/.env` (vulndb DB creds +
+`VULNDB_UI_URL`, same shape as `vendor/nakon/.env.example`) is gitignored and must be created
+by hand on every machine that runs boxbuilder (boxbuilder runs nakon with `cwd=vendor/nakon`
+specifically so it can read this file). `vendor/vulndb-cli` needs no on-disk config, but does
+need `VULNDB_UI_URL` exported as a real environment variable (or passed via `--url`) in the
+shell running boxbuilder — it otherwise silently falls back to `http://127.0.0.1:3000`.
+
 ## Building a practice box (the boxbuilder workflow)
 
 `boxbuilder/` automates the four-step workflow: **(1) author** huitz checks +

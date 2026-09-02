@@ -6,6 +6,7 @@ is a fake CLI package (install_fake_vulndb_cli) rather than a fake HTTP server. 
 ensure_configuration/ensure_attachment's idempotency and content-addressing logic offline.
 """
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +42,20 @@ def test_resolve_vulndb_url_precedence(monkeypatch):
     assert vulndb.resolve_vulndb_url("http://explicit:9000") == "http://explicit:9000"
 
 
+def test_run_vulndb_cli_accepts_pretty_printed_json(monkeypatch, tmp_path):
+    cli_dir = tmp_path / "cli"
+    monkeypatch.setattr(vulndb, "resolve_vulndb_cli_dir", lambda explicit=None: str(cli_dir))
+    result = SimpleNamespace(
+        returncode=0,
+        stdout='[\n  {"name": "example"}\n]\n',
+        stderr="",
+    )
+    monkeypatch.setattr(vulndb.subprocess, "run", lambda *args, **kwargs: result)
+    assert vulndb._run_vulndb_cli(["list", "--json"], "http://catalog") == [
+        {"name": "example"}
+    ]
+
+
 def test_resolve_vulndb_cli_dir_missing_raises(monkeypatch, tmp_path):
     # Point VULNDB_CLI_DIR at an empty dir so neither candidate matches.
     monkeypatch.setenv("VULNDB_CLI_DIR", str(tmp_path / "nope"))
@@ -55,6 +70,40 @@ def test_load_seed_definition_all_four_present():
         assert d["type"] == "command"
         assert d["run_as"] == "root"
         assert d["script"].startswith("#!/bin/sh")
+
+
+def test_vuln_seed_definitions_present_and_valid():
+    names = {
+        "insecure-file-mode", "passwordless-sudo", "malicious-factory-users",
+        "unauthorized-admin-user", "service-account-shell", "hidden-cron-persistence",
+        "polyglot-media", "malicious-autostart", "malicious-systemd-service",
+    }
+    for name in names:
+        d = vulndb.load_vuln_seed_definition(name)
+        assert d["name"] == name
+        assert d["platform"] == "linux"
+        assert d["type"] == "command"
+        assert d["run_as"] == "root"
+        assert d["script"].startswith("#!/bin/sh")
+        assert isinstance(d["depends_on"], list)
+
+
+def test_ensure_vuln_seeds_only_selected_and_idempotent(fake_vulndb):
+    base_url, state_file = fake_vulndb
+    selected = [
+        "insecure-file-mode",
+        {"name": "passwordless-sudo", "vars": {"unused": "test"}},
+        "passwordless-sudo",  # duplicate request is only ensured once
+        "not-a-bundled-seed",  # existing/shared catalog names are untouched here
+    ]
+    assert vulndb.ensure_vuln_seeds(base_url, selected) == [
+        "insecure-file-mode", "passwordless-sudo",
+    ]
+    assert vulndb.ensure_vuln_seeds(base_url, selected) == [
+        "insecure-file-mode", "passwordless-sudo",
+    ]
+    rows = json.loads(state_file.read_text())["configurations"]
+    assert [row["name"] for row in rows] == ["insecure-file-mode", "passwordless-sudo"]
 
 
 def test_list_configurations_empty(fake_vulndb):

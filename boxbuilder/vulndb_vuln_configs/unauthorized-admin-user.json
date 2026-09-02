@@ -1,0 +1,10 @@
+{
+  "name": "unauthorized-admin-user",
+  "description": "Practice-box misconfiguration: creates an intern account and grants it membership in the Ubuntu sudo administrator group.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\nif ! id intern >/dev/null 2>&1; then useradd -m -s /bin/bash intern; fi\nif getent group sudo >/dev/null 2>&1; then\n    usermod -a -G sudo intern\nelif getent group wheel >/dev/null 2>&1; then\n    usermod -a -G wheel intern\nelse\n    groupadd sudo\n    usermod -a -G sudo intern\nfi\n",
+  "depends_on": []
+}
