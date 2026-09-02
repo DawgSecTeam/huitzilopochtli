@@ -1,0 +1,10 @@
+{
+  "name": "malicious-systemd-service",
+  "description": "Practice-box persistence finding: installs and enables a harmless training systemd unit that invokes the hidden cocoa sync payload.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\ncat > /etc/systemd/system/cocoa-update.service <<'UNIT'\n[Unit]\nDescription=Cocoa update helper (training finding)\nAfter=network.target\n\n[Service]\nType=oneshot\nExecStart=/opt/.cocoa/cocoa-sync\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\nUNIT\nchmod 0644 /etc/systemd/system/cocoa-update.service\nif command -v systemctl >/dev/null 2>&1; then\n    systemctl daemon-reload\n    systemctl enable --now cocoa-update.service\nfi\n",
+  "depends_on": []
+}

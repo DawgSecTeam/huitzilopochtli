@@ -20,7 +20,9 @@ import sys
 import tempfile
 
 _DEFAULT_VULNDB_URL = "http://127.0.0.1:3000"
-_SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vulndb_theme_configs")
+_BOXBUILDER_DIR = os.path.dirname(os.path.abspath(__file__))
+_THEME_SEED_DIR = os.path.join(_BOXBUILDER_DIR, "vulndb_theme_configs")
+_VULN_SEED_DIR = os.path.join(_BOXBUILDER_DIR, "vulndb_vuln_configs")
 
 
 class VulndbError(Exception):
@@ -60,12 +62,54 @@ def resolve_vulndb_cli_dir(explicit: str = None) -> str:
     )
 
 
-def load_seed_definition(name: str) -> dict:
-    """Read one of the bundled static seed definitions (boxbuilder/vulndb_theme_configs/
-    <name>.json) — the source of truth for the four theme catalog configurations."""
-    path = os.path.join(_SEED_DIR, f"{name}.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_seed_definition(name: str, seed_dir: str = None) -> dict:
+    """Read a bundled static catalog seed by name.
+
+    Theme seeds remain in ``vulndb_theme_configs``; box-specific planting seeds live in
+    ``vulndb_vuln_configs``.  When no directory is supplied, the theme directory is kept as
+    the backwards-compatible default for callers such as ``theme.py``.
+    """
+    search_dirs = [seed_dir] if seed_dir else [_THEME_SEED_DIR, _VULN_SEED_DIR]
+    for directory in search_dirs:
+        path = os.path.join(directory, f"{name}.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                definition = json.load(f)
+            if definition.get("name") != name:
+                raise VulndbError(
+                    f"seed {path} declares name {definition.get('name')!r}, expected {name!r}"
+                )
+            return definition
+    raise FileNotFoundError(
+        f"no bundled catalog seed named {name!r} in {', '.join(search_dirs)}"
+    )
+
+
+def load_vuln_seed_definition(name: str) -> dict:
+    """Read a bundled planting seed from ``boxbuilder/vulndb_vuln_configs``."""
+    return load_seed_definition(name, seed_dir=_VULN_SEED_DIR)
+
+
+def ensure_vuln_seeds(base_url: str, configurations: list, timeout: int = 60) -> list:
+    """Ensure bundled planting seeds selected by a nakon configuration exist in vulndb.
+
+    Only names with a local ``vulndb_vuln_configs/<name>.json`` seed are touched; catalog
+    entries authored elsewhere are left to the catalog as-is.  The operation is
+    create-if-missing and never overwrites an existing row.
+    """
+    ensured = []
+    seen = set()
+    for item in configurations:
+        name = item if isinstance(item, str) else (item or {}).get("name")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        path = os.path.join(_VULN_SEED_DIR, f"{name}.json")
+        if not os.path.isfile(path):
+            continue
+        ensure_configuration(base_url, load_vuln_seed_definition(name), timeout=timeout)
+        ensured.append(name)
+    return ensured
 
 
 def _run_vulndb_cli(args: list, base_url: str, stdin_str: str = None,
@@ -99,9 +143,18 @@ def _run_vulndb_cli(args: list, base_url: str, stdin_str: str = None,
     if not stdout:
         return None
     try:
+        # Older/compact vulndb-cli versions emit one JSON object per line; newer versions
+        # pretty-print arrays/objects.  Keep the fast last-line path, then fall back to the
+        # complete stdout document just as the nakon wrapper does.
         return json.loads(stdout.splitlines()[-1])
-    except json.JSONDecodeError as e:
-        raise VulndbError(f"vulndb-cli emitted unparseable JSON: {e}", stderr=result.stderr) from e
+    except json.JSONDecodeError as last_line_error:
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError as full_output_error:
+            raise VulndbError(
+                f"vulndb-cli emitted unparseable JSON: {last_line_error}",
+                stderr=result.stderr,
+            ) from full_output_error
 
 
 def list_configurations(base_url: str, timeout: int = 60) -> list:

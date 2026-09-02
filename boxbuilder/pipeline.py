@@ -62,6 +62,10 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
         "bundle": {"bundle_id", "path", "cached", "plans", "machines"},
       }
     """
+    # nakon is invoked with its own checkout as cwd. Normalize the artifacts directory before
+    # writing any inputs so the config path remains valid across that cwd boundary (the CLI's
+    # default is the relative ``./artifacts`` path).
+    artifacts_dir = os.path.abspath(artifacts_dir)
     os.makedirs(artifacts_dir, exist_ok=True)
 
     # 1a. Authoring key (load or generate+persist).
@@ -97,6 +101,14 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
     # unchanged -- fully backward compatible, and touches vulndb-ui not at all.
     ndir = nakon.resolve_nakon_dir(nakon_dir)
     nakon_cfg = dict(spec.nakon_config)
+    # Boxbuilder-owned planting seeds are ensured only when selected.  Existing catalog rows
+    # (including shared/public configurations) are never modified; nakon still remains the
+    # source of truth for resolving and building the final request.
+    from boxbuilder import vulndb
+    selected_vulns = []
+    for machine in nakon_cfg.get("machines", []):
+        selected_vulns.extend(machine.get("configurations", []))
+    vulndb.ensure_vuln_seeds(vulndb.resolve_vulndb_url(vulndb_url), selected_vulns)
     theme_entries = resolve_theme_configurations(spec, vulndb_url=vulndb_url)
     if theme_entries:
         machines = []

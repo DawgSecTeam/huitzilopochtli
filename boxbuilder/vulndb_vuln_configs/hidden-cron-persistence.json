@@ -1,0 +1,10 @@
+{
+  "name": "hidden-cron-persistence",
+  "description": "Practice-box persistence finding: hides an executable sync payload under /opt/.cocoa and schedules it from root's crontab.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\ninstall -d -m 0700 /opt/.cocoa\ncat > /opt/.cocoa/cocoa-sync <<'PAYLOAD'\n#!/bin/sh\n# Harmless training payload: its existence and persistence are the finding.\nprintf '%s\\n' \"cocoa-sync training payload ran\" >> /var/log/cocoa-sync.log\nPAYLOAD\nchmod 0700 /opt/.cocoa/cocoa-sync\n\ncron_file=/etc/cron.d/cocoa-hidden-sync\nprintf '%s\\n' '*/15 * * * * root /opt/.cocoa/cocoa-sync' > \"$cron_file\"\nchmod 0600 \"$cron_file\"\n",
+  "depends_on": []
+}

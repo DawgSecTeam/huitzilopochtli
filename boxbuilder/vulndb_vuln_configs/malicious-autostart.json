@@ -1,0 +1,10 @@
+{
+  "name": "malicious-autostart",
+  "description": "Practice-box persistence finding: installs a hidden XFCE/desktop autostart launcher that invokes the training payload at graphical login.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\ninstall -d -m 0755 /etc/xdg/autostart\ncat > /etc/xdg/autostart/cocoa-update.desktop <<'DESKTOP'\n[Desktop Entry]\nType=Application\nName=Cocoa Update Helper\nComment=Training persistence finding\nExec=/opt/.cocoa/cocoa-sync\nOnlyShowIn=XFCE;\nX-GNOME-Autostart-enabled=true\nDESKTOP\nchmod 0644 /etc/xdg/autostart/cocoa-update.desktop\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "insecure-file-mode",
+  "description": "Practice-box helper: creates a caller-selected file with caller-selected content and an intentionally loose mode. Use distinct vars for each file finding.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${FILE_PATH:?FILE_PATH is required}\"\n: \"${FILE_MODE:?FILE_MODE is required}\"\n\ninstall -d -m 0755 \"$(dirname -- \"$FILE_PATH\")\"\nprintf '%s\\n' \"${FILE_CONTENT-}\" > \"$FILE_PATH\"\nchmod -- \"$FILE_MODE\" \"$FILE_PATH\"\n",
+  "depends_on": []
+}

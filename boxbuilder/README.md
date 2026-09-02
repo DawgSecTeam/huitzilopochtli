@@ -48,6 +48,15 @@ python3 -m boxbuilder build \
   --image-out /tmp/linux-fundamentals.ova --json
 ```
 
+For a longer, themed follow-up session, see the **Cocoa Falls Chocolate Works**
+example: `boxbuilder/examples/chocolate-factory.{box,scenario,nakon}.yaml`.
+It targets an Ubuntu/Xubuntu XFCE VM in honor mode and pairs ordinary cyPAT-style
+access-control findings (root SSH login, passwordless sudo, unauthorized users,
+unwanted admin membership, and loose permissions) with cron, malicious media,
+autostart, and system-service persistence findings. Its bundled planting seeds
+are ensured into vulndb idempotently when selected; point `VULNDB_UI_URL` at the
+shared catalog before compiling.
+
 Each step is also runnable on its own (see CLI below) so you can pause/verify
 between steps.
 

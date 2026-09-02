@@ -1,0 +1,10 @@
+{
+  "name": "polyglot-media",
+  "description": "Practice-box malicious-media finding: places a file named like an MP3 in the shared media shelf, but its body is an executable shell payload.",
+  "platform": "linux",
+  "category": "vulnerability",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\ninstall -d -m 0755 /var/media\ncat > /var/media/golden-ticket.mp3 <<'MEDIA'\n#!/bin/sh\n# Training-only fake media payload; do not execute files solely because of their extension.\nprintf '%s\\n' \"fake golden-ticket media payload\" >> /var/log/cocoa-media.log\nMEDIA\nchmod 0644 /var/media/golden-ticket.mp3\n",
+  "depends_on": []
+}

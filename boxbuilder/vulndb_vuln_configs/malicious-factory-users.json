@@ -1,0 +1,10 @@
+{
+  "name": "malicious-factory-users",
+  "description": "Practice-box misconfiguration: leaves two unauthorized factory-tour accounts behind, one with a weak password and one with an empty password.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n# Keep the accounts reproducible if a bundle is deployed more than once.\nif ! id tourguide >/dev/null 2>&1; then useradd -m -s /bin/bash tourguide; fi\nif ! id tempscout >/dev/null 2>&1; then useradd -m -s /bin/bash tempscout; fi\nprintf '%s:%s\\n' tourguide 'Chocolate123!' | chpasswd\n# An empty password is intentional: it is the finding for the exercise.\nusermod -p '' tempscout\n",
+  "depends_on": []
+}
