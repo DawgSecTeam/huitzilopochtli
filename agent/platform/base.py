@@ -1,8 +1,4 @@
-"""Platform abstraction contract. See architecture.md §9.3.
-
-FROZEN — every check that needs service/package facts (service_state.py,
-package.py) and every platform strategy module builds against this ABC.
-"""
+"""Platform abstraction contract. See architecture.md §9.3."""
 from abc import ABC, abstractmethod
 
 

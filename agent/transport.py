@@ -1,7 +1,5 @@
 """Push-only transport client with queue-and-forward. Ranked mode only.
 See architecture.md §9.5.
-
-FROZEN signature (agreed for parallel build); body is a PHASE 1 TASK.
 """
 import base64
 import dataclasses
@@ -56,9 +54,6 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
     score = ScoreBreakdown(
         scenario_name=score_data.get("scenario_name"),
         scenario_version=score_data.get("scenario_version"),
-        # Default numeric fields so a response that omits `score` (or its
-        # `total`) renders as "Total: 0" rather than the confusing "Total: None"
-        # in the report. A well-formed engine always includes these.
         total=score_data.get("total", 0) or 0,
         results=results,
         sla_status=sla_status,
@@ -84,10 +79,7 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
 
 
 def _is_retryable_status(status: int) -> bool:
-    """A transient server/rate-limit response is retryable (queue-and-forward);
-    4xx codes (403 bad sig, 409 replay, 410 expired, 400 malformed, §14.2) are
-    permanent logic rejections and must NOT be re-queued (they can never
-    succeed)."""
+    """5xx/429 are transient and retryable; 4xx are permanent rejections."""
     return status >= 500 or status == 429
 
 
@@ -96,13 +88,7 @@ class _NetworkFailure(Exception):
 
 
 class _ResponseParseFailure(Exception):
-    """Internal marker: the engine returned HTTP 200 but the body didn't
-    parse into a CheckinResponse (missing/renamed field, malformed JSON).
-
-    This is NOT a rejection of the bundle — the engine may well have
-    accepted and scored it. Treated like _NetworkFailure (retry later)
-    rather than a permanent rejection, so a transient/format bug on the
-    engine side doesn't silently drop scored evidence."""
+    """Engine returned 200 but body didn't parse; retry rather than drop."""
 
 
 class TransportClient:
@@ -124,9 +110,7 @@ class TransportClient:
             return [line for line in (l.rstrip("\n") for l in f) if line]
 
     def _write_queue(self, lines: list) -> None:
-        # Write to a temp file and atomically rename into place, so a crash
-        # mid-write can never leave a truncated/corrupt queue that would poison
-        # every subsequent flush. os.replace is atomic on POSIX within a dir.
+        # Atomic write via temp file + rename.
         tmp_path = self.queue_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             for line in lines:
@@ -167,10 +151,6 @@ class TransportClient:
                 status = resp.status
                 resp_body = resp.read()
         except urllib.error.HTTPError as e:
-            # Non-200. A 5xx/429 is transient (engine restart/overload) and
-            # must be queued-and-retried, NOT dropped. Only genuine logic/
-            # identity rejections (403 bad sig, 409 replay, 410 expired, 400
-            # malformed -- §14.2) are permanent.
             body = e.read()
             if _is_retryable_status(e.code):
                 raise _NetworkFailure(
@@ -214,10 +194,6 @@ class TransportClient:
         On network failure: append `bundle` to the queue file and return None.
         """
         queued = self._read_queue()
-        # Work on a copy and persist it once at the end (or once on early
-        # exit below), rather than rewriting + fsyncing the whole queue file
-        # after every single entry. The old per-pop write made draining an
-        # N-bundle backlog O(n^2) file I/O; a batch write is O(n).
         remaining = list(queued)
 
         while remaining:
@@ -226,24 +202,11 @@ class TransportClient:
             try:
                 self._send_canonical(canonical_bytes)
             except (_NetworkFailure, _ResponseParseFailure):
-                # Stop flushing; queue the new bundle behind what's left
-                # (don't send it out of order), persist, and bail out. A
-                # parse failure means we can't tell whether the engine
-                # accepted this bundle, so retry it rather than drop it —
-                # if it was already accepted, the retry will cleanly hit a
-                # 409 replay and get dropped by the branch below instead.
                 new_canonical = canonicalize(dataclasses.asdict(bundle))
                 self._write_queue(remaining)
                 self._append_queue(new_canonical.decode("utf-8"))
                 return None
             except Exception as e:
-                # A permanent (non-transient) rejection of a QUEUED bundle, most
-                # commonly a 409 replay: the engine already recorded this seq
-                # (e.g. we crashed after it accepted the check-in but before we
-                # popped the queue). Retrying it forever would make the agent
-                # crash-loop on every restart. It can never succeed, so drop the
-                # poison bundle and keep flushing the rest instead of letting the
-                # exception kill the agent.
                 print(
                     f"WARNING: dropping un-sendable queued bundle (permanent "
                     f"rejection): {e}",
@@ -252,35 +215,18 @@ class TransportClient:
                 remaining.pop(0)
                 continue
 
-            # Successfully flushed; drop it and move on.
             remaining.pop(0)
 
-        # Queue fully drained (everything sent or dropped as poison): persist
-        # the (now-empty) queue once, if anything changed.
         if remaining != queued:
             self._write_queue(remaining)
 
-        # Queue empty (or fully flushed): send the new bundle.
         canonical_bytes = canonicalize(dataclasses.asdict(bundle))
         try:
             return self._send_canonical(canonical_bytes)
         except (_NetworkFailure, _ResponseParseFailure):
-            # See the matching comment in the flush loop above: a parse
-            # failure doesn't tell us whether the engine accepted this
-            # bundle, so queue it for retry instead of dropping it.
             self._append_queue(canonical_bytes.decode("utf-8"))
             return None
         except Exception as e:
-            # A permanent (non-transient) rejection of the NEW bundle, e.g. a
-            # 409 replay (the engine already recorded this seq after it accepted
-            # the check-in but before the caller persisted last_seq) or a 403.
-            # Mirrors the queued-bundle path above: it can never succeed, so
-            # drop it and let the loop advance its cadence rather than letting
-            # the exception kill the ranked loop. CRUCIALLY do NOT re-queue it:
-            # that would make the agent crash-loop on every cycle/restart.
-            # The caller has already persisted identity.last_seq before calling
-            # checkin (see agent/__main__.py), so the next cycle builds a fresh,
-            # strictly-greater seq and the run continues.
             print(
                 f"WARNING: dropping un-sendable bundle (permanent rejection): {e}",
                 file=sys.stderr,

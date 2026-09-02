@@ -1,8 +1,5 @@
 """`package` check type. See architecture.md §9.2, §9.3.
 
-PHASE 1 TASK: implement collect(). Queries the package manager via
-ctx.package_installed(name) (agent.platform.base.PlatformContext — already
-frozen; does not need platform/pkg.py's body to exist, only the ABC).
 collect_params: {"package": str}.
 Evidence.raw shape: {"installed": bool, "version": str | None}.
 """

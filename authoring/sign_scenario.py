@@ -1,7 +1,4 @@
-"""Sign a compiled manifest with the authoring private key. See architecture.md §7.
-
-PHASE 1 TASK: implement using common.canon.canonicalize + common.crypto.signing.
-"""
+"""Sign a compiled manifest with the authoring private key. See architecture.md §7."""
 import base64
 
 from common.canon import canonicalize

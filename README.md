@@ -46,6 +46,7 @@ For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and t
 | `agent/` | On-box collector/reporter; builds into the `.pyz` deployed to a box. |
 | `engine/` | Ranked-mode server: enrollment, check-in, SLA ledger, adversary scheduler, leaderboard. |
 | `authoring/` | Scenario compile + sign toolchain, run on the author's machine. |
+| `boxbuilder/` | Practice-box factory: pairs nakon-planted vulns with huitz scoring checks. |
 | `packaging/` | Zipapp build, install, and re-arm/reset tooling for deploying the agent to a box. |
 | `tests/` | Unit, integration, and Proxmox (live-infrastructure) test tiers. |
 

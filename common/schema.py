@@ -87,12 +87,8 @@ class Manifest:
     engine_url: Optional[str]
     hosts: list
     checks: list  # list[CheckSpec]
-    # NOTE: no rubric, no adversary schedule, no seed.
-    # Cosmetic box-theming subset only ({"title","organization","accent","logo_b64"} --
-    # see authoring/compile.py) -- purely additive, so old manifests without it still pass
-    # validate_manifest (not in _REQUIRED_MANIFEST_KEYS) and old callers still work
-    # unchanged (readers use .get("theme"), same pattern as the existing optional
-    # engine_url). No SCHEMA_VERSION bump needed for the same reason.
+    # No rubric, adversary schedule, or seed. Theme is a small optional subset
+    # (title/organization/accent/logo_b64) — purely additive, not required.
     theme: Optional[dict] = None
 
 
@@ -151,7 +147,6 @@ class Bundle:
 
 
 # --- §12 / §14.2 Directive + protocol response envelopes -------------------
-# Frozen for parallel build (not given dataclass form in architecture.md).
 
 @dataclass
 class Directive:
@@ -236,9 +231,6 @@ def validate_manifest(obj: dict) -> list:
             for key in _REQUIRED_CHECK_SPEC_KEYS:
                 if key not in check:
                     errors.append(f"{ref} missing required key '{key}'")
-            # Only validate the value when the key is present; otherwise the
-            # "missing required key 'category'" error above already covers it and
-            # this would add a redundant, misleading "got None" second error.
             if "category" in check and check["category"] not in (
                 Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
             ):
@@ -246,9 +238,7 @@ def validate_manifest(obj: dict) -> list:
                     f"{ref}.category must be one of vuln/penalty/prohibited, "
                     f"got {check['category']!r}"
                 )
-            # Invariant (§6.1): collect_params must never carry expected/correct
-            # values. Best-effort structural guard: reject an accidentally-leaked
-            # "expect"/"points" key inside collect_params.
+            # §6.1: collect_params must never contain rubric data.
             collect_params = check.get("collect_params")
             if isinstance(collect_params, dict):
                 for leaked_key in ("expect", "points", "matcher"):
@@ -297,8 +287,6 @@ def validate_rubric(obj: dict) -> list:
             for key in _REQUIRED_RUBRIC_ENTRY_KEYS:
                 if key not in entry:
                     errors.append(f"{ref} missing required key '{key}'")
-            # See validate_manifest: skip the value check when the key is absent
-            # to avoid a redundant "got None" alongside the missing-key error.
             if "category" in entry and entry["category"] not in (
                 Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
             ):
@@ -324,16 +312,7 @@ def validate_rubric(obj: dict) -> list:
                 if (isinstance(interval_s, bool)
                         or not isinstance(interval_s, (int, float))
                         or interval_s <= 0):
-                    # interval_s is the divisor for SLA accrual (engine/sla.py);
-                    # zero/negative would divide-by-zero or credit nonsense.
                     errors.append(f"{ref}.sla.interval_s must be a positive number")
-                # points_per_interval and max_intervals_per_checkin feed
-                # `accrued_points += intervals * points_per_interval` directly
-                # in engine/sla.py, with `intervals` capped at
-                # max_intervals_per_checkin. A non-positive value corrupts
-                # accrual: negative points_per_interval shrinks a box's total
-                # over time, and max_intervals_per_checkin <= 0 either kills
-                # accrual entirely or (if negative) also shrinks it via min().
                 ppi = sla.get("points_per_interval")
                 if isinstance(ppi, bool) or not isinstance(ppi, int) or ppi <= 0:
                     errors.append(

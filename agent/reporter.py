@@ -1,23 +1,14 @@
-"""Static HTML report renderer. See architecture.md §13.
-
-FROZEN signature; body is a PHASE 1 TASK. Pure function — no I/O; caller
-writes the returned HTML string to report_path.
-"""
+"""Static HTML report renderer. See architecture.md §13."""
 import html
 import re
 import time
 
 from common.schema import Mode, ScoreBreakdown
 
-# Display refresh cadence only — this number is never a scoring input, it
-# just tells the browser how often to reload the static HTML page.
+# Display refresh cadence (not a scoring input).
 REFRESH_SECONDS = 30
 
-# Re-validated here even though authoring/validate.py already checks this shape at
-# authoring time -- theme reaches this function via a signed-but-still-external
-# manifest field, and this is a <style> interpolation context, not HTML text, so it gets
-# its own defensive check rather than relying on html.escape (which is the wrong
-# protection for a CSS value position anyway).
+# Defensive accent validation for CSS interpolation context.
 _ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -108,20 +99,10 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                    last_confirmed_at: float | None, theme: dict | None = None) -> str:
     """Render ScoreBreakdown to a self-contained HTML string.
 
-    Includes a <meta http-equiv="refresh" content="N"> tag (display cadence
-    only, never a scoring input). Dashboard elements: cumulative total; table
-    of point-in-time results (category, awarded, reason); SLA status table
-    (state UP/DOWN, accrued); and, in ranked mode, a "last confirmed by
-    engine at <last_confirmed_at>" stamp. In ranked mode before the first
-    engine response, last_confirmed_at is None and the report should show
-    "submitted — awaiting engine" instead of a score.
-
-    `theme` (new, optional, trailing -- every existing call site is unaffected) is the
-    small cosmetic subset Manifest.theme carries: {"title", "organization", "accent",
-    "logo_b64"}, any of which may be absent/None. When given, it re-brands the masthead
-    (title text, org subtitle, logo) and the accent color used for the title underline
-    and the total-points figure; it never touches the pass/fail UP/DOWN colors, which
-    stay semantic regardless of theme.
+    Dashboard: total, point-in-time results, SLA status, and in ranked mode a
+    "last confirmed" stamp. Before the first engine response shows
+    "submitted — awaiting engine". Optional ``theme`` re-brands the masthead
+    and accent color; UP/DOWN colors stay semantic.
     """
     theme = theme or {}
     scenario_version = html.escape(str(score.scenario_version))

@@ -1,6 +1,5 @@
 """`permission` check type. See architecture.md §9.2.
 
-PHASE 1 TASK: implement collect(). stat() of a path.
 collect_params: {"path": str}.
 Evidence.raw shape: {"mode": str (e.g. "0640"), "uid": int, "gid": int, "exists": bool}.
 """
@@ -19,10 +18,6 @@ class PermissionCheck(Check):
     def collect(self, spec: CheckSpec, ctx) -> Evidence:
         path = spec.collect_params.get("path")
         if path is None:
-            # A malformed check spec missing the required 'path' param used to
-            # raise KeyError here; the outer run_all would catch it as a generic
-            # ERROR, but the reason would be opaque ("collection error: 'path'").
-            # Return a structured ERROR with an actionable reason instead.
             return Evidence(
                 check_id=spec.id,
                 check_type=self.type_key,

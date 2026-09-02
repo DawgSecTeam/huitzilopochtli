@@ -1,7 +1,4 @@
-"""GET /leaderboard aggregation. See architecture.md §11.4.
-
-PHASE 1 TASK: implement. Depends only on engine.store.Store's signature.
-"""
+"""GET /leaderboard aggregation. See architecture.md §11.4."""
 from engine.store import Store
 
 

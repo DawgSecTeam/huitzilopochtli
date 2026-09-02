@@ -1,7 +1,6 @@
 """`file_regex` check type. See architecture.md §9.2.
 
-PHASE 1 TASK: implement collect(). Reads a text file, applies an extract
-regex. collect_params: {"path": str, "extract": str (regex with one group)}.
+collect_params: {"path": str, "extract": str (regex with one group)}.
 Evidence.raw shape: {"matched": str | None, "present": bool}.
 """
 import re
@@ -11,11 +10,7 @@ from agent.checks.base import Check, register
 from common.matchers import _REGEX_HAYSTACK_LIMIT, _compile_pattern
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-# ReDoS guard: stdlib `re` cannot be safely CPU-bounded from within a worker
-# thread (signal.alarm needs the main thread; a thread join can't interrupt a
-# C-level regex holding the GIL). Mitigate the realistic vector -- a huge file
-# amplifying a sloppy trusted pattern -- by capping how much we read. Pattern
-# validation + compile-caching come from common.matchers._compile_pattern.
+# Cap read size to mitigate ReDoS via a huge file (see common/matchers.py).
 _CONTENT_LIMIT = _REGEX_HAYSTACK_LIMIT  # 1 MB
 
 

@@ -17,13 +17,7 @@ _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _load_build_zipapp():
-    """Load packaging/build_zipapp.py::build by file path.
-
-    Avoids `from packaging.build_zipapp import build`, which collides with the
-    PyPI `packaging` namespace package present in site-packages on many
-    interpreters (it shadows the repo's packaging/ dir). importlib by path is
-    immune to that.
-    """
+    """Load packaging/build_zipapp.py::build by file path (avoids PyPI shadowing)."""
     import importlib.util
     path = os.path.join(_REPO_ROOT, "packaging", "build_zipapp.py")
     spec = importlib.util.spec_from_file_location("huitzilopochtli.packaging.build_zipapp", path)
@@ -31,79 +25,31 @@ def _load_build_zipapp():
     spec.loader.exec_module(mod)
     return mod.build
 
-# On-box install layout, per packaging/README.md. Kept here (not in spec) so
-# the provider install step and any future re-arm integration share one constant.
 INSTALL_DIR = "/opt/huitzilopochtli"
 
 
 def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = None,
                 rebuild_bundle: bool = False, vulndb_url: Optional[str] = None,
                 log=print) -> dict:
-    """Step 1: compile the scenario + build the agent.pyz + build the nakon bundle.
-
-    Reuses authoring/compile.py::compile_scenario (signs the manifest), and
-    packaging/build_zipapp.py::build (the agent artifact). Then shells out to
-    `nakon build` to produce the vuln bundle (needs vulndb reachable).
-
-    `vulndb_url` is only consulted when the scenario has a `theme` block that
-    references a wallpaper/README/motd/shortcuts (see boxbuilder/theme.py); an
-    untheme'd scenario never touches vulndb-ui at all. Defaults via
-    boxbuilder.vulndb.resolve_vulndb_url() ($VULNDB_UI_URL, else http://127.0.0.1:3000).
-
-    Returns:
-      {
-        "mode": "honor"|"ranked",
-        "authoring_key": <path>,
-        "manifest": <artifacts path>,
-        "rubric": <artifacts path or null>,   # honor only
-        "engine_record": <artifacts path>,
-        "authoring_public_key": <artifacts path>,
-        "agent_pyz": <artifacts path>,
-        "bundle": {"bundle_id", "path", "cached", "plans", "machines"},
-      }
-    """
-    # nakon is invoked with its own checkout as cwd. Normalize the artifacts directory before
-    # writing any inputs so the config path remains valid across that cwd boundary (the CLI's
-    # default is the relative ``./artifacts`` path).
+    """Step 1: compile scenario, build agent.pyz, and build nakon bundle."""
     artifacts_dir = os.path.abspath(artifacts_dir)
     os.makedirs(artifacts_dir, exist_ok=True)
 
-    # 1a. Authoring key (load or generate+persist).
     priv_key, key_path = keys.load_authoring_key(spec.authoring_key_path, artifacts_dir)
     log(f"[boxbuilder] authoring key: {key_path}")
 
-    # 1b. Compile the scenario. Defer the import so a missing PyYAML only
-    # surfaces when someone actually compiles (mirrors authoring/ conventions).
     from authoring.compile import compile_scenario
 
     outputs = compile_scenario(spec.scenario_path, artifacts_dir, priv_key)
     log(f"[boxbuilder] compiled {spec.mode} scenario -> {outputs['manifest']}")
 
-    # 1c. Build the agent zipapp into the artifacts dir. Load the builder by
-    # file path rather than `from packaging.build_zipapp import ...`, because a
-    # site-packages `packaging` (PyPI namespace package) can shadow the repo's
-    # packaging/ dir on some interpreters.
     build_zipapp = _load_build_zipapp()
     agent_pyz = os.path.join(artifacts_dir, "agent.pyz")
     build_zipapp(agent_pyz)
     log(f"[boxbuilder] built agent -> {agent_pyz}")
 
-    # 1d. Build the nakon bundle (vuln planting payload). We write a copy of the
-    # agent's nakon config into the artifacts dir so the build input is captured
-    # alongside its outputs; address reconciliation happens at deploy time.
-    #
-    # Theme (box decoration -- wallpaper/readme/motd/shortcuts) is folded in here, not
-    # at plant/install time, as extra entries appended to every machine's
-    # `configurations` list -- nakon's own, unmodified `depends_on`/vars/attachment
-    # mechanism does the rest (see boxbuilder/theme.py). This is nakon's normal
-    # config.json shape; there is no separate "theme" key in it. A scenario with no
-    # `theme` block resolves to an empty entry list and writes spec.nakon_config
-    # unchanged -- fully backward compatible, and touches vulndb-ui not at all.
     ndir = nakon.resolve_nakon_dir(nakon_dir)
     nakon_cfg = dict(spec.nakon_config)
-    # Boxbuilder-owned planting seeds are ensured only when selected.  Existing catalog rows
-    # (including shared/public configurations) are never modified; nakon still remains the
-    # source of truth for resolving and building the final request.
     from boxbuilder import vulndb
     selected_vulns = []
     for machine in nakon_cfg.get("machines", []):
@@ -127,7 +73,6 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
         f"({'cached' if bundle.get('cached') else 'fresh'}, "
         f"{bundle.get('plans', '?')} plan(s), {bundle.get('machines', '?')} machine(s))")
 
-    # Record state so plant/install/package can resume without re-deriving it.
     result = {
         "mode": spec.mode,
         "scenario_name": spec.scenario["scenario"]["name"],
@@ -146,12 +91,9 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
 
 
 def _save_state(artifacts_dir: str, state: dict) -> None:
-    """Persist a build-state.json so later steps (plant/install/package) and the
-    resumable `build` command can pick up where compile left off."""
+    """Persist build-state.json for resumable builds."""
     os.makedirs(artifacts_dir, exist_ok=True)
     path = os.path.join(artifacts_dir, "build-state.json")
-    # build-state.json is build output (paths + bundle id), not secret. The
-    # authoring private key is stored separately as authoring.key (0600).
     serializable = {k: v for k, v in state.items() if k != "authoring_key"}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(serializable, f, indent=2, default=str)
@@ -159,26 +101,11 @@ def _save_state(artifacts_dir: str, state: dict) -> None:
 
 def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = None,
               nakon_dir: Optional[str] = None, provider_factory=None, log=print) -> dict:
-    """Step 2: deploy the vulns onto the box via nakon.
-
-    `bundle_path` defaults to the bundle produced by compile_box (recorded in
-    <artifacts_dir>/build-state.json); callers may pass an explicit one.
-    `provider_factory` is a callable(name, cfg) -> (provider, handle) used in
-    tests to inject a FakeProvider; in production it defaults to the registry.
-
-    Returns:
-      {
-        "bundle_id": str,
-        "machine": {"name","addr","user","port"},
-        "deploy": <nakon deploy --json output>,
-        "ok": bool,
-      }
-    """
+    """Step 2: deploy vulns onto the box via nakon."""
     import json as _json
     state_path = os.path.join(artifacts_dir, "build-state.json")
 
     if bundle_path is None:
-        # Prefer an explicitly-passed bundle, else fall back to the compile record.
         if os.path.isfile(state_path):
             with open(state_path, "r", encoding="utf-8") as f:
                 state = _json.load(f)
@@ -195,18 +122,15 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
             "(e.g. provider: {name: ssh, host: ..., user: ..., password: ...})"
         )
 
-    # Resolve the provider + start the box handle.
     provider, handle = _resolve_provider(spec.provider, provider_factory, log)
     machine_name = nakon.first_machine_name(spec.nakon_config)
     try:
-        # Address reconciliation: take vulns from agent config, address from handle.
         derived = nakon.derive_deploy_config(
             spec.nakon_config, machine_name,
             host=handle.addr, user=handle.user, password=handle.password,
             port=getattr(handle, "port", 22),
         )
         derived_path = os.path.join(artifacts_dir, "nakon-deploy-config.json")
-        # Contains the box's plaintext ssh password; write 0600 like authoring.key.
         fd = os.open(derived_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             _json.dump(derived, f, indent=2)

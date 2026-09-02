@@ -1,7 +1,4 @@
-"""SLA ledger & hysteresis. See architecture.md §11.3.
-
-PHASE 1 TASK: implement. Depends only on engine.store.Store's signature.
-"""
+"""SLA ledger & hysteresis. See architecture.md §11.3."""
 import math
 
 from common.schema import SlaParams
@@ -9,39 +6,8 @@ from engine.store import SlaStateRecord, Store
 
 
 def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
-                is_up: bool, received_at: float) -> SlaStateRecord:
-    """Advance the per-(box_id, check_id) hysteresis state machine:
-
-        UP   --(consec_fail >= fail_n)--> DOWN
-        DOWN --(consec_ok   >= ok_n)  --> UP
-
-    Consecutive counters reset on the opposite observation; a single flap
-    does not change state.
-
-    Accrual (engine clock only): on entering/continuing UP, credit points for
-    floor(elapsed / interval_s) intervals since last_credited_at, capped at
-    max_intervals_per_checkin. No credit accrues while DOWN or during gaps;
-    while DOWN, last_credited_at is advanced to received_at so a later UP
-    transition does not retroactively credit the DOWN period.
-
-    Deliberately fail-closed on the UP->DOWN transitioning check-in itself:
-    accrual below checks the state *after* this observation's hysteresis
-    update, so the trailing UP window between last_credited_at and this
-    failing observation is not credited, even though the box may well have
-    still been UP for most of it. The first observed failure halts crediting
-    immediately rather than waiting for hysteresis to confirm the box is
-    really down — a box that is actually flapping should not keep accruing
-    UP credit through fail_n-1 failing observations before the state catches
-    up. See tests/unit/test_sla.py::test_two_consecutive_fails_flip_to_down_and_stop_accrual
-    and ::test_watermark_jumps_to_received_at_while_down, which pin this
-    behavior.
-
-    Persists the updated SlaStateRecord via store.save_sla_state and returns
-    it.
-
-    Invariant: only `received_at` (the engine's receipt timestamp) is ever
-    used for timing; the box's self-reported clock never influences accrual.
-    """
+                 is_up: bool, received_at: float) -> SlaStateRecord:
+    """Advance hysteresis state and accrue points (engine clock only)."""
     def _apply(rec):
         if rec is None:
             # First-ever observation for this (box, check_id): initialize state
@@ -70,12 +36,7 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
         elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
             rec.state = "UP"
 
-        # Accrual, using the (possibly just-transitioned) new state.
         if rec.state == "UP" and sla_params.interval_s > 0:
-            # interval_s <= 0 is a malformed rubric (validate_rubric rejects it at
-            # authoring/upload time); guard here too so a bad record already in the
-            # DB can't divide-by-zero mid-check-in and crash after partial state has
-            # been persisted. No accrual for a non-positive interval.
             elapsed = received_at - rec.last_credited_at
             intervals = math.floor(elapsed / sla_params.interval_s)
             if intervals < 0:
@@ -87,8 +48,4 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
             rec.last_credited_at = received_at
         return rec
 
-    # The whole read-modify-write runs under Store's lock (update_sla_atomic),
-    # so two concurrent check-ins for the same (box_id, check_id) cannot
-    # interleave their get/mutate/save and clobber each other's accrual or
-    # consecutive counters.
     return store.update_sla_atomic(box_id, check_id, _apply)

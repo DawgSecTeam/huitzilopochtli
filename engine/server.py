@@ -63,25 +63,13 @@ def _rubric_from_dict(d: dict) -> Rubric:
 
 
 def _load_engine_record(path: str) -> dict:
-    """Load engine_record.json (produced by authoring/compile.py). Returns
-    the raw dict {"rubric": {...}, "adversary": {...}} for seeding the store
-    via save_scenario (see main())."""
+    """Load engine_record.json for seeding the store via save_scenario."""
     with open(path, "r") as f:
         return json.load(f)
 
 
 def _validate_adversary_pool(adversary: dict) -> None:
-    """Validate the adversary pool at upload time (§12.1).
-
-    Each event must have:
-      - window_s: [min_s, max_s] numeric pair, with min_s <= max_s
-      - action: non-empty string
-      - id (optional): unique across the pool if provided; two events
-        sharing an explicit id collide on the (box_id, event_id) store
-        index and the later one would silently never fire
-    Missing or malformed events cause a 400 rejection so the engine never
-    silently ignores a broken pool at check-in time.
-    """
+    """Validate adversary pool at upload time; raises ValueError on bad input."""
     events = adversary.get("events", [])
     if not isinstance(events, list):
         raise ValueError("adversary.events must be a list")
@@ -143,9 +131,7 @@ def _bundle_from_dict(d: dict) -> Bundle:
 
 
 def _jsonable(obj):
-    """Recursively convert dataclasses/Enums into plain JSON-serializable
-    structures (dataclasses.asdict doesn't touch Enum values on its own in a
-    way that json.dumps can serialize, so normalize explicitly)."""
+    """Recursively convert dataclasses/Enums for json.dumps."""
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return {k: _jsonable(v) for k, v in dataclasses.asdict(obj).items()}
     if isinstance(obj, Enum):
@@ -163,13 +149,6 @@ class Handler(BaseHTTPRequestHandler):
     server_secret: bytes = b""
     admin_token: str = ""
 
-    # Bound how long any single read (request line, headers, or body) may
-    # stall. socketserver.StreamRequestHandler.setup() applies this to the
-    # connection socket, and BaseHTTPRequestHandler.handle_one_request()
-    # already catches the resulting TimeoutError and closes the connection.
-    # Without this, a client that sends a large Content-Length and then
-    # withholds bytes pins a ThreadingHTTPServer worker thread forever —
-    # a handful of such connections exhausts the thread pool (§11.1).
     timeout = 30
 
     def log_message(self, fmt, *args):  # quiet down default stderr access log
@@ -288,10 +267,6 @@ class Handler(BaseHTTPRequestHandler):
             rubric = _rubric_from_dict(json.loads(scenario_row["rubric_json"]))
             event_pool = json.loads(scenario_row["adversary_json"]).get("events", [])
         except (ValueError, KeyError, TypeError) as e:
-            # A stored rubric that doesn't parse into a valid Rubric means a bad
-            # scenario record reached the DB (validate_rubric on upload should
-            # prevent this, but a pre-existing/older DB could still hold one).
-            # Fail closed with a clean 500 rather than an unhandled traceback.
             self._send_json(
                 500,
                 {
@@ -322,10 +297,6 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             scenario_name = body["scenario_name"]
             ttl_s = body.get("ttl_s", 3600)
-            # Guard the type here (inside the try): a JSON string/other type
-            # would otherwise raise an unhandled TypeError at `time.time() + ttl_s`
-            # below, escaping this handler as a 500. bool is a subclass of int,
-            # so reject it explicitly.
             if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
                 raise ValueError("ttl_s must be a number")
             expires_at = time.time() + ttl_s
@@ -354,21 +325,11 @@ class Handler(BaseHTTPRequestHandler):
                           "{rubric: {..., scenario_name}, adversary: {...}}"},
             )
             return
-        # Validate the rubric BEFORE persisting: a malformed rubric stored here
-        # would otherwise crash /checkin with an unhandled 500 deep inside
-        # _rubric_from_dict (bad category -> ValueError, missing keys -> KeyError,
-        # bad sla -> TypeError), and every box enrolled against it would be
-        # permanently stuck. validate_rubric is the same structural check
-        # authoring/compile.py applies; reject the upload with a 400 + the list.
         errors = validate_rubric(rubric)
         if errors:
             self._send_json(400, {"error": "invalid rubric", "details": errors})
             return
         adversary = body.get("adversary", {})
-        # Validate the adversary pool BEFORE persisting, mirroring the rubric
-        # path above. _validate_adversary_pool raises ValueError on a malformed
-        # pool (bad window_s / action); without this catch the handler would
-        # surface an unhandled 500 instead of the documented 400 rejection.
         try:
             _validate_adversary_pool(adversary)
         except ValueError as exc:
@@ -379,10 +340,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _resolve_server_secret(store: Store) -> bytes:
-    """§4: prefer an explicit env var, else a secret persisted in the store
-    (surviving restarts), else generate + persist a fresh one. This keeps
-    the adversary schedule (derived from (server_secret, box_id)) stable
-    across restarts without requiring an operator to manage the env var."""
+    """Resolve server secret from env, store, or generate and persist."""
     secret_env = os.environ.get("HUITZILOPOCHTLI_SERVER_SECRET")
     if secret_env:
         return secret_env.encode("utf-8")
@@ -402,9 +360,6 @@ def main() -> None:
 
     server_secret = _resolve_server_secret(store)
 
-    # Optional startup convenience: seed the DB from a single engine_record.json
-    # via the same save_scenario() path POST /admin/scenarios uses, so the
-    # existing enroll->checkin flow keeps working without an admin call.
     engine_record_path = os.environ.get("HUITZILOPOCHTLI_ENGINE_RECORD_PATH")
     if engine_record_path:
         record = _load_engine_record(engine_record_path)

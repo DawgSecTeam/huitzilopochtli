@@ -1,9 +1,4 @@
-"""Author-facing validation. See architecture.md §6.7, §8.
-
-PHASE 1 TASK: implement. Wraps common.schema.validate_manifest /
-validate_rubric (structural validation of compiled JSON) with YAML-source
-line-number mapping so build failures are line-referenced for the author.
-"""
+"""Author-facing validation. See architecture.md §6.7, §8."""
 import re
 
 _VALID_MODES = ("honor", "ranked")
@@ -12,29 +7,12 @@ _VALID_CATEGORIES = ("vuln", "penalty", "prohibited")
 # Required keys on each `checks[]` entry, per architecture.md §8.
 _REQUIRED_CHECK_KEYS = ("id", "type", "category", "display", "max_points", "collect", "expect")
 
-# Optional top-level `theme` block (box theming -- see boxbuilder/theme.py and
-# nakon/theme/). Every key is independently optional; only `wallpaper`/`readme`/`logo`
-# are file paths, everything else is inline text. Pure structural/shape checks only --
-# no filesystem access here (consistent with the rest of this file); path existence is
-# checked later where the paths are actually resolved (boxbuilder/theme.py for
-# wallpaper/readme, authoring/compile.py for logo).
 _THEME_STRING_KEYS = ("title", "organization", "accent", "logo", "wallpaper", "readme", "motd", "issue")
 _ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
-    """Returns a list of human-readable, line-referenced error strings;
-    empty list = valid. Called before compile.py splits the scenario into
-    manifest/rubric/engine record.
-
-    NOTE ON "LINE-REFERENCED": raw YAML parsed via yaml.safe_load does not
-    carry line numbers without a custom Loader/constructor. As a best-effort
-    substitute, errors reference the entry's *index* within its containing
-    list (e.g. "checks[2]") rather than a true source line number. This is
-    an acceptable simplification for now; a custom loader that tags nodes
-    with line numbers could replace this later without changing the return
-    contract (still a list of strings).
-    """
+    """Validate scenario YAML; returns list of error strings (empty = valid)."""
     errors = []
 
     if not isinstance(parsed_yaml, dict):
@@ -66,9 +44,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             f"{source_path}: scenario.engine_url is required when mode is 'ranked'"
         )
 
-    # --- checks[] ---------------------------------------------------------
-    # NOTE: per the §8 YAML example, `checks` is a TOP-LEVEL key (a sibling
-    # of `scenario`), not nested under `scenario`. Likewise `adversary`.
     checks = parsed_yaml.get("checks")
     if checks is None:
         errors.append(f"{source_path}: missing required top-level key 'checks'")
@@ -96,13 +71,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             if collect is not None and not isinstance(collect, dict):
                 errors.append(f"{source_path}: {ref}.collect must be a mapping")
 
-            # `expect` is a required key (checked above). A present-but-null
-            # `expect:` (YAML null) satisfied the required-key check, and an
-            # explicit `expect: {}` is also a valid dict -- but both compile to
-            # an empty matcher {} that later crashes the evaluator with
-            # KeyError('tag'); reject them here at authoring time. Only enforce
-            # when the key is present so the earlier "missing required key"
-            # message stands on its own when it's absent.
             if "expect" in check:
                 expect = check.get("expect")
                 if not isinstance(expect, dict) or len(expect) == 0:
@@ -111,7 +79,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                         f"non-empty mapping (an empty matcher crashes the evaluator)"
                     )
 
-    # --- theme (optional, top-level, sibling of scenario/checks/adversary) -----------
     if "theme" in parsed_yaml:
         errors.extend(_validate_theme(parsed_yaml.get("theme"), source_path))
 
@@ -119,14 +86,10 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
 
 
 def _validate_theme(theme, source_path: str) -> list:
-    """Structural checks only for the optional `theme` block -- no filesystem access.
-    Every key is independently optional; presence-checking a key only validates its
-    *shape*, never that a referenced file exists (see module docstring above)."""
+    """Validate optional ``theme`` block (structural only, no filesystem access)."""
     errors = []
 
     if theme is None or (isinstance(theme, dict) and len(theme) == 0):
-        # `theme:` present but null/empty is a no-op, not an error -- unlike `expect`,
-        # nothing downstream crashes on an empty theme.
         return errors
     if not isinstance(theme, dict):
         return [f"{source_path}: 'theme' must be a mapping"]
