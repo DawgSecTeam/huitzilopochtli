@@ -37,8 +37,14 @@ class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     A check that ignores its deadline (e.g. a subprocess-less hang) can never
     be cancelled from outside; daemon threads let the one-shot honor-mode run
     still exit instead of blocking forever on a hung worker (§9.1). Mirrors
-    the stdlib _adjust_thread_count (3.14) so the daemon flag lands before
+    the stdlib _adjust_thread_count so the daemon flag lands before
     Thread.start(), where it is required; re-verify on stdlib upgrades.
+
+    Version-tolerant: 3.14 passes a worker context
+    (``_create_worker_context``) as the second _worker arg, while 3.12
+    passes ``(work_queue, initializer, initargs)`` and has no
+    ``_create_worker_context``. Probe for the method instead of the version
+    so the same zipapp runs on the box's 3.12 and the dev machine's 3.14.
     """
 
     def _adjust_thread_count(self):
@@ -54,11 +60,18 @@ class _DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = '%s_%d' % (self._thread_name_prefix or self,
-                                     num_threads)
+                                      num_threads)
+            if hasattr(self, "_create_worker_context"):
+                args = (weakref.ref(self, weakref_cb),
+                        self._create_worker_context(),
+                        self._work_queue)
+            else:  # Python <= 3.13: no worker-context support.
+                args = (weakref.ref(self, weakref_cb),
+                        self._work_queue,
+                        self._initializer,
+                        self._initargs)
             t = threading.Thread(name=thread_name, target=concurrent.futures.thread._worker,
-                                 args=(weakref.ref(self, weakref_cb),
-                                       self._create_worker_context(),
-                                       self._work_queue))
+                                  args=args)
             t.daemon = True
             t.start()
             self._threads.add(t)

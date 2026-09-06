@@ -1,17 +1,20 @@
 # Xubuntu XFCE VM connection details: chocolate-factory-01, a full clone of
-# the "chocolate-factory-template" (Proxmox vmid 134 as of 2026-09-06; a
-# full clone of the "xubuntu-vnc" template, vmid 119, itself a VNC-enabled
-# clone of the original "xubuntu" template, vmid 904). This redeploy is
-# from xubuntu-vnc (119) so the display/machine-id fix
-# (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on the
-# fresh clone before `boxbuilder build`, as 119 itself is unpatched.
+# the "chocolate-factory-template" (Proxmox vmid 121 as of 2026-09-06; a
+# full clone of vmid 134, itself a full clone of the "xubuntu-vnc" template,
+# vmid 119, itself a VNC-enabled clone of the original "xubuntu" template,
+# vmid 904). This redeploy is from xubuntu-vnc (119) so the display/machine-id
+# fix (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on
+# the fresh clone before `boxbuilder build`, as 119 itself is unpatched.
 #
-# vmid 134 supersedes 133 (wallpaper not visible due to XFCE screen0/Virtual-1
-# mismatch and xfconfd cache – fixed via theme-wallpaper live-reload) and 132
-# (pre-redesign report) and 131 (shortcut/report bugs, see
-# boxbuilder/README.md's "Desktop shortcut/report caveats") and 130 (16-check
-# scenario, see "VNC desktop caveats") and 129 (missing display fix). Don't
-# clone from any of those. 133 remains as fallback until 134 is confirmed.
+# vmid 121 supersedes 134 (20 checks/200pts + forensics, 3.12 collector fix,
+# theme-readme catalog id 119 updated in place to write README.html) and 133
+# (wallpaper not visible due to XFCE screen0/Virtual-1 mismatch and xfconfd
+# cache – fixed via theme-wallpaper live-reload) and 132 (pre-redesign
+# report) and 131 (shortcut/report bugs, see boxbuilder/README.md's "Desktop
+# shortcut/report caveats") and 130 (16-check scenario, see "VNC desktop
+# caveats") and 129 (missing display fix). Don't clone from any of those.
+# 134 remains as fallback until 121 is confirmed. See boxbuilder/REDEPLOY.md
+# for the clone → snapshot → deploy → seal procedure used for 121.
 #
 # provider.host below is whatever IP this specific example clone happens to
 # get from DHCP at build time -- it WILL go stale once that clone is

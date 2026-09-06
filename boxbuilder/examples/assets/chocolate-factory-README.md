@@ -1,63 +1,48 @@
-# Cocoa Falls Chocolate Works — hardening tour
+# Cocoa Falls Chocolate Works: IT Department Debrief
 
-Welcome to the factory systems tour. The box is a normal Ubuntu/Xubuntu XFCE
-workstation with a fictional chocolate-factory wrapper. You do **not** need to
-know any story or brand to solve it: use standard Linux administration and
-incident-response habits.
+Welcome to the IT Department of the Cocoa Falls Chocolate Works factory. Your
+first assignment is to secure this compromised Ubuntu workstation. Remove
+unauthorized access, harden SSH, and clean up files and services left behind
+by the intruder.
 
-## Tour brief
+## Scenario
+You are tasked with securing an employee workstation for the CFCW company.
+Remove unauthorized users and malicious services, secure access to critical
+services, and ensure limited permissions are set on confidential files. The
+password for all admins must be unique and secure, but the ubuntu user
+password does not need to be changed.
 
-You are the incoming systems custodian. Restore a safe baseline before the next
-production shift. The scoring report rewards the secure end state, not a
-particular command or tool.
+**Critical services**
+SSH (`sshd`)
 
-Start with the ordinary checks:
+**Authorized users**
+`ubuntu` is an authorized administrator and their password is `asdf`.
+`cocoaadm` is an authorized administrator.
+`chocobot` is a service account.
 
-- Review `/etc/passwd`, `/etc/shadow`, and the `sudo` group.
-- Check SSH settings, sudoers drop-ins, and the admin's `authorized_keys`.
-- Inspect permissions on recipe, scheduled-job, key, and Desktop files.
-- Review `/etc/cron.d`, user crontabs, and enabled services.
-- Treat a file's extension as untrusted; inspect the shared media shelf.
+**Confidential files**
+Secret recipe: `/opt/cocoa/recipes/secret-recipe.txt`
+Warehouse vault code: `/home/sysadmin/Desktop/vault-code.txt`
+Factory deployment key: `/home/cocoaadm/.ssh/id_rsa`
 
-New to this? A few findings don't need a terminal at all: unexpected
-accounts show up as extra tiles on the login screen before you even reach
-a desktop, and a stray autostart entry is a checkbox in Settings > Session
-and Startup > Application Autostart. Start there, then work into the ones
-that need a terminal.
-
-## A fair way to work
-
-1. Record what you find before changing it.
-2. Prefer the least disruptive fix that restores the expected baseline.
-3. Validate syntax before restarting a service or changing an access-control file.
-4. Re-check both the direct artifact and the mechanism that launches it.
-5. Do not delete the scoring agent or its installation directory.
-
-The difficult findings are meant to reward careful enumeration: look for hidden
-paths, startup hooks, and services that do not belong on a workstation. A clean
-service state is not enough if its unit file or launcher remains behind.
-
-## Useful, non-prescriptive commands
-
-```text
-id; getent passwd; getent group sudo
-sudo -l
-sshd -T 2>/dev/null | grep -i permitrootlogin
-find /etc/cron.d /var/spool/cron -maxdepth 3 -type f -ls 2>/dev/null
-systemctl list-unit-files --state=enabled
-file /var/media/* 2>/dev/null
-```
 
 ## Forensics questions
 
 **Forensics Questions** on the Desktop holds scored questions about what happened to
-this box. Type your answers over the `____` blanks and save — they are re-graded
-automatically along with the rest of the box. A correct answer earns its full points;
-a wrong or blank answer never deducts. Everything the questions ask is discoverable
-from the box itself.
+this box. Type your answers over the `____` blanks and save; questions are graded
+automatically. Each question wants one short, specific answer (a filename, account
+name, or tag) — not yes/no.
 
-When finished, open **Scoring Report** on the desktop. The report explains which
-checks passed and gives the evidence collected by the agent.
 
+## Viewing score report
+To view current score and issues addressed, open the **Scoring Report** shortcut on
+the desktop. The report shows checks that have passed and the points gained from each.
+
+
+
+## Other
 This is an authorized training image. The payloads planted for the exercise are
 harmless, but they model patterns that should be investigated on real systems.
+
+**Do not delete** the scoring engine service or related files! Removing it will
+break scoring and not result in gaining points.
