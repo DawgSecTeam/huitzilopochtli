@@ -48,6 +48,14 @@ systemctl list-unit-files --state=enabled
 file /var/media/* 2>/dev/null
 ```
 
+## Forensics questions
+
+**Forensics Questions** on the Desktop holds scored questions about what happened to
+this box. Type your answers over the `____` blanks and save — they are re-graded
+automatically along with the rest of the box. A correct answer earns its full points;
+a wrong or blank answer never deducts. Everything the questions ask is discoverable
+from the box itself.
+
 When finished, open **Scoring Report** on the desktop. The report explains which
 checks passed and gives the evidence collected by the agent.
 

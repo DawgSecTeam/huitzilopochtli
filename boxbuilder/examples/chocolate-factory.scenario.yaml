@@ -276,11 +276,6 @@ theme:
   issue: |
     AUTHORIZED TRAINING BOX — Cocoa Falls Chocolate Works
     Disconnect if you are not part of the tour.
-  forensics_questions:
-    - "Which scheduled jobs run as root, and do they belong in the factory?"
-    - "Which accounts can administer this box, and which should be removed?"
-    - "Does every file in the shared media shelf look like the type it claims to be?"
-    - "Does the factory admin's authorized_keys list only keys you recognize?"
   desktop_shortcuts:
     # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
     # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
@@ -288,3 +283,28 @@ theme:
     # tilde/variable expansion).
     - name: "Factory Hardening Handbook"
       exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt on the Desktop; the agent re-grades the file each
+# pass. Correct answer = full points; wrong or blank = nothing, no penalty.
+# Each question must be answerable from the evidence on the box -- every key
+# below mirrors a planted vulnerability's check above.
+forensics:
+  - id: fq-hidden-cron
+    question: "A rogue scheduled job keeps phoning home. What is the filename of the hidden cron job?"
+    answer: "cocoa-hidden-sync"
+    answers: ["/etc/cron.d/cocoa-hidden-sync"]
+    points: 10
+  - id: fq-sudo-account
+    question: "One account was quietly added to the sudo group. Which account is it?"
+    answer: "intern"
+    points: 10
+  - id: fq-media-file
+    question: "Something in the shared media shelf (/var/media) is not what it claims to be. Which file?"
+    answer: "golden-ticket.mp3"
+    answers: ["/var/media/golden-ticket.mp3"]
+    points: 10
+  - id: fq-ssh-key
+    question: "The factory admin's authorized_keys contains a key nobody recognizes. What identifying tag does that key carry?"
+    answer: "planted-training-key"
+    points: 10

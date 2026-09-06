@@ -82,6 +82,93 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
     if "theme" in parsed_yaml:
         errors.extend(_validate_theme(parsed_yaml.get("theme"), source_path))
 
+    if "forensics" in parsed_yaml:
+        errors.extend(_validate_forensics(parsed_yaml.get("forensics"), checks, source_path))
+
+    return errors
+
+
+_FORENSIC_KEYS = ("id", "question", "answer", "answers", "points", "path")
+
+
+def _validate_forensics(forensics, checks, source_path: str) -> list:
+    """Validate the optional scored ``forensics`` block."""
+    errors = []
+    if forensics is None:
+        return [f"{source_path}: 'forensics' must be a list of question mappings"]
+    if not isinstance(forensics, list):
+        return [f"{source_path}: 'forensics' must be a list of question mappings"]
+
+    check_ids = {
+        c.get("id") for c in (checks or [])
+        if isinstance(c, dict) and c.get("id") is not None
+    }
+    seen_ids = set()
+    for idx, fq in enumerate(forensics):
+        ref = f"forensics[{idx}]"
+        if not isinstance(fq, dict):
+            errors.append(f"{source_path}: {ref} must be a mapping")
+            continue
+
+        for key in fq:
+            if key not in _FORENSIC_KEYS:
+                errors.append(
+                    f"{source_path}: {ref} has unknown key '{key}' "
+                    f"(expected one of {_FORENSIC_KEYS!r})"
+                )
+
+        for key in ("id", "question", "points"):
+            if key not in fq:
+                errors.append(f"{source_path}: {ref} missing required key '{key}'")
+
+        fid = fq.get("id")
+        if fid is not None:
+            if not isinstance(fid, str) or not fid.strip():
+                errors.append(f"{source_path}: {ref}.id must be a non-empty string")
+            elif fid in seen_ids:
+                errors.append(f"{source_path}: {ref} duplicate forensics id '{fid}'")
+            elif fid in check_ids:
+                errors.append(
+                    f"{source_path}: {ref} id '{fid}' collides with a check id"
+                )
+            seen_ids.add(fid)
+
+        question = fq.get("question")
+        if question is not None and (not isinstance(question, str) or not question.strip()):
+            errors.append(f"{source_path}: {ref}.question must be a non-empty string")
+
+        points = fq.get("points")
+        if points is not None and (
+            isinstance(points, bool) or not isinstance(points, int) or points <= 0
+        ):
+            errors.append(f"{source_path}: {ref}.points must be a positive integer")
+
+        has_answer = "answer" in fq
+        has_answers = "answers" in fq
+        if has_answer:
+            answer = fq.get("answer")
+            if not isinstance(answer, str) or not answer.strip():
+                errors.append(f"{source_path}: {ref}.answer must be a non-empty string")
+        if has_answers:
+            answers = fq.get("answers")
+            if (
+                not isinstance(answers, list)
+                or not answers
+                or not all(isinstance(a, str) and a.strip() for a in answers)
+            ):
+                errors.append(
+                    f"{source_path}: {ref}.answers must be a non-empty list of "
+                    "non-empty strings"
+                )
+        if not has_answer and not has_answers:
+            errors.append(
+                f"{source_path}: {ref} missing required key 'answer' (or 'answers')"
+            )
+
+        path = fq.get("path")
+        if path is not None and (not isinstance(path, str) or not path.strip()):
+            errors.append(f"{source_path}: {ref}.path must be a non-empty string")
+
     return errors
 
 
@@ -106,8 +193,11 @@ def _validate_theme(theme, source_path: str) -> list:
 
     questions = theme.get("forensics_questions")
     if questions is not None:
-        if not isinstance(questions, list) or not all(isinstance(q, str) for q in questions):
-            errors.append(f"{source_path}: theme.forensics_questions must be a list of strings")
+        errors.append(
+            f"{source_path}: theme.forensics_questions is no longer supported; "
+            "move questions to the top-level scored 'forensics' section "
+            "(id/question/answer/points per entry)"
+        )
 
     shortcuts = theme.get("desktop_shortcuts")
     if shortcuts is not None:

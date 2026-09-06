@@ -7,10 +7,14 @@ fetcher), with zero nakon source changes.
 Four small, generic, reusable catalog configurations do the actual work on the box --
 `theme-wallpaper`, `theme-motd`, `theme-readme`, `theme-shortcuts` (static definitions in
 boxbuilder/vulndb_theme_configs/, auto-created idempotently the first time they're
-needed via boxbuilder/vulndb.py::ensure_configuration). Free text (motd/issue/forensics
-questions/shortcut name+exec) is threaded through as `vars`; files (wallpaper/readme) go
+needed via boxbuilder/vulndb.py::ensure_configuration). Free text (motd/issue/
+shortcut name+exec) is threaded through as `vars`; files (wallpaper/readme) go
 through one content-addressed attachment per distinct file, uploaded once and reused by
 every scenario that references identical bytes (boxbuilder/vulndb.py::ensure_attachment).
+
+Forensics questions are NOT handled here anymore: they are scored, compiled into
+the manifest + rubric by authoring/compile.py, and the agent writes/reads the
+answers file on the box itself (agent/__main__.py + agent/checks/forensics.py).
 
 `title`/`organization`/`accent`/`logo` are NOT handled here -- those are the small,
 cosmetic subset that flows through the signed Manifest instead (see
@@ -77,18 +81,6 @@ def _motd_vars(theme: dict) -> dict:
     if issue_text:
         v["ISSUE_TEXT"] = issue_text
     return v
-
-
-def _forensics_text(theme: dict) -> str:
-    questions = theme.get("forensics_questions") or []
-    if not questions:
-        return ""
-    lines = []
-    for i, q in enumerate(questions, start=1):
-        lines.append(f"Q{i}: {q}")
-        lines.append("Answer: ______________________________________________")
-        lines.append("")
-    return "\n".join(lines)
 
 
 def _shortcut_pairs(theme: dict) -> list:
@@ -159,21 +151,17 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
         vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-motd"))
         entries.append({"name": "theme-motd", "vars": motd_vars})
 
-    forensics_text = _forensics_text(theme)
-    if readme_abs or forensics_text:
+    if readme_abs:
         config = vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-readme"))
         readme_vars = {}
-        if readme_abs:
-            upload_path = _readme_upload_path(readme_abs, theme, spec.base_dir)
-            try:
-                readme_vars["README_FILENAME"] = vulndb.ensure_attachment(
-                    url, config, upload_path
-                )
-            finally:
-                if upload_path != readme_abs:
-                    shutil.rmtree(os.path.dirname(upload_path), ignore_errors=True)
-        if forensics_text:
-            readme_vars["FORENSICS_TEXT"] = forensics_text
+        upload_path = _readme_upload_path(readme_abs, theme, spec.base_dir)
+        try:
+            readme_vars["README_FILENAME"] = vulndb.ensure_attachment(
+                url, config, upload_path
+            )
+        finally:
+            if upload_path != readme_abs:
+                shutil.rmtree(os.path.dirname(upload_path), ignore_errors=True)
         entries.append({"name": "theme-readme", "vars": readme_vars})
 
     shortcut_pairs = _shortcut_pairs(theme)

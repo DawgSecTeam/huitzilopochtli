@@ -57,10 +57,21 @@ theme:
   readme: assets/README.md
   motd: |
     Authorized use only. All activity is monitored and logged.
-  forensics_questions:
-    - "What port is the mail server listening on?"
-    - "Which user account was created without authorization?"
   # No desktop_shortcuts here -- the "Scoring Report" launcher (pointing at
   # $INSTALL_DIR/report.html) is added automatically for any themed scenario; see
   # boxbuilder/theme.py::resolve_theme_for_nakon. Set include_report_shortcut: false
   # to opt out, or add more entries under desktop_shortcuts: [{name, exec}, ...].
+
+# Scored forensics questions (CyberPatriot-style): answers are typed into
+# Forensics-Questions.txt on the Desktop and re-graded by the agent. Keys
+# mirror the planted vulnerabilities above.
+forensics:
+  - id: fq-suid-binary
+    question: "One system utility was carrying an unauthorized SUID bit. Which binary was it?"
+    answer: "find"
+    answers: ["/usr/bin/find"]
+    points: 5
+  - id: fq-web-server
+    question: "Which web server was down when the box was handed over, and had to be brought back up?"
+    answer: "nginx"
+    points: 5

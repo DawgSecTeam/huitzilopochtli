@@ -176,7 +176,27 @@ class Manifest:
     hosts: list[str]            # host_ids present in this scenario
     checks: list[CheckSpec]
     # NOTE: no rubric, no adversary schedule, no seed.
+
+@dataclass
+class ForensicsQuestion:
+    id: str                     # unique; must not collide with a check id
+    question: str               # rendered on-box (report card, answers template)
+    max_points: int
+    # forensics: Optional[list[ForensicsQuestion]] on Manifest.
+    # Question text is public; the answer key NEVER ships in the manifest —
+    # it lives only in the corresponding RubricEntry matcher (`answer_equals`).
 ```
+
+**Forensics questions (§8 authoring):** the scenario's top-level `forensics:` block
+compiles 1:1 into a public `CheckSpec(type="forensics_answer")` per question (carrying
+question text, points, and the on-box answers-file path) plus a rubric entry with the
+answer key. The agent writes a `Forensics-Questions.txt` template to the primary
+desktop user's Desktop on first boot (write-if-missing — team answers are never
+clobbered); teams type answers over the blank lines; the collector reads the file each
+pass as ordinary evidence and the shared evaluator scores it with the `answer_equals`
+matcher (normalized comparison; blank/wrong earns nothing, never deducts). Ranked mode
+needs no engine changes: answers ride the bundle as evidence, keys stay in the
+engine-side rubric.
 
 ### 6.5 Rubric (JSON; engine-held in ranked, ships with box in honor)
 
@@ -316,6 +336,7 @@ class Check(ABC):
 | `package` | queries package manager via platform layer | `{installed: bool, version: str\|null}` | dpkg/rpm/apk |
 | `http_uptime` | GET against localhost (stdlib `http.client`) | `{status: int\|null, body_match: bool, error: str\|null}` | SLA-capable |
 | `db_query` | runs a fixed test query on a local socket | `{ok: bool, error: str\|null}` | SLA-capable; DB driver must remain optional/stdlib-friendly — if a pure-Python driver is unavailable for a given DB, this check degrades to a socket-connect probe |
+| `forensics_answer` | reads the team-editable answers file, extracts one question's `Answer:` line | `{answer: str}` | empty string = unanswered/blank; scored via the `answer_equals` matcher (§6.4) |
 
 Each check type's evidence schema is fixed and documented alongside its module.
 

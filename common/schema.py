@@ -83,6 +83,19 @@ class RubricEntry:
 # --- §6.4 Manifest (signed, shipped to box) ---------------------------------
 
 @dataclass
+class ForensicsQuestion:
+    """A scored forensics question as shipped in the Manifest.
+
+    Question text and max points are public (rendered on-box); the answer key
+    lives only in the RubricEntry matcher, never here (rubric data must not
+    ship in the manifest).
+    """
+    id: str
+    question: str
+    max_points: int
+
+
+@dataclass
 class Manifest:
     schema_version: int
     scenario_name: str
@@ -94,6 +107,8 @@ class Manifest:
     # No rubric, adversary schedule, or seed. Theme is a small optional subset
     # (title/organization/accent/logo_b64) — purely additive, not required.
     theme: Optional[dict] = None
+    # Scored forensics questions (question text only — no answer keys).
+    forensics: Optional[list] = None  # list[ForensicsQuestion]
 
 
 # --- §6.5 Rubric -------------------------------------------------------------
@@ -260,6 +275,56 @@ def validate_manifest(obj: dict) -> list:
                 if cid in seen_ids:
                     errors.append(f"{ref} duplicate check id '{cid}'")
                 seen_ids.add(cid)
+
+    forensics = obj.get("forensics")
+    if forensics is not None:
+        if not isinstance(forensics, list):
+            errors.append("manifest.forensics must be a list")
+        else:
+            seen_fq_ids = set()
+            # Collision is against author-written checks only — each forensics
+            # question compiles into its own forensics_answer CheckSpec with
+            # the same id, which is by design.
+            check_ids = {
+                c.get("id") for c in (checks or [])
+                if isinstance(c, dict) and c.get("id") is not None
+                and c.get("type") != "forensics_answer"
+            }
+            for idx, fq in enumerate(forensics):
+                ref = f"manifest.forensics[{idx}]"
+                if not isinstance(fq, dict):
+                    errors.append(f"{ref} must be an object")
+                    continue
+                for key in ("id", "question", "max_points"):
+                    if key not in fq:
+                        errors.append(f"{ref} missing required key '{key}'")
+                fid = fq.get("id")
+                if fid is not None:
+                    if not isinstance(fid, str) or not fid.strip():
+                        errors.append(f"{ref}.id must be a non-empty string")
+                    elif fid in seen_fq_ids:
+                        errors.append(f"{ref} duplicate forensics id '{fid}'")
+                    elif fid in check_ids:
+                        errors.append(f"{ref} id '{fid}' collides with a check id")
+                    seen_fq_ids.add(fid)
+                question = fq.get("question")
+                if question is not None and (
+                    not isinstance(question, str) or not question.strip()
+                ):
+                    errors.append(f"{ref}.question must be a non-empty string")
+                max_points = fq.get("max_points")
+                if max_points is not None and (
+                    isinstance(max_points, bool) or not isinstance(max_points, int)
+                    or max_points <= 0
+                ):
+                    errors.append(f"{ref}.max_points must be a positive integer")
+                # Leak guard: answer keys live only in the rubric.
+                for leaked_key in ("answer", "answers"):
+                    if leaked_key in fq:
+                        errors.append(
+                            f"{ref} must not contain '{leaked_key}' "
+                            "(answer keys must never ship in the manifest)"
+                        )
 
     return errors
 
