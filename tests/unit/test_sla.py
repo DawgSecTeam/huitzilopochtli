@@ -128,20 +128,21 @@ def test_recovery_after_hysteresis_ok_n_resumes_accrual(store):
     # last_credited_at should have been advanced to this received_at (still DOWN).
     assert rec.last_credited_at == 1180.0
 
-    # Second consecutive OK observation: recovers to UP, but no elapsed
-    # interval to credit yet since last_credited_at was just reset to 1180.
+    # Second consecutive OK observation: recovers to UP. The transition
+    # re-anchors last_credited_at at now (the pending-hysteresis window is
+    # not credited) and credits nothing on the transition check-in itself.
     rec = update_sla(store, "box1", "check1", params, is_up=True, received_at=1200.0)
     assert rec.state == "UP"
     assert rec.consec_ok == 2
-    assert rec.accrued_points == down_points  # only 20s elapsed, < interval_s
-    assert rec.last_credited_at == 1180.0
+    assert rec.accrued_points == down_points
+    assert rec.last_credited_at == 1200.0
 
-    # Now accrual resumes normally while UP.
-    rec = update_sla(store, "box1", "check1", params, is_up=True, received_at=1240.0)
+    # Now accrual resumes normally while UP, measured from the transition.
+    rec = update_sla(store, "box1", "check1", params, is_up=True, received_at=1260.0)
     assert rec.state == "UP"
-    # elapsed = 1240 - 1180 = 60s -> exactly 1 interval.
+    # elapsed = 1260 - 1200 = 60s -> exactly 1 interval.
     assert rec.accrued_points == down_points + 5
-    assert rec.last_credited_at == 1240.0
+    assert rec.last_credited_at == 1260.0
 
 
 def test_max_intervals_per_checkin_caps_credit(store):
@@ -193,9 +194,10 @@ def test_watermark_jumps_to_received_at_while_down(store):
 
     rec = update_sla(store, "box1", "check1", params, is_up=True, received_at=1600.0)
     assert rec.state == "UP"
-    # elapsed since last_credited_at (1550) is only 50s < interval_s -> no credit yet.
     assert rec.accrued_points == 0
-    assert rec.last_credited_at == 1550.0
+    # The UP transition re-anchors last_credited_at at the recovery moment,
+    # so the DOWN window can never be retroactively credited.
+    assert rec.last_credited_at == 1600.0
 
 
 # --- concurrency: update_sla must not lose updates (BUG-E3) ----------------

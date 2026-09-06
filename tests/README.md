@@ -9,13 +9,13 @@ package, no path hacking needed in individual test files.
 No external processes; mocked `subprocess`/filesystem where the real thing
 would be slow, flaky, or system-dependent (platform layer, package managers).
 Real (but temporary/local) files and sqlite DBs where that's cheap and more
-representative (checks, store). 254 tests, ~40s.
+representative (checks, store). ~40s.
 
 ## `tests/integration/` — real processes, same host
 
 Real subprocesses (`python3 -m agent`, `python3 -m engine.server`), real
 sockets over `127.0.0.1`, real sqlite files, real signing/verification. No
-external VM or network boundary. 24 tests, ~90s — dominated by
+external VM or network boundary. ~90s — dominated by
 `test_ranked_loopback.py`, see the note below.
 
 Run both tiers together (the default):

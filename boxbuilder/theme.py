@@ -23,17 +23,11 @@ import tempfile
 from typing import Optional
 
 from boxbuilder import mdhtml, vulndb
-from boxbuilder.spec import BoxSpec
+from boxbuilder.spec import BoxSpec, _resolve
 
 # Matches authoring/compile.py's manifest logo cap; the README page skips (rather
 # than fails) an over-cap/unreadable logo -- compile.py is the one that fail-fasts.
 _MAX_LOGO_BYTES = 150 * 1024
-
-
-def _resolve(path: str, base_dir: str) -> str:
-    # Mirrors boxbuilder/spec.py::_resolve -- same "absolute wins, else relative to the
-    # spec file's directory" rule used for scenario_path/nakon_config_path there.
-    return path if os.path.isabs(path) else os.path.normpath(os.path.join(base_dir, path))
 
 
 def _readme_logo_b64(theme: dict, base_dir: str) -> Optional[str]:
@@ -108,6 +102,12 @@ def _shortcut_pairs(theme: dict) -> list:
     expands -- a bare `~`/`$HOME` in a .desktop Exec= line isn't guaranteed to be
     shell-expanded by whatever launches it."""
     shortcuts = list(theme.get("desktop_shortcuts") or [])
+    for idx, sc in enumerate(shortcuts):
+        if not isinstance(sc, dict) or not sc.get("name") or not sc.get("exec"):
+            raise ValueError(
+                f"theme.desktop_shortcuts[{idx}] must be an object with "
+                f"'name' and 'exec' keys, got {sc!r}"
+            )
     if theme.get("include_report_shortcut") is not False:
         shortcuts.append({
             "name": "Scoring Report",

@@ -130,8 +130,11 @@ def _run_vulndb_cli(args: list, base_url: str, stdin_str: str = None,
     except FileNotFoundError as e:
         raise VulndbError(f"failed to invoke vulndb-cli: {e}") from e
     except subprocess.TimeoutExpired as e:
-        raise VulndbError(f"vulndb-cli timed out after {timeout}s: {' '.join(args)}",
-                          returncode=124) from e
+        raise VulndbError(
+            f"vulndb-cli timed out after {timeout}s: {' '.join(args)}",
+            returncode=124,
+            stderr=(e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")),
+        ) from e
 
     if result.returncode != 0:
         raise VulndbError(
@@ -214,7 +217,9 @@ def upload_attachment(base_url: str, configuration: dict, local_path: str, filen
     try:
         staged = os.path.join(d, filename)
         with open(local_path, "rb") as src, open(staged, "wb") as dst:
-            dst.write(src.read())
+            # Stream in chunks: wallpapers are exactly the kind of file that
+            # gets large; slurping them into memory is pointless.
+            shutil.copyfileobj(src, dst)
         ref = configuration.get("name") or str(configuration["id"])
         return _run_vulndb_cli(["upload", ref, staged], base_url, timeout=timeout)
     finally:

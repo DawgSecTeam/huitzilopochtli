@@ -49,7 +49,7 @@ python3 -m boxbuilder build \
 ```
 
 For a longer, themed follow-up session, see the **Cocoa Falls Chocolate Works**
-example: `boxbuilder/examples/chocolate-factory.{box,scenario,nakon}.yaml`.
+example: `boxbuilder/examples/chocolate-factory.box.yaml` pairs with `chocolate-factory.scenario.yaml` and `chocolate-factory.nakon.json`.
 It targets an Ubuntu/Xubuntu XFCE VM in honor mode and pairs ordinary cyPAT-style
 access-control findings (root SSH login, passwordless sudo, unauthorized users,
 unwanted admin membership, and loose permissions) with cron, malicious media,
@@ -305,7 +305,11 @@ attachment fetcher unmodified.
 This means a **themed** `compile` needs vulndb-ui reachable (`--vulndb-url` or
 `$VULNDB_UI_URL`, default `http://127.0.0.1:3000` — same env var and default
 `vulndb-cli` uses) *in addition to* the usual nakon/vulndb reachability `nakon build`
-already needs; an **untheme'd** scenario never touches vulndb-ui at all. See
+already needs; a scenario with **no theme block and no locally-seeded vulns**
+never touches vulndb-ui at all. (Note: `compile` also ensures any *selected*
+vuln that has a bundled seed in `boxbuilder/vulndb_vuln_configs/` exists in the
+catalog — create-if-missing — so scenarios selecting seeded vulns reach
+vulndb-ui even when untheme'd.) See
 `boxbuilder/examples/linux-fundamentals-themed.{scenario,box}.yaml` for a worked example.
 
 ## Artifacts

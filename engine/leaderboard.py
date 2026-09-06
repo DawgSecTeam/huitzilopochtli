@@ -9,6 +9,7 @@ def get_leaderboard(store: Store, scenario_name: str) -> list:
     return [
         {
             "rank": idx + 1,
+            "box_id": row.box_id,
             "scenario_name": row.scenario_name,
             "total": row.total,
             "updated_at": row.updated_at,

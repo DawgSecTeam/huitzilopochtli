@@ -26,18 +26,12 @@ from urllib.parse import urlsplit, parse_qs
 
 from common.schema import (
     Bundle, Category, CollectorStatus, Evidence, Rubric, RubricEntry, SlaParams,
-    validate_rubric,
+    SCHEMA_VERSION, validate_rubric,
 )
 from engine import enrollment, leaderboard
 from engine.checkin import CheckinError, handle_checkin
 from engine.enrollment import EnrollError
 from engine.store import Store
-
-
-def _empty_rubric() -> Rubric:
-    """A Rubric with no entries. Used when a scenario has no uploaded record
-    yet, so /health and /enroll remain smoke-testable without one."""
-    return Rubric(schema_version=1, scenario_name="", scenario_version=0, entries=[])
 
 
 def _rubric_from_dict(d: dict) -> Rubric:
@@ -127,6 +121,7 @@ def _bundle_from_dict(d: dict) -> Bundle:
         scenario_version=d["scenario_version"],
         evidence=evidence,
         created_wall_claim=d.get("created_wall_claim", 0.0),
+        schema_version=d.get("schema_version", SCHEMA_VERSION),
     )
 
 
@@ -286,6 +281,13 @@ class Handler(BaseHTTPRequestHandler):
                 e.status_code, {"error": e.message, "last_seq": e.last_seq}
             )
             return
+        except Exception as e:  # noqa: BLE001 — fail closed with a mapped 500
+            # rather than dropping the connection (the agent would treat that
+            # as a transient failure and retry forever).
+            self._send_json(
+                500, {"error": f"internal error during check-in: {e}", "last_seq": None}
+            )
+            return
         self._send_json(200, response)
 
     def _handle_admin_create_token(self):
@@ -392,7 +394,7 @@ def main() -> None:
             "to enable it"
         )
 
-    print(f"huitzilopochtli engine listening on {scheme}://0.0.0.0:{port} (db={db_path})")
+    print(f"huitzilopochtli engine listening on {scheme}://{bind_host}:{port} (db={db_path})")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

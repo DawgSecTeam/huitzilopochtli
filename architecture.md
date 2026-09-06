@@ -220,7 +220,7 @@ class ScoreBreakdown:
 
 Signatures must be computed over identical bytes on both sides.
 
-- **Canonical form** (`common/canon.py`): `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`. No trailing newline. All signed payloads pass through `canonicalize()`.
+- **Canonical form** (`common/canon.py`): `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`. No trailing newline. All signed payloads pass through `canonicalize()`. String values (and dict keys) are additionally NFC-normalized before serialization, so decomposed vs composed Unicode forms of the same text sign identically. String values (and dict keys) are additionally NFC-normalized before serialization, so decomposed vs composed Unicode forms of the same text sign identically.
 - **Crypto** (`common/crypto/`): vendored pure-Python **Ed25519** (`ed25519.py`), pinned to a well-known reference implementation, plus a thin `signing.py` wrapper: `keypair()`, `sign(priv, msg_bytes) -> sig`, `verify(pub, msg_bytes, sig) -> bool`.
 - **What is signed:**
   - **Scenario manifest** — signed by the *authoring key* (team key). The agent verifies before running.

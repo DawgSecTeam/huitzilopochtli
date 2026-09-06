@@ -43,7 +43,9 @@ def minimal_rubric_entry():
     return {
         "check_id": "chk-1",
         "category": "vuln",
-        "matcher": {},
+        # Resolvable shorthand matcher (validate_rubric rejects matchers no
+        # registered predicate can claim -- they would KeyError at evaluation).
+        "matcher": {"equals": "yes"},
         "points": 10,
     }
 

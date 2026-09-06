@@ -9,9 +9,10 @@ provider will produce a real image.
 """
 import os
 import shlex
-import stat
+import sys
 from typing import Optional
 
+from boxbuilder.artifacts import INSTALL_DIR  # noqa: F401 — re-exported for callers
 from boxbuilder.providers.base import (
     BoxHandle, BoxProvider, ExportResult, RunResult, register_provider,
 )
@@ -19,7 +20,10 @@ from boxbuilder.providers.base import (
 # packaging/ lives at <repo_root>/packaging/; we reference its init templates.
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _PACKAGING = os.path.join(_REPO_ROOT, "packaging")
-INSTALL_DIR = "/opt/huitzilopochtli"
+
+
+class SshProviderError(RuntimeError):
+    """Raised when an SSH/SFTP operation against the box fails."""
 
 
 @register_provider
@@ -36,18 +40,46 @@ class SshProvider(BoxProvider):
             user=cfg["user"],
             password=cfg["password"],
             port=int(cfg.get("port", 22)),
+            known_hosts=cfg.get("known_hosts"),
         ).connect()
+
+
+def _host_key_policy(client, known_hosts, addr, port):
+    """Pin host keys when a known_hosts file is available; otherwise fail
+    closed-ish with a loud warning about AutoAddPolicy (a silent trust-on-
+    first-use would let a MITM intercept the plaintext box password)."""
+    import paramiko
+
+    if known_hosts:
+        client.load_host_keys(known_hosts)  # explicit pins take precedence
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        return
+    env_kh = os.environ.get("HUITZILOPOCHTLI_KNOWN_HOSTS")
+    if env_kh and os.path.isfile(env_kh):
+        client.load_host_keys(env_kh)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        return
+    print(
+        f"WARNING: ssh provider trusting ANY host key for {addr}:{port} "
+        f"(AutoAddPolicy) while sending a plaintext password. Pass "
+        f"provider.known_hosts (or set HUITZILOPOCHTLI_KNOWN_HOSTS) to pin "
+        f"the host key.",
+        file=sys.stderr,
+    )
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
 
 class SshHandle(BoxHandle):
     """A live SSH connection to a box (paramiko)."""
 
-    def __init__(self, name: str, addr: str, user: str, password: str, port: int = 22):
+    def __init__(self, name: str, addr: str, user: str, password: str, port: int = 22,
+                 known_hosts: Optional[str] = None):
         self.name = name
         self.addr = addr
         self.user = user
         self.password = password
         self.port = port
+        self.known_hosts = known_hosts
         self._client = None  # paramiko.SSHClient, lazily connected
 
     def connect(self) -> "SshHandle":
@@ -59,16 +91,21 @@ class SshHandle(BoxHandle):
             ) from e
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        _host_key_policy(client, self.known_hosts, self.addr, self.port)
         # password auth, as nakon uses (config.json carries plaintext creds).
-        client.connect(
-            self.addr, port=self.port, username=self.user, password=self.password,
-            timeout=30, allow_agent=False, look_for_keys=False,
-        )
+        try:
+            client.connect(
+                self.addr, port=self.port, username=self.user, password=self.password,
+                timeout=30, allow_agent=False, look_for_keys=False,
+            )
+        except Exception as e:
+            raise SshProviderError(
+                f"could not SSH to {self.user}@{self.addr}:{self.port}: {e}"
+            ) from e
         self._client = client
 
         # Reachability + python3 presence. Alpine ships without python3; install
-        # it so the agent.pyz can run (packaging/README.md:44-56).
+        # it so the agent.pyz can run (see packaging/README.md, "Alpine" note).
         py = self.run("command -v python3 >/dev/null 2>&1 && echo ok", sudo=False)
         if not py.ok or "ok" not in py.stdout:
             # Try to install (apt or apk); ignore failures -- surface a clear
@@ -88,6 +125,8 @@ class SshHandle(BoxHandle):
 
     # --- BoxHandle API ---------------------------------------------------
     def run(self, cmd: str, *, timeout: int = 1800, sudo: bool = True) -> RunResult:
+        if self._client is None:
+            raise SshProviderError("SSH connection is not open; call connect() first")
         # Use /bin/sh (POSIX), NOT bash: minimal Alpine ships only busybox /bin/sh,
         # and the openrc init script targets exactly those boxes. Every command we
         # issue here is POSIX; shlex.quote() emits POSIX-safe quoting.
@@ -107,7 +146,33 @@ class SshHandle(BoxHandle):
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
             # Same latent hang applies to non-sudo commands that read stdin.
             stdin.channel.shutdown_write()
-        exit_status = stdout.channel.recv_exit_status()
+        try:
+            # recv_exit_status() waits on a channel event that the timeout
+            # given to exec_command does NOT bound; if the channel dies
+            # without delivering a status it would block forever. A watchdog
+            # thread bounds it (daemon: never blocks interpreter exit).
+            import threading
+            status = {}
+            watcher = threading.Thread(
+                target=lambda: status.__setitem__(
+                    "exit", stdout.channel.recv_exit_status()
+                ),
+                daemon=True,
+            )
+            watcher.start()
+            watcher.join(timeout)
+            if watcher.is_alive():
+                raise SshProviderError(
+                    f"command on {self.addr} produced no exit status within "
+                    f"{timeout}s: {cmd!r}"
+                )
+            exit_status = status["exit"]
+        except SshProviderError:
+            raise
+        except Exception as e:
+            raise SshProviderError(
+                f"command failed on {self.addr} (channel error): {cmd!r}: {e}"
+            ) from e
         return RunResult(
             exit_status=exit_status,
             stdout=stdout.read().decode("utf-8", "replace"),
@@ -115,11 +180,22 @@ class SshHandle(BoxHandle):
         )
 
     def put(self, local: str, remote: str, mode: Optional[int] = None) -> None:
-        sftp = self._client.open_sftp()
+        if self._client is None:
+            raise SshProviderError("SSH connection is not open; call connect() first")
+        try:
+            sftp = self._client.open_sftp()
+        except Exception as e:
+            raise SshProviderError(
+                f"could not open SFTP to {self.addr}: {e}"
+            ) from e
         try:
             sftp.put(local, remote)
             if mode is not None:
                 sftp.chmod(remote, mode)
+        except Exception as e:
+            raise SshProviderError(
+                f"failed to place {local} -> {self.addr}:{remote}: {e}"
+            ) from e
         finally:
             sftp.close()
 
@@ -128,7 +204,7 @@ class SshHandle(BoxHandle):
             return
         # Ensure the install dir exists, then copy + enable the unit. We SFTP the
         # template up and let the box's own init system install it, per
-        # packaging/README.md:118-133.
+        # the templates in packaging/.)
         # The target dirs (/etc/systemd/system, /etc/init.d) are root-owned, so a
         # non-root SSH user cannot SFTP into them. Stage the unit under /tmp (any
         # user can write there), then sudo-install it into place.

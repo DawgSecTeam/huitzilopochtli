@@ -5,7 +5,7 @@ the packaging/README.md install layout. It does NOT touch the box -- it returns
 a description of what to place; pipeline.install_box applies it via the provider
 handle. Separation makes the per-mode file set unit-testable without a box.
 
-Install layout (packaging/README.md:11-24), all under INSTALL_DIR:
+Install layout (see packaging/README.md), all under INSTALL_DIR:
   agent.pyz                      both modes
   manifest.signed.json           both modes
   authoring_public_key.b64       both modes

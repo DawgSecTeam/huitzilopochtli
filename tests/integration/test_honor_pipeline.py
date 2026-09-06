@@ -55,6 +55,7 @@ def _write_agent_config(
     rubric_path,
     report_path,
     authoring_public_key_path=None,
+    allow_unsigned_manifest=None,
 ):
     config = {
         "mode": "honor",
@@ -66,6 +67,8 @@ def _write_agent_config(
     }
     if authoring_public_key_path is not None:
         config["authoring_public_key_path"] = str(authoring_public_key_path)
+    if allow_unsigned_manifest is not None:
+        config["allow_unsigned_manifest"] = allow_unsigned_manifest
     config_path = tmp_path / "agent_config.json"
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f)
@@ -221,10 +224,12 @@ def test_manifest_signature_tampered_rejected(tmp_path):
     assert "signature verification" in result.stderr.lower()
 
 
-# --- 4. manifest signature verification: back-compat fallback ---------------
+# --- 4. manifest signature verification: fail-closed, explicit opt-out ------
+# (§6.7/§16: an unverifiable manifest must not run without an explicit config
+# opt-out, since replacing manifest.signed.json would mean arbitrary checks.)
 
 
-def test_manifest_signature_backcompat_no_public_key_configured(tmp_path):
+def test_manifest_signature_no_public_key_fails_closed(tmp_path):
     outputs, _priv_key = _compile_basic_scenario(tmp_path)
 
     report_path = tmp_path / "report.html"
@@ -239,11 +244,32 @@ def test_manifest_signature_backcompat_no_public_key_configured(tmp_path):
 
     result = _run_agent(config_path)
 
+    assert result.returncode != 0, "agent must refuse an UNVERIFIED manifest"
+    assert "UNVERIFIED" in result.stderr
+    assert not report_path.exists()
+
+
+def test_manifest_signature_backcompat_explicit_opt_out(tmp_path):
+    outputs, _priv_key = _compile_basic_scenario(tmp_path)
+
+    report_path = tmp_path / "report.html"
+    # Explicit dev opt-out: run without a verification key.
+    config_path = _write_agent_config(
+        tmp_path,
+        manifest_path=outputs["manifest"],
+        rubric_path=outputs["rubric"],
+        report_path=report_path,
+        authoring_public_key_path=None,
+        allow_unsigned_manifest=True,
+    )
+
+    result = _run_agent(config_path)
+
     assert result.returncode == 0, (
         f"agent failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert "WARNING" in result.stderr
-    assert "skip" in result.stderr.lower() or "SKIPPED" in result.stderr
+    assert "SKIPPED" in result.stderr
     assert report_path.exists()
     assert "Total: 10" in report_path.read_text(encoding="utf-8")
 

@@ -302,6 +302,9 @@ def _base_config(manifest_path, identity_path, report_path, checkin_interval_s,
         "report_path": str(report_path),
         "checkin_interval_s": checkin_interval_s,
         "authoring_public_key_path": None,
+        # Test fixtures ship unsigned manifests; _load_manifest now fails
+        # closed without a verification key, so opt in explicitly (§16).
+        "allow_unsigned_manifest": True,
         "enrollment_token": enrollment_token,
     }
 
