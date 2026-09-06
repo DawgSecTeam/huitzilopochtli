@@ -1,23 +1,24 @@
 # Xubuntu XFCE VM connection details: chocolate-factory-01, a full clone of
-# the "chocolate-factory-template" (Proxmox vmid 132 as of 2026-09-06; a
+# the "chocolate-factory-template" (Proxmox vmid 133 as of 2026-09-06; a
 # full clone of the "xubuntu-vnc" template, vmid 119, itself a VNC-enabled
-# clone of the original "xubuntu" template, vmid 904), cloned 2026-09-06.
+# clone of the original "xubuntu" template, vmid 904). This redeploy is
+# from xubuntu-vnc (119) so the display/machine-id fix
+# (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on the
+# fresh clone before `boxbuilder build`, as 119 itself is unpatched.
 #
-# vmid 132 supersedes 131 (which had all 19 checks correctly planted and the
-# display fix, but the desktop-shortcut/report bugs described in
-# boxbuilder/README.md's "Desktop shortcut/report caveats" section) and 130
-# (which had the display fix but the older, 16-check scenario -- see the
-# "VNC desktop caveats" section) and 129 before that (missing the display
-# fix entirely). Don't clone from any of those. xubuntu-vnc (119) itself was
-# NOT patched with the display fix; any future box built straight from 119
-# needs boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh run on it
-# first, or will reproduce the same black-screen symptom.
+# vmid 133 supersedes 132 (which had all 19 checks, the display fix, and the
+# desktop-shortcut/report fixes, but the pre-redesign report page from before
+# 2ab540e's honor-board countdown work) and 131 before it (which had the
+# shortcut/report bugs described in boxbuilder/README.md's "Desktop
+# shortcut/report caveats" section) and 130 (older 16-check scenario -- see
+# "VNC desktop caveats") and 129 (missing the display fix). Don't clone from
+# any of those.
 #
-# provider.host below is whatever IP this specific example clone happened
-# to get from DHCP at build time -- it WILL go stale once that clone is
+# provider.host below is whatever IP this specific example clone happens to
+# get from DHCP at build time -- it WILL go stale once that clone is
 # destroyed/reprovisioned; point it at your own clone's current IP before
-# running `boxbuilder build` yourself. Don't assume a box's IP is stable
-# for its whole lifetime either -- it can change on a lease renewal.
+# running `boxbuilder build` yourself (DHCP is fine). Don't assume a box's IP
+# is stable for its whole lifetime either -- it can change on a lease renewal.
 scenario: chocolate-factory.scenario.yaml
 nakon_config: chocolate-factory.nakon.json
 provider:
