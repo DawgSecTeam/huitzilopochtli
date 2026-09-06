@@ -20,6 +20,7 @@ from common.schema import (
     Bundle,
     Category,
     CheckSpec,
+    ForensicsQuestion,
     Manifest,
     Mode,
     Rubric,
@@ -66,6 +67,12 @@ def _manifest_from_dict(d: dict) -> Manifest:
         hosts=d.get("hosts", []),
         checks=[_check_spec_from_dict(c) for c in d.get("checks", [])],
         theme=d.get("theme"),
+        forensics=[
+            ForensicsQuestion(
+                id=f["id"], question=f["question"], max_points=f["max_points"]
+            )
+            for f in d.get("forensics") or []
+        ] or None,
     )
 
 
@@ -159,6 +166,128 @@ def _read_boot_id() -> str:
             return f.read().strip()
     except OSError:
         return str(uuid.uuid4())
+
+
+_ANSWER_BLANK = "_" * 44
+
+
+def _primary_desktop_dir() -> str | None:
+    """Best-effort Desktop dir of the first real interactive account.
+
+    Mirrors the uid/shell heuristic the boxbuilder theme scripts use
+    (uid >= 1000, real login shell). Returns None when nothing matches or the
+    platform has no pwd module (non-POSIX).
+    """
+    try:
+        import pwd
+    except ImportError:
+        return None
+    for entry in pwd.getpwall():
+        if entry.pw_uid < 1000:
+            continue
+        shell = entry.pw_shell or ""
+        if shell.endswith("/nologin") or shell.endswith("/false"):
+            continue
+        return os.path.join(entry.pw_dir, "Desktop")
+    return None
+
+
+def _write_forensics_template(path: str, questions: list) -> None:
+    """Write the answers template for `questions` [(ordinal, text)] at `path`.
+
+    Callers handle write-if-missing; here we write via tmp + rename and make
+    the file group/other-writable (and owned by the desktop user when it lives
+    under one) because the agent typically runs as root while the answers are
+    typed in by a desktop user.
+    """
+    lines = [
+        "Forensics Questions",
+        "===================",
+        "",
+        "Answer each question below by replacing the blank on its 'Answer:'",
+        "line. Answers are collected and scored automatically each time the",
+        "box re-grades: a correct answer earns the question's points, a wrong",
+        "or blank answer earns nothing and never deducts.",
+        "",
+    ]
+    for ordinal, question in questions:
+        lines.append(f"Q{ordinal}: {question}")
+        lines.append(f"Answer: {_ANSWER_BLANK}")
+        lines.append("")
+
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    try:
+        os.chmod(tmp, 0o666)
+    except OSError:
+        pass
+    # When the template lands on a desktop user's Desktop, hand them
+    # ownership so their editor never complains about a root-owned file.
+    desktop_dir = _primary_desktop_dir()
+    if desktop_dir and path.startswith(desktop_dir):
+        try:
+            import pwd
+            for entry in pwd.getpwall():
+                if os.path.join(entry.pw_dir, "Desktop") == desktop_dir:
+                    os.chown(tmp, entry.pw_uid, entry.pw_gid)
+                    break
+        except (ImportError, OSError):
+            pass
+    os.rename(tmp, path)
+
+
+def _prepare_forensics(manifest, config_dir: str) -> None:
+    """Resolve answers-file paths and write missing templates (both modes).
+
+    The compiled manifest defaults forensics collect_params to
+    "Forensics-Questions.txt" with no directory; that sentinel resolves to the
+    primary desktop user's Desktop (where teams can actually edit it), falling
+    back to the agent config dir. An explicit scenario `path` is honored as-is
+    (relative paths resolve against the config dir). Templates are written
+    ONLY when the answers file does not exist yet — the file belongs to the
+    team after that, and rewriting it would clobber their answers.
+    """
+    if not manifest.forensics:
+        return
+
+    default_dir = _primary_desktop_dir() or config_dir
+    try:
+        os.makedirs(default_dir, exist_ok=True)
+    except OSError:
+        default_dir = config_dir
+
+    by_path = {}
+    for spec in manifest.checks:
+        if spec.type != "forensics_answer":
+            continue
+        path = spec.collect_params.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        if path == "Forensics-Questions.txt":
+            path = os.path.join(default_dir, path)
+        elif not os.path.isabs(path):
+            path = os.path.join(config_dir, path)
+        spec.collect_params["path"] = path
+        by_path.setdefault(path, []).append(spec)
+
+    for path, specs in by_path.items():
+        if os.path.exists(path):
+            continue
+        specs.sort(key=lambda s: s.collect_params.get("ordinal", 0))
+        questions = [
+            (s.collect_params.get("ordinal", 0), s.display_title) for s in specs
+        ]
+        try:
+            _write_forensics_template(path, questions)
+        except OSError as e:
+            # Never stall the run over the template; the collector will report
+            # the missing file as an error and score it unsatisfied (§9.1).
+            print(
+                f"WARNING: could not write forensics answers template "
+                f"{path!r}: {e}",
+                file=sys.stderr,
+            )
 
 
 def _run_honor(config, manifest, ctx) -> None:
@@ -331,6 +460,10 @@ def main() -> None:
         allow_unsigned=config.allow_unsigned_manifest,
     )
     ctx = agent.platform.detect.detect()
+
+    _prepare_forensics(
+        manifest, os.path.dirname(os.path.abspath(config_path))
+    )
 
     if config.mode == Mode.HONOR:
         _run_honor(config, manifest, ctx)

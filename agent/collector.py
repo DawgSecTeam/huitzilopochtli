@@ -13,6 +13,7 @@ _LATE_GRACE_S = 2.0
 # Populate CHECKS registry via decorator side-effects.
 import agent.checks.db_query  # noqa: F401
 import agent.checks.file_regex  # noqa: F401
+import agent.checks.forensics  # noqa: F401
 import agent.checks.http_uptime  # noqa: F401
 import agent.checks.package  # noqa: F401
 import agent.checks.permission  # noqa: F401

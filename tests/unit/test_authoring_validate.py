@@ -44,10 +44,13 @@ def test_full_valid_theme_passes():
         "readme": "assets/README.md",
         "motd": "Authorized use only.",
         "issue": "Authorized use only.",
-        "forensics_questions": ["What port is the mail server on?"],
         "desktop_shortcuts": [{"name": "Wiki", "exec": "xdg-open https://x"}],
         "include_report_shortcut": False,
     }
+    parsed["forensics"] = [{
+        "id": "fq1", "question": "What port is the mail server on?",
+        "answer": "587", "points": 10,
+    }]
     assert validate_scenario_yaml(parsed, "x.yaml") == []
 
 
@@ -79,15 +82,13 @@ def test_theme_accent_valid_hex_passes():
     assert validate_scenario_yaml(parsed, "x.yaml") == []
 
 
-def test_theme_forensics_questions_must_be_list_of_strings():
+def test_theme_forensics_questions_is_rejected():
+    """The cosmetic theme list was replaced by the scored forensics section."""
     parsed = _base()
-    parsed["theme"] = {"forensics_questions": "not a list"}
+    parsed["theme"] = {"forensics_questions": ["What port is the mail server on?"]}
     errors = validate_scenario_yaml(parsed, "x.yaml")
-    assert any("forensics_questions must be a list of strings" in e for e in errors)
-
-    parsed["theme"] = {"forensics_questions": ["ok", 5]}
-    errors = validate_scenario_yaml(parsed, "x.yaml")
-    assert any("forensics_questions must be a list of strings" in e for e in errors)
+    assert any("no longer supported" in e for e in errors)
+    assert any("'forensics' section" in e for e in errors)
 
 
 def test_theme_desktop_shortcuts_shape():

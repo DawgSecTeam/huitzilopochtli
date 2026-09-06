@@ -104,6 +104,33 @@ def _render_sla_table(sla_status) -> str:
 """
 
 
+def _manifest_forensics(manifest) -> list:
+    """Extract manifest forensics questions as [{id, question, max_points}].
+
+    Works for both dataclass Manifests and raw dict manifests.
+    """
+    if manifest is None:
+        return []
+    forensics = getattr(manifest, "forensics", None)
+    if forensics is None and isinstance(manifest, dict):
+        forensics = manifest.get("forensics")
+    out = []
+    for fq in forensics or []:
+        if isinstance(fq, dict):
+            out.append({
+                "id": fq.get("id"),
+                "question": fq.get("question") or fq.get("id"),
+                "max_points": fq.get("max_points", 0),
+            })
+        else:
+            out.append({
+                "id": getattr(fq, "id", None),
+                "question": getattr(fq, "question", None) or getattr(fq, "id", None),
+                "max_points": getattr(fq, "max_points", 0),
+            })
+    return out
+
+
 def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     """CyberPatriot-style honor board: positive-only.
 
@@ -111,8 +138,12 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     - Penalties / prohibited only when incurred (awarded != 0).
     - No check_id, category, reason, or awarded=0 rows ever surface.
     - Shows k of n + progress bar + remaining count.
+    - Scored forensics questions get their own card and are excluded from the
+      vulnerabilities-fixed accounting (they still add to score.total).
     """
     lookup = _manifest_lookup(manifest)
+    forensics = _manifest_forensics(manifest)
+    forensics_ids = {f["id"] for f in forensics}
 
     # Separate results by awarded/penalty semantics.
     vuln_fixed = []
@@ -121,7 +152,7 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
         cat = r.category.value if hasattr(r.category, "value") else str(r.category)
         # VULN: show only when passed (positive points earned)
         if cat == "vuln":
-            if r.passed and r.awarded_points != 0:
+            if r.passed and r.awarded_points != 0 and r.check_id not in forensics_ids:
                 vuln_fixed.append(r)
         else:
             # penalty / prohibited: show only when incurred (negative points applied)
@@ -137,6 +168,8 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
         non_sla_total = 0
         max_possible = 0
         for cid, info in lookup.items():
+            if cid in forensics_ids:
+                continue
             # is_sla check: peek manifest object
             is_sla = False
             # need to find original check object
@@ -171,6 +204,8 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     vuln_total = 0
     if lookup:
         for cid, info in lookup.items():
+            if cid in forensics_ids:
+                continue
             cat = info.get("category")
             cat_s = cat.value if hasattr(cat, "value") else str(cat) if cat else "vuln"
             # lookup category is from manifest; fallback to vuln counting
@@ -189,7 +224,11 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
         if vuln_total == 0:
             vuln_total = vuln_count_total
     else:
-        vuln_total = sum(1 for r in score.results if (r.category.value if hasattr(r.category, "value") else str(r.category)) == "vuln")
+        vuln_total = sum(
+            1 for r in score.results
+            if (r.category.value if hasattr(r.category, "value") else str(r.category)) == "vuln"
+            and r.check_id not in forensics_ids
+        )
 
     if max_possible <= 0:
         max_possible = vuln_total * 1  # avoid div0; show count-based progress
@@ -242,6 +281,40 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     max_label = f" / {max_possible} max" if max_possible and max_possible != vuln_fixed_count else ""
     fraction_label = f"{vuln_fixed_count} of {vuln_total} fixed" if vuln_total else f"{vuln_fixed_count} fixed"
 
+    forensics_card = ""
+    if forensics:
+        results_by_id = {r.check_id: r for r in score.results}
+
+        def _forensics_li(f) -> str:
+            r = results_by_id.get(f["id"])
+            if r is not None and r.passed:
+                pts_html = (
+                    '<span class="pts pos">+'
+                    f'{html.escape(str(r.awarded_points))} pts</span>'
+                )
+                icon = '<span class="icon ok">&#10003;</span> '
+            else:
+                pts_html = '<span class="pts muted">0 pts</span>'
+                icon = ""
+            return (
+                f'<li><span class="found-title">{icon}'
+                f'{html.escape(str(f["question"]))}</span>{pts_html}</li>'
+            )
+
+        forensics_earned = sum(
+            1 for f in forensics
+            if (r := results_by_id.get(f["id"])) is not None and r.passed
+        )
+        forensics_items = "\n".join(_forensics_li(f) for f in forensics)
+        forensics_card = f"""
+  <section class="card forensics">
+    <h2><span class="icon warn">&#128269;</span> Forensics &mdash; {forensics_earned} of {len(forensics)} correct</h2>
+    <ul>
+      {forensics_items}
+    </ul>
+    <p class="muted remaining">Type your answers into Forensics-Questions.txt &mdash; they are re-graded automatically.</p>
+  </section>"""
+
     return f"""
 <div class="score-header">
   <div>
@@ -270,6 +343,7 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
       {pen_items}
     </ul>
   </section>
+{forensics_card}
 </div>
 <p class="stamp honor-stamp">Last checked: {html.escape(_fmt_time(score.computed_at))} &middot; Honor mode — SLA not scored (untimed)</p>
 """

@@ -52,6 +52,19 @@ def test_themed_example_scenario_compiles_with_theme_in_manifest(tmp_path):
     # Box-decoration fields must NOT leak into the signed manifest.
     for leaked in ("wallpaper", "readme", "motd", "forensics_questions", "desktop_shortcuts"):
         assert leaked not in theme
+    # Scored forensics questions ship as public question data; no answer keys.
+    [fq_suid, fq_web] = manifest["forensics"]
+    assert fq_suid["id"] == "fq-suid-binary"
+    assert "SUID" in fq_suid["question"]
+    assert fq_suid["max_points"] == 5
+    assert fq_web["id"] == "fq-web-server"
+    assert fq_web["max_points"] == 5
+    assert all("answer" not in fq and "answers" not in fq for fq in manifest["forensics"])
+    # The rubric (honor mode: on-box) holds the key under the answer_equals matcher.
+    rubric = json.load(open(outputs["rubric"]))
+    [entry] = [e for e in rubric["entries"] if e["check_id"] == "fq-suid-binary"]
+    assert entry["matcher"]["tag"] == "answer_equals"
+    assert entry["matcher"]["accept"] == ["/usr/bin/find"]
 
 
 def test_themed_example_box_spec_resolves():
@@ -108,7 +121,7 @@ def test_compile_box_appends_theme_configurations_to_every_machine(
     assert by_name["theme-wallpaper"]["vars"]["WALLPAPER_FILENAME"] == "fakehash-wallpaper.png"
     assert "Authorized use only" in by_name["theme-motd"]["vars"]["MOTD_TEXT"]
     assert by_name["theme-readme"]["vars"]["README_FILENAME"] == "fakehash-README.html"
-    assert "Q1:" in by_name["theme-readme"]["vars"]["FORENSICS_TEXT"]
+    assert "FORENSICS_TEXT" not in by_name["theme-readme"]["vars"]
     assert by_name["theme-shortcuts"]["vars"]["SHORTCUT_NAME"] == "Scoring Report"
 
     # Wallpaper was uploaded from the real example asset; the readme was rendered to

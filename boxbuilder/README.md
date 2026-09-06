@@ -284,8 +284,14 @@ theme:
                                           # README.html on every user's Desktop
                                           # (.html passes through unrendered)
   motd: "Authorized use only."            # -> /etc/motd (+ /etc/issue if `issue` absent)
-  forensics_questions: ["What port is the mail server on?"]  # cosmetic only, not scored
   desktop_shortcuts: [{name: "Wiki", exec: "xdg-open https://..."}]
+
+# Scored forensics questions (CyberPatriot-style) -- see "Forensics questions" below.
+forensics:
+  - id: fq-mail-port
+    question: "What port is the mail server listening on?"
+    answer: "587"
+    points: 10
 ```
 
 `title`/`organization`/`accent`/`logo` are small and cosmetic — they're compiled straight
@@ -296,7 +302,7 @@ changes**: `boxbuilder/theme.py` turns it into extra entries appended to every m
 `configurations` list, referencing four small, generic, reusable catalog configurations
 (`theme-wallpaper`, `theme-motd`, `theme-readme`, `theme-shortcuts` — static definitions
 in `boxbuilder/vulndb_theme_configs/`) that `boxbuilder/vulndb.py` auto-creates
-idempotently the first time they're needed. Free text (motd/issue/forensics questions/
+idempotently the first time they're needed. Free text (motd/issue/
 shortcut name+exec) rides as ordinary nakon `vars`; the wallpaper/README files go through
 one content-addressed attachment per distinct file — uploaded once, reused by every
 scenario that references identical bytes, using nakon's own existing MinIO-backed
@@ -311,6 +317,39 @@ vuln that has a bundled seed in `boxbuilder/vulndb_vuln_configs/` exists in the
 catalog — create-if-missing — so scenarios selecting seeded vulns reach
 vulndb-ui even when untheme'd.) See
 `boxbuilder/examples/linux-fundamentals-themed.{scenario,box}.yaml` for a worked example.
+
+## Forensics questions (scored)
+
+Forensics questions work like CyberPatriot's: each carries points, teams type answers
+on the box, and correct answers earn the points (wrong/blank answers never deduct).
+They live in a top-level `forensics:` block (sibling of `scenario:`/`checks:`):
+
+```yaml
+forensics:
+  - id: fq-hidden-cron            # must not collide with a check id
+    question: "What is the filename of the hidden cron job?"
+    answer: "cocoa-hidden-sync"   # exact key; `answers: [...]` adds alternates
+    points: 10                    # positive integer
+    # path: /home/user/Desktop/Forensics-Questions.txt   # optional; default = Desktop
+```
+
+How it works end to end:
+
+- **Compile** turns each question into a `forensics_answer` check (question text +
+  answers-file path in the signed manifest) plus a rubric entry holding the answer key.
+  The key never ships in the manifest — engine-side rubric in ranked mode, on-box
+  `rubric.json` in honor mode, same as every other check.
+- **On the box**, the agent writes `Forensics-Questions.txt` (with blank `Answer: ____
+  ` lines) to the primary desktop user's Desktop on first boot — if the file already
+  exists it is never overwritten, so team answers survive reboots/re-grades.
+- **Scoring**: teams replace the `____` blanks; the agent's collector reads the file
+  each re-grade/check-in pass and the shared evaluator compares answers (case-
+  insensitive, whitespace-collapsed, punctuation-tolerant). A correct answer earns the
+  question's points; the report shows a Forensics card with per-question status.
+
+Because questions are scored, **pair them with planted vulnerabilities** like checks:
+each answer should be discoverable from the box's evidence (see "How vulns and checks
+relate" above). The chocolate-factory example shows four question/vuln pairings.
 
 ## Artifacts
 

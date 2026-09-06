@@ -13,6 +13,7 @@ from common.crypto.signing import public_key_from_private
 from common.schema import (
     Category,
     CheckSpec,
+    ForensicsQuestion,
     Manifest,
     Mode,
     Rubric,
@@ -25,6 +26,7 @@ from common.schema import (
 
 _DEFAULT_TIMEOUT_S = 5.0
 _DEFAULT_HOST_ID = "localhost"
+_DEFAULT_FORENSICS_PATH = "Forensics-Questions.txt"
 
 _MAX_LOGO_BYTES = 150 * 1024  # Keep signed manifest small (logo is data: URI).
 
@@ -110,6 +112,52 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
     )
 
 
+def _build_forensics(question: dict, ordinal: int) -> tuple:
+    """Compile one forensics question into (CheckSpec, RubricEntry).
+
+    The CheckSpec (public, shipped in the manifest) carries only the question
+    text and where to read answers from; the answer key lives solely in the
+    RubricEntry matcher (engine-side in ranked, on-box rubric.json in honor).
+    """
+    fq_id = question["id"]
+    path = question.get("path", _DEFAULT_FORENSICS_PATH)
+    points = question["points"]
+
+    spec = CheckSpec(
+        id=fq_id,
+        type="forensics_answer",
+        category=Category.VULN,
+        host_id=_DEFAULT_HOST_ID,
+        collect_params={
+            "path": path,
+            "question_id": fq_id,
+            "ordinal": ordinal,
+        },
+        display_title=question["question"],
+        display_max_points=points,
+        timeout_s=_DEFAULT_TIMEOUT_S,
+    )
+
+    if "answer" in question and "answers" in question:
+        matcher = {
+            "tag": "answer_equals",
+            "value": question["answer"],
+            "accept": list(question["answers"]),
+        }
+    elif "answers" in question:
+        matcher = {"tag": "answer_equals", "accept": list(question["answers"])}
+    else:
+        matcher = {"tag": "answer_equals", "value": question["answer"]}
+
+    entry = RubricEntry(
+        check_id=fq_id,
+        category=Category.VULN,
+        matcher=matcher,
+        points=points,
+    )
+    return spec, entry
+
+
 def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes) -> dict:
     """Compile scenario YAML into signed manifest, rubric, and engine record."""
     with open(yaml_path, "r") as f:
@@ -121,9 +169,22 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
 
     scenario = parsed["scenario"]
     checks = parsed["checks"]
+    forensics = parsed.get("forensics") or []
 
     check_specs = [_build_check_spec(c) for c in checks]
     rubric_entries = [_build_rubric_entry(c) for c in checks]
+
+    forensics_questions = []
+    for ordinal, fq in enumerate(forensics, start=1):
+        spec, entry = _build_forensics(fq, ordinal)
+        check_specs.append(spec)
+        rubric_entries.append(entry)
+        forensics_questions.append(
+            ForensicsQuestion(
+                id=fq["id"], question=fq["question"], max_points=fq["points"]
+            )
+        )
+
     manifest_theme = _build_manifest_theme(parsed.get("theme"), yaml_path)
 
     manifest = Manifest(
@@ -135,6 +196,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         hosts=scenario["hosts"],
         checks=check_specs,
         theme=manifest_theme,
+        forensics=forensics_questions or None,
     )
 
     rubric = Rubric(

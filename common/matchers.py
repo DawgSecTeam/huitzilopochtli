@@ -17,6 +17,7 @@ conventional keys are:
   user_absent              {"tag": "user_absent", "username": <str>}
   user_present             {"tag": "user_present", "username": <str>}
   group_members_subset_of  {"tag": "group_members_subset_of", "group": <str>, "allowed": [<str>, ...]}
+  answer_equals            {"tag": "answer_equals", "value": <str>, "accept": [<str>, ...]}
 
 "field" defaults to "matched" for equals/not_equals/contains/regex (the
 common single-value raw field, e.g. file_regex's raw["matched"]) when not
@@ -32,6 +33,7 @@ when the conventional "value"/"pattern" key is absent. This lets the
 documented §8 YAML example work unmodified through the pipeline.
 """
 import re
+import string
 from typing import Callable
 
 MATCHERS: dict[str, Callable[[dict, dict], tuple]] = {}
@@ -205,6 +207,52 @@ def _regex(matcher: dict, raw: dict) -> tuple:
     if hit:
         return True, f"{field}={actual!r} matches pattern {pattern!r}"
     return False, f"{field}={actual!r} does not match pattern {pattern!r}"
+
+
+@register("answer_equals")
+def _answer_equals(matcher: dict, raw: dict) -> tuple:
+    """Forensics answer comparison with forgiving normalization.
+
+    Matcher keys: "value" (expected answer) or "accept" (list of acceptable
+    answers); raw must carry "answer" (the team's submission, from the
+    forensics_answer collector). Comparison is case-insensitive with internal
+    whitespace collapsed and surrounding punctuation ignored. A blank or
+    missing submission never matches — an unanswered question earns nothing.
+    """
+    expected = _expected_value(matcher, "answer_equals")
+    accept = matcher.get("accept")
+    if expected is _MISSING and accept is None:
+        return False, "matcher missing expected value (value/accept)"
+    if accept is not None and (
+        not isinstance(accept, list) or not all(isinstance(a, str) for a in accept)
+    ):
+        return False, "matcher 'accept' must be a list of strings"
+
+    candidates = []
+    if expected is not _MISSING:
+        candidates.append(expected)
+    if accept:
+        candidates.extend(accept)
+
+    actual = _get_raw(raw, "answer")
+    if actual is _MISSING or actual is None:
+        return False, "answer not submitted"
+    if not isinstance(actual, str):
+        return False, f"answer must be a string (got {type(actual).__name__})"
+
+    normalized = _normalize_answer(actual)
+    if not normalized:
+        return False, "answer is blank"
+    for candidate in candidates:
+        if normalized == _normalize_answer(candidate):
+            return True, f"answer {actual!r} matches expected"
+    return False, f"answer {actual!r} is not correct"
+
+
+def _normalize_answer(value: str) -> str:
+    """Casefold, collapse whitespace, and strip surrounding punctuation."""
+    collapsed = " ".join(str(value).casefold().split())
+    return collapsed.strip(string.punctuation + "\u201c\u201d\u2018\u2019")
 
 
 @register("mode_at_most")

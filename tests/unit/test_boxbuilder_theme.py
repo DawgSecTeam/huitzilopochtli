@@ -119,23 +119,19 @@ def test_motd_and_issue_fallback_both_directions(tmp_path, fake_vulndb):
     assert r3 == [{"name": "theme-motd", "vars": {"MOTD_TEXT": "m", "ISSUE_TEXT": "i"}}]
 
 
-def test_forensics_questions_without_readme_file_still_creates_readme_entry(tmp_path, fake_vulndb):
+def test_forensics_questions_no_longer_create_entries(tmp_path, fake_vulndb):
+    """Forensics questions are scored now: authoring/compile.py compiles them into the
+    manifest + rubric and the agent owns Forensics-Questions.txt on the box -- theme
+    resolution must not emit anything for them."""
     result = theme_mod.resolve_theme_configurations(_spec(tmp_path, {
         "forensics_questions": ["What port is the mail server on?"],
         "include_report_shortcut": False,
     }))
-    assert len(result) == 1
-    entry = result[0]
-    assert entry["name"] == "theme-readme"
-    assert "README_FILENAME" not in entry["vars"]
-    assert entry["vars"]["FORENSICS_TEXT"] == (
-        "Q1: What port is the mail server on?\n"
-        "Answer: ______________________________________________\n"
-    )
-    assert not any(c[0] == "ensure_attachment" for c in fake_vulndb)  # no file, no upload
+    assert result == []
+    assert not fake_vulndb
 
 
-def test_readme_file_and_forensics_together(tmp_path, fake_vulndb):
+def test_readme_file_alone_creates_single_readme_entry(tmp_path, fake_vulndb):
     readme = tmp_path / "README.md"
     readme.write_text("hi")
     result = theme_mod.resolve_theme_configurations(_spec(tmp_path, {
@@ -147,7 +143,8 @@ def test_readme_file_and_forensics_together(tmp_path, fake_vulndb):
     # Markdown is rendered to a themed page first, so the attachment (and the
     # on-box Desktop copy) is README.html, not the authored filename.
     assert entry["vars"]["README_FILENAME"] == "fakehash-README.html"
-    assert "FORENSICS_TEXT" in entry["vars"]
+    # Forensics questions ride the manifest/rubric pipeline now, not theme vars.
+    assert "FORENSICS_TEXT" not in entry["vars"]
     upload_calls = [c for c in fake_vulndb if c[0] == "ensure_attachment"]
     assert len(upload_calls) == 1
     _, config_name, upload_path = upload_calls[0]
