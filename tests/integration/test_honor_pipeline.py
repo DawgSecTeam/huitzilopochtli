@@ -145,9 +145,19 @@ def test_happy_path_end_to_end_report(tmp_path):
 
     html = report_path.read_text(encoding="utf-8")
     # vuln (+10, matched) + penalty (0, intact) = 10
+    # Honor is positive-only (CyberPatriot-style): only passed vulns and
+    # active penalties surface by display_title; failed/zero rows and raw
+    # check_ids/reasons are hidden.
     assert "Total: 10" in html
-    assert "vuln-flag-present" in html
-    assert "penalty-perm-intact" in html
+    assert "Flag file contains FOUND marker" in html
+    assert "vuln-flag-present" not in html
+    # penalty intact (0) must not appear as a row — only active penalties surface
+    assert "penalty-perm-intact" not in html
+    assert "Sensitive file is not world-writable" not in html
+    # CyberPatriot-style affordances: progress, countdown, no leak
+    assert 'id="countdown"' in html
+    assert "Next check in" in html
+    assert 'class="progress"' in html
 
 
 # --- 2. manifest signature verification: valid -------------------------------
@@ -318,10 +328,17 @@ def test_multiple_categories_total_is_correct_sum(tmp_path):
     # penalty: intact (matcher passes) -> 0 (no penalty applied)
     # prohibited: forbidden state matched/present -> -7
     # total = 10 + 0 - 7 = 3
+    # Honor is positive-only: show vuln + active prohibited by display_title,
+    # hide intact penalty and all raw check_ids/reasons.
     assert "Total: 3" in html
-    assert "vuln-check" in html
-    assert "penalty-check" in html
-    assert "prohibited-check" in html
+    assert "Vuln marker present" in html
+    assert "Backdoor marker absent" in html
+    assert "-7 pts" in html
+    assert "vuln-check" not in html
+    assert "penalty-check" not in html
+    assert "prohibited-check" not in html
+    # penalty intact must not surface
+    assert "Sensitive file permission intact" not in html
 
 
 # --- 6. re-arm ---------------------------------------------------------------

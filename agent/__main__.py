@@ -156,7 +156,9 @@ def _run_honor(config, manifest, ctx) -> None:
     rubric = _rubric_from_dict(rubric_dict)
 
     score = common.evaluator.evaluate(evidence, rubric, _WallClock())
-    html = agent.reporter.render_report(score, Mode.HONOR, None, theme=manifest.theme)
+    html = agent.reporter.render_report(
+        score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest
+    )
     with open(config.report_path, "w", encoding="utf-8") as f:
         f.write(html)
 
@@ -227,7 +229,9 @@ def _run_ranked(config, manifest, ctx) -> None:
             for directive in response.directives:
                 agent.adversary.executor.execute(directive, ctx)
             html = agent.reporter.render_report(
-                response.score, Mode.RANKED, response.server_time, theme=manifest.theme
+                response.score, Mode.RANKED, response.server_time,
+                theme=manifest.theme, manifest=manifest,
+                next_checkin_s=response.next_checkin_s,
             )
         else:
             last_confirmed_at = (
@@ -236,7 +240,9 @@ def _run_ranked(config, manifest, ctx) -> None:
             score = last_response.score if last_response is not None else None
             if score is not None:
                 html = agent.reporter.render_report(
-                    score, Mode.RANKED, last_confirmed_at, theme=manifest.theme
+                    score, Mode.RANKED, last_confirmed_at, theme=manifest.theme,
+                    manifest=manifest,
+                    next_checkin_s=last_response.next_checkin_s if last_response else None,
                 )
             else:
                 from common.schema import ScoreBreakdown
@@ -250,7 +256,7 @@ def _run_ranked(config, manifest, ctx) -> None:
                     computed_at=time.time(),
                 )
                 html = agent.reporter.render_report(
-                    placeholder, Mode.RANKED, None, theme=manifest.theme
+                    placeholder, Mode.RANKED, None, theme=manifest.theme, manifest=manifest
                 )
 
         with open(config.report_path, "w", encoding="utf-8") as f:
