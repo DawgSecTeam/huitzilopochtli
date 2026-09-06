@@ -1,0 +1,29 @@
+# Xubuntu XFCE VM connection details: chocolate-factory-01, a full clone of
+# the "chocolate-factory-template" (Proxmox vmid 132 as of 2026-09-06; a
+# full clone of the "xubuntu-vnc" template, vmid 119, itself a VNC-enabled
+# clone of the original "xubuntu" template, vmid 904), cloned 2026-09-06.
+#
+# vmid 132 supersedes 131 (which had all 19 checks correctly planted and the
+# display fix, but the desktop-shortcut/report bugs described in
+# boxbuilder/README.md's "Desktop shortcut/report caveats" section) and 130
+# (which had the display fix but the older, 16-check scenario -- see the
+# "VNC desktop caveats" section) and 129 before that (missing the display
+# fix entirely). Don't clone from any of those. xubuntu-vnc (119) itself was
+# NOT patched with the display fix; any future box built straight from 119
+# needs boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh run on it
+# first, or will reproduce the same black-screen symptom.
+#
+# provider.host below is whatever IP this specific example clone happened
+# to get from DHCP at build time -- it WILL go stale once that clone is
+# destroyed/reprovisioned; point it at your own clone's current IP before
+# running `boxbuilder build` yourself. Don't assume a box's IP is stable
+# for its whole lifetime either -- it can change on a lease renewal.
+scenario: chocolate-factory.scenario.yaml
+nakon_config: chocolate-factory.nakon.json
+provider:
+  name: ssh
+  host: 10.0.0.95
+  port: 22
+  user: ubuntu
+  password: ubuntu
+# authoring_key: ./chocolate-factory.authoring.key

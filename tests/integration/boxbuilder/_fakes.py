@@ -49,8 +49,9 @@ class FakeHandle:
     def put(self, local, remote, mode=None):
         self.puts.append((local, remote, mode))
 
-    def install_init(self, kind):
+    def install_init(self, kind, mode="honor"):
         self.init_kind = kind
+        self.init_mode = mode
 
     def export(self, out_path, fmt="ova"):
         self.exported = (out_path, fmt)

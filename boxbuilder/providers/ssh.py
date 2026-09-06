@@ -123,7 +123,7 @@ class SshHandle(BoxHandle):
         finally:
             sftp.close()
 
-    def install_init(self, kind: str) -> None:
+    def install_init(self, kind: str, mode: str = "honor") -> None:
         if kind == "none":
             return
         # Ensure the install dir exists, then copy + enable the unit. We SFTP the
@@ -143,6 +143,22 @@ class SshHandle(BoxHandle):
             )
             if not res.ok:
                 raise RuntimeError(f"failed to enable systemd unit: {res.stderr.strip()}")
+            if mode == "honor":
+                # Honor mode's agent process runs once and exits (see the
+                # unit's own comments); pair it with a timer so the report
+                # re-checks periodically instead of staying a single
+                # install-time snapshot forever. Ranked mode's agent already
+                # loops forever on its own and doesn't need this.
+                timer_local = os.path.join(_PACKAGING, "huitzilopochtli-agent.timer")
+                timer_tmp = "/tmp/huitzilopochtli-agent.timer"
+                self.put(timer_local, timer_tmp)
+                res = self.run(
+                    f"install -m 644 {timer_tmp} /etc/systemd/system/huitzilopochtli-agent.timer && "
+                    "systemctl daemon-reload && "
+                    "systemctl enable --now huitzilopochtli-agent.timer"
+                )
+                if not res.ok:
+                    raise RuntimeError(f"failed to enable systemd timer: {res.stderr.strip()}")
         elif kind == "openrc":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.openrc")
             tmp = "/tmp/huitzilopochtli-agent"

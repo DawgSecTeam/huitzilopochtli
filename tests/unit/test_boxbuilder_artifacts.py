@@ -72,6 +72,11 @@ def test_on_box_files_honor(tmp_path):
     # agent_config.json was actually written to disk.
     written = json.loads((ad / "agent_config.json").read_text())
     assert written["mode"] == "honor"
+    # sync-report.sh (mirrors report.html into $HOME/Desktop for a snap-confined
+    # browser) is placed in both modes, executable.
+    sync_files = [f for f in files if f.remote.endswith("/sync-report.sh")]
+    assert len(sync_files) == 1
+    assert sync_files[0].mode == 0o755
 
 
 def test_on_box_files_ranked_omits_rubric(tmp_path):

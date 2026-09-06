@@ -40,13 +40,25 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/huitzilopochtli/agent.pyz /opt/huitzilopochtli/agent_config.json
+# Mirrors report.html into each real user's $HOME/Desktop (see that script's
+# comments): a snap-confined browser (e.g. Ubuntu's default Firefox) can only
+# see paths under $HOME, never /opt, so a "Scoring Report" desktop shortcut
+# pointed straight at /opt/huitzilopochtli/report.html shows "File not found"
+# from inside one. Honor mode's timer restarts this service every 60s, so the
+# synced copy stays fresh; ranked mode's single long-running process only
+# gets the very first snapshot synced (ExecStartPost fires once, at service
+# start) -- a known limitation, same shape as the honor/ranked asymmetry
+# already documented in huitzilopochtli-agent.timer.
+ExecStartPost=/opt/huitzilopochtli/sync-report.sh
 WorkingDirectory=/opt/huitzilopochtli
 Restart=on-failure
 RestartSec=5s
 
 # Hardening (best-effort; loosen if the agent's checks need broader
 # access to inspect the host -- many checks legitimately need root).
-ProtectHome=read-only
+# ProtectHome is off (not read-only) because ExecStartPost above needs to
+# write into each real user's $HOME/Desktop.
+ProtectHome=false
 NoNewPrivileges=false
 
 [Install]

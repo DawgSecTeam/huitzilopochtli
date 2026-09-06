@@ -59,7 +59,7 @@ def test_manifest_only_fields_excluded_but_report_shortcut_still_added(tmp_path,
     assert result == [{
         "name": "theme-shortcuts",
         "vars": {"SHORTCUT_NAME": "Scoring Report",
-                 "SHORTCUT_EXEC": "xdg-open /opt/huitzilopochtli/report.html"},
+                 "SHORTCUT_EXEC": "sh -c 'xdg-open $HOME/Desktop/report.html'"},
     }]
     assert ("ensure_configuration", "theme-shortcuts") in fake_vulndb
 
@@ -155,7 +155,7 @@ def test_multiple_shortcuts_plus_auto_report_shortcut(tmp_path, fake_vulndb):
         {"name": "theme-shortcuts", "vars": {"SHORTCUT_NAME": "Wiki", "SHORTCUT_EXEC": "xdg-open https://x"}},
         {"name": "theme-shortcuts",
          "vars": {"SHORTCUT_NAME": "Scoring Report",
-                  "SHORTCUT_EXEC": "xdg-open /opt/huitzilopochtli/report.html"}},
+                  "SHORTCUT_EXEC": "sh -c 'xdg-open $HOME/Desktop/report.html'"}},
     ]
     # ensure_configuration called once for theme-shortcuts regardless of shortcut count.
     assert fake_vulndb.count(("ensure_configuration", "theme-shortcuts")) == 1

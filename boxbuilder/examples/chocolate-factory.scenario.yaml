@@ -1,0 +1,290 @@
+# Cocoa Falls Chocolate Works: a light, recognizable factory-themed hardening box.
+# The theme is flavor only; every task is solvable from ordinary Linux evidence.
+# Each selected nakon configuration plants the insecure state described by its paired check.
+
+scenario:
+  name: "Cocoa Falls Chocolate Works"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # Difficulty spread, called out explicitly per-check below (and in the
+  # in-box README) so a self-paced beginner can tell what to try first:
+  #   EASY (8):     recipe_private, desktop_vault_code, no_tourguide,
+  #                 no_tempscout, no_shipping_bot, no_passwordless_sudo,
+  #                 no_malicious_autostart, media_is_not_script
+  #   MODERATE (8): cron_file_private, deploy_key_private, ssh_no_root,
+  #                 intern_not_admin, service_account_no_shell,
+  #                 no_blank_tempscout_password, cocoa_service_inactive,
+  #                 cocoa_service_disabled
+  #   HARD (3):     no_hidden_cron_file, no_hidden_payload,
+  #                 no_backdoor_ssh_key
+  #
+  # GUI-only findings (no terminal needed -- at least 4, called out with
+  # "GUI:" below): the three unauthorized accounts show up as login tiles
+  # on the greeter before you even reach a desktop; the autostart entry is
+  # a checkbox in Settings > Session and Startup > Application Autostart;
+  # the vault-code file sits in plain sight on the Desktop.
+
+  # --- basic file permissions --------------------------------------------
+  - id: recipe_private
+    type: permission
+    category: vuln
+    display: "EASY, GUI: Secret recipe is not world-writable (right-click > Properties > Permissions in the file manager)"
+    max_points: 10
+    collect:
+      path: /opt/cocoa/recipes/secret-recipe.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: desktop_vault_code
+    type: permission
+    category: vuln
+    display: "EASY, GUI: Warehouse vault code left on the Desktop is not world-writable"
+    max_points: 10
+    collect:
+      path: /home/sysadmin/Desktop/vault-code.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: cron_file_private
+    type: permission
+    category: vuln
+    display: "MODERATE: Cocoa backup cron file is not world-writable"
+    max_points: 10
+    collect:
+      path: /etc/cron.d/cocoa-backup
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: deploy_key_private
+    type: permission
+    category: vuln
+    display: "MODERATE: Factory deployment key is private"
+    max_points: 10
+    collect:
+      path: /home/cocoaadm/.ssh/id_rsa
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0600"
+      points: 10
+
+  # --- basic access control ----------------------------------------------
+  - id: ssh_no_root
+    type: file_regex
+    category: vuln
+    display: "MODERATE: SSH root login is disabled"
+    max_points: 10
+    collect:
+      path: /etc/ssh/sshd_config
+      extract: '(?m)^\s*PermitRootLogin\s+(\S+)'
+    expect:
+      equals: "no"
+      points: 10
+
+  - id: no_passwordless_sudo
+    type: permission
+    category: vuln
+    display: "EASY: No unrestricted passwordless sudo drop-in"
+    max_points: 10
+    collect:
+      path: /etc/sudoers.d/00-cocoa-nopasswd
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+
+  # --- malicious users and unwanted administration ----------------------
+  - id: no_tourguide
+    type: user_group
+    category: vuln
+    display: "EASY, GUI: Unauthorized tourguide account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: tourguide
+      points: 10
+
+  - id: no_tempscout
+    type: user_group
+    category: vuln
+    display: "EASY, GUI: Unauthorized temp scout account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: tempscout
+      points: 10
+
+  - id: no_shipping_bot
+    type: user_group
+    category: vuln
+    display: "EASY, GUI: Unauthorized shipping-contractor account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: shipping_bot
+      points: 10
+
+  - id: intern_not_admin
+    type: user_group
+    category: vuln
+    display: "MODERATE: Intern is not an administrator"
+    max_points: 10
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: sudo
+      # Ubuntu's connecting account is the legitimate administrator in the example box.
+      allowed: [ubuntu, cocoaadm]
+      points: 10
+
+  - id: service_account_no_shell
+    type: file_regex
+    category: vuln
+    display: "MODERATE: Service account has no interactive shell"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^chocobot:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:(/usr/sbin/nologin|/sbin/nologin)$'
+    expect:
+      regex: '(?m)^/usr/sbin/nologin$|^/sbin/nologin$'
+      points: 10
+
+  - id: no_blank_tempscout_password
+    type: file_regex
+    category: vuln
+    display: "MODERATE: No blank password remains in the shadow database"
+    max_points: 10
+    collect:
+      path: /etc/shadow
+      extract: '(?m)^(tempscout::)'
+    expect:
+      equals: null
+      points: 10
+
+  # --- difficult persistence and malicious-file findings ----------------
+  - id: no_hidden_cron_file
+    type: permission
+    category: vuln
+    display: "HARD: Hidden cocoa cron persistence is removed"
+    max_points: 10
+    collect:
+      path: /etc/cron.d/cocoa-hidden-sync
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: no_hidden_payload
+    type: permission
+    category: vuln
+    display: "HARD: Hidden cocoa payload is removed"
+    max_points: 10
+    collect:
+      path: /opt/.cocoa/cocoa-sync
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: no_backdoor_ssh_key
+    type: file_regex
+    category: vuln
+    display: "HARD: No unauthorized key remains in the admin's authorized_keys"
+    max_points: 10
+    collect:
+      path: /home/cocoaadm/.ssh/authorized_keys
+      extract: '(?m)(planted-training-key)'
+    expect:
+      equals: null
+      points: 10
+
+  - id: media_is_not_script
+    type: file_regex
+    category: vuln
+    display: "EASY, GUI: Shared golden-ticket media is not an executable script (browse to /var/media in the file manager)"
+    max_points: 10
+    collect:
+      path: /var/media/golden-ticket.mp3
+      extract: '(?m)^(#!/bin/sh)'
+    expect:
+      equals: null
+      points: 10
+
+  - id: no_malicious_autostart
+    type: permission
+    category: vuln
+    display: "EASY, GUI: Malicious desktop autostart is removed (Settings > Session and Startup > Application Autostart)"
+    max_points: 10
+    collect:
+      path: /etc/xdg/autostart/cocoa-update.desktop
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: cocoa_service_inactive
+    type: service_state
+    category: vuln
+    display: "MODERATE: Cocoa update service is inactive"
+    max_points: 10
+    collect:
+      service: cocoa-update.service
+    expect:
+      equals: false
+      field: active
+      points: 10
+
+  - id: cocoa_service_disabled
+    type: service_state
+    category: vuln
+    display: "MODERATE: Cocoa update service is disabled"
+    max_points: 10
+    collect:
+      service: cocoa-update.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+theme:
+  title: "Cocoa Falls Chocolate Works"
+  organization: "Factory Systems Hardening Tour"
+  accent: "#8B4A24"
+  logo: assets/chocolate-factory-logo.png
+  wallpaper: assets/chocolate-factory-wallpaper.png
+  readme: assets/chocolate-factory-README.md
+  motd: |
+    Welcome to Cocoa Falls Chocolate Works.
+    This is an authorized systems-hardening tour. Keep recipes private, verify every account,
+    and treat unexpected media and scheduled jobs as suspicious.
+  issue: |
+    AUTHORIZED TRAINING BOX — Cocoa Falls Chocolate Works
+    Disconnect if you are not part of the tour.
+  forensics_questions:
+    - "Which scheduled jobs run as root, and do they belong in the factory?"
+    - "Which accounts can administer this box, and which should be removed?"
+    - "Does every file in the shared media shelf look like the type it claims to be?"
+    - "Does the factory admin's authorized_keys list only keys you recognize?"
+  desktop_shortcuts:
+    # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
+    # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
+    # launches it (GLib's desktop-entry parsing does quote-removal, not
+    # tilde/variable expansion).
+    - name: "Factory Hardening Handbook"
+      exec: "sh -c 'xdg-open $HOME/Desktop/README.md'"

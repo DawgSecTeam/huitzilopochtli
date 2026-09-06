@@ -40,7 +40,7 @@ def test_register_and_load():
                 def put(self, local, remote, mode=None):
                     pass
 
-                def install_init(self, kind):
+                def install_init(self, kind, mode="honor"):
                     pass
 
                 def export(self, out_path, fmt="ova"):
