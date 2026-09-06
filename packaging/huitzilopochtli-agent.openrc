@@ -20,6 +20,13 @@
 # honor mode that just means the backgrounded process exits shortly
 # after start and rc-status will show it as stopped, which is
 # expected and harmless.
+#
+# Known gap: unlike the systemd unit (paired with
+# huitzilopochtli-agent.timer for periodic honor-mode re-grading),
+# there is no OpenRC equivalent here yet -- OpenRC has no built-in
+# timer unit, so an honor-mode box on an OpenRC init system needs a
+# cron entry (e.g. `* * * * * rc-service huitzilopochtli-agent
+# restart`) added separately if periodic re-grading is wanted there.
 
 name="huitzilopochtli-agent"
 description="Huitzilopochtli scoring agent"

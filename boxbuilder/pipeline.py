@@ -103,6 +103,7 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
               nakon_dir: Optional[str] = None, provider_factory=None, log=print) -> dict:
     """Step 2: deploy vulns onto the box via nakon."""
     import json as _json
+    artifacts_dir = os.path.abspath(artifacts_dir)
     state_path = os.path.join(artifacts_dir, "build-state.json")
 
     if bundle_path is None:
@@ -122,11 +123,27 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
             "(e.g. provider: {name: ssh, host: ..., user: ..., password: ...})"
         )
 
+    # compile_box may have appended theme configurations (wallpaper/motd/readme/
+    # shortcuts) to the machine's configuration list before building the bundle,
+    # so the bundle's request_key was computed over that expanded list. Deriving
+    # the deploy config from the *raw* spec.nakon_config here would omit those
+    # extras and produce a different request_key that the bundle doesn't
+    # contain (nakon deploy looks plans up by request_key, never by machine
+    # name). Read back the compiled, theme-expanded config compile_box wrote to
+    # artifacts_dir/nakon-config.json when present, falling back to the raw
+    # spec config for callers that skip straight to `plant`.
+    compiled_nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
+    if os.path.isfile(compiled_nakon_cfg_path):
+        with open(compiled_nakon_cfg_path, "r", encoding="utf-8") as f:
+            effective_nakon_config = _json.load(f)
+    else:
+        effective_nakon_config = spec.nakon_config
+
     provider, handle = _resolve_provider(spec.provider, provider_factory, log)
-    machine_name = nakon.first_machine_name(spec.nakon_config)
+    machine_name = nakon.first_machine_name(effective_nakon_config)
     try:
         derived = nakon.derive_deploy_config(
-            spec.nakon_config, machine_name,
+            effective_nakon_config, machine_name,
             host=handle.addr, user=handle.user, password=handle.password,
             port=getattr(handle, "port", 22),
         )
@@ -275,7 +292,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                 log(f"[boxbuilder] WARNING: could not detect init system ({e}); "
                     f"the agent will not auto-start -- pass --init or enable it manually")
                 init_kind = "none"
-        handle.install_init(init_kind)
+        handle.install_init(init_kind, mode)
         log(f"[boxbuilder] init unit: {init_kind}")
 
         return {

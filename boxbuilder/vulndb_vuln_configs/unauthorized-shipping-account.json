@@ -1,0 +1,10 @@
+{
+  "name": "unauthorized-shipping-account",
+  "description": "Practice-box misconfiguration: leaves a third unauthorized factory-tour account behind (a former shipping contractor), with a weak password. Easy/GUI-tier finding, same shape as malicious-factory-users but a distinct catalog name so re-running ensure_vuln_seeds (create-if-missing, never overwrites) actually plants it on boxes built from an older catalog snapshot.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\nif ! id shipping_bot >/dev/null 2>&1; then useradd -m -s /bin/bash shipping_bot; fi\nprintf '%s:%s\\n' shipping_bot 'Cocoa2024!' | chpasswd\n",
+  "depends_on": []
+}

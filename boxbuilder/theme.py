@@ -20,10 +20,7 @@ import os
 from typing import Optional
 
 from boxbuilder import vulndb
-from boxbuilder.artifacts import INSTALL_DIR
 from boxbuilder.spec import BoxSpec
-
-_REPORT_PATH = f"{INSTALL_DIR}/report.html"
 
 
 def _resolve(path: str, base_dir: str) -> str:
@@ -60,10 +57,20 @@ def _forensics_text(theme: dict) -> str:
 
 def _shortcut_pairs(theme: dict) -> list:
     """Author's desktop_shortcuts list plus the auto-appended "Scoring Report" launcher
-    (unless opted out) -- one (name, exec) pair per eventual `theme-shortcuts` entry."""
+    (unless opted out) -- one (name, exec) pair per eventual `theme-shortcuts` entry.
+
+    The Scoring Report opens $HOME/Desktop/report.html, not _REPORT_PATH (/opt/...)
+    directly: packaging/sync-report.sh mirrors the real report there specifically
+    because a snap-confined browser (e.g. Ubuntu's default Firefox) can't see /opt at
+    all, and would show "File not found" for it. sh -c wrapped so $HOME actually
+    expands -- a bare `~`/`$HOME` in a .desktop Exec= line isn't guaranteed to be
+    shell-expanded by whatever launches it."""
     shortcuts = list(theme.get("desktop_shortcuts") or [])
     if theme.get("include_report_shortcut") is not False:
-        shortcuts.append({"name": "Scoring Report", "exec": f"xdg-open {_REPORT_PATH}"})
+        shortcuts.append({
+            "name": "Scoring Report",
+            "exec": "sh -c 'xdg-open $HOME/Desktop/report.html'",
+        })
     return [(sc["name"], sc["exec"]) for sc in shortcuts]
 
 

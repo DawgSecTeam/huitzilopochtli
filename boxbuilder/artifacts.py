@@ -14,6 +14,9 @@ Install layout (packaging/README.md:11-24), all under INSTALL_DIR:
   identity.json                  ranked only, CREATED BY THE AGENT on first boot
                                  (not placed by boxbuilder -- see note below)
   report.html                    written by the agent at runtime
+  sync-report.sh                 both modes; mirrors report.html into each real
+                                 user's $HOME/Desktop (see packaging/sync-report.sh
+                                 -- a snap-confined browser can't see /opt)
 
 Note on identity.json: the agent generates its own Ed25519 identity on first
 ranked boot (agent/identity.py), so boxbuilder never ships one. We only set
@@ -24,6 +27,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 INSTALL_DIR = "/opt/huitzilopochtli"
+
+# packaging/ lives at <repo_root>/packaging/ -- mirrors providers/ssh.py's _PACKAGING.
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+_SYNC_REPORT_SH = os.path.join(_REPO_ROOT, "packaging", "sync-report.sh")
 
 
 @dataclass
@@ -89,6 +96,10 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict) -> list:
         OnBoxFile(compile_result["manifest"], f"{INSTALL_DIR}/manifest.signed.json"),
         OnBoxFile(compile_result["authoring_public_key"],
                   f"{INSTALL_DIR}/authoring_public_key.b64"),
+        # Both modes: huitzilopochtli-agent.service's ExecStartPost runs this after
+        # every agent run to mirror report.html into each real user's $HOME/Desktop
+        # (a snap-confined browser can't see /opt -- see the script's own comments).
+        OnBoxFile(_SYNC_REPORT_SH, f"{INSTALL_DIR}/sync-report.sh", mode=0o755),
     ]
     if mode == "honor":
         if not compile_result.get("rubric"):

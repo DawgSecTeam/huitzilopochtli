@@ -1,0 +1,34 @@
+# Periodic re-grade for honor-mode boxes.
+#
+# _run_honor() (agent/__main__.py) runs the checks exactly once and exits;
+# huitzilopochtli-agent.service's Restart=on-failure does not restart it on
+# a clean exit (see that unit's comments). Without this timer, an honor-mode
+# box's report.html is a single install-time/boot-time snapshot that never
+# reflects anything the person being scored fixes afterward -- report.html
+# already carries a <meta http-equiv="refresh"> tag (agent/reporter.py,
+# architecture.md §13) expecting the file itself to be periodically
+# rewritten, which is exactly what this timer provides.
+#
+# Ranked mode does not need this: _run_ranked() already loops forever on
+# its own (collect -> check-in -> sleep), so installing this timer for a
+# ranked-mode box would just waste a restart every interval for no effect
+# beyond what the service's own loop already does. install_init() only
+# installs/enables this timer when the box's manifest mode is "honor".
+#
+# OnUnitActiveSec is intentionally short (re-grading is cheap: it's local
+# file/service checks, no network calls in honor mode) so a person working
+# through the exercise sees their score update within about a minute of
+# fixing something, without needing to reboot or SSH in to restart the
+# service by hand.
+
+[Unit]
+Description=Periodic re-grade for the Huitzilopochtli scoring agent (honor mode)
+Documentation=file:///opt/huitzilopochtli/README.md
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=huitzilopochtli-agent.service
+
+[Install]
+WantedBy=timers.target

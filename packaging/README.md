@@ -123,6 +123,18 @@ phase.
      systemctl daemon-reload
      systemctl enable --now huitzilopochtli-agent
      ```
+     For **honor mode**, also install the paired timer so the report
+     re-checks periodically instead of staying a single install-time
+     snapshot forever (honor mode's agent process runs once and exits;
+     `Restart=on-failure` does not restart it on a clean exit):
+     ```
+     cp packaging/huitzilopochtli-agent.timer /etc/systemd/system/
+     systemctl daemon-reload
+     systemctl enable --now huitzilopochtli-agent.timer
+     ```
+     `boxbuilder`'s own SSH provider does this automatically (see
+     `install_init()` in `boxbuilder/providers/ssh.py`) -- this manual step
+     is only needed for a hand-rolled install.
    - **OpenRC (Alpine):**
      ```
      apk add python3   # if not already present -- see caveat above

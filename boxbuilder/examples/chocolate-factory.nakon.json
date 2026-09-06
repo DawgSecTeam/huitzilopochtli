@@ -1,0 +1,65 @@
+{
+  "_comment": "Cocoa Falls vuln-planting side. The insecure-file-mode entries are all the same reusable catalog configuration with different variables -- adding a new file-based finding never needs new vulndb authoring, just another entry here with a fresh FILE_PATH. (2026-09-05: fixed deploy_key_private's FILE_PATH, which had drifted from /opt/cocoaadm/.ssh/id_rsa here vs /home/cocoaadm/.ssh/id_rsa in scenario.yaml's collect.path -- they must match exactly, since nothing cross-checks them; see boxbuilder/README.md's vuln/check pairing caveat.) New user-account or service findings DO need a small new boxbuilder/vulndb_vuln_configs/<name>.json (see unauthorized-shipping-account.json for the minimal pattern), since ensure_vuln_seeds only creates catalog rows, never renames/edits an existing one. Run `nakon catalog check --config chocolate-factory.nakon.json --json` after the bundled seeds have been ensured in vulndb.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "cocoa-factory-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "ubuntu-xfce",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "configurations": [
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/opt/cocoa/recipes/secret-recipe.txt",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "Batch 7: cocoa, sugar, patience"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/etc/cron.d/cocoa-backup",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "15 * * * * root /usr/local/sbin/cocoa-backup"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/cocoaadm/.ssh/id_rsa",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "-----BEGIN TRAINING PRIVATE KEY-----\nnot-a-real-key\n-----END TRAINING PRIVATE KEY-----"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/cocoaadm/.ssh/authorized_keys",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINotARealKeyPlantedForTraining planted-training-key"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/sysadmin/Desktop/vault-code.txt",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "Warehouse safe code: 4471 (rotate after each shift)"
+          }
+        },
+        "ssh-root-login",
+        "passwordless-sudo",
+        "malicious-factory-users",
+        "unauthorized-shipping-account",
+        "unauthorized-admin-user",
+        "service-account-shell",
+        "hidden-cron-persistence",
+        "polyglot-media",
+        "malicious-autostart",
+        "malicious-systemd-service"
+      ]
+    }
+  ]
+}

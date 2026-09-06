@@ -60,6 +60,87 @@ shared catalog before compiling.
 Each step is also runnable on its own (see CLI below) so you can pause/verify
 between steps.
 
+### VNC desktop caveats (xubuntu-vnc-derived templates)
+
+If a VNC-viewed box (like chocolate-factory) shows a solid-black screen with
+no desktop -- theme shortcuts (e.g. the "Scoring Report" icon) included --
+this is very unlikely to be a boxbuilder/theme/agent bug even though it
+looks like one from the shortcut's perspective. It's a live-cursor-but-black
+X session underneath, and boxbuilder has no visibility into or control over
+VNC/X11/lightdm at all (that setup lives entirely on the box's own template
+image, outside this repo). Three independent, compounding causes were found
+by direct `xwd`-based capture of a real X display (bypassing VNC/Guacamole
+entirely -- a moving cursor is NOT proof the session is rendering; x11vnc
+tracks/draws the pointer separately from the framebuffer capture):
+
+1. **No real lightdm autologin.** A template built by manually typing a
+   password into the greeter once (so it "stays logged in" as long as the
+   VM is never rebooted) breaks on the first reboot or `systemctl restart
+   lightdm` -- it drops back to a real login greeter nobody has credentials
+   for, which sits there indefinitely with a dark background and a live
+   cursor. This was the actual root cause the one time this was chased down
+   in full (2026-09-05); the other two below are real but secondary.
+2. **DPMS screen blanking** after an idle timeout, independently
+   re-asserted by `xfce4-power-manager` regardless of raw `xset` settings.
+3. **`xfce4-screensaver`'s own idle-activation** (separate from DPMS)
+   painting a fullscreen black lock/blank window.
+
+`boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh` fixes all three (plus
+a related machine-id/DHCP-collision issue -- see the script's own header) on
+a booted (not yet re-templated) clone -- see its header comment for the full
+incident writeup, exact commands, and the `xwdtopnm`-not-ImageMagick
+diagnostic note. Run it once against any new xubuntu-vnc-derived template
+before re-sealing with `qm template`.
+
+**Updating an already-sealed Proxmox template**: `qm template` on LVM/LVM-thin
+storage doesn't just flip a config flag -- it converts the backing volume
+itself to a read-only "base" LV. Setting `template: 0` back via the config
+API looks like it works (the flag flips) but the disk stays read-only and
+the VM fails to start ("device is not writable"). There is no supported way
+to edit a template in place: full-clone it to a fresh vmid, boot and edit
+the clone, shut it down, and re-seal *that* (`qm template`) as the new
+template, retiring the old vmid.
+
+### Desktop shortcut/report caveats (any theme-enabled, snap-browser image)
+
+Unlike the black-screen issue above, these three showed up even with the
+display itself rendering correctly -- shortcuts that just quietly do the
+wrong thing when clicked. Found the same way: live SSH diagnosis against a
+booted clone, not a code read, since none of them are visible from
+boxbuilder's side of the fence.
+
+1. **Content-addressed filenames must never reach a Desktop icon.**
+   `vulndb.ensure_attachment()`'s `<sha256[:16]>-<basename>` naming exists so
+   identical attachment bytes are reused across builds -- it's an internal
+   vulndb storage convention. `theme-readme.json` used to `cp` the
+   attachment to each user's Desktop *under that same name*, so the icon
+   read as e.g. `158f3cbb4e51da58-chocolate-factory-README.md` instead of
+   `README.md`, and any shortcut assuming the clean name (like a scenario's
+   own `desktop_shortcuts` entry pointing at `~/Desktop/README.md`) never
+   resolved. Fixed by always copying out under a fixed `README.md`.
+2. **A bare `~`/`$HOME` in a `.desktop` `Exec=` line is not guaranteed to be
+   shell-expanded.** GLib's desktop-entry launcher does quote-removal, not
+   tilde/variable expansion, so `Exec=xdg-open ~/Desktop/README.md` can
+   silently fail to resolve regardless of whether the target file exists.
+   Wrap any such Exec in `sh -c '...'` (e.g. `sh -c 'xdg-open
+   $HOME/Desktop/README.md'`) so the shell -- not the launcher -- does the
+   expansion.
+3. **A strictly-confined snap browser (Ubuntu's default Firefox) can't see
+   `/opt`.** `snap connections firefox` shows only the `home` interface
+   connected -- no access outside `$HOME`. The auto-appended "Scoring
+   Report" shortcut used to point straight at
+   `/opt/huitzilopochtli/report.html`; Firefox would actually launch (so
+   this doesn't look like caveat #2) but show "File not found", because the
+   file is genuinely invisible to the sandboxed process, not because it's
+   missing. Fixed by `packaging/sync-report.sh` (run via
+   `huitzilopochtli-agent.service`'s `ExecStartPost`, which is why that
+   unit's `ProtectHome` is `false` rather than `read-only`) mirroring
+   `report.html` into each real user's `$HOME/Desktop`, and pointing the
+   shortcut there instead. Honor mode's re-grade timer keeps that copy
+   fresh; a ranked-mode box's single long-running process only gets the
+   very first snapshot synced (`ExecStartPost` fires once, at service
+   start) -- a known, currently-unaddressed limitation for that mode.
+
 ## The two inputs you author
 
 ### 1. nakon config (which vulns to plant)
