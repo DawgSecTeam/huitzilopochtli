@@ -35,6 +35,10 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
             rec.state = "DOWN"
         elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
             rec.state = "UP"
+            # §11.3: no credit accrues while DOWN. The DOWN window sits in
+            # (last_credited_at, received_at), so on the transition back to UP
+            # we re-anchor crediting at now instead of crediting the outage.
+            rec.last_credited_at = received_at
 
         if rec.state == "UP" and sla_params.interval_s > 0:
             elapsed = received_at - rec.last_credited_at
@@ -44,7 +48,9 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
             intervals = min(intervals, sla_params.max_intervals_per_checkin)
             rec.accrued_points += intervals * sla_params.points_per_interval
             rec.last_credited_at += intervals * sla_params.interval_s
-        else:
+        elif rec.state == "DOWN":
+            # Freeze the anchor while DOWN so a future UP stretch is only
+            # credited from the moment UP actually resumes.
             rec.last_credited_at = received_at
         return rec
 

@@ -29,11 +29,32 @@ def load_or_create(identity_path: str) -> Identity:
     if os.path.exists(identity_path):
         with open(identity_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        private_key = base64.b64decode(data["private_key"], validate=True)
+        public_key = base64.b64decode(data["public_key"], validate=True)
+        box_id = data["box_id"]
+        last_seq = data["last_seq"]
+        if (not isinstance(box_id, str) or not box_id
+                or not isinstance(last_seq, int) or isinstance(last_seq, bool)
+                or last_seq < 0):
+            raise ValueError(
+                f"identity file {identity_path!r} is malformed: box_id must be "
+                f"a non-empty string and last_seq a non-negative integer"
+            )
+        if len(private_key) != 32 or len(public_key) != 32:
+            raise ValueError(
+                f"identity file {identity_path!r} has malformed key material "
+                f"(expected 32-byte Ed25519 keys)"
+            )
+        if signing.public_key_from_private(private_key) != public_key:
+            raise ValueError(
+                f"identity file {identity_path!r} is inconsistent: the stored "
+                f"public key does not match the private key"
+            )
         return Identity(
-            box_id=data["box_id"],
-            private_key=base64.b64decode(data["private_key"]),
-            public_key=base64.b64decode(data["public_key"]),
-            last_seq=data["last_seq"],
+            box_id=box_id,
+            private_key=private_key,
+            public_key=public_key,
+            last_seq=last_seq,
         )
 
     private_key, public_key = signing.keypair()

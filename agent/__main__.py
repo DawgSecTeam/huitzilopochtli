@@ -24,6 +24,8 @@ from common.schema import (
     Mode,
     Rubric,
     RubricEntry,
+    SCHEMA_VERSION,
+    ScoreBreakdown,
     SlaParams,
     validate_manifest,
 )
@@ -98,7 +100,8 @@ def _rubric_from_dict(d: dict) -> Rubric:
     )
 
 
-def _load_manifest(manifest_path: str, authoring_public_key_path: str | None) -> Manifest:
+def _load_manifest(manifest_path: str, authoring_public_key_path: str | None,
+                   allow_unsigned: bool = False) -> Manifest:
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest_dict = json.load(f)
 
@@ -113,17 +116,27 @@ def _load_manifest(manifest_path: str, authoring_public_key_path: str | None) ->
     unsigned_dict = {k: v for k, v in manifest_dict.items() if k != "_signature"}
 
     if authoring_public_key_path is None:
+        # §6.7/§16: fail closed on unverifiable input. Running an unverified
+        # manifest lets anything that can replace manifest.signed.json execute
+        # arbitrary checks on the box, so it requires an explicit opt-out.
+        if not allow_unsigned:
+            raise ValueError(
+                "no authoring_public_key_path configured; refusing to run with "
+                "an UNVERIFIED manifest. Set authoring_public_key_path in "
+                "agent_config.json, or set \"allow_unsigned_manifest\": true "
+                "to accept this risk (development only)."
+            )
         print(
-            "WARNING: no authoring_public_key_path configured; manifest "
-            "signature verification SKIPPED. Set authoring_public_key_path "
-            "in agent_config.json to enable it.",
+            "WARNING: no authoring_public_key_path configured and "
+            "allow_unsigned_manifest is set; manifest signature verification "
+            "SKIPPED. Do not use in production.",
             file=sys.stderr,
         )
     else:
         with open(authoring_public_key_path, "r", encoding="utf-8") as f:
-            public_key = base64.b64decode(f.read().strip())
+            public_key = base64.b64decode(f.read().strip(), validate=True)
         canonical_bytes = canonicalize(unsigned_dict)
-        sig = base64.b64decode(sig_b64)
+        sig = base64.b64decode(sig_b64, validate=True)
         if not signing.verify(public_key, canonical_bytes, sig):
             raise ValueError(
                 f"manifest at {manifest_path} FAILED signature verification "
@@ -168,11 +181,29 @@ def _enrolled_marker_path(identity_path: str) -> str:
     return identity_path + ".enrolled"
 
 
-def _ensure_enrolled(config, manifest, identity) -> None:
-    """Ensure enrollment; retry every boot until ``.enrolled`` marker exists."""
-    marker = _enrolled_marker_path(config.identity_path)
+def _mark_enrolled(identity_path: str) -> None:
+    """Write the .enrolled marker atomically."""
+    marker = _enrolled_marker_path(identity_path)
     if os.path.exists(marker):
         return
+    tmp = marker + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("ok")
+    os.rename(tmp, marker)
+
+
+def _ensure_enrolled(config, manifest, identity) -> bool:
+    """Ensure enrollment; retry every boot until ``.enrolled`` marker exists.
+
+    Returns True when the engine confirmed a FRESH enrollment of this exact
+    identity. A 409 (token consumed) is ambiguous — it can mean an idempotent
+    re-enroll of the same box, or a token consumed by a different/new box —
+    so in that case the marker is NOT written here; it is written only after
+    the engine accepts a signed check-in from this keypair (see _run_ranked).
+    """
+    marker = _enrolled_marker_path(config.identity_path)
+    if os.path.exists(marker):
+        return False
 
     if config.enrollment_token is None:
         raise ValueError(
@@ -185,13 +216,14 @@ def _ensure_enrolled(config, manifest, identity) -> None:
             manifest.engine_url, config.enrollment_token, identity,
             AGENT_VERSION, manifest.scenario_name, manifest.scenario_version,
         )
-    except agent.identity.EnrollmentTokenConsumed:
-        pass
-
-    tmp = marker + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("ok")
-    os.rename(tmp, marker)
+    except agent.identity.EnrollmentTokenConsumed as e:
+        print(
+            f"WARNING: {e}; the enrolled-marker will only be written after a "
+            f"confirmed check-in",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _run_ranked(config, manifest, ctx) -> None:
@@ -213,40 +245,55 @@ def _run_ranked(config, manifest, ctx) -> None:
             scenario_version=manifest.scenario_version,
             evidence=evidence,
             created_wall_claim=time.time(),
+            schema_version=SCHEMA_VERSION,
         )
 
-        # Persist seq before network so a crash cannot desync local state.
+        # Persist seq before network so a crash cannot desync local state; a
+        # replay-style permanent rejection below resyncs from the engine.
         identity.last_seq = bundle.seq
         agent.identity.save(config.identity_path, identity)
 
         client = agent.transport.TransportClient(
             manifest.engine_url, identity, queue_path=queue_path
         )
-        response = client.checkin(bundle)
+        try:
+            response = client.checkin(bundle)
+        except agent.transport.PermanentRejection as e:
+            # The engine refused the bundle outright (§14.2: logic error, not
+            # transient). The bundle is dropped; on a replay rejection the
+            # engine tells us its authoritative last_seq — resync so a
+            # desynced counter cannot wedge the box permanently.
+            print(f"WARNING: {e}", file=sys.stderr)
+            if e.last_seq is not None:
+                identity.last_seq = e.last_seq
+                agent.identity.save(config.identity_path, identity)
+            response = None
 
         if response is not None:
             last_response = response
+            # A confirmed check-in from this keypair settles any enrollment
+            # ambiguity (e.g. a consumed token that may have been used by a
+            # different box identity).
+            _mark_enrolled(config.identity_path)
             for directive in response.directives:
-                agent.adversary.executor.execute(directive, ctx)
-            html = agent.reporter.render_report(
-                response.score, Mode.RANKED, response.server_time,
-                theme=manifest.theme, manifest=manifest,
-                next_checkin_s=response.next_checkin_s,
-            )
-        else:
-            last_confirmed_at = (
-                last_response.server_time if last_response is not None else None
-            )
-            score = last_response.score if last_response is not None else None
-            if score is not None:
+                try:
+                    agent.adversary.executor.execute(directive, ctx)
+                except Exception as e:  # noqa: BLE001 — one bad directive
+                    # must never stall the run (§9.1)
+                    print(
+                        f"WARNING: directive {directive.event_id!r} "
+                        f"({directive.action!r}) failed: {e}",
+                        file=sys.stderr,
+                    )
+
+        try:
+            if last_response is not None:
                 html = agent.reporter.render_report(
-                    score, Mode.RANKED, last_confirmed_at, theme=manifest.theme,
-                    manifest=manifest,
-                    next_checkin_s=last_response.next_checkin_s if last_response else None,
+                    last_response.score, Mode.RANKED, last_response.server_time,
+                    theme=manifest.theme, manifest=manifest,
+                    next_checkin_s=last_response.next_checkin_s,
                 )
             else:
-                from common.schema import ScoreBreakdown
-
                 placeholder = ScoreBreakdown(
                     scenario_name=manifest.scenario_name,
                     scenario_version=manifest.scenario_version,
@@ -258,18 +305,31 @@ def _run_ranked(config, manifest, ctx) -> None:
                 html = agent.reporter.render_report(
                     placeholder, Mode.RANKED, None, theme=manifest.theme, manifest=manifest
                 )
+            with open(config.report_path, "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception as e:  # noqa: BLE001 — report rendering must never
+            # stall the check-in loop (§9.1)
+            print(f"WARNING: failed to render/write report: {e}", file=sys.stderr)
 
-        with open(config.report_path, "w", encoding="utf-8") as f:
-            f.write(html)
-
-        time.sleep(config.checkin_interval_s)
+        # The engine's next_checkin_s is authoritative when present (it backs
+        # the reporter countdown and SLA cadence); fall back to local config.
+        interval = config.checkin_interval_s
+        if last_response is not None:
+            nxt = last_response.next_checkin_s
+            if isinstance(nxt, (int, float)) and not isinstance(nxt, bool) and nxt > 0:
+                interval = nxt
+        time.sleep(interval)
 
 
 def main() -> None:
     config_path = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_CONFIG_PATH
     config = agent.config.load_config(config_path)
 
-    manifest = _load_manifest(config.manifest_path, config.authoring_public_key_path)
+    manifest = _load_manifest(
+        config.manifest_path,
+        config.authoring_public_key_path,
+        allow_unsigned=config.allow_unsigned_manifest,
+    )
     ctx = agent.platform.detect.detect()
 
     if config.mode == Mode.HONOR:

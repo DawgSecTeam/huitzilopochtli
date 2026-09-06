@@ -14,6 +14,8 @@ finishes -- so any genuinely hung check hung run_all. The fix uses an explicit
 executor + shutdown(wait=False, cancel_futures=True).
 """
 import time
+
+import pytest
 from unittest.mock import patch
 
 import agent.collector as collector
@@ -37,27 +39,27 @@ def _bundle():
 # --- BUG-A1: permanent rejection of the new bundle ---------------------------
 
 
-def test_checkin_permanent_rejection_of_new_bundle_returns_none(tmp_path, capsys):
-    """A 409/403-style permanent rejection of the new bundle must NOT raise --
-    it returns None so _run_ranked keeps looping. Previously it escaped checkin
-    and crash-looped the agent."""
+def test_checkin_permanent_rejection_of_new_bundle_raises(tmp_path, capsys):
+    """A 409/403-style permanent rejection of the new bundle must raise
+    PermanentRejection so _run_ranked can keep the loop alive, resync seq from
+    the engine, and keep the last-known report. It must NOT be re-queued (that
+    would replay-reject forever)."""
+    from agent.transport import PermanentRejection
+
     client = TransportClient("http://engine.example", FakeIdentity(),
                              queue_path=str(tmp_path / "q"))
 
     def boom(_canonical_bytes):
-        # Mirror _send_canonical's permanent-rejection path: a bare Exception
-        # (e.g. "HTTP 409") for a non-200 response.
-        raise Exception("checkin failed: HTTP 409: replay")
+        raise PermanentRejection("checkin failed: permanent HTTP 409: replay",
+                                 status=409, last_seq=6)
 
     with patch.object(client, "_send_canonical", side_effect=boom):
-        result = client.checkin(_bundle())
+        with pytest.raises(PermanentRejection) as exc_info:
+            client.checkin(_bundle())
 
-    assert result is None
-    # And it must NOT have been re-queued (that would crash-loop next cycle).
+    assert exc_info.value.last_seq == 6
+    # And it must NOT have been re-queued (that would replay-loop next cycle).
     assert not (tmp_path / "q").exists()
-    # A warning is logged.
-    err = capsys.readouterr().err
-    assert "permanent rejection" in err
 
 
 def test_checkin_transient_failure_of_new_bundle_queues_it(tmp_path):
@@ -286,7 +288,7 @@ def test_run_all_caps_workers_at_20():
         for i in range(50)  # 50 checks would otherwise spawn 50 threads
     ]
     with patch.dict(collector.CHECKS, {"_echo_for_cap_test": _Echo}, clear=False):
-        with patch.object(collector.concurrent.futures, "ThreadPoolExecutor", _RecordingTPE):
+        with patch.object(collector, "_DaemonThreadPoolExecutor", _RecordingTPE):
             results = collector.run_all(specs, ctx=None)
 
     assert captured["max_workers"] == 20

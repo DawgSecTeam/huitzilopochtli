@@ -69,7 +69,7 @@ class BoxHandle(ABC):
         """Install + enable the huitzilopochtli-agent init unit.
         kind is one of: 'systemd', 'openrc', 'none' (none = skip, the operator
         will wire it up). Copies the template from packaging/ and runs the
-        enable commands from packaging/README.md:118-133.
+        enable commands from the templates in packaging/ (huitzilopochtli-agent.*).
         mode is 'honor' or 'ranked' (BoxSpec.mode). Honor mode's agent runs
         the checks once and exits (see packaging/huitzilopochtli-agent.service's
         comments); on systemd, this also installs+enables the paired

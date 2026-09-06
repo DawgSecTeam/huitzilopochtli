@@ -33,7 +33,7 @@ def _split_url(engine_url: str):
     return parts.scheme, host, port
 
 
-def _request(scheme: str, host: str, port: str, method: str, path: str,
+def _request(scheme: str, host: str, port: int, method: str, path: str,
              admin_token: str, body: Optional[dict] = None, timeout: int = 30) -> dict:
     """One HTTP request to the engine admin API. Returns parsed JSON response."""
     import http.client
@@ -87,8 +87,18 @@ def upload_scenario(engine_url: str, admin_token: str, engine_record_path: str,
             "admin token is required to upload the scenario record; set "
             "HUITZILOPOCHTLI_ADMIN_TOKEN (the engine's admin token)"
         )
-    with open(engine_record_path, "r", encoding="utf-8") as f:
-        record = json.load(f)
+    try:
+        with open(engine_record_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+    except FileNotFoundError as e:
+        raise EngineError(
+            f"compiled engine record not found: {engine_record_path} "
+            f"(run `compile` first)"
+        ) from e
+    except json.JSONDecodeError as e:
+        raise EngineError(
+            f"engine record at {engine_record_path} is not valid JSON: {e}"
+        ) from e
     # The endpoint expects exactly {rubric, adversary}; engine_record has that shape.
     scheme, host, port = _split_url(engine_url)
     return _request(scheme, host, port, "POST", "/admin/scenarios", admin_token,
@@ -100,7 +110,7 @@ def mint_enrollment_token(engine_url: str, admin_token: str, scenario_name: str,
     """POST /admin/tokens -> return the one-time enrollment token string.
 
     The token is embedded in agent_config.json.enrollment_token and consumed
-    once by the agent on its first ranked boot (agent/config.py:35-37).
+    once by the agent on its first ranked boot (see agent/config.py).
     """
     if not admin_token:
         raise EngineError("admin token is required to mint an enrollment token")

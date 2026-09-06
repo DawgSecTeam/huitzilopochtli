@@ -91,6 +91,19 @@ class _ResponseParseFailure(Exception):
     """Engine returned 200 but body didn't parse; retry rather than drop."""
 
 
+class PermanentRejection(Exception):
+    """The engine permanently rejected a bundle (non-retryable 4xx; §14.2:
+    bad signature / replay / version mismatch are logic bugs, not transient
+    failures). The bundle was NOT accepted; callers must not advance seq on
+    their own. For replay rejections the engine's authoritative last_seq is
+    attached so the caller can resync a desynced local counter."""
+
+    def __init__(self, message: str, status: int = 0, last_seq=None):
+        super().__init__(message)
+        self.status = status
+        self.last_seq = last_seq
+
+
 class TransportClient:
     def __init__(self, engine_url: str, identity: "agent.identity.Identity",
                  queue_path: str):
@@ -130,9 +143,8 @@ class TransportClient:
     def _send_canonical(self, canonical_bytes: bytes) -> CheckinResponse:
         """POST already-canonicalized bundle bytes to the engine.
 
-        Raises _NetworkFailure on transient network errors, or a plain
-        Exception on a non-200 response (§14.2: bad signature / replay /
-        version mismatch are logic bugs, not transient failures).
+        Raises _NetworkFailure on transient network errors and
+        PermanentRejection on a non-retryable 4xx response.
         """
         sig = signing.sign(self.identity.private_key, canonical_bytes)
         headers = {
@@ -151,14 +163,11 @@ class TransportClient:
                 status = resp.status
                 resp_body = resp.read()
         except urllib.error.HTTPError as e:
-            body = e.read()
             if _is_retryable_status(e.code):
                 raise _NetworkFailure(
-                    f"checkin failed: transient HTTP {e.code}: {body!r}"
+                    f"checkin failed: transient HTTP {e.code}: {e.read()!r}"
                 ) from e
-            raise Exception(
-                f"checkin failed: HTTP {e.code}: {body!r}"
-            ) from e
+            raise self._permanent_rejection(e.code, e.read()) from e
         except (
             urllib.error.URLError,
             ConnectionError,
@@ -176,7 +185,7 @@ class TransportClient:
                 raise _NetworkFailure(
                     f"checkin failed: transient HTTP {status}: {resp_body!r}"
                 )
-            raise Exception(f"checkin failed: HTTP {status}: {resp_body!r}")
+            raise self._permanent_rejection(status, resp_body)
 
         try:
             data = json.loads(resp_body.decode("utf-8"))
@@ -184,37 +193,65 @@ class TransportClient:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             raise _ResponseParseFailure(str(e)) from e
 
+    @staticmethod
+    def _permanent_rejection(status: int, body: bytes) -> PermanentRejection:
+        """Build a PermanentRejection, extracting the engine's authoritative
+        last_seq from a replay-style error body when present."""
+        last_seq = None
+        try:
+            data = json.loads(body.decode("utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("last_seq"), int):
+                last_seq = data["last_seq"]
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        return PermanentRejection(
+            f"checkin failed: permanent HTTP {status}: {body!r}",
+            status=status,
+            last_seq=last_seq,
+        )
+
     # -- public API -----------------------------------------------------
 
     def checkin(self, bundle: Bundle) -> CheckinResponse:
         """Sign bundle's canonical form, POST to <engine_url>/checkin over TLS.
 
         On success: flush any previously-queued bundles first (in seq order),
-        then send `bundle`, return the parsed CheckinResponse.
+        then send `bundle`, return the parsed CheckinResponse. The response to
+        a successfully flushed queued bundle is authoritative too — the most
+        recent successful response from any send is returned.
+
         On network failure: append `bundle` to the queue file and return None.
+        On _ResponseParseFailure (engine accepted the bundle but the response
+        body was unusable): nothing is queued (a replay would 409 forever) and
+        None is returned; the bundle counts as accepted.
+        Raises PermanentRejection when the engine rejects a bundle with a
+        non-retryable 4xx; the rejected bundle is dropped, earlier queued
+        bundles are preserved.
         """
         queued = self._read_queue()
         remaining = list(queued)
+        last_response = None  # most recent successful response from any send
 
         while remaining:
             line = remaining[0]
-            canonical_bytes = line.encode("utf-8")
             try:
-                self._send_canonical(canonical_bytes)
-            except (_NetworkFailure, _ResponseParseFailure):
+                last_response = self._send_canonical(line.encode("utf-8"))
+            except _NetworkFailure:
                 new_canonical = canonicalize(dataclasses.asdict(bundle))
                 self._write_queue(remaining)
                 self._append_queue(new_canonical.decode("utf-8"))
                 return None
-            except Exception as e:
+            except _ResponseParseFailure as e:
+                # Engine accepted this queued bundle (HTTP 200) but the body
+                # didn't parse; retrying it would only earn a 409 replay.
                 print(
-                    f"WARNING: dropping un-sendable queued bundle (permanent "
-                    f"rejection): {e}",
+                    f"WARNING: dropping queued bundle the engine accepted but "
+                    f"whose response didn't parse: {e}",
                     file=sys.stderr,
                 )
-                remaining.pop(0)
-                continue
-
+            except PermanentRejection as e:
+                self._write_queue(remaining[1:])
+                raise
             remaining.pop(0)
 
         if remaining != queued:
@@ -223,12 +260,21 @@ class TransportClient:
         canonical_bytes = canonicalize(dataclasses.asdict(bundle))
         try:
             return self._send_canonical(canonical_bytes)
-        except (_NetworkFailure, _ResponseParseFailure):
+        except _NetworkFailure:
+            # Queue the new bundle for next cycle, then return the flushed
+            # queued bundle's response — it is the most recent authoritative
+            # engine response (score, directives).
             self._append_queue(canonical_bytes.decode("utf-8"))
-            return None
-        except Exception as e:
+            return last_response
+        except _ResponseParseFailure as e:
+            # Engine accepted the current bundle (HTTP 200) but the response
+            # body didn't parse. Do NOT queue it: the next cycle would replay
+            # an accepted bundle and be permanently 409-rejected.
             print(
-                f"WARNING: dropping un-sendable bundle (permanent rejection): {e}",
+                f"WARNING: engine accepted bundle seq={bundle.seq} but its "
+                f"response didn't parse (not queued): {e}",
                 file=sys.stderr,
             )
             return None
+        except PermanentRejection:
+            raise

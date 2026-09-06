@@ -114,6 +114,11 @@ def build_bundle(
             raise NakonError(
                 f"nakon build emitted unparseable JSON: {e}", stderr=result.stderr
             ) from e
+    if not isinstance(info, dict):
+        raise NakonError(
+            f"nakon build emitted {type(info).__name__} instead of a JSON object",
+            stderr=result.stderr,
+        )
 
     # nakon's `path` is relative to its cwd; make it absolute for the caller.
     if info.get("path") and not os.path.isabs(info["path"]):
@@ -149,14 +154,20 @@ def deploy_bundle(
     if not stdout:
         raise NakonError("nakon deploy produced no JSON output", stderr=result.stderr)
     try:
-        return json.loads(stdout.splitlines()[-1])
+        outcome = json.loads(stdout.splitlines()[-1])
     except json.JSONDecodeError as e:
         try:
-            return json.loads(stdout)
+            outcome = json.loads(stdout)
         except json.JSONDecodeError:
             raise NakonError(
                 f"nakon deploy emitted unparseable JSON: {e}", stderr=result.stderr
             ) from e
+    if not isinstance(outcome, dict):
+        raise NakonError(
+            f"nakon deploy emitted {type(outcome).__name__} instead of a JSON object",
+            stderr=result.stderr,
+        )
+    return outcome
 
 
 def derive_deploy_config(agent_nakon_config: dict, machine_name: str, host: str,

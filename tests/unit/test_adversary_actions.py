@@ -263,11 +263,11 @@ def test_execute_dispatches_kill_service_with_params():
     fake_fn.assert_called_once_with({"service": "nginx"}, ctx)
 
 
-def test_execute_unknown_action_raises_keyerror():
+def test_execute_unknown_action_raises_unknown_directive_error():
     ctx = FakeCtx()
     directive = Directive(event_id="e3", action="exfiltrate_data", params={})
 
-    with pytest.raises(KeyError):
+    with pytest.raises(executor.UnknownDirectiveError):
         executor.execute(directive, ctx)
 
 
@@ -277,7 +277,7 @@ def test_execute_unknown_action_does_not_run_any_action():
 
     fakes = {name: MagicMock() for name in ACTIONS}
     with patch.dict(executor.ACTIONS, fakes, clear=True):
-        with pytest.raises(KeyError):
+        with pytest.raises(executor.UnknownDirectiveError):
             executor.execute(directive, ctx)
     for fn in fakes.values():
         fn.assert_not_called()

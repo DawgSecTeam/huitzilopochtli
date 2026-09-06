@@ -225,7 +225,7 @@ def _enroll_box(base_url: str, admin_token: str, scenario_name: str, box_id: str
         "enrollment_token": enrollment_token,
         "box_id": box_id,
         "public_key": pub_key_b64,
-        "agent_version": "test-agent-1.0",
+        "agent_version": "0.1.0-test",
         "scenario_name": scenario_name,
         "scenario_version": 1,
     }
@@ -245,7 +245,7 @@ def _make_checkin_body(box_id: str, scenario_name: str, seq: int, matched_value:
         box_id=box_id,
         seq=seq,
         boot_id="boot-1",
-        agent_version="test-agent-1.0",
+        agent_version="0.1.0-test",
         scenario_name=scenario_name,
         scenario_version=1,
         evidence=[

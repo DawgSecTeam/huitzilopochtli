@@ -16,6 +16,7 @@ class AgentConfig:
     checkin_interval_s: Optional[int]  # ranked only
     authoring_public_key_path: Optional[str] = None  # for manifest signature verification
     enrollment_token: Optional[str] = None  # ranked only; consumed once on first boot
+    allow_unsigned_manifest: bool = False  # dev escape hatch; fails closed when unset
 
 
 def load_config(config_path: str) -> AgentConfig:
@@ -27,9 +28,10 @@ def load_config(config_path: str) -> AgentConfig:
             "authoring_public_key_path": str|null,
             "enrollment_token": str|null}
 
-    authoring_public_key_path is optional; if omitted, verification is
-    skipped with a warning (see _load_manifest). enrollment_token is
-    consumed only on first ranked boot.
+    authoring_public_key_path is optional only together with
+    allow_unsigned_manifest: without a verification key the agent refuses to
+    run unless allow_unsigned_manifest is true (development only; see
+    _load_manifest). enrollment_token is consumed only on first ranked boot.
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -43,6 +45,7 @@ def load_config(config_path: str) -> AgentConfig:
         checkin_interval_s=data.get("checkin_interval_s"),
         authoring_public_key_path=data.get("authoring_public_key_path"),
         enrollment_token=data.get("enrollment_token"),
+        allow_unsigned_manifest=bool(data.get("allow_unsigned_manifest", False)),
     )
 
     if config.mode == Mode.RANKED:

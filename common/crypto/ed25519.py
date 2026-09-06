@@ -15,6 +15,14 @@ algorithm are unchanged from the reference — only the byte/string plumbing
 was adapted for Python 3. Released into the public domain by the original
 authors; this adaptation carries the same public-domain status.
 
+NOTE: like the reference implementation this code is NOT constant-time; it
+signs with long-term box keys (§7 pins it anyway for portability). Risk
+scales with who can run timed code on the box — accepted per §7.
+
+NOTE: like the reference implementation this code is NOT constant-time; it
+signs with long-term box keys (§7 pins it anyway for portability). Risk
+scales with who can run timed code on the box — accepted per §7.
+
 Do not modify the arithmetic below; it is pinned to the reference above.
 
 Public surface (used only by signing.py — nothing else should import this
@@ -25,6 +33,8 @@ module directly):
     def verify(public_key: bytes, msg: bytes, sig: bytes) -> bool: ...
 """
 
+import functools
+import functools
 import hashlib
 import os
 
@@ -188,10 +198,16 @@ def keypair() -> tuple:
     return private_key, public_key
 
 
+@functools.lru_cache(maxsize=8)
+def _cached_public_key(private_key: bytes) -> bytes:
+    """Deriving the public key is a full scalar multiplication; hot per
+    check-in, so cache by private key (identities are few and fixed)."""
+    return publickey(private_key)
+
+
 def sign(private_key: bytes, msg: bytes) -> bytes:
     """Sign `msg` with `private_key`, returning a 64-byte signature."""
-    public_key = publickey(private_key)
-    return signature(msg, private_key, public_key)
+    return signature(msg, private_key, _cached_public_key(private_key))
 
 
 def verify(public_key: bytes, msg: bytes, sig: bytes) -> bool:

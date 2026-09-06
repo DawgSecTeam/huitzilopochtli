@@ -11,7 +11,10 @@ from common import canon
 from common.crypto import signing
 from common.evaluator import evaluate
 from common.matchers import evaluate_matcher
-from common.schema import Bundle, CheckinResponse, Rubric, SlaStatus
+from common.schema import (
+    Bundle, CheckinResponse, CollectorStatus, Rubric, SCHEMA_VERSION, SlaStatus,
+)
+from common.version import AGENT_VERSION
 from engine.store import Store
 
 
@@ -27,6 +30,28 @@ class CheckinError(Exception):
         self.status_code = status_code
         self.message = message
         self.last_seq = last_seq
+
+
+def _agent_version_compatible(agent_version: str) -> bool:
+    """§14.3: the bundle's major agent version must match the engine's;
+    minor/patch drift is tolerated."""
+    if not isinstance(agent_version, str) or not agent_version:
+        return False
+    try:
+        return agent_version.split(".")[0] == AGENT_VERSION.split(".")[0]
+    except Exception:
+        return False
+
+
+def _agent_version_compatible(agent_version: str) -> bool:
+    """§14.3: the bundle's major agent version must match the engine's;
+    minor/patch drift is tolerated."""
+    if not isinstance(agent_version, str) or not agent_version:
+        return False
+    try:
+        return agent_version.split(".")[0] == AGENT_VERSION.split(".")[0]
+    except Exception:
+        return False
 
 
 class _Clock:
@@ -58,6 +83,38 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     box = store.get_box(bundle.box_id)
     if box is None:
         raise CheckinError(403, "unknown box")
+
+    # Protocol-version checks (§14.3) come before signature verification:
+    # they are cheap and leak no enrollment information, and rejecting an
+    # incompatible wire format before parsing/signature work is fail-closed.
+    if bundle.schema_version != SCHEMA_VERSION:
+        raise CheckinError(
+            400,
+            f"incompatible bundle schema_version {bundle.schema_version!r} "
+            f"(engine supports {SCHEMA_VERSION!r})",
+        )
+    if not _agent_version_compatible(bundle.agent_version):
+        raise CheckinError(
+            400,
+            f"incompatible agent_version {bundle.agent_version!r} "
+            f"(engine expects major version {AGENT_VERSION.split('.')[0]})",
+        )
+
+    # Protocol-version checks (§14.3) come before signature verification:
+    # they are cheap and leak no enrollment information, and rejecting an
+    # incompatible wire format before parsing/signature work is fail-closed.
+    if bundle.schema_version != SCHEMA_VERSION:
+        raise CheckinError(
+            400,
+            f"incompatible bundle schema_version {bundle.schema_version!r} "
+            f"(engine supports {SCHEMA_VERSION!r})",
+        )
+    if not _agent_version_compatible(bundle.agent_version):
+        raise CheckinError(
+            400,
+            f"incompatible agent_version {bundle.agent_version!r} "
+            f"(engine expects major version {AGENT_VERSION.split('.')[0]})",
+        )
 
     # Verify signature before scenario checks to avoid leaking enrollment info.
     canonical_bytes = canon.canonicalize(dataclasses.asdict(bundle))
@@ -112,10 +169,13 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         if entry.sla is None:
             continue
         ev = evidence_by_check_id.get(entry.check_id)
-        if ev is None or ev.status != "ok":
-            continue
-        raw = ev.raw
-        is_up, _reason = evaluate_matcher(entry.matcher, raw)
+        # Missing or failed SLA evidence counts as a DOWN observation: the
+        # hysteresis counters must keep advancing (a box whose SLA collection
+        # is broken cannot hold its prior UP state indefinitely).
+        if ev is not None and ev.status == CollectorStatus.OK:
+            is_up, _reason = evaluate_matcher(entry.matcher, ev.raw)
+        else:
+            is_up = False
         sla_rec = sla.update_sla(
             store, bundle.box_id, entry.check_id, entry.sla, is_up, received_at
         )

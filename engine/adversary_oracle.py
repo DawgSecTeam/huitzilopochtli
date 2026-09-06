@@ -18,6 +18,16 @@ def due_directives(store: Store, box_id: str, server_secret: bytes,
     seed_material = server_secret + box_id.encode()
     seed = int.from_bytes(hashlib.sha256(seed_material).digest(), "big")
     rng = random.Random(seed)
+    # CAUTION: fire times are *derived*, not stored. Rotating
+    # HUITZILOPOCHTLI_SERVER_SECRET silently re-schedules every box's events
+    # while adversary_log (already-issued ids) persists, so some events may
+    # fire immediately on the next check-in or never. Rotate the secret only
+    # when wiping the store.
+    # CAUTION: fire times are *derived*, not stored. Rotating
+    # HUITZILOPOCHTLI_SERVER_SECRET silently re-schedules every box's events
+    # while adversary_log (already-issued ids) persists, so some events may
+    # fire immediately on the next check-in or never. Rotate the secret only
+    # when wiping the store.
 
     issued = store.get_issued_event_ids(box_id)
     directives = []

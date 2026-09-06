@@ -37,12 +37,18 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
       - else: store.create_box(...), store.consume_token(token), and return
         an EnrollResponse-shaped dict {"ok": True, "box_id": ..., "checkin_interval_s": ...}.
     """
-    # 1. Validate shape.
+    # 1. Validate shape. (isinstance(x, int) accepts bool, so scenario_version
+    # needs an explicit bool guard like the rest of the codebase.)
     for key, expected_type in _REQUIRED_FIELDS.items():
         if key not in body:
             raise EnrollError(400, f"malformed body: missing {key}")
-        if not isinstance(body[key], expected_type):
+        if key == "scenario_version":
+            if isinstance(body[key], bool) or not isinstance(body[key], int):
+                raise EnrollError(400, "malformed body: scenario_version has wrong type")
+        elif not isinstance(body[key], expected_type):
             raise EnrollError(400, f"malformed body: {key} has wrong type")
+    if not body["box_id"] or len(body["box_id"]) > 128:
+        raise EnrollError(400, "malformed body: box_id length out of range")
 
     try:
         public_key = base64.b64decode(body["public_key"], validate=True)

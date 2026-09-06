@@ -87,14 +87,22 @@ class FakeProvider:
 
 def install_fake_nakon(tmp_path, monkeypatch, *, build_json=None, deploy_json=None):
     """Install a fake `python3 -m nakon` whose `build --json` / `deploy --json`
-    print canned JSON. Either may be None to leave that command's output empty."""
+    print canned JSON. None defaults to a minimal valid object (not `null`):
+    boxbuilder now rejects non-object JSON with NakonError, so a `null` default
+    would mask a mis-wired test as a "nakon emitted garbage" failure."""
     ndir = tmp_path / "nakon"
     pkg = ndir / "nakon"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
     (pkg / "cli.py").write_text("# marker for resolve_nakon_dir\n")
-    build_blob = json.dumps(build_json) if build_json is not None else "null"
-    deploy_blob = json.dumps(deploy_json) if deploy_json is not None else "null"
+    if build_json is None:
+        build_json = {"bundle_id": "fake-bundle", "path": "bundles/fake-bundle",
+                      "cached": False, "plans": 1, "machines": 1}
+    if deploy_json is None:
+        deploy_json = {"bundle_id": "fake-bundle", "machines": [], "failures": 0,
+                       "ok": True, "log_dir": None}
+    build_blob = json.dumps(build_json)
+    deploy_blob = json.dumps(deploy_json)
     (pkg / "__main__.py").write_text(textwrap.dedent(f"""\
         import sys, json
         cmd = sys.argv[1] if len(sys.argv) > 1 else ""

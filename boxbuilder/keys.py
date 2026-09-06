@@ -70,12 +70,20 @@ def _read_key(path: str) -> bytes:
 
 
 def _write_key(path: str, priv: bytes) -> None:
-    # Write atomically-ish, then lock down perms. 0600 because this signs
-    # manifests; a leaked key lets an attacker forge manifests for any box
-    # trusting the matching public key.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Atomic temp-file + rename, then lock down perms. 0600 because this
+    # signs manifests; a leaked key lets an attacker forge manifests for any
+    # box trusting the matching public key.
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    tmp_path = os.path.join(directory, f".{os.path.basename(path)}.tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(priv.hex())
-    finally:
-        os.chmod(path, 0o600)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+    os.chmod(path, 0o600)

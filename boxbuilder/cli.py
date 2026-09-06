@@ -83,17 +83,40 @@ def _spec_from_args(args) -> BoxSpec:
             provider["port"] = args.provider_port
         if args.provider_user:
             provider["user"] = args.provider_user
-        if args.provider_password:
-            provider["password"] = args.provider_password
+        password = _resolve_provider_password(args)
+        if password:
+            provider["password"] = password
     return BoxSpec(
         scenario_path=os.path.abspath(args.scenario),
         nakon_config_path=os.path.abspath(args.nakon_config),
         provider=provider,
         authoring_key_path=os.path.abspath(args.authoring_key) if args.authoring_key else None,
-        base_dir=os.getcwd(),
+        # Theme assets resolve relative to the scenario's directory, exactly
+        # like the spec-file path does (theme.py uses spec.base_dir) — using
+        # CWD here would make the same inputs behave differently per invocation.
+        base_dir=os.path.dirname(os.path.abspath(args.scenario)),
         scenario=scenario,
         nakon_config=nakon_config,
     )
+
+
+def _resolve_provider_password(args) -> Optional[str]:
+    """--provider-password flag > $HUITZILOPOCHTLI_PROVIDER_PASSWORD > prompt.
+
+    Prefers not to take the password from argv at all: command lines are
+    visible in `ps` and shell history on the build machine."""
+    if getattr(args, "provider_password", None):
+        return args.provider_password
+    env = os.environ.get("HUITZILOPOCHTLI_PROVIDER_PASSWORD")
+    if env:
+        return env
+    if getattr(args, "provider", None):
+        # Never prompt on `compile` (no box contact needed there).
+        if getattr(args, "command", "compile") == "compile":
+            return None
+        import getpass
+        return getpass.getpass(f"SSH password for {args.provider_user or 'box'}: ")
+    return None
 
 
 def _add_spec_inputs(p: argparse.ArgumentParser) -> None:
