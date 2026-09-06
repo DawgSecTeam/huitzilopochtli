@@ -1,18 +1,17 @@
 # Xubuntu XFCE VM connection details: chocolate-factory-01, a full clone of
-# the "chocolate-factory-template" (Proxmox vmid 133 as of 2026-09-06; a
+# the "chocolate-factory-template" (Proxmox vmid 134 as of 2026-09-06; a
 # full clone of the "xubuntu-vnc" template, vmid 119, itself a VNC-enabled
 # clone of the original "xubuntu" template, vmid 904). This redeploy is
 # from xubuntu-vnc (119) so the display/machine-id fix
 # (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on the
 # fresh clone before `boxbuilder build`, as 119 itself is unpatched.
 #
-# vmid 133 supersedes 132 (which had all 19 checks, the display fix, and the
-# desktop-shortcut/report fixes, but the pre-redesign report page from before
-# 2ab540e's honor-board countdown work) and 131 before it (which had the
-# shortcut/report bugs described in boxbuilder/README.md's "Desktop
-# shortcut/report caveats" section) and 130 (older 16-check scenario -- see
-# "VNC desktop caveats") and 129 (missing the display fix). Don't clone from
-# any of those.
+# vmid 134 supersedes 133 (wallpaper not visible due to XFCE screen0/Virtual-1
+# mismatch and xfconfd cache – fixed via theme-wallpaper live-reload) and 132
+# (pre-redesign report) and 131 (shortcut/report bugs, see
+# boxbuilder/README.md's "Desktop shortcut/report caveats") and 130 (16-check
+# scenario, see "VNC desktop caveats") and 129 (missing display fix). Don't
+# clone from any of those. 133 remains as fallback until 134 is confirmed.
 #
 # provider.host below is whatever IP this specific example clone happens to
 # get from DHCP at build time -- it WILL go stale once that clone is
