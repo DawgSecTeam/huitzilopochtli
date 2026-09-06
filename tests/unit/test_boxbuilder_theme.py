@@ -5,7 +5,9 @@ network-free unit tests -- the real HTTP behavior (idempotency, content-addressi
 multipart upload) is covered against a fake http.server in test_boxbuilder_vulndb.py,
 and was additionally verified live against a real vulndb-ui during development.
 """
+import glob
 import os
+import tempfile
 
 import pytest
 
@@ -142,9 +144,63 @@ def test_readme_file_and_forensics_together(tmp_path, fake_vulndb):
     }))
     [entry] = result
     assert entry["name"] == "theme-readme"
-    assert entry["vars"]["README_FILENAME"] == "fakehash-README.md"
+    # Markdown is rendered to a themed page first, so the attachment (and the
+    # on-box Desktop copy) is README.html, not the authored filename.
+    assert entry["vars"]["README_FILENAME"] == "fakehash-README.html"
     assert "FORENSICS_TEXT" in entry["vars"]
+    upload_calls = [c for c in fake_vulndb if c[0] == "ensure_attachment"]
+    assert len(upload_calls) == 1
+    _, config_name, upload_path = upload_calls[0]
+    assert config_name == "theme-readme"
+    assert upload_path != str(readme)
+    assert os.path.basename(upload_path) == "README.html"
+
+
+def test_markdown_readme_renders_html_page(tmp_path, fake_vulndb, monkeypatch):
+    """The uploaded file is the themed HTML page: standalone document, escaped text,
+    rendered markup, theme branding."""
+    uploaded = {}
+
+    def _capture(url, configuration, local_path, timeout=60):
+        with open(local_path, encoding="utf-8") as f:
+            uploaded["content"] = f.read()
+        return f"fakehash-{os.path.basename(local_path)}"
+
+    monkeypatch.setattr(theme_mod.vulndb, "ensure_attachment", _capture)
+    readme = tmp_path / "README.md"
+    readme.write_text("## Hello\n\nUse `sudo -l` and **be careful** with <tags>\n")
+    theme_mod.resolve_theme_configurations(_spec(tmp_path, {
+        "readme": "README.md", "title": "Op X", "organization": "DawgSec",
+        "accent": "#c8102e", "include_report_shortcut": False,
+    }))
+    page = uploaded["content"]
+    assert page.startswith("<!doctype html>")
+    assert "<h1>Op X</h1>" in page
+    assert "<h2>Hello</h2>" in page
+    assert "<code>sudo -l</code>" in page
+    assert "<strong>be careful</strong>" in page
+    assert "&lt;tags&gt;" in page
+    assert '<p class="org">DawgSec</p>' in page
+    assert "--accent: #c8102e;" in page
+
+
+def test_html_readme_passes_through_untouched(tmp_path, fake_vulndb):
+    """An author-supplied .html readme is uploaded as-is (no conversion, no temp file)."""
+    readme = tmp_path / "README.html"
+    readme.write_text("<!doctype html><html><body>custom</body></html>")
+    theme_mod.resolve_theme_configurations(
+        _spec(tmp_path, {"readme": "README.html", "include_report_shortcut": False})
+    )
     assert ("ensure_attachment", "theme-readme", str(readme)) in fake_vulndb
+
+
+def test_readme_temp_dir_cleaned_up_after_upload(tmp_path, fake_vulndb):
+    readme = tmp_path / "README.md"
+    readme.write_text("hi")
+    theme_mod.resolve_theme_configurations(
+        _spec(tmp_path, {"readme": "README.md", "include_report_shortcut": False})
+    )
+    assert glob.glob(os.path.join(tempfile.gettempdir(), "huitz-readme-*")) == []
 
 
 def test_multiple_shortcuts_plus_auto_report_shortcut(tmp_path, fake_vulndb):
