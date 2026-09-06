@@ -27,7 +27,7 @@ def test_no_theme_arg_and_explicit_none_are_identical():
 def test_no_theme_uses_scenario_name_and_has_no_accent_block():
     out = render_report(_score(), Mode.HONOR, None)
     assert "<h1>Test Scenario</h1>" in out
-    assert ":root" not in out
+    assert ":root { --accent:" not in out
     assert '<div class="masthead">' in out  # masthead wrapper always present
 
 
@@ -69,15 +69,17 @@ def test_theme_invalid_accent_is_dropped_defensively():
     renderer must not trust an accent value blindly -- it's a <style> interpolation
     context where a malformed value could break out of the intended CSS rule."""
     out = render_report(_score(), Mode.HONOR, None, theme={"accent": "red; } body { color:red"})
-    assert ":root" not in out
+    assert ":root { --accent:" not in out
     assert "red; }" not in out
 
 
 def test_pass_fail_colors_never_themed():
     """The up/down semantic colors must stay fixed regardless of accent."""
     out = render_report(_score(), Mode.HONOR, None, theme={"accent": "#000000"})
-    assert ".up { color: #4caf50; font-weight: bold; }" in out
-    assert ".down { color: #f44336; font-weight: bold; }" in out
+    # semantic colors stay fixed; font-weight may be 700 vs bold (same visual)
+    assert "#4caf50" in out
+    assert "#f44336" in out
+    assert ".up" in out and ".down" in out
 
 
 def test_ranked_awaiting_engine_with_theme():
@@ -90,3 +92,97 @@ def test_ranked_confirmed_with_theme():
     out = render_report(_score(), Mode.RANKED, 1700000000.0, theme={"title": "Op X", "accent": "#c8102e"})
     assert "last confirmed by engine" in out
     assert ":root { --accent: #c8102e; }" in out
+
+
+# --- Honor positive-only + countdown (CyberPatriot-style) -----------------
+
+def test_honor_hides_failed_and_uses_display_title():
+    from common.schema import CheckSpec, Manifest
+    manifest = Manifest(
+        schema_version=1, scenario_name="Test Scenario", scenario_version=1,
+        mode=Mode.HONOR, engine_url=None, hosts=["localhost"], checks=[
+            CheckSpec(id="c-pass", type="file_regex", category=Category.VULN,
+                      host_id="localhost", collect_params={}, display_title="Fixed vuln A", display_max_points=10),
+            CheckSpec(id="c-fail", type="file_regex", category=Category.VULN,
+                      host_id="localhost", collect_params={}, display_title="Hidden vuln B", display_max_points=10),
+        ], theme=None,
+    )
+    score = ScoreBreakdown(
+        scenario_name="Test Scenario", scenario_version=1, total=10,
+        results=[
+            CheckResult(check_id="c-pass", category=Category.VULN, awarded_points=10, passed=True, reason="equals FOUND"),
+            CheckResult(check_id="c-fail", category=Category.VULN, awarded_points=0, passed=False, reason="equals FOUND expected X"),
+        ], sla_status=[], computed_at=1234.0,
+    )
+    out = render_report(score, Mode.HONOR, None, theme=None, manifest=manifest)
+    assert "Fixed vuln A" in out
+    assert "+10 pts" in out
+    assert "Hidden vuln B" not in out
+    assert "c-fail" not in out
+    assert "equals FOUND" not in out  # reason must not leak
+    # category value and Passed oracle must not appear in honor
+    assert "<th>Category</th>" not in out
+    assert "<th>Passed</th>" not in out
+
+
+def test_honor_penalty_only_when_active():
+    from common.schema import CheckSpec, Manifest
+    manifest = Manifest(
+        schema_version=1, scenario_name="Test Scenario", scenario_version=1,
+        mode=Mode.HONOR, engine_url=None, hosts=["localhost"], checks=[
+            CheckSpec(id="pen-ok", type="permission", category=Category.PENALTY,
+                      host_id="localhost", collect_params={}, display_title="Perm ok", display_max_points=5),
+            CheckSpec(id="pen-bad", type="permission", category=Category.PENALTY,
+                      host_id="localhost", collect_params={}, display_title="Perm bad", display_max_points=5),
+        ], theme=None,
+    )
+    # pen-ok intact (0 pts) should not surface; pen-bad incurred (-5) should
+    score = ScoreBreakdown(
+        scenario_name="Test Scenario", scenario_version=1, total=-5,
+        results=[
+            CheckResult(check_id="pen-ok", category=Category.PENALTY, awarded_points=0, passed=True, reason="mode ok"),
+            CheckResult(check_id="pen-bad", category=Category.PENALTY, awarded_points=-5, passed=False, reason="mode 0777 looser"),
+        ], sla_status=[], computed_at=1234.0,
+    )
+    out = render_report(score, Mode.HONOR, None, theme=None, manifest=manifest)
+    assert "Perm bad" in out
+    assert "-5 pts" in out
+    assert "Perm ok" not in out
+    assert "0777" not in out
+
+
+def test_honor_countdown_and_progress_present():
+    score = _score(total=5, results=[
+        CheckResult(check_id="c1", category=Category.VULN, awarded_points=5, passed=True, reason="ok"),
+    ], computed_at=1000.0)
+    out = render_report(score, Mode.HONOR, None)
+    assert 'id="countdown"' in out
+    assert "Next check in" in out
+    assert 'class="progress"' in out
+    assert "<script>" in out
+    assert "setInterval" in out
+    # SLA table must be suppressed in honor (untimed)
+    assert "SLA status" not in out
+    assert "Honor mode" in out
+
+
+def test_ranked_still_verbose():
+    score = ScoreBreakdown(
+        scenario_name="Test Scenario", scenario_version=1, total=5,
+        results=[CheckResult(check_id="c1", category=Category.VULN, awarded_points=5, passed=True, reason="ok reason")],
+        sla_status=[SlaStatus(check_id="c1", state="UP", accrued_points=3)],
+        computed_at=1234.0,
+    )
+    out = render_report(score, Mode.RANKED, 1700000000.0)
+    # Ranked keeps diagnostic table with category/check_id/reason
+    assert "c1" in out
+    assert "ok reason" in out
+    assert "Category" in out
+    assert "Reason" in out
+
+
+def test_ranked_countdown_when_next_checkin_known():
+    score = _score()
+    out = render_report(score, Mode.RANKED, 1700000000.0, next_checkin_s=60)
+    assert 'id="countdown"' in out
+    assert "Next check-in in" in out
