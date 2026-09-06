@@ -107,15 +107,22 @@ def test_compile_box_appends_theme_configurations_to_every_machine(
     by_name = {e["name"]: e for e in appended}
     assert by_name["theme-wallpaper"]["vars"]["WALLPAPER_FILENAME"] == "fakehash-wallpaper.png"
     assert "Authorized use only" in by_name["theme-motd"]["vars"]["MOTD_TEXT"]
-    assert by_name["theme-readme"]["vars"]["README_FILENAME"] == "fakehash-README.md"
+    assert by_name["theme-readme"]["vars"]["README_FILENAME"] == "fakehash-README.html"
     assert "Q1:" in by_name["theme-readme"]["vars"]["FORENSICS_TEXT"]
     assert by_name["theme-shortcuts"]["vars"]["SHORTCUT_NAME"] == "Scoring Report"
 
-    # wallpaper/readme were uploaded from real, existing, absolute example asset paths.
+    # Wallpaper was uploaded from the real example asset; the readme was rendered to
+    # a themed page first, so it uploads from a temp dir under the fixed README.html
+    # name (see boxbuilder/theme.py::_readme_upload_path).
     upload_paths = [c[2] for c in fake_vulndb if c[0] == "ensure_attachment"]
     assert any(p.endswith(os.path.join("assets", "wallpaper.png")) for p in upload_paths)
-    assert any(p.endswith(os.path.join("assets", "README.md")) for p in upload_paths)
-    assert all(os.path.isabs(p) and os.path.isfile(p) for p in upload_paths)
+    readme_uploads = [p for p in upload_paths if os.path.basename(p) == "README.html"]
+    assert len(readme_uploads) == 1
+    assert all(os.path.isabs(p) for p in upload_paths)
+    # wallpaper exists on disk; the rendered readme temp file is removed post-upload.
+    assert os.path.isfile(
+        next(p for p in upload_paths if p.endswith(os.path.join("assets", "wallpaper.png")))
+    )
 
 
 def test_compile_box_without_theme_writes_nakon_config_unchanged(tmp_path, monkeypatch):

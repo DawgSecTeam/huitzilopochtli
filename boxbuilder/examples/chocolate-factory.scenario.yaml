@@ -287,4 +287,4 @@ theme:
     # launches it (GLib's desktop-entry parsing does quote-removal, not
     # tilde/variable expansion).
     - name: "Factory Hardening Handbook"
-      exec: "sh -c 'xdg-open $HOME/Desktop/README.md'"
+      exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"

@@ -115,15 +115,17 @@ boxbuilder's side of the fence.
    vulndb storage convention. `theme-readme.json` used to `cp` the
    attachment to each user's Desktop *under that same name*, so the icon
    read as e.g. `158f3cbb4e51da58-chocolate-factory-README.md` instead of
-   `README.md`, and any shortcut assuming the clean name (like a scenario's
-   own `desktop_shortcuts` entry pointing at `~/Desktop/README.md`) never
-   resolved. Fixed by always copying out under a fixed `README.md`.
+   `README.html`, and any shortcut assuming the clean name (like a scenario's
+   own `desktop_shortcuts` entry pointing at `~/Desktop/README.html`) never
+   resolved. Fixed by always copying out under a fixed `README.html` (authored
+   Markdown is rendered to that themed page at build time by
+   `boxbuilder/mdhtml.py`).
 2. **A bare `~`/`$HOME` in a `.desktop` `Exec=` line is not guaranteed to be
    shell-expanded.** GLib's desktop-entry launcher does quote-removal, not
-   tilde/variable expansion, so `Exec=xdg-open ~/Desktop/README.md` can
+   tilde/variable expansion, so `Exec=xdg-open ~/Desktop/README.html` can
    silently fail to resolve regardless of whether the target file exists.
    Wrap any such Exec in `sh -c '...'` (e.g. `sh -c 'xdg-open
-   $HOME/Desktop/README.md'`) so the shell -- not the launcher -- does the
+   $HOME/Desktop/README.html'`) so the shell -- not the launcher -- does the
    expansion.
 3. **A strictly-confined snap browser (Ubuntu's default Firefox) can't see
    `/opt`.** `snap connections firefox` shows only the `home` interface
@@ -278,7 +280,9 @@ theme:
   accent: "#c8102e"                       # report accent color (#rrggbb)
   logo: ./assets/logo.png                 # embedded in report.html as base64 (size-capped)
   wallpaper: ./assets/wallpaper.png       # file path, resolved relative to the scenario file
-  readme: ./assets/README.md              # file path; copied to every user's Desktop
+  readme: ./assets/README.md              # authored as Markdown; rendered to a themed
+                                          # README.html on every user's Desktop
+                                          # (.html passes through unrendered)
   motd: "Authorized use only."            # -> /etc/motd (+ /etc/issue if `issue` absent)
   forensics_questions: ["What port is the mail server on?"]  # cosmetic only, not scored
   desktop_shortcuts: [{name: "Wiki", exec: "xdg-open https://..."}]

@@ -16,17 +16,59 @@ every scenario that references identical bytes (boxbuilder/vulndb.py::ensure_att
 cosmetic subset that flows through the signed Manifest instead (see
 authoring/compile.py::_build_manifest_theme); this module never touches them.
 """
+import base64
 import os
+import shutil
+import tempfile
 from typing import Optional
 
-from boxbuilder import vulndb
+from boxbuilder import mdhtml, vulndb
 from boxbuilder.spec import BoxSpec
+
+# Matches authoring/compile.py's manifest logo cap; the README page skips (rather
+# than fails) an over-cap/unreadable logo -- compile.py is the one that fail-fasts.
+_MAX_LOGO_BYTES = 150 * 1024
 
 
 def _resolve(path: str, base_dir: str) -> str:
     # Mirrors boxbuilder/spec.py::_resolve -- same "absolute wins, else relative to the
     # spec file's directory" rule used for scenario_path/nakon_config_path there.
     return path if os.path.isabs(path) else os.path.normpath(os.path.join(base_dir, path))
+
+
+def _readme_logo_b64(theme: dict, base_dir: str) -> Optional[str]:
+    """Base64-encode theme.logo for the README page masthead, or None if absent/
+    unreadable/over-cap (cosmetic only -- the manifest path fail-fasts instead)."""
+    logo = theme.get("logo")
+    if not logo:
+        return None
+    try:
+        with open(_resolve(logo, base_dir), "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if len(data) > _MAX_LOGO_BYTES:
+        return None
+    return base64.b64encode(data).decode("ascii")
+
+
+def _readme_upload_path(readme_abs: str, theme: dict, base_dir: str) -> str:
+    """Return the file to upload for theme.readme. Markdown is rendered to a themed
+    HTML page (boxbuilder/mdhtml.py) in a temp dir that the caller removes after the
+    upload; an author-supplied .html passes through untouched. The fixed `README.html`
+    basename -- not the scenario's own filename -- is what lands in the content-
+    addressed attachment name, matching the on-box script's Desktop filename."""
+    if readme_abs.lower().endswith((".html", ".htm")):
+        return readme_abs
+    with open(readme_abs, encoding="utf-8") as f:
+        page = mdhtml.render_readme_page(
+            f.read(), theme, logo_b64=_readme_logo_b64(theme, base_dir)
+        )
+    tmp_dir = tempfile.mkdtemp(prefix="huitz-readme-")
+    path = os.path.join(tmp_dir, "README.html")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(page)
+    return path
 
 
 def _motd_vars(theme: dict) -> dict:
@@ -122,7 +164,14 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
         config = vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-readme"))
         readme_vars = {}
         if readme_abs:
-            readme_vars["README_FILENAME"] = vulndb.ensure_attachment(url, config, readme_abs)
+            upload_path = _readme_upload_path(readme_abs, theme, spec.base_dir)
+            try:
+                readme_vars["README_FILENAME"] = vulndb.ensure_attachment(
+                    url, config, upload_path
+                )
+            finally:
+                if upload_path != readme_abs:
+                    shutil.rmtree(os.path.dirname(upload_path), ignore_errors=True)
         if forensics_text:
             readme_vars["FORENSICS_TEXT"] = forensics_text
         entries.append({"name": "theme-readme", "vars": readme_vars})
