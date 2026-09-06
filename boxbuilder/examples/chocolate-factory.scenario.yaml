@@ -14,9 +14,10 @@ checks:
   #   EASY (8):     recipe_private, desktop_vault_code, no_tourguide,
   #                 no_tempscout, no_shipping_bot, no_passwordless_sudo,
   #                 no_malicious_autostart, media_is_not_script
-  #   MODERATE (8): cron_file_private, deploy_key_private, ssh_no_root,
+  #   MODERATE (9):  cron_file_private, deploy_key_private, ssh_no_root,
   #                 intern_not_admin, service_account_no_shell,
-  #                 no_blank_tempscout_password, cocoa_service_inactive,
+  #                 no_blank_tempscout_password, cocoaadm_password_set,
+  #                 cocoa_service_inactive,
   #                 cocoa_service_disabled
   #   HARD (3):     no_hidden_cron_file, no_hidden_payload,
   #                 no_backdoor_ssh_key
@@ -31,7 +32,7 @@ checks:
   - id: recipe_private
     type: permission
     category: vuln
-    display: "EASY, GUI: Secret recipe is not world-writable (right-click > Properties > Permissions in the file manager)"
+    display: "Secret recipe is not world-writable (right-click > Properties > Permissions in the file manager)"
     max_points: 10
     collect:
       path: /opt/cocoa/recipes/secret-recipe.txt
@@ -44,7 +45,7 @@ checks:
   - id: desktop_vault_code
     type: permission
     category: vuln
-    display: "EASY, GUI: Warehouse vault code left on the Desktop is not world-writable"
+    display: "Warehouse vault code left on the Desktop is not world-writable"
     max_points: 10
     collect:
       path: /home/sysadmin/Desktop/vault-code.txt
@@ -57,7 +58,7 @@ checks:
   - id: cron_file_private
     type: permission
     category: vuln
-    display: "MODERATE: Cocoa backup cron file is not world-writable"
+    display: "Cocoa backup cron file is not world-writable"
     max_points: 10
     collect:
       path: /etc/cron.d/cocoa-backup
@@ -70,7 +71,7 @@ checks:
   - id: deploy_key_private
     type: permission
     category: vuln
-    display: "MODERATE: Factory deployment key is private"
+    display: "Factory deployment key is private"
     max_points: 10
     collect:
       path: /home/cocoaadm/.ssh/id_rsa
@@ -84,13 +85,25 @@ checks:
   - id: ssh_no_root
     type: file_regex
     category: vuln
-    display: "MODERATE: SSH root login is disabled"
+    display: "SSH root login is disabled"
     max_points: 10
     collect:
       path: /etc/ssh/sshd_config
       extract: '(?m)^\s*PermitRootLogin\s+(\S+)'
     expect:
       equals: "no"
+      points: 10
+
+  - id: cocoaadm_password_set
+    type: file_regex
+    category: vuln
+    display: "Cocoa administrator has a usable password hash"
+    max_points: 10
+    collect:
+      path: /etc/shadow
+      extract: '(?m)^cocoaadm:([^:]+):'
+    expect:
+      regex: '^\$(1|2[aby]?|5|6|y)\$'
       points: 10
 
   - id: no_passwordless_sudo
@@ -110,7 +123,7 @@ checks:
   - id: no_tourguide
     type: user_group
     category: vuln
-    display: "EASY, GUI: Unauthorized tourguide account is removed (shows as a login tile on the greeter)"
+    display: "Unauthorized tourguide account is removed (shows as a login tile on the greeter)"
     max_points: 10
     collect: {}
     expect:
@@ -121,7 +134,7 @@ checks:
   - id: no_tempscout
     type: user_group
     category: vuln
-    display: "EASY, GUI: Unauthorized temp scout account is removed (shows as a login tile on the greeter)"
+    display: "Unauthorized temp scout account is removed (shows as a login tile on the greeter)"
     max_points: 10
     collect: {}
     expect:
@@ -132,7 +145,7 @@ checks:
   - id: no_shipping_bot
     type: user_group
     category: vuln
-    display: "EASY, GUI: Unauthorized shipping-contractor account is removed (shows as a login tile on the greeter)"
+    display: "Unauthorized shipping-contractor account is removed (shows as a login tile on the greeter)"
     max_points: 10
     collect: {}
     expect:
@@ -143,7 +156,7 @@ checks:
   - id: intern_not_admin
     type: user_group
     category: vuln
-    display: "MODERATE: Intern is not an administrator"
+    display: "Intern is not an administrator"
     max_points: 10
     collect: {}
     expect:
@@ -156,7 +169,7 @@ checks:
   - id: service_account_no_shell
     type: file_regex
     category: vuln
-    display: "MODERATE: Service account has no interactive shell"
+    display: "Service account has no interactive shell"
     max_points: 10
     collect:
       path: /etc/passwd
@@ -168,7 +181,7 @@ checks:
   - id: no_blank_tempscout_password
     type: file_regex
     category: vuln
-    display: "MODERATE: No blank password remains in the shadow database"
+    display: "No blank password remains in the shadow database"
     max_points: 10
     collect:
       path: /etc/shadow
@@ -181,7 +194,7 @@ checks:
   - id: no_hidden_cron_file
     type: permission
     category: vuln
-    display: "HARD: Hidden cocoa cron persistence is removed"
+    display: "Hidden cocoa cron persistence is removed"
     max_points: 10
     collect:
       path: /etc/cron.d/cocoa-hidden-sync
@@ -193,7 +206,7 @@ checks:
   - id: no_hidden_payload
     type: permission
     category: vuln
-    display: "HARD: Hidden cocoa payload is removed"
+    display: "Hidden cocoa payload is removed"
     max_points: 10
     collect:
       path: /opt/.cocoa/cocoa-sync
@@ -205,7 +218,7 @@ checks:
   - id: no_backdoor_ssh_key
     type: file_regex
     category: vuln
-    display: "HARD: No unauthorized key remains in the admin's authorized_keys"
+    display: "No unauthorized key remains in the admin's authorized_keys"
     max_points: 10
     collect:
       path: /home/cocoaadm/.ssh/authorized_keys
@@ -217,7 +230,7 @@ checks:
   - id: media_is_not_script
     type: file_regex
     category: vuln
-    display: "EASY, GUI: Shared golden-ticket media is not an executable script (browse to /var/media in the file manager)"
+    display: "Shared golden-ticket media is not an executable script (browse to /var/media in the file manager)"
     max_points: 10
     collect:
       path: /var/media/golden-ticket.mp3
@@ -229,7 +242,7 @@ checks:
   - id: no_malicious_autostart
     type: permission
     category: vuln
-    display: "EASY, GUI: Malicious desktop autostart is removed (Settings > Session and Startup > Application Autostart)"
+    display: "Malicious desktop autostart is removed (Settings > Session and Startup > Application Autostart)"
     max_points: 10
     collect:
       path: /etc/xdg/autostart/cocoa-update.desktop
@@ -241,7 +254,7 @@ checks:
   - id: cocoa_service_inactive
     type: service_state
     category: vuln
-    display: "MODERATE: Cocoa update service is inactive"
+    display: "Cocoa update service is inactive"
     max_points: 10
     collect:
       service: cocoa-update.service
@@ -253,7 +266,7 @@ checks:
   - id: cocoa_service_disabled
     type: service_state
     category: vuln
-    display: "MODERATE: Cocoa update service is disabled"
+    display: "Cocoa update service is disabled"
     max_points: 10
     collect:
       service: cocoa-update.service
@@ -271,11 +284,10 @@ theme:
   readme: assets/chocolate-factory-README.md
   motd: |
     Welcome to Cocoa Falls Chocolate Works.
-    This is an authorized systems-hardening tour. Keep recipes private, verify every account,
-    and treat unexpected media and scheduled jobs as suspicious.
+    This is a protected system, unauthorized access will be persecuted.
   issue: |
-    AUTHORIZED TRAINING BOX — Cocoa Falls Chocolate Works
-    Disconnect if you are not part of the tour.
+    Cocoa Falls Chocolate Works System
+    Disconnect if you are unauthorized.
   desktop_shortcuts:
     # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
     # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
@@ -296,7 +308,7 @@ forensics:
     answers: ["/etc/cron.d/cocoa-hidden-sync"]
     points: 10
   - id: fq-sudo-account
-    question: "One account was quietly added to the sudo group. Which account is it?"
+    question: "One account was quietly added to the sudo group. Type that account's username."
     answer: "intern"
     points: 10
   - id: fq-media-file
@@ -305,6 +317,6 @@ forensics:
     answers: ["/var/media/golden-ticket.mp3"]
     points: 10
   - id: fq-ssh-key
-    question: "The factory admin's authorized_keys contains a key nobody recognizes. What identifying tag does that key carry?"
+    question: "The factory admin's authorized_keys contains a key nobody recognizes. Type the comment/tag at the end of that key's line (the last field, e.g. 'someone@host')."
     answer: "planted-training-key"
     points: 10

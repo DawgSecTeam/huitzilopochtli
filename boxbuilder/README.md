@@ -40,16 +40,16 @@ nakon catalog check --select nginx,ssh-root-login,suid-find --json
 #    See boxbuilder/examples/ for a worked pairing.
 
 # 3. Author a box spec tying them together:
-#    boxbuilder/examples/linux-fundamentals.box.yaml
+#    boxbuilder/examples/chocolate-factory.box.yaml
 
 # 4. Build the box (all four steps, resumable):
 python3 -m boxbuilder build \
-  --spec boxbuilder/examples/linux-fundamentals.box.yaml \
-  --image-out /tmp/linux-fundamentals.ova --json
+  --spec boxbuilder/examples/chocolate-factory.box.yaml \
+  --image-out /tmp/chocolate-factory.ova --json
 ```
 
-For a longer, themed follow-up session, see the **Cocoa Falls Chocolate Works**
-example: `boxbuilder/examples/chocolate-factory.box.yaml` pairs with `chocolate-factory.scenario.yaml` and `chocolate-factory.nakon.json`.
+The worked example is the **Cocoa Falls Chocolate Works** scenario:
+`boxbuilder/examples/chocolate-factory.box.yaml` pairs with `chocolate-factory.scenario.yaml` and `chocolate-factory.nakon.json`.
 It targets an Ubuntu/Xubuntu XFCE VM in honor mode and pairs ordinary cyPAT-style
 access-control findings (root SSH login, passwordless sudo, unauthorized users,
 unwanted admin membership, and loose permissions) with cron, malicious media,
@@ -150,7 +150,8 @@ boxbuilder's side of the fence.
 A nakon machine list. Each entry's `configurations` names vulndb catalog entries
 that, when deployed, make the box insecure in specific ways. Browse with
 `nakon catalog list --json`; validate a selection with
-`nakon catalog check --config <file> --json`. See `boxbuilder/examples/nakon-config.json`.
+`nakon catalog check --config <file> --json`. See
+`boxbuilder/examples/chocolate-factory.nakon.json`.
 
 The `ip`/`user`/`password` are **placeholders** — at deploy time boxbuilder
 overwrites them with the provider's address (so the box spec is the single source
@@ -161,13 +162,13 @@ of truth for where the box is). v1 is single-box; the first machine is targeted.
 A standard huitzilopochtli scenario YAML (same shape `authoring/compile.py`
 consumes). Each check awards points for correctly hardening what a planted vuln
 broke. Mode (`honor`/`ranked`) and `engine_url` live here. See
-`boxbuilder/examples/linux-fundamentals.scenario.yaml` and `architecture.md` §8.
+`boxbuilder/examples/chocolate-factory.scenario.yaml` and `architecture.md` §8.
 
 ### The box spec (ties them together)
 
 ```yaml
-scenario: ./linux-fundamentals.scenario.yaml
-nakon_config: ./nakon-config.json
+scenario: ./chocolate-factory.scenario.yaml
+nakon_config: ./chocolate-factory.nakon.json
 provider: {name: ssh, host: 192.168.50.10, user: ubuntu, password: ubuntu}
 authoring_key: ./authoring.key     # optional; auto-generated+persisted (0600) if absent
 ```
@@ -260,7 +261,8 @@ boxbuilder does **not** pair them for you. When you author a box, you must ensur
 each planted vuln has a corresponding check that verifies the hardening — e.g.
 `ssh-root-login` (plants `PermitRootLogin yes`) pairs with a `file_regex` check
 expecting `PermitRootLogin no`. The worked example in `boxbuilder/examples/`
-shows one concrete pairing. An agent authoring a box should:
+(chocolate-factory) shows several concrete pairings. An agent authoring a box
+should:
 
 1. `nakon catalog show <vuln> --json` — read exactly what each vuln plants.
 2. Write a check that awards points for the *opposite* (hardened) state.
@@ -316,7 +318,8 @@ never touches vulndb-ui at all. (Note: `compile` also ensures any *selected*
 vuln that has a bundled seed in `boxbuilder/vulndb_vuln_configs/` exists in the
 catalog — create-if-missing — so scenarios selecting seeded vulns reach
 vulndb-ui even when untheme'd.) See
-`boxbuilder/examples/linux-fundamentals-themed.{scenario,box}.yaml` for a worked example.
+`boxbuilder/examples/chocolate-factory.{scenario,box}.yaml` for a worked,
+themed example.
 
 ## Forensics questions (scored)
 

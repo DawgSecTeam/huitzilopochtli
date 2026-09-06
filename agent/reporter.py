@@ -259,22 +259,22 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     if vuln_fixed:
         vuln_items = "\n".join(_li_for_result(r) for r in vuln_fixed)
     else:
-        vuln_items = '<li class="muted"><em>No vulnerabilities fixed yet — keep hardening!</em></li>'
+        vuln_items = '<li class="muted"><em>No vulnerabilities fixed yet</em></li>'
 
     if penalties_active:
         pen_items = "\n".join(_li_for_result(r) for r in penalties_active)
-        pen_header = f"Penalties &amp; Prohibited — {len(penalties_active)} active"
+        pen_header = f"Penalties &amp; {len(penalties_active)} Penalties"
     else:
-        pen_items = '<li class="muted"><em>No penalties — good hygiene!</em></li>'
-        pen_header = "Penalties &amp; Prohibited — 0 active"
+        pen_items = '<li class="muted"><em>No penalties</em></li>'
+        pen_header = "Penalties &amp; 0 Penalties"
 
     # Remaining hint: count only, no identities
     remaining_vulns = max(0, vuln_total - vuln_fixed_count)
     if remaining_vulns > 0:
-        remaining_html = f'<p class="muted remaining">{remaining_vulns} issue(s) remain — keep hunting.</p>'
+        remaining_html = f'<p class="muted remaining">{remaining_vulns} issue(s) remain.</p>'
     else:
         if vuln_total > 0 and vuln_fixed_count == vuln_total:
-            remaining_html = '<p class="muted remaining">All scored issues fixed — nice work!</p>'
+            remaining_html = '<p class="muted remaining">All scored issues fixed</p>'
         else:
             remaining_html = ""
 

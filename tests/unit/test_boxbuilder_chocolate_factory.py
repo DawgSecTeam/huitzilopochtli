@@ -30,9 +30,9 @@ def _matcher(check):
 def test_chocolate_factory_scenario_validates_and_compiles(tmp_path):
     parsed = _load_scenario()
     assert validate_scenario_yaml(parsed, SCENARIO) == []
-    assert len(parsed["checks"]) == 19
-    assert len({check["id"] for check in parsed["checks"]}) == 19
-    assert sum(check["max_points"] for check in parsed["checks"]) == 190
+    assert len(parsed["checks"]) == 20
+    assert len({check["id"] for check in parsed["checks"]}) == 20
+    assert sum(check["max_points"] for check in parsed["checks"]) == 200
 
     private_key, _ = signing.keypair()
     outputs = compile_scenario(SCENARIO, str(tmp_path), private_key)
@@ -73,6 +73,15 @@ def test_chocolate_factory_pairings_score_secure_states_and_reject_planted_state
     planted, reason = evaluate_matcher(
         _matcher(checks["recipe_private"]),
         {"mode": "0666", "uid": 0, "gid": 0, "exists": True},
+    )
+    assert not planted, reason
+
+    secure, reason = evaluate_matcher(
+        _matcher(checks["cocoaadm_password_set"]), {"matched": "$6$rounds=5000$salt$hash"}
+    )
+    assert secure, reason
+    planted, reason = evaluate_matcher(
+        _matcher(checks["cocoaadm_password_set"]), {"matched": ""}
     )
     assert not planted, reason
 
