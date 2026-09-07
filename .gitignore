@@ -13,3 +13,6 @@ tests/proxmox/.env
 # compiled rubric, and the agent zipapp -- all build outputs, never source.
 artifacts/
 *.key
+
+# local ZCode CLI session state (plans/scratch), never source
+.zcode/
