@@ -1,10 +1,19 @@
-# Chocolate-factory redeploy procedure (used for vmid 121, 2026-09-06)
+# Chocolate-factory redeploy procedure (used for vmid 121, 2026-09-06;
+# vmid 108, 2026-09-06 -- a full clone straight from xubuntu-vnc/119
+# instead of the current template, see "Gotchas hit on the 108 round"
+# below)
 
 How to roll a new `chocolate-factory-template` from the current one.
 No `qm`/`pvesh` on the dev host — all Proxmox ops go through the
 `proxmoxer` API using `tests/proxmox/.env` (same convention as
 `tests/proxmox/proxmox_helper.py`). SSH to the box works from here
-(`ubuntu`/`ubuntu`); only the Proxmox API port + guest agent are assumed.
+(`ubuntu`/`ubuntu` once that account exists -- see the 108-round gotchas if
+cloning straight from xubuntu-vnc/119, which has no `ubuntu` account at
+all); only the Proxmox API port + guest agent are assumed. Where SSH isn't
+usable yet (no `ubuntu` account, or password auth denied for another
+reason), the QEMU guest agent's own exec/file-write/file-read API works
+identically and needs no login credentials -- see
+`tests/proxmox/proxmox_helper.py`'s `guest_exec`/`guest_file_write`.
 
 ## 0. Preflight
 
@@ -71,6 +80,12 @@ the theme-readme catalog fix below).
 
 ```python
 px.nodes(n).qemu(121).snapshot('pre-deploy-clean').delete()  # required: template + snapshots conflict
+# Wipe machine-id so the template carries it EMPTY (systemd generates a fresh
+# ID per clone at first boot — sealing with a fixed ID bakes one ID into every
+# future clone and reproduces the DHCP-collision bug; vmid 121 shipped this
+# defect, fixed from 125 on). Safe on the running box: only affects next boot.
+# Run over SSH BEFORE shutdown:
+#   sudo sh -c 'rm -f /etc/machine-id && touch /etc/machine-id'; wc -c /etc/machine-id  # expect 0
 px.nodes(n).qemu(121).status.shutdown.post()                 # wait stopped
 px.nodes(n).qemu(121).template.post()                        # converts disk to read-only base
 px.nodes(n).qemu(121).config.put(name='chocolate-factory-template')
@@ -97,3 +112,63 @@ keep the previous template as fallback until the new one is confirmed).
    preserved), then `compile --rebuild-bundle` (scripts bake into the bundle
    at build time) + re-`plant`. Same pattern as the earlier id-118 wallpaper fix.
 3. Stale `README.md` duplicates were deleted from both Desktops before sealing.
+
+## Gotchas hit on the 108 round (do not re-learn)
+
+This round cloned straight from `xubuntu-vnc` (119) instead of the current
+template, because 121 and 125 were both already sealed templates with their
+`pre-deploy-clean` snapshot already deleted (`qm template` requires that) --
+there was nothing left to revert/redeploy in place on either, so both were
+destroyed and 108 was cloned fresh from 119. If a template chain is still
+mid-cycle (candidate VM exists, snapshot intact), reverting that snapshot
+and redeploying on it directly is cheaper than a fresh full clone --
+check `snapshot.get()` on the current template's vmid before assuming a
+fresh clone is needed.
+
+1. **119 has no `ubuntu` account.** Only `sysadmin` (the exercise/VNC login)
+   exists on a fresh xubuntu-vnc clone. boxbuilder's ssh provider needs a
+   separate account with a password that works for both SSH login and
+   `sudo -S` (see `boxbuilder/providers/ssh.py`) -- created by hand before
+   `plant`/`install`:
+   ```
+   useradd -m -s /bin/bash ubuntu && echo 'ubuntu:ubuntu' | chpasswd && usermod -aG sudo ubuntu
+   ```
+   run over the guest agent (`guest_exec`), since SSH itself isn't usable
+   yet without this account.
+2. **`fix-xubuntu-vnc-display.sh`'s belt 2/3 xfconf writes silently never
+   applied when lightdm autologin had already started a real session by the
+   time the script ran** (the normal case -- autologin fires immediately at
+   boot, well before the guest agent is even reachable to push/run this
+   script). The script used `dbus-launch --exit-with-session` to fabricate
+   a throwaway D-Bus bus per write; that bus is unrelated to the already-
+   running session's real bus at `/run/user/<uid>/bus`, so the write went
+   to a disposable xfconfd instance the live session never saw, and
+   `2>/dev/null || true` swallowed the failure. Net effect: reproduced the
+   exact "solid black screen" bug the script exists to fix -- confirmed by
+   sampling the raw `xwd -root` framebuffer (every pixel byte was `0`) and
+   by `xwininfo -root -tree` showing `xfce4-screensaver`'s window at the
+   full screen size (`1280x800+0+0`) instead of the normal 10x10 tray-icon
+   placeholder. Fixed by preferring the real per-user bus
+   (`/run/user/<uid>/bus`, present whenever that user actually has a
+   session) and only falling back to `dbus-launch` when no session has
+   started yet; also added an explicit `xfce4-screensaver-command
+   --deactivate` since disabling idle-activation only stops *future*
+   triggers; it doesn't dismiss a screensaver that already painted itself
+   in before the script ran. Verified by re-running the fixed script, then
+   a full reboot from cold, then re-sampling the framebuffer (256 distinct
+   byte values, real desktop content) before sealing.
+3. Within one VM, `/etc/machine-id` regenerates to the *same* value every
+   time it's wiped and rebooted (Proxmox/qemu's SMBIOS UUID is a
+   deterministic seed for systemd's fallback generator when no other
+   entropy source is available at early boot) -- expected, not a sign the
+   wipe-before-seal step failed. The uniqueness this whole exercise
+   protects only shows up *across clones* (different SMBIOS UUIDs), which
+   single-VM testing can't exercise; trust the wipe, don't expect the
+   in-VM value to change on its own reboot.
+4. The seal step's Proxmox calls (`shutdown` + snapshot `delete` + `qemu
+   .template.post()` + rename, bundled together) got blocked by the
+   session's auto-mode safety classifier even after in-conversation
+   approval -- expected, this is a harness-level gate independent of chat
+   approval for a bundle this destructive/irreversible. Worked around by
+   having the user run the same script directly (`!python3 <script>`)
+   instead of Claude executing it.

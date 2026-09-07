@@ -55,6 +55,28 @@ set -e
 
 LOGIN_USER="${1:?usage: $0 <login-user-to-autologin>}"
 
+# xfconf-query needs a D-Bus session bus. `dbus-launch --exit-with-session`
+# spins up a throwaway one -- correct if nobody is logged in yet, but WRONG
+# if lightdm autologin has already started a real session for $u by the time
+# this script runs (true whenever this runs post-boot against an
+# already-autologinned clone, which is the normal case here): the write goes
+# to a disposable xfconfd instance the real, already-running session never
+# sees, and silently vanishes -- confirmed the hard way (2026-09-06 xubuntu-vnc
+# round): belt 3 below reported "disabled" but the property never existed on
+# the live session's bus, and the screensaver's fullscreen window kept
+# painting solid black over the whole desktop. Prefer the REAL per-user bus
+# at /run/user/<uid>/bus (created by an actual login) when it's there; only
+# fall back to a throwaway dbus-launch bus if no session has started yet.
+run_as_user_dbus() {
+  _u="$1"; shift
+  _uid=$(id -u "$_u")
+  if [ -S "/run/user/$_uid/bus" ]; then
+    sudo -u "$_u" env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$_uid/bus" "$@"
+  else
+    sudo -u "$_u" dbus-launch --exit-with-session "$@"
+  fi
+}
+
 echo "== 0. machine-id (DHCP-collision hygiene) =="
 # A template built from another template (e.g. chocolate-factory-template
 # from xubuntu-vnc) inherits the source's /etc/machine-id verbatim unless
@@ -132,14 +154,12 @@ for home in /home/*; do
   RUNTIME_DIR="/run/user/$uid"
   mkdir -p "$RUNTIME_DIR"
   chown "$u:$u" "$RUNTIME_DIR"
-  # xfconf needs a DBus session bus; dbus-launch spins up a throwaway one
-  # since nobody is logged in when this runs (root, over SSH/serial).
-  sudo -u "$u" dbus-launch --exit-with-session xfconf-query \
+  run_as_user_dbus "$u" xfconf-query \
     -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled \
     -n -t bool -s false 2>/dev/null || true
   for prop in blank-on-ac blank-on-battery dpms-on-ac-off \
               dpms-on-ac-sleep dpms-on-battery-off dpms-on-battery-sleep; do
-    sudo -u "$u" dbus-launch --exit-with-session xfconf-query \
+    run_as_user_dbus "$u" xfconf-query \
       -c xfce4-power-manager -p "/xfce4-power-manager/$prop" \
       -n -t int -s 0 2>/dev/null || true
   done
@@ -152,10 +172,17 @@ for home in /home/*; do
   uid=$(id -u "$u" 2>/dev/null) || continue
   [ "$uid" -ge 1000 ] 2>/dev/null || continue
   [ "$uid" -lt 60000 ] 2>/dev/null || continue
-  sudo -u "$u" dbus-launch --exit-with-session xfconf-query \
+  run_as_user_dbus "$u" xfconf-query \
     -c xfce4-screensaver -p /saver/idle-activation/enabled \
     -n -t bool -s false 2>/dev/null || true
-  echo "   disabled xfce4-screensaver idle-activation for $u"
+  # Disabling idle-activation only stops FUTURE triggers -- if the
+  # screensaver already painted its fullscreen window before this script
+  # ran (observed happening immediately after lightdm autologin, well
+  # before boxbuilder/this fix gets a chance to run), that window stays up
+  # until explicitly told to go away.
+  run_as_user_dbus "$u" xfce4-screensaver-command --deactivate 2>/dev/null || true
+  echo "   disabled xfce4-screensaver idle-activation (and deactivated any"
+  echo "   already-active instance) for $u"
 done
 
 echo "== done =="

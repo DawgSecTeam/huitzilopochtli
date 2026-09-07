@@ -1,20 +1,29 @@
 # Xubuntu XFCE VM connection details: chocolate-factory-01, a full clone of
-# the "chocolate-factory-template" (Proxmox vmid 121 as of 2026-09-06; a
-# full clone of vmid 134, itself a full clone of the "xubuntu-vnc" template,
-# vmid 119, itself a VNC-enabled clone of the original "xubuntu" template,
-# vmid 904). This redeploy is from xubuntu-vnc (119) so the display/machine-id
-# fix (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on
-# the fresh clone before `boxbuilder build`, as 119 itself is unpatched.
+# the "chocolate-factory-template" (Proxmox vmid 108 as of 2026-09-06; a
+# full clone straight from the "xubuntu-vnc" template, vmid 119, itself a
+# VNC-enabled clone of the original "xubuntu" template, vmid 904). This
+# redeploy is from xubuntu-vnc (119) so the display/machine-id fix
+# (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on the
+# fresh clone before `boxbuilder build`, as 119 itself is unpatched -- and
+# 119 has no "ubuntu" account at all (only "sysadmin", the exercise/VNC
+# login), so a separate sudo-capable `ubuntu`/`ubuntu` account must be
+# created by hand for boxbuilder's ssh provider before plant/install.
 #
-# vmid 121 supersedes 134 (20 checks/200pts + forensics, 3.12 collector fix,
-# theme-readme catalog id 119 updated in place to write README.html) and 133
-# (wallpaper not visible due to XFCE screen0/Virtual-1 mismatch and xfconfd
-# cache – fixed via theme-wallpaper live-reload) and 132 (pre-redesign
-# report) and 131 (shortcut/report bugs, see boxbuilder/README.md's "Desktop
-# shortcut/report caveats") and 130 (16-check scenario, see "VNC desktop
-# caveats") and 129 (missing display fix). Don't clone from any of those.
-# 134 remains as fallback until 121 is confirmed. See boxbuilder/REDEPLOY.md
-# for the clone → snapshot → deploy → seal procedure used for 121.
+# vmid 108 supersedes 125 and 121 (both deleted 2026-09-06 -- both were
+# already sealed templates with their `pre-deploy-clean` snapshot already
+# removed, so neither could be reverted/redeployed in place; 108 is a fresh
+# full clone straight from 119 instead) and 134 (20 checks/200pts +
+# forensics, 3.12 collector fix, theme-readme catalog id 119 updated in
+# place to write README.html) and 133 (wallpaper not visible due to XFCE
+# screen0/Virtual-1 mismatch and xfconfd cache – fixed via theme-wallpaper
+# live-reload) and 132 (pre-redesign report) and 131 (shortcut/report bugs,
+# see boxbuilder/README.md's "Desktop shortcut/report caveats") and 130
+# (16-check scenario, see "VNC desktop caveats") and 129 (missing display
+# fix). Don't clone from any of those -- 121/125/134 no longer exist.
+# See boxbuilder/REDEPLOY.md for the clone → snapshot → deploy → seal
+# procedure used for 108, including a display-fix script bug found and
+# fixed during that round (xfce4-screensaver's disable-idle-activation write
+# went to a throwaway D-Bus bus and never reached the live session).
 #
 # provider.host below is whatever IP this specific example clone happens to
 # get from DHCP at build time -- it WILL go stale once that clone is
@@ -25,7 +34,7 @@ scenario: chocolate-factory.scenario.yaml
 nakon_config: chocolate-factory.nakon.json
 provider:
   name: ssh
-  host: 10.0.0.95
+  host: 10.0.0.11
   port: 22
   user: ubuntu
   password: ubuntu
