@@ -76,9 +76,9 @@ def test_theme_invalid_accent_is_dropped_defensively():
 def test_pass_fail_colors_never_themed():
     """The up/down semantic colors must stay fixed regardless of accent."""
     out = render_report(_score(), Mode.HONOR, None, theme={"accent": "#000000"})
-    # semantic colors stay fixed; font-weight may be 700 vs bold (same visual)
-    assert "#4caf50" in out
-    assert "#f44336" in out
+    # semantic colors stay fixed (light-theme green/red); see agent/report_page.py
+    assert "#1a7f37" in out
+    assert "#cf222e" in out
     assert ".up" in out and ".down" in out
 
 
@@ -186,3 +186,33 @@ def test_ranked_countdown_when_next_checkin_known():
     out = render_report(score, Mode.RANKED, 1700000000.0, next_checkin_s=60)
     assert 'id="countdown"' in out
     assert "Next check-in in" in out
+
+
+# --- Countdown embeds a render-time remainder, not an absolute target ------
+
+def test_honor_countdown_embeds_render_time_remainder(monkeypatch):
+    """The static report outlives its render instant, so the JS must count
+    down from page load ("N seconds left as of render"), not tick an absolute
+    epoch target against whatever clock happens to open the file."""
+    monkeypatch.setattr("agent.reporter.time.time", lambda: 1030.0)
+    out = render_report(_score(computed_at=1000.0), Mode.HONOR, None)
+    assert "endMs=Date.now()+30*1000" in out  # 60s honor interval - 30s since scoring
+    assert "targetMs" not in out
+
+
+def test_ranked_countdown_embeds_render_time_remainder(monkeypatch):
+    """Ranked deadlines come from the engine's clock (server_time +
+    next_checkin_s); converting to a remainder at render keeps the box
+    browser's clock out of the math entirely."""
+    monkeypatch.setattr("agent.reporter.time.time", lambda: 1700000007.0)
+    out = render_report(_score(), Mode.RANKED, 1700000000.0, next_checkin_s=123)
+    assert "endMs=Date.now()+116*1000" in out  # 123s - 7s since server confirmation
+
+
+def test_stale_render_reads_expired_at_load(monkeypatch):
+    """A file rendered after its deadline (stale last_response on failed
+    check-ins, dead re-grade timer) must read 00:00 immediately, never
+    resurrect a countdown for a check-in that is already overdue."""
+    monkeypatch.setattr("agent.reporter.time.time", lambda: 1700000300.0)
+    out = render_report(_score(), Mode.RANKED, 1700000000.0, next_checkin_s=60)
+    assert "endMs=Date.now()+0*1000" in out

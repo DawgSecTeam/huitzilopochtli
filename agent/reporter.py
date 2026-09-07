@@ -1,15 +1,17 @@
-"""Static HTML report renderer. See architecture.md §13."""
+"""Static HTML report renderer. See architecture.md §13.
+
+Scoring logic and data-driven fragments only; the visual shell (CSS, page
+document, masthead, countdown, accent guard) lives in agent/report_page.py.
+"""
 import html
-import re
 import time
 
+from agent.report_page import accent_css, countdown_script, masthead_html, page_shell
 from common.schema import Mode, ScoreBreakdown
 
-# Display refresh cadence (not a scoring input).
-REFRESH_SECONDS = 30
-
-# Defensive accent validation for CSS interpolation context.
-_ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+# Display refresh cadence (not a scoring input). Short enough that a parked
+# "00:00 — checking…" expires within one refresh of the file being rewritten.
+REFRESH_SECONDS = 15
 
 # Honor re-grade cadence — mirrors packaging/huitzilopochtli-agent.timer
 # OnUnitActiveSec=60s (local file/service checks, no network).
@@ -349,85 +351,6 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
 """
 
 
-_STYLE = """
-:root { --card-bg: #111418; --card-border: #23282e; --muted: #9aa0a6; }
-* { box-sizing: border-box; }
-body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
-       margin: 0; background: #0b0d10; color: #e6e6e6; line-height: 1.5; }
-.container { max-width: 960px; margin: 0 auto; padding: 1.25rem 1.5rem 2rem; }
-.masthead { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.25rem; }
-.logo { height: 2.2rem; width: auto; border-radius: 4px; }
-h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; border-bottom: 3px solid var(--accent, #2a2f36);
-      padding-bottom: 0.2rem; display: inline-block; line-height: 1.2; }
-.sub, .org { color: var(--muted); margin: 0.15rem 0 0; font-size: 0.9rem; }
-.sub { margin-bottom: 0.5rem; }
-.score-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap;
-                background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px;
-                padding: 1rem 1.2rem; margin: 1rem 0 0.6rem; }
-.total { font-size: 2.1rem; font-weight: 800; margin: 0; color: var(--accent, #e6e6e6); letter-spacing: -0.02em; }
-.total-suffix { font-size: 1rem; font-weight: 600; color: var(--muted); margin-left: 0.15rem; }
-.fraction { color: var(--muted); font-size: 0.9rem; margin-top: 0.15rem; }
-.countdown-wrap { text-align: right; min-width: 9rem; }
-.countdown-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.15rem; }
-.countdown { font-variant-numeric: tabular-nums; font-weight: 800; font-size: 1.35rem; letter-spacing: 0.04em;
-             color: #e6e6e6; border: 1px solid #2a2f36; border-radius: 8px; padding: 0.3rem 0.7rem; background: #1a1d21; min-width: 5.5rem; display: inline-block; text-align: center; }
-.progress { height: 12px; background: #1a1d21; border-radius: 999px; overflow: hidden; border: 1px solid var(--card-border); margin: 0.5rem 0 1rem; }
-.progress .fill { height: 100%; background: var(--accent, #4caf50); width: 0%; transition: width 0.45s ease; border-radius: 999px; }
-.cards { display: grid; grid-template-columns: 1fr; gap: 0.9rem; margin-bottom: 0.5rem; }
-@media (min-width: 720px) { .cards { grid-template-columns: 1fr 1fr; } }
-.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 1rem 1.15rem; }
-.card h2 { margin: 0 0 0.65rem; font-size: 0.95rem; letter-spacing: 0.02em; color: #e6e6e6; display: flex; align-items: center; gap: 0.45rem; }
-.card h2 .icon.ok { color: #4caf50; }
-.card h2 .icon.warn { color: #f0a500; }
-.card ul { list-style: none; padding: 0; margin: 0; }
-.card li { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid #1e2328; font-size: 0.92rem; }
-.card li:last-child { border-bottom: none; }
-.found-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.pts { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
-.pts.pos { color: #4caf50; }
-.pts.neg { color: #f44336; }
-.muted { color: var(--muted); }
-.remaining { margin: 0.6rem 0 0; font-size: 0.85rem; }
-.stamp { color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0; }
-.honor-stamp { margin-top: 0.75rem; }
-table { border-collapse: collapse; width: 100%; margin-bottom: 1.25rem; background: var(--card-bg); border-radius: 8px; overflow: hidden; }
-caption { text-align: left; font-weight: 700; margin-bottom: 0.4rem; color: #e6e6e6; }
-th, td { border: 1px solid #2a2f36; padding: 0.45rem 0.6rem; text-align: left; font-size: 0.88rem; }
-th { background: #1a1d21; color: #e6e6e6; }
-td { background: #111418; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
-.up { color: #4caf50; font-weight: 700; }
-.down { color: #f44336; font-weight: 700; }
-.pending { font-size: 1.25rem; padding: 2rem; border: 2px dashed #3a3f45; border-radius: 10px;
-           text-align: center; margin: 1.25rem 0; background: var(--card-bg); color: var(--muted); }
-"""
-
-
-def _countdown_script(target_epoch: float) -> str:
-    """Inline JS countdown to target_epoch (seconds since epoch). No deps."""
-    # target as integer seconds to avoid float formatting issues; JS uses ms.
-    target_int = int(target_epoch)
-    # Defensive: ensure int, no injection — html.escape not needed for int but keep safe.
-    return f"""
-<script>
-(function(){{
-  var el=document.getElementById('countdown');
-  if(!el) return;
-  var targetMs={target_int}*1000;
-  function pad(n){{return n<10?'0'+n:''+n;}}
-  function tick(){{
-    var rem=Math.max(0, Math.floor((targetMs-Date.now())/1000));
-    var m=Math.floor(rem/60), s=rem%60;
-    if(rem<=0){{ el.textContent='00:00 \\u2014 checking\\u2026'; return; }}
-    el.textContent=pad(m)+':'+pad(s);
-  }}
-  tick();
-  setInterval(tick,1000);
-}})();
-</script>
-"""
-
-
 def render_report(score: ScoreBreakdown, mode: Mode,
                    last_confirmed_at: float | None, theme: dict | None = None,
                    manifest=None, honor_interval_s: int | None = None,
@@ -443,21 +366,24 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     (display_title) and active penalties are listed; failed check_ids, categories,
     reasons and awarded=0 rows are never surfaced. A live JS countdown shows
     time until the next re-grade (honor_interval_s, default 60s) or next
-    ranked check-in (next_checkin_s).
+    ranked check-in (next_checkin_s), embedded as a render-time remainder
+    (seconds from page load) so a stale file reads 00:00 instead of counting
+    down from a long-dead target.
     """
     theme = theme or {}
     scenario_version = html.escape(str(score.scenario_version))
+    mode_label = html.escape(mode.value if hasattr(mode, "value") else str(mode))
 
-    display_title = html.escape(str(theme.get("title") or score.scenario_name))
+    raw_title = str(theme.get("title") or score.scenario_name)
     organization = theme.get("organization")
-    org_html = f'<p class="org">{html.escape(str(organization))}</p>' if organization else ""
     logo_b64 = theme.get("logo_b64")
-    logo_html = (
-        f'<img class="logo" src="data:image/png;base64,{html.escape(str(logo_b64))}" alt="">'
-        if logo_b64 else ""
+    accent_css_block = accent_css(theme.get("accent"))
+
+    masthead = masthead_html(raw_title, organization, logo_b64)
+    sub_html = (
+        f'<p class="sub">scenario version {scenario_version}'
+        f' &middot; mode: {mode_label}</p>'
     )
-    accent = theme.get("accent")
-    accent_css = f":root {{ --accent: {accent}; }}\n" if accent and _ACCENT_RE.match(accent) else ""
 
     is_ranked = mode == Mode.RANKED
     is_honor = not is_ranked
@@ -481,7 +407,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             except Exception:
                 interval = _HONOR_INTERVAL_S
             target_epoch = float(score.computed_at) + interval
-            countdown_html = _countdown_script(target_epoch)
+            countdown_html = countdown_script(target_epoch - time.time())
         else:
             # Ranked: verbose diagnostic table (rubric off-box, so safe to show)
             results_table = _render_results_table(score.results)
@@ -502,7 +428,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                     if nci > 0:
                         target_epoch = float(last_confirmed_at) + nci
                         rank_countdown_block = '<div class="countdown-wrap" style="margin:0.75rem 0"><div class="countdown-label">Next check-in in</div><div id="countdown" class="countdown">--:--</div></div>'
-                        rank_countdown_script = _countdown_script(target_epoch)
+                        rank_countdown_script = countdown_script(target_epoch - time.time())
                     else:
                         target_epoch = None
                 except Exception:
@@ -522,26 +448,18 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             # for footer script injection
             countdown_html = rank_countdown_script
 
-    mode_label = html.escape(mode.value if hasattr(mode, "value") else str(mode))
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<!-- Display cadence only, never a scoring input: the browser reloads this
-     static page every REFRESH_SECONDS seconds so it looks "live". -->
+    body_html = f"""{masthead}
+{sub_html}
+{body_main}"""
+    head_extra = f"""<!-- Display cadence only, never a scoring input: the browser reloads this
+     static page every {REFRESH_SECONDS} seconds so it looks "live". -->
 <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
-<title>HUITZILOPOCHTLI &mdash; {display_title}</title>
-<style>{accent_css}{_STYLE}</style>
-</head>
-<body>
-<div class="container">
-<div class="masthead">{logo_html}<h1>{display_title}</h1></div>
-{org_html}
-<p class="sub">scenario version {scenario_version} &middot; mode: {mode_label}</p>
-{body_main}
-</div>
-{countdown_html if not awaiting_engine else ''}
-</body>
-</html>
 """
+    return page_shell(
+        f"HUITZILOPOCHTLI — {raw_title}",
+        body_html,
+        accent=accent_css_block,
+        head_extra=head_extra,
+        body_suffix=countdown_html if not awaiting_engine else "",
+        wide=True,
+    )
