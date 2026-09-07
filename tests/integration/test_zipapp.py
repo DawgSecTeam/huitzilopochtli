@@ -175,11 +175,11 @@ def test_zipapp_matches_source_tree_run(tmp_path):
     content_a = report_a.read_bytes()
     content_b = report_b.read_bytes()
     # The honor stamp embeds wall-clock time ("Last checked: ..." plus the
-    # countdown target), which necessarily differs between two sequential
+    # countdown remainder), which necessarily differs between two sequential
     # runs; compare everything except that volatile timestamp.
     stamp = re.compile(
         rb"Last checked: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC"
-        rb"|targetMs=\d+\*1000"
+        rb"|endMs=Date\.now\(\)\+\d+\*1000"
     )
     content_a, content_b = stamp.sub(b"<ts>", content_a), stamp.sub(b"<ts>", content_b)
     assert content_a == content_b, (
