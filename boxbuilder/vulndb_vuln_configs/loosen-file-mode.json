@@ -1,0 +1,10 @@
+{
+  "name": "loosen-file-mode",
+  "description": "Practice-box misconfiguration: relaxes the permission bits of an existing file WITHOUT touching its content -- use this for system files like /etc/shadow or /etc/passwd where insecure-file-mode (which rewrites the file) must never be used. Vars: FILE_PATH (required); FILE_MODE (required).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${FILE_PATH:?FILE_PATH is required}\"\n: \"${FILE_MODE:?FILE_MODE is required}\"\n\nif [ -e \"$FILE_PATH\" ]; then\n    chmod -- \"$FILE_MODE\" \"$FILE_PATH\"\nfi\n",
+  "depends_on": []
+}

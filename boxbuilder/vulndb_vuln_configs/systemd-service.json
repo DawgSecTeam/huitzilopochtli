@@ -1,0 +1,10 @@
+{
+  "name": "systemd-service",
+  "description": "Practice-box helper: installs a systemd unit and (by default) enables and starts it -- a real, ps-visible process. Reusable for both plainly-malicious services and plausible-looking ones. Vars: SERVICE_NAME (required, no .service suffix); EXEC_START (required); DESCRIPTION (optional); SERVICE_TYPE (optional, default simple); EXTRA_LINE (optional extra [Service] line, e.g. a hidden Environment=/flag only visible via `systemctl cat`); PAYLOAD_PATH + PAYLOAD_BODY (optional: write a payload script the unit runs); ENABLE (optional, default 1 -- set 0 to install without enabling).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${SERVICE_NAME:?SERVICE_NAME is required}\"\n: \"${EXEC_START:?EXEC_START is required}\"\n\nif [ -n \"${PAYLOAD_PATH-}\" ]; then\n    install -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\n    printf '%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\n    chmod 0755 \"$PAYLOAD_PATH\"\nfi\n\nunit=\"/etc/systemd/system/${SERVICE_NAME}.service\"\n{\n    printf '%s\\n' '[Unit]'\n    printf 'Description=%s\\n' \"${DESCRIPTION:-System service}\"\n    printf '%s\\n\\n' 'After=network.target'\n    printf '%s\\n' '[Service]'\n    printf 'Type=%s\\n' \"${SERVICE_TYPE:-simple}\"\n    printf 'ExecStart=%s\\n' \"$EXEC_START\"\n    if [ -n \"${EXTRA_LINE-}\" ]; then printf '%s\\n' \"$EXTRA_LINE\"; fi\n    printf '%s\\n\\n' 'Restart=always'\n    printf '%s\\n' '[Install]'\n    printf '%s\\n' 'WantedBy=multi-user.target'\n} > \"$unit\"\nchmod 0644 \"$unit\"\n\nif command -v systemctl >/dev/null 2>&1; then\n    systemctl daemon-reload\n    if [ \"${ENABLE:-1}\" = \"1\" ]; then\n        systemctl enable --now \"${SERVICE_NAME}.service\"\n    fi\nfi\n",
+  "depends_on": []
+}

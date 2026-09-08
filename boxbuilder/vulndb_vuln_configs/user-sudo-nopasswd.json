@@ -1,0 +1,10 @@
+{
+  "name": "user-sudo-nopasswd",
+  "description": "Practice-box misconfiguration: grants an account unrestricted passwordless sudo through a sudoers drop-in. Vars: USERNAME (required); DROPIN_NAME (optional, default 00-nopasswd).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${USERNAME:?USERNAME is required}\"\ndropin=\"${DROPIN_NAME:-00-nopasswd}\"\n\ninstall -d -m 0755 /etc/sudoers.d\nprintf '%s ALL=(ALL:ALL) NOPASSWD:ALL\\n' \"$USERNAME\" > \"/etc/sudoers.d/${dropin}\"\nchmod 0440 \"/etc/sudoers.d/${dropin}\"\nif command -v visudo >/dev/null 2>&1; then\n    visudo -cf \"/etc/sudoers.d/${dropin}\" >/dev/null\nfi\n",
+  "depends_on": []
+}

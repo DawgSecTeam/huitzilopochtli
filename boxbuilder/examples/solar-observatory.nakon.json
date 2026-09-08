@@ -1,0 +1,111 @@
+{
+  "_comment": "Coyolxauhqui Ridge Solar Observatory vuln-planting side. Every new catalog config referenced here is GENERIC and var-driven (see boxbuilder/vulndb_vuln_configs/): uid0-user, loosen-file-mode, insecure-file-mode, local-user, user-login-shell, user-sudo-nopasswd, systemd-service, pam-permit-auth, apache-site -- all theme detail lives in the vars below, not in the catalog rows, so any future box reuses the same seeds. loosen-file-mode (chmod only, no content write) is used for /etc/shadow and /etc/passwd; insecure-file-mode (rewrites content) is only for files we create. loosen-file-mode for /etc/shadow and /etc/passwd MUST run after every account-creation/shell step (uid0-user, local-user, user-login-shell) -- useradd/usermod/chpasswd rewrite those files and reset their mode on the way out (0666 decays to 0664), so chmod-ing first gets silently undone; confirmed the hard way on the 149 round. Each FILE_PATH / SERVICE_NAME / USERNAME here MUST match its paired check's collect.path / service / username in solar-observatory.scenario.yaml exactly -- nothing cross-checks them. uplink-relay and mirror-fan are ALSO scored by a `process_state` check (collect.pattern is a regex matched against /proc/<pid>/cmdline), which is why each needs a distinctively-named EXEC_START/PAYLOAD_PATH (mirror-fan runs PAYLOAD_PATH=/usr/local/sbin/mirror-fanctl instead of a bland `sleep`) rather than a launcher whose cmdline is generic -- if you rename either payload path, update the matching `collect.pattern` in solar-observatory.scenario.yaml too. `ssh-root-login` comes from the shared vulndb catalog (no local seed). Run `nakon catalog check --config solar-observatory.nakon.json --json` after the bundled seeds have been ensured in vulndb.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "observatory-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "ubuntu-xfce",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "configurations": [
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/opt/observatory/telescope-keys.txt",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "mount-drive control key: RA=05h34m GTC-7 (do not share)"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/obsadmin/.ssh/id_rsa",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "-----BEGIN TRAINING PRIVATE KEY-----\nnot-a-real-key\n-----END TRAINING PRIVATE KEY-----"
+          }
+        },
+        {
+          "name": "uid0-user",
+          "vars": { "USERNAME": "sunwatch", "PASSWORD": "Photons2024!" }
+        },
+        {
+          "name": "local-user",
+          "vars": { "USERNAME": "red", "PASSWORD": "Observatory1!", "GROUPS_ADD": "sudo" }
+        },
+        {
+          "name": "local-user",
+          "vars": { "USERNAME": "kalipatriot", "PASSWORD": "Nightsky7!" }
+        },
+        {
+          "name": "local-user",
+          "vars": { "USERNAME": "dipa", "PASSWORD": "" }
+        },
+        {
+          "name": "user-login-shell",
+          "vars": { "USERNAME": "heliobot", "LOGIN_SHELL": "/bin/bash", "SYSTEM": "1" }
+        },
+        {
+          "name": "loosen-file-mode",
+          "vars": { "FILE_PATH": "/etc/shadow", "FILE_MODE": "0666" }
+        },
+        {
+          "name": "loosen-file-mode",
+          "vars": { "FILE_PATH": "/etc/passwd", "FILE_MODE": "0666" }
+        },
+        {
+          "name": "user-sudo-nopasswd",
+          "vars": { "USERNAME": "obsadmin", "DROPIN_NAME": "00-obs-nopasswd" }
+        },
+        "pam-permit-auth",
+        {
+          "name": "apache-site",
+          "vars": {
+            "SITE_TITLE": "Coyolxauhqui Ridge Solar Observatory - Seeing Conditions",
+            "SITE_BODY": "<p>Current sky-cam status: <b>CLEAR</b> &middot; seeing 1.2\" &middot; dome OPEN</p><p>Public status page. Instrument control is restricted.</p>",
+            "RUN_USER": "root",
+            "EXTRA_DIRECTIVES": "# Public archive share (planted directory-listing/traversal misconfig)\nAlias /archive /\n<Directory />\n    Options Indexes FollowSymLinks\n    AllowOverride None\n    Require all granted\n</Directory>"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "SkiddiePwner3000",
+            "DESCRIPTION": "System Optimizer",
+            "EXEC_START": "/bin/sh -c 'while true; do sleep 300; done'"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "uplink-relay",
+            "DESCRIPTION": "Telemetry Uplink Relay",
+            "EXEC_START": "/usr/bin/python3 /opt/.uplink/relay.py",
+            "PAYLOAD_PATH": "/opt/.uplink/relay.py",
+            "PAYLOAD_BODY": "import socket, time\nsrv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"0.0.0.0\", 4444))\nsrv.listen(5)\nwhile True:\n    try:\n        conn, _addr = srv.accept()\n        conn.sendall(b\"uplink-ok\\n\")\n        conn.close()\n    except Exception:\n        time.sleep(5)"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "mirror-fan",
+            "DESCRIPTION": "Primary Mirror Cooling Fan Controller",
+            "EXEC_START": "/usr/local/sbin/mirror-fanctl",
+            "PAYLOAD_PATH": "/usr/local/sbin/mirror-fanctl",
+            "PAYLOAD_BODY": "#!/bin/sh\nwhile true; do sleep 300; done\n"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "dome-rotate",
+            "DESCRIPTION": "Dome Azimuth Rotation Service",
+            "EXEC_START": "/bin/sh -c 'while true; do sleep 300; done'",
+            "EXTRA_LINE": "Environment=EXFIL_URL=http://feed.ridgemetrics.example/collect"
+          }
+        },
+        "ssh-root-login"
+      ]
+    }
+  ]
+}
