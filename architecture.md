@@ -334,6 +334,7 @@ class Check(ABC):
 | `user_group` | parses `/etc/passwd`, `/etc/group` | `{users: [...], group_members: {...}}` | backdoor users, `wheel`/`sudo` membership |
 | `service_state` | queries init system via platform layer | `{active: bool, enabled: bool}` | see §9.3 |
 | `package` | queries package manager via platform layer | `{installed: bool, version: str\|null}` | dpkg/rpm/apk |
+| `process_state` | scans `/proc` for a process whose cmdline (falling back to comm) matches a regex | `{running: bool, count: int, pids: [int], sample_cmdline: str\|null}` | detects a live rogue process (e.g. malware/C2) independent of how it was launched; pure stdlib, bypasses the platform layer like `file_regex`/`permission`; excludes the collector's own pid; a pid vanishing mid-scan or a per-pid permission error is skipped, not surfaced as a check-level error |
 | `http_uptime` | GET against localhost (stdlib `http.client`) | `{status: int\|null, body_match: bool, error: str\|null}` | SLA-capable |
 | `db_query` | runs a fixed test query on a local socket | `{ok: bool, error: str\|null}` | SLA-capable; DB driver must remain optional/stdlib-friendly — if a pure-Python driver is unavailable for a given DB, this check degrades to a socket-connect probe |
 | `forensics_answer` | reads the team-editable answers file, extracts one question's `Answer:` line | `{answer: str}` | empty string = unanswered/blank; scored via the `answer_equals` matcher (§6.4) |
@@ -612,7 +613,8 @@ huitzilopochtli/
     config.py
     collector.py
     checks/ { base.py, file_regex.py, permission.py, user_group.py,
-              service_state.py, package.py, http_uptime.py, db_query.py }
+              service_state.py, package.py, process_state.py, http_uptime.py,
+              db_query.py }
     platform/ { detect.py, base.py, systemd.py, openrc.py, pkg.py }
     adversary/ { executor.py, actions.py }   # closed vocabulary
     identity.py

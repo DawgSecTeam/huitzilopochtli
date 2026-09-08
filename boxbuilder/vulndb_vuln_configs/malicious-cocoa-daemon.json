@@ -1,0 +1,10 @@
+{
+  "name": "malicious-cocoa-daemon",
+  "description": "Practice-box persistence finding: installs and enables a long-running background 'sync daemon' whose live process must actually be found and stopped -- unlike cocoa-update.service (Type=oneshot, RemainAfterExit=yes), this unit is Type=simple with Restart=on-failure, so a real PID persists and respawns unless the service itself is stopped/disabled, not just its unit file deleted.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\nmkdir -p /opt/.cocoa-daemon\ncat > /opt/.cocoa-daemon/cocoa-daemon <<'PAYLOAD'\n#!/bin/sh\n# Harmless training payload: a real, continuously-running process (not\n# oneshot) -- the finding is that it must be killed/stopped, not just its\n# unit file deleted. Heartbeats to a log so its activity is forensically visible.\nwhile true; do\n    printf '%s\\n' \"cocoa-daemon heartbeat\" >> /var/log/cocoa-sync.log\n    sleep 30\ndone\nPAYLOAD\nchmod 0700 /opt/.cocoa-daemon/cocoa-daemon\nchmod 0700 /opt/.cocoa-daemon\n\ncat > /etc/systemd/system/cocoa-sync.service <<'UNIT'\n[Unit]\nDescription=Cocoa sync daemon (training finding)\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/opt/.cocoa-daemon/cocoa-daemon\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nUNIT\nchmod 0644 /etc/systemd/system/cocoa-sync.service\nif command -v systemctl >/dev/null 2>&1; then\n    systemctl daemon-reload\n    systemctl enable --now cocoa-sync.service\nfi\n",
+  "depends_on": []
+}

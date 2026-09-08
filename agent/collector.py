@@ -17,6 +17,7 @@ import agent.checks.forensics  # noqa: F401
 import agent.checks.http_uptime  # noqa: F401
 import agent.checks.package  # noqa: F401
 import agent.checks.permission  # noqa: F401
+import agent.checks.process_state  # noqa: F401
 import agent.checks.service_state  # noqa: F401
 import agent.checks.user_group  # noqa: F401
 from agent.checks.base import CHECKS
