@@ -1,4 +1,4 @@
-"""Unit tests for the 7 check plugins under agent/checks/.
+"""Unit tests for the 8 check plugins under agent/checks/.
 
 Each check's collect(spec, ctx) contract:
 - file_regex: collect_params {"path": str, "extract": str}; raw {"matched": str|None, "present": bool}
@@ -6,14 +6,19 @@ Each check's collect(spec, ctx) contract:
 - user_group: collect_params {}; raw {"users": list[str]|None, "group_members": dict|None}
 - service_state: collect_params {"service": str}; raw {"active": bool, "enabled": bool}; needs PlatformContext
 - package: collect_params {"package": str}; raw {"installed": bool, "version": str|None}; needs PlatformContext
+- process_state: collect_params {"pattern": str}; raw {"running": bool, "count": int, "pids": list[int], "sample_cmdline": str|None}
 - http_uptime: collect_params {"url": str}; raw {"status": int|None, "body": str, "error": str|None}
 - db_query: collect_params {"host": str, "port": int}; raw {"ok": bool, "error": str|None}
 """
 import http.server
 import os
+import re
 import socket
+import subprocess
+import sys
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -22,6 +27,7 @@ from agent.checks.file_regex import FileRegexCheck
 from agent.checks.http_uptime import HttpUptimeCheck
 from agent.checks.package import PackageCheck
 from agent.checks.permission import PermissionCheck
+from agent.checks.process_state import ProcessStateCheck
 from agent.checks.service_state import ServiceStateCheck
 from agent.checks.user_group import UserGroupCheck
 from agent.platform.base import PlatformContext
@@ -283,6 +289,85 @@ def test_package_ctx_raises_degrades_to_error():
     assert_well_formed(ev)
     assert ev.status == CollectorStatus.ERROR
     assert ev.raw == {"installed": False, "version": None}
+
+
+# --- process_state: real short-lived subprocess, scanned via /proc ---------------
+
+@pytest.fixture
+def marker_process():
+    """A real, short-lived child process with a unique, greppable cmdline
+    token -- close analogue to a planted decoy the check is meant to find."""
+    marker = f"huitz-test-marker-{uuid.uuid4()}"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", marker]
+    )
+    try:
+        yield proc, marker
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def _collect_until_running(spec, timeout=2.0):
+    """Poll collect() briefly -- the child process is started via Popen just
+    before this runs, and exec() landing in /proc is not instantaneous."""
+    deadline = time.monotonic() + timeout
+    ev = None
+    while time.monotonic() < deadline:
+        ev = ProcessStateCheck().collect(spec, None)
+        if ev.raw.get("running"):
+            return ev
+        time.sleep(0.05)
+    return ev
+
+
+def test_process_state_matches_running_process(marker_process):
+    proc, marker = marker_process
+    spec = make_spec("process_state", {"pattern": marker})
+    ev = _collect_until_running(spec)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.OK
+    assert ev.raw["running"] is True
+    assert ev.raw["count"] >= 1
+    assert proc.pid in ev.raw["pids"]
+    assert marker in ev.raw["sample_cmdline"]
+
+
+def test_process_state_no_match():
+    spec = make_spec("process_state", {"pattern": str(uuid.uuid4())})
+    ev = ProcessStateCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.OK
+    assert ev.raw == {"running": False, "count": 0, "pids": [], "sample_cmdline": None}
+
+
+def test_process_state_excludes_self():
+    # Build a pattern guaranteed to match this test process's own cmdline
+    # (rather than assuming e.g. "python" appears, which depends on how
+    # pytest itself was invoked).
+    with open(f"/proc/{os.getpid()}/cmdline", "rb") as f:
+        own_cmdline = f.read().replace(b"\x00", b" ").decode().strip()
+    token = own_cmdline.split()[0]
+    spec = make_spec("process_state", {"pattern": re.escape(token)})
+    ev = ProcessStateCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert os.getpid() not in ev.raw["pids"]
+
+
+def test_process_state_missing_pattern_param_returns_clear_error():
+    spec = make_spec("process_state", {})
+    ev = ProcessStateCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert ev.raw == {"running": False, "count": 0, "pids": [], "sample_cmdline": None}
+    assert "pattern" in ev.reason
+
+
+def test_process_state_invalid_regex_returns_clear_error():
+    spec = make_spec("process_state", {"pattern": "("})
+    ev = ProcessStateCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
 
 
 # --- http_uptime: real HTTPServer in a background thread -------------------------
