@@ -1,0 +1,10 @@
+{
+  "name": "local-user",
+  "description": "Practice-box misconfiguration: creates a local login account. Vars: USERNAME (required); PASSWORD (optional -- empty string plants a blank password via `usermod -p ''`); GROUPS_ADD (optional comma-separated supplementary groups, e.g. an unauthorized `sudo` membership).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${USERNAME:?USERNAME is required}\"\n\nif ! id \"$USERNAME\" >/dev/null 2>&1; then\n    useradd -m -s /bin/bash \"$USERNAME\"\nfi\n\nif [ -n \"${PASSWORD-}\" ]; then\n    printf '%s:%s\\n' \"$USERNAME\" \"$PASSWORD\" | chpasswd\nelse\n    # An empty password is intentional: it is the finding for the exercise.\n    usermod -p '' \"$USERNAME\"\nfi\n\nif [ -n \"${GROUPS_ADD-}\" ]; then\n    usermod -a -G \"$GROUPS_ADD\" \"$USERNAME\"\nfi\n",
+  "depends_on": []
+}

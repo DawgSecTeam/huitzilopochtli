@@ -1,0 +1,10 @@
+{
+  "name": "uid0-user",
+  "description": "Practice-box misconfiguration: creates (or repoints) an account and gives it UID/GID 0 -- a second all-powerful root-equivalent user. Vars: USERNAME (required), PASSWORD (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${USERNAME:?USERNAME is required}\"\n\nif id \"$USERNAME\" >/dev/null 2>&1; then\n    usermod -o -u 0 -g 0 \"$USERNAME\"\nelse\n    useradd -m -o -u 0 -g 0 -s /bin/bash \"$USERNAME\"\nfi\n\nif [ -n \"${PASSWORD-}\" ]; then\n    printf '%s:%s\\n' \"$USERNAME\" \"$PASSWORD\" | chpasswd\nfi\n",
+  "depends_on": []
+}

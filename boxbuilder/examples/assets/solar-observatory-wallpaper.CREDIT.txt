@@ -1,0 +1,5 @@
+solar-observatory-wallpaper.png and solar-observatory-logo.png are derived
+(cropped/resized) from "Starry La Silla Observatory" by ESO/Iztok Bončina,
+licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Source: https://commons.wikimedia.org/wiki/File:Starry_La_Silla_Observatory.jpg
+Attribution required if this image is redistributed.

@@ -1,0 +1,373 @@
+# Coyolxauhqui Ridge Solar Observatory: a light, recognizable observatory-themed
+# hardening box. The theme is flavor only; every task is solvable from ordinary
+# Linux evidence. Each selected nakon configuration plants the insecure state
+# described by its paired check. Companion to the two-part Linux workshop
+# (blue-team fundamentals + the malicious angle) -- the box makes students DO
+# what the talk showed: read /etc/passwd in vim, `systemctl cat`/`stop`/`disable`
+# a rogue unit, fix an Apache misconfig, and audit processes with `ps aux`.
+
+scenario:
+  name: "Coyolxauhqui Ridge Solar Observatory"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # Difficulty spread, called out explicitly here (and in the in-box README) so
+  # a self-paced beginner can tell what to try first:
+  #   EASY (10):    no_uid0_user, apache_not_root, service_account_no_shell,
+  #                 skiddie_inactive, skiddie_disabled, no_red, no_kalipatriot,
+  #                 no_dipa, telescope_keys_private, obs_sole_admin
+  #   MODERATE (10): shadow_not_world_writable, passwd_not_world_writable,
+  #                 no_blank_password, no_hidden_unit_flag, apache_no_dir_traversal,
+  #                 uplink_process_killed, uplink_disabled, deploy_key_private,
+  #                 ssh_no_root, mirror_fan_process_killed
+  #   HARD (3):     mirror_fan_disabled, no_passwordless_sudo, no_passwordless_login
+  #
+  # The three malicious services (SkiddiePwner3000, uplink-relay, mirror-fan)
+  # are real, running processes -- visible in `ps aux` and `systemctl status`.
+  # SkiddiePwner3000 is scored purely on unit state (a "just stop the service"
+  # finding, the obvious/EASY tier). uplink-relay and mirror-fan are each
+  # scored on BOTH a `process_state` check (rewards actually finding and
+  # killing the live process via `ps aux` -- Restart=always respawns it until
+  # the unit is disabled/stopped for good, not just killed once) and a
+  # `service_state ... enabled` check (rewards disabling the launcher).
+  # mirror-fan is deliberately named like a legitimate instrument service, so
+  # it must be READ (`systemctl cat`), not pattern-matched.
+
+  # --- passwd / shadow (the auth-file segment of the talk) ---------------
+  - id: no_uid0_user
+    type: file_regex
+    category: vuln
+    display: "EASY: No second UID-0 (root-equivalent) account in /etc/passwd"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^(?!root:)([^:]+):[^:]*:0:'
+    expect:
+      equals: null
+      points: 10
+
+  - id: shadow_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: /etc/shadow is not world-writable"
+    max_points: 10
+    collect:
+      path: /etc/shadow
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 10
+
+  - id: passwd_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: /etc/passwd is not world-writable"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: no_blank_password
+    type: file_regex
+    category: vuln
+    display: "MODERATE: No account has a blank password in the shadow database"
+    max_points: 10
+    collect:
+      path: /etc/shadow
+      extract: '(?m)^(dipa::)'
+    expect:
+      equals: null
+      points: 10
+
+  # --- unauthorized accounts and administration -------------------------
+  - id: no_red
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'red' account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: red
+      points: 10
+
+  - id: no_kalipatriot
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'kalipatriot' account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: kalipatriot
+      points: 10
+
+  - id: no_dipa
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'dipa' account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: dipa
+      points: 10
+
+  - id: obs_sole_admin
+    type: user_group
+    category: vuln
+    display: "EASY: Only the authorized administrator is in the sudo group"
+    max_points: 10
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: sudo
+      # obsadmin is the only authorized administrator on this box.
+      allowed: [obsadmin]
+      points: 10
+
+  - id: service_account_no_shell
+    type: file_regex
+    category: vuln
+    display: "EASY: The heliobot service account has no interactive shell"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^heliobot:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:(/usr/sbin/nologin|/sbin/nologin)$'
+    expect:
+      regex: '(?m)^/usr/sbin/nologin$|^/sbin/nologin$'
+      points: 10
+
+  # --- sudo / login hardening (hard) ------------------------------------
+  - id: no_passwordless_sudo
+    type: permission
+    category: vuln
+    display: "HARD: No unrestricted passwordless sudo drop-in remains"
+    max_points: 10
+    collect:
+      path: /etc/sudoers.d/00-obs-nopasswd
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: no_passwordless_login
+    type: file_regex
+    category: vuln
+    display: "HARD: No passwordless-login PAM rule (pam_permit.so) in common-auth"
+    max_points: 10
+    collect:
+      path: /etc/pam.d/common-auth
+      # Specifically the "sufficient" line, not a bare mention of the module --
+      # stock Ubuntu's common-auth already references pam_permit.so in its own
+      # benign "prime the stack" line ("auth required ... pam_permit.so", a
+      # no-op safety net after pam_deny.so), so a bare `pam_permit\.so` pattern
+      # would never reach the hardened (null) state on any box.
+      extract: '(?mi)^\s*auth\s+sufficient\s+pam_permit\.so'
+    expect:
+      equals: null
+      points: 10
+
+  - id: ssh_no_root
+    type: file_regex
+    category: vuln
+    display: "MODERATE: SSH root login is disabled"
+    max_points: 10
+    collect:
+      path: /etc/ssh/sshd_config
+      extract: '(?m)^\s*PermitRootLogin\s+(\S+)'
+    expect:
+      equals: "no"
+      points: 10
+
+  # --- file permissions -------------------------------------------------
+  - id: telescope_keys_private
+    type: permission
+    category: vuln
+    display: "EASY: Telescope control keys file is not world-writable"
+    max_points: 10
+    collect:
+      path: /opt/observatory/telescope-keys.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: deploy_key_private
+    type: permission
+    category: vuln
+    display: "MODERATE: Observatory deployment key is private"
+    max_points: 10
+    collect:
+      path: /home/obsadmin/.ssh/id_rsa
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0600"
+      points: 10
+
+  # --- Apache (the web-service segment of the talk) ---------------------
+  - id: apache_not_root
+    type: file_regex
+    category: vuln
+    display: "EASY: Apache does not run its workers as root (/etc/apache2/envvars)"
+    max_points: 10
+    collect:
+      path: /etc/apache2/envvars
+      extract: '(?m)^export APACHE_RUN_USER=(\S+)'
+    expect:
+      equals: "www-data"
+      points: 10
+
+  - id: apache_no_dir_traversal
+    type: file_regex
+    category: vuln
+    display: "MODERATE: Apache filesystem-exposing Alias/traversal block is removed from apache2.conf"
+    max_points: 10
+    collect:
+      # Planted in the always-present main config so hardening is an edit, not a
+      # delete (a file_regex check errors on a missing file). The unique
+      # signature is the `Alias /archive /` that exposes the whole filesystem;
+      # `Options Indexes` alone is a stock Ubuntu default and must NOT be the tell.
+      path: /etc/apache2/apache2.conf
+      extract: '(?m)^\s*(Alias\s+/archive)\b'
+    expect:
+      equals: null
+      points: 10
+
+  # --- systemd services (the ps aux / systemctl segment) ----------------
+  - id: skiddie_inactive
+    type: service_state
+    category: vuln
+    display: "EASY: SkiddiePwner3000 service is inactive"
+    max_points: 10
+    collect:
+      service: SkiddiePwner3000.service
+    expect:
+      equals: false
+      field: active
+      points: 10
+
+  - id: skiddie_disabled
+    type: service_state
+    category: vuln
+    display: "EASY: SkiddiePwner3000 service is disabled"
+    max_points: 10
+    collect:
+      service: SkiddiePwner3000.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: uplink_process_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: No telemetry-uplink relay (C2 beacon) process is running (`ps aux`)"
+    max_points: 10
+    collect:
+      pattern: '(?i)\.uplink/relay\.py'
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: uplink_disabled
+    type: service_state
+    category: vuln
+    display: "MODERATE: Telemetry-uplink relay (C2 beacon) service is disabled"
+    max_points: 10
+    collect:
+      service: uplink-relay.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: mirror_fan_process_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: No rogue mirror-fan process is running (read the unit with `systemctl cat` -- it only looks legitimate)"
+    max_points: 10
+    collect:
+      pattern: 'mirror-fanctl'
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: mirror_fan_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: Rogue mirror-fan service is disabled"
+    max_points: 10
+    collect:
+      service: mirror-fan.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: no_hidden_unit_flag
+    type: file_regex
+    category: vuln
+    display: "MODERATE: Hidden exfil flag removed from the dome-rotate unit (find it with `systemctl cat`)"
+    max_points: 10
+    collect:
+      path: /etc/systemd/system/dome-rotate.service
+      extract: '(?m)(EXFIL_URL)'
+    expect:
+      equals: null
+      points: 10
+
+theme:
+  title: "Coyolxauhqui Ridge Solar Observatory"
+  organization: "Ridge Systems Hardening Program"
+  accent: "#3B3A6B"
+  logo: assets/solar-observatory-logo.png
+  wallpaper: assets/solar-observatory-wallpaper.png
+  readme: assets/solar-observatory-README.md
+  motd: |
+    Welcome to Coyolxauhqui Ridge Solar Observatory.
+    This is a protected system, unauthorized access will be prosecuted.
+  issue: |
+    Coyolxauhqui Ridge Solar Observatory System
+    Disconnect if you are unauthorized.
+  desktop_shortcuts:
+    # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
+    # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
+    # launches it (GLib's desktop-entry parsing does quote-removal, not
+    # tilde/variable expansion).
+    - name: "Observatory Hardening Handbook"
+      exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt on the Desktop; the agent re-grades the file each
+# pass. Correct answer = full points; wrong or blank = nothing, no penalty.
+# Each question is answerable from the evidence on the box.
+forensics:
+  - id: fq-uid0-user
+    question: "One non-root account was given UID 0 (full root power). Type that account's username."
+    answer: "sunwatch"
+    points: 10
+  - id: fq-fan-service
+    question: "A service is named like legitimate instrument hardware but is actually malicious. What is its unit filename?"
+    answer: "mirror-fan.service"
+    answers: ["mirror-fan"]
+    points: 10
+  - id: fq-sudo-account
+    question: "One unauthorized account was added to the sudo group. Type that account's username."
+    answer: "red"
+    points: 10
+  - id: fq-beacon-port
+    question: "The telemetry-uplink relay is really a C2 beacon listening on a TCP port. Which port number?"
+    answer: "4444"
+    points: 10

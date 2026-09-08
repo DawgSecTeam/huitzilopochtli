@@ -1,0 +1,10 @@
+{
+  "name": "pam-permit-auth",
+  "description": "Practice-box misconfiguration: inserts `auth sufficient pam_permit.so` at the top of a PAM stack so authentication succeeds with no password. Vars: PAM_FILE (optional, default /etc/pam.d/common-auth).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\npam_file=\"${PAM_FILE:-/etc/pam.d/common-auth}\"\n\n# Guard on the SPECIFIC \"auth sufficient pam_permit.so\" line, not just any\n# mention of the pam_permit.so module name -- Ubuntu's stock common-auth\n# already references pam_permit.so in a separate, benign \"prime the stack\"\n# line (\"auth required ... pam_permit.so\", a no-op safety net placed after\n# pam_deny.so so the chain never returns an unset code), so a bare\n# `grep -q pam_permit.so` false-positives on that pre-existing line and\n# silently skips planting this finding -- confirmed the hard way (149 round).\nif [ -f \"$pam_file\" ] && ! grep -qE '^[[:space:]]*auth[[:space:]]+sufficient[[:space:]]+pam_permit\\.so' \"$pam_file\"; then\n    tmp=\"$(mktemp)\"\n    printf 'auth\\tsufficient\\tpam_permit.so\\n' > \"$tmp\"\n    cat \"$pam_file\" >> \"$tmp\"\n    cat \"$tmp\" > \"$pam_file\"\n    rm -f \"$tmp\"\nfi\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "user-login-shell",
+  "description": "Practice-box account-hardening finding: gives an account an interactive login shell (the wrong thing for a service identity). Vars: USERNAME (required); LOGIN_SHELL (optional, default /bin/bash); SYSTEM (optional '1' to create as a system account if it does not exist).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n\n: \"${USERNAME:?USERNAME is required}\"\nshell=\"${LOGIN_SHELL:-/bin/bash}\"\n\nif id \"$USERNAME\" >/dev/null 2>&1; then\n    usermod -s \"$shell\" \"$USERNAME\"\nelif [ \"${SYSTEM-}\" = \"1\" ]; then\n    useradd -r -m -s \"$shell\" \"$USERNAME\"\nelse\n    useradd -m -s \"$shell\" \"$USERNAME\"\nfi\n",
+  "depends_on": []
+}
