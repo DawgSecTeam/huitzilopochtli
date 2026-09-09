@@ -1,0 +1,33 @@
+# Xubuntu XFCE VM connection details: observatory-01, a full clone of the
+# "solar-observatory-template" (Proxmox vmid 152 as of 2026-09-08, sealed
+# from a full clone of the vmid-150 template of the same name with only the
+# fixed manifest+rubric re-installed; that round superseded 150, which
+# superseded the earlier 149 -- the two previous templates are kept as
+# fallbacks until the 152 template is confirmed in the field. 152 exists
+# because 150 shipped a no_passwordless_login extract with no capturing
+# group, which the file_regex collector rejects at collect time, making the
+# check unpassable; the full loop is documented in boxbuilder/REDEPLOY.md).
+# This box ships neither `ubuntu` nor `sysadmin`: template prep created a
+# sudo-capable `obsadmin` account (the LightDM/desktop autologin, and the
+# account boxbuilder's ssh provider connects as) and removed the stock
+# `sysadmin` account. The xubuntu-vnc display fix
+# (boxes/shared/fix-xubuntu-vnc-display.sh) was run with
+# `obsadmin` as the login-user argument before sealing (twice: once to lay
+# down the autologin config, again after the autologin session was live so
+# the xfconf writes hit the real session bus), and /etc/machine-id was
+# wiped empty immediately before `qm template`.
+#
+# provider.host below is whatever IP this specific clone happens to get from
+# DHCP at build time -- it WILL go stale once that clone is destroyed. Point
+# it at your own clone's current IP before running boxbuilder, and connect as
+# `obsadmin` (the only authorized account). Don't assume a box's IP is stable
+# for its whole lifetime either -- it can change on a lease renewal.
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 10.0.0.11
+  port: 22
+  user: obsadmin
+  password: obsadmin
+# authoring_key: ./authoring.key

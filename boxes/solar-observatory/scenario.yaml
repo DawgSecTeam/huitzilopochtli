@@ -169,8 +169,11 @@ checks:
       # stock Ubuntu's common-auth already references pam_permit.so in its own
       # benign "prime the stack" line ("auth required ... pam_permit.so", a
       # no-op safety net after pam_deny.so), so a bare `pam_permit\.so` pattern
-      # would never reach the hardened (null) state on any box.
-      extract: '(?mi)^\s*auth\s+sufficient\s+pam_permit\.so'
+      # would never reach the hardened (null) state on any box. The whole
+      # match is wrapped in a capturing group: the file_regex collector
+      # REQUIRES one (it reports the group text as evidence) -- an ungrouped
+      # pattern errors on every run and the check can never pass.
+      extract: '(?mi)^\s*(auth\s+sufficient\s+pam_permit\.so)'
     expect:
       equals: null
       points: 10
@@ -332,9 +335,9 @@ theme:
   title: "Coyolxauhqui Ridge Solar Observatory"
   organization: "Ridge Systems Hardening Program"
   accent: "#3B3A6B"
-  logo: assets/solar-observatory-logo.png
-  wallpaper: assets/solar-observatory-wallpaper.png
-  readme: assets/solar-observatory-README.md
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
   motd: |
     Welcome to Coyolxauhqui Ridge Solar Observatory.
     This is a protected system, unauthorized access will be prosecuted.

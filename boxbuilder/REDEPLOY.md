@@ -50,7 +50,7 @@ Compile with the REAL spec (theme wallpaper/readme resolve relative to the
 spec's dir — a `/tmp` spec copy breaks with "theme.wallpaper ... not found"):
 
 ```bash
-python3 -m boxbuilder compile --spec boxbuilder/examples/chocolate-factory.box.yaml \
+python3 -m boxbuilder compile --spec boxes/chocolate-factory/box.yaml \
   --out /tmp/choc --rebuild-bundle --json        # --rebuild-bundle after any catalog change
 # plant/install need provider.host = the clone's CURRENT DHCP IP; use a temp
 # spec with absolute scenario/nakon_config paths + host overridden (do NOT
@@ -92,7 +92,7 @@ px.nodes(n).qemu(121).config.put(name='chocolate-factory-template')
 ```
 
 Then update the header comment in
-`boxbuilder/examples/chocolate-factory.box.yaml` (new vmid supersedes old;
+`boxes/chocolate-factory/box.yaml` (new vmid supersedes old;
 keep the previous template as fallback until the new one is confirmed).
 `package` via the ssh provider returns `manual` — expected; sealing IS the export.
 

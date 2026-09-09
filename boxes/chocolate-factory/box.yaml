@@ -3,7 +3,7 @@
 # full clone straight from the "xubuntu-vnc" template, vmid 119, itself a
 # VNC-enabled clone of the original "xubuntu" template, vmid 904). This
 # redeploy is from xubuntu-vnc (119) so the display/machine-id fix
-# (boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh) must be run on the
+# (boxes/shared/fix-xubuntu-vnc-display.sh) must be run on the
 # fresh clone before `boxbuilder build`, as 119 itself is unpatched -- and
 # 119 has no "ubuntu" account at all (only "sysadmin", the exercise/VNC
 # login), so a separate sudo-capable `ubuntu`/`ubuntu` account must be
@@ -30,12 +30,12 @@
 # destroyed/reprovisioned; point it at your own clone's current IP before
 # running `boxbuilder build` yourself (DHCP is fine). Don't assume a box's IP
 # is stable for its whole lifetime either -- it can change on a lease renewal.
-scenario: chocolate-factory.scenario.yaml
-nakon_config: chocolate-factory.nakon.json
+scenario: scenario.yaml
+nakon_config: nakon.json
 provider:
   name: ssh
   host: 10.0.0.11
   port: 22
   user: ubuntu
   password: ubuntu
-# authoring_key: ./chocolate-factory.authoring.key
+# authoring_key: ./authoring.key
