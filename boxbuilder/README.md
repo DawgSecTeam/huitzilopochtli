@@ -146,6 +146,18 @@ boxbuilder's side of the fence.
    very first snapshot synced (`ExecStartPost` fires once, at service
    start) -- a known, currently-unaddressed limitation for that mode.
 
+### Score-change notifications (sounds + toasts)
+
+Like the real CyberPatriot engine, boxes announce score movement: the
+agent diffs each run's total against the previous one and plays the
+points-gained chime or penalty alarm plus a desktop toast, with a
+matching transient banner on the report page. The first run after a
+(re)install has no baseline and is always silent; `install` clears any
+stale baseline and `rearm.py` removes it too. Sound is console-only
+over VNC (see `packaging/README.md` § "Score-change notifications" for
+behavior, the off switch, and `agent/sounds.CREDIT.md` for sound
+provenance).
+
 ## The two inputs you author
 
 ### 1. nakon config (which vulns to plant)

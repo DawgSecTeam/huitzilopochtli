@@ -9,6 +9,7 @@ import uuid
 import agent.config
 import agent.collector
 import agent.identity
+import agent.notify
 import agent.platform.detect
 import agent.reporter
 import agent.transport
@@ -290,6 +291,12 @@ def _prepare_forensics(manifest, config_dir: str) -> None:
             )
 
 
+def _theme_title(manifest) -> str:
+    """Human-facing scenario title for notifications (theme override wins)."""
+    theme = manifest.theme or {}
+    return theme.get("title") or manifest.scenario_name
+
+
 def _run_honor(config, manifest, ctx) -> None:
     evidence = agent.collector.run_all(manifest.checks, ctx)
 
@@ -298,11 +305,24 @@ def _run_honor(config, manifest, ctx) -> None:
     rubric = _rubric_from_dict(rubric_dict)
 
     score = common.evaluator.evaluate(evidence, rubric, _WallClock())
+    # Diff against the previous run's total (None on first run / rebuilt
+    # scenario -- deliberately silent, see agent/notify.py).
+    delta = agent.notify.consume_delta(
+        agent.notify.state_path_for(config.report_path),
+        score.total, manifest.scenario_version,
+    )
     html = agent.reporter.render_report(
-        score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest
+        score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest,
+        score_delta=delta,
     )
     with open(config.report_path, "w", encoding="utf-8") as f:
         f.write(html)
+
+    if delta:
+        agent.notify.announce(
+            delta, score.total, title=_theme_title(manifest),
+            enabled=config.notifications,
+        )
 
 
 def _enrolled_marker_path(identity_path: str) -> str:
@@ -415,12 +435,18 @@ def _run_ranked(config, manifest, ctx) -> None:
                         file=sys.stderr,
                     )
 
+        delta = None
         try:
             if last_response is not None:
+                delta = agent.notify.consume_delta(
+                    agent.notify.state_path_for(config.report_path),
+                    last_response.score.total, manifest.scenario_version,
+                )
                 html = agent.reporter.render_report(
                     last_response.score, Mode.RANKED, last_response.server_time,
                     theme=manifest.theme, manifest=manifest,
                     next_checkin_s=last_response.next_checkin_s,
+                    score_delta=delta,
                 )
             else:
                 placeholder = ScoreBreakdown(
@@ -439,6 +465,12 @@ def _run_ranked(config, manifest, ctx) -> None:
         except Exception as e:  # noqa: BLE001 — report rendering must never
             # stall the check-in loop (§9.1)
             print(f"WARNING: failed to render/write report: {e}", file=sys.stderr)
+
+        if delta:
+            agent.notify.announce(
+                delta, last_response.score.total, title=_theme_title(manifest),
+                enabled=config.notifications,
+            )
 
         # The engine's next_checkin_s is authoritative when present (it backs
         # the reporter countdown and SLA cadence); fall back to local config.

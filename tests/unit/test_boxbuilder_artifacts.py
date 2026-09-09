@@ -33,6 +33,29 @@ def test_ranked_agent_config():
     assert cfg["enrollment_token"] == "tok123"
 
 
+def test_agent_config_notifications_roundtrip(tmp_path):
+    """The notifications knob survives the disk roundtrip and defaults on for
+    configs written before it existed (boxbuilder/agent version skew)."""
+    from agent.config import load_config
+
+    cfg = artifacts.agent_config_dict("demo", "honor")
+    cfg["manifest_path"] = str(tmp_path / "manifest.json")
+    cfg["rubric_path"] = str(tmp_path / "rubric.json")
+    cfg["report_path"] = str(tmp_path / "report.html")
+    path = tmp_path / "agent_config.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    assert load_config(str(path)).notifications is True
+
+    # An older config without the key loads with notifications on.
+    del cfg["notifications"]
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    assert load_config(str(path)).notifications is True
+
+    cfg["notifications"] = False
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    assert load_config(str(path)).notifications is False
+
+
 def test_ranked_requires_engine_url():
     with pytest.raises(ValueError, match="engine_url"):
         artifacts.agent_config_dict("demo", "ranked", checkin_interval_s=60)

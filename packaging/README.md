@@ -21,7 +21,29 @@ Per §17, a restricted install dir (default `/opt/huitzilopochtli/`) holds:
   rubric.json                  # honor mode only -- local scoring rubric
   identity.json                # ranked mode only -- box_id + Ed25519 keys, 0600
   report.html                  # written by the agent on each run/check-in
+  score_state.json             # written by the agent -- previous run's total,
+                               # used to detect score changes for the
+                               # gain-chime/penalty-alarm notifications
+                               # (agent/notify.py)
 ```
+
+## Score-change notifications (sounds + desktop toasts)
+
+After each run, the agent diffs the new total against
+`score_state.json`. On a change it plays the points-gained chime or the
+penalty alarm and raises a desktop notification on the box's graphical
+session (`agent/notify.py`; the sounds it embeds are documented in
+`agent/sounds.CREDIT.md`). The report page shows the same change as a
+transient up/down banner. Notes:
+
+- The **first run after install or `rearm.py` has no baseline and stays
+  silent** by design -- a fresh box is never greeted by the penalty alarm.
+- The sound is played through the box's own PulseAudio/ALSA stack, so it
+  is audible at the VM console; a VNC session (x11vnc) does **not**
+  carry audio -- remote users get the visual notification + banner only.
+  That is a limit of the delivery protocol, not a bug.
+- Set `"notifications": false` in `agent_config.json` to silence the
+  sound/toast (the report banner is unaffected).
 
 `authoring_public_key.b64` (base64-encoded Ed25519 public key) is emitted
 by `authoring/compile.py` alongside the manifest, and lets the agent
@@ -160,7 +182,9 @@ python3 packaging/rearm.py /opt/huitzilopochtli
 ```
 
 By default this only deletes the cached report (`report_path` from
-`agent_config.json`), leaving box identity and sequence number
+`agent_config.json`) and the score baseline (`score_state.json`, so the
+replayed session starts silent instead of announcing a fake score
+change), leaving box identity and sequence number
 untouched -- appropriate for "let me retake this scenario" without
 re-enrolling as a new box with the engine. Pass `--reset-identity` to
 additionally delete the ranked-mode identity file and its transport
