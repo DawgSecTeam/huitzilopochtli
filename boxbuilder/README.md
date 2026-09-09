@@ -37,19 +37,22 @@ nakon catalog list --json
 nakon catalog check --select nginx,ssh-root-login,suid-find --json
 
 # 2. Author a nakon config (which vulns) + a huitz scenario (which checks).
-#    See boxbuilder/examples/ for a worked pairing.
+#    See boxes/chocolate-factory/ for a worked pairing.
 
 # 3. Author a box spec tying them together:
-#    boxbuilder/examples/chocolate-factory.box.yaml
+#    boxes/chocolate-factory/box.yaml
 
 # 4. Build the box (all four steps, resumable):
 python3 -m boxbuilder build \
-  --spec boxbuilder/examples/chocolate-factory.box.yaml \
+  --spec boxes/chocolate-factory/box.yaml \
   --image-out /tmp/chocolate-factory.ova --json
 ```
 
-The worked example is the **Cocoa Falls Chocolate Works** scenario:
-`boxbuilder/examples/chocolate-factory.box.yaml` pairs with `chocolate-factory.scenario.yaml` and `chocolate-factory.nakon.json`.
+Each box lives in its own directory (`boxes/<name>/box.yaml`,
+`scenario.yaml`, `nakon.json`, plus `assets/`). The worked example is the
+**Cocoa Falls Chocolate Works** scenario:
+`boxes/chocolate-factory/box.yaml` pairs with `scenario.yaml` and `nakon.json`
+in the same directory.
 It targets an Ubuntu/Xubuntu XFCE VM in honor mode and pairs ordinary cyPAT-style
 access-control findings (root SSH login, passwordless sudo, unauthorized users,
 unwanted admin membership, and loose permissions) with cron, malicious media,
@@ -85,7 +88,7 @@ tracks/draws the pointer separately from the framebuffer capture):
 3. **`xfce4-screensaver`'s own idle-activation** (separate from DPMS)
    painting a fullscreen black lock/blank window.
 
-`boxbuilder/examples/assets/fix-xubuntu-vnc-display.sh` fixes all three (plus
+`boxes/shared/fix-xubuntu-vnc-display.sh` fixes all three (plus
 a related machine-id/DHCP-collision issue -- see the script's own header) on
 a booted (not yet re-templated) clone -- see its header comment for the full
 incident writeup, exact commands, and the `xwdtopnm`-not-ImageMagick
@@ -151,7 +154,7 @@ A nakon machine list. Each entry's `configurations` names vulndb catalog entries
 that, when deployed, make the box insecure in specific ways. Browse with
 `nakon catalog list --json`; validate a selection with
 `nakon catalog check --config <file> --json`. See
-`boxbuilder/examples/chocolate-factory.nakon.json`.
+`boxes/chocolate-factory/nakon.json`.
 
 The `ip`/`user`/`password` are **placeholders** — at deploy time boxbuilder
 overwrites them with the provider's address (so the box spec is the single source
@@ -162,13 +165,13 @@ of truth for where the box is). v1 is single-box; the first machine is targeted.
 A standard huitzilopochtli scenario YAML (same shape `authoring/compile.py`
 consumes). Each check awards points for correctly hardening what a planted vuln
 broke. Mode (`honor`/`ranked`) and `engine_url` live here. See
-`boxbuilder/examples/chocolate-factory.scenario.yaml` and `architecture.md` §8.
+`boxes/chocolate-factory/scenario.yaml` and `architecture.md` §8.
 
 ### The box spec (ties them together)
 
 ```yaml
-scenario: ./chocolate-factory.scenario.yaml
-nakon_config: ./chocolate-factory.nakon.json
+scenario: ./scenario.yaml
+nakon_config: ./nakon.json
 provider: {name: ssh, host: 192.168.50.10, user: ubuntu, password: ubuntu}
 authoring_key: ./authoring.key     # optional; auto-generated+persisted (0600) if absent
 ```
@@ -260,8 +263,8 @@ sibling `../nakon` checkout). Catalog theming goes through the `vendor/vulndb-cl
 boxbuilder does **not** pair them for you. When you author a box, you must ensure
 each planted vuln has a corresponding check that verifies the hardening — e.g.
 `ssh-root-login` (plants `PermitRootLogin yes`) pairs with a `file_regex` check
-expecting `PermitRootLogin no`. The worked example in `boxbuilder/examples/`
-(chocolate-factory) shows several concrete pairings. An agent authoring a box
+expecting `PermitRootLogin no`. The worked example in `boxes/chocolate-factory/`
+shows several concrete pairings. An agent authoring a box
 should:
 
 1. `nakon catalog show <vuln> --json` — read exactly what each vuln plants.
@@ -318,7 +321,7 @@ never touches vulndb-ui at all. (Note: `compile` also ensures any *selected*
 vuln that has a bundled seed in `boxbuilder/vulndb_vuln_configs/` exists in the
 catalog — create-if-missing — so scenarios selecting seeded vulns reach
 vulndb-ui even when untheme'd.) See
-`boxbuilder/examples/chocolate-factory.{scenario,box}.yaml` for a worked,
+`boxes/chocolate-factory/{scenario,box}.yaml` for a worked,
 themed example.
 
 ## Forensics questions (scored)

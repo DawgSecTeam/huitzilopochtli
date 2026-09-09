@@ -1,6 +1,7 @@
 """Regression coverage for the themed Coyolxauhqui Ridge Solar Observatory example."""
 import json
 import os
+import re
 
 import yaml
 
@@ -12,10 +13,10 @@ from common.matchers import evaluate_matcher
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EXAMPLES = os.path.join(REPO_ROOT, "boxbuilder", "examples")
-SCENARIO = os.path.join(EXAMPLES, "solar-observatory.scenario.yaml")
-BOX = os.path.join(EXAMPLES, "solar-observatory.box.yaml")
-NAKON = os.path.join(EXAMPLES, "solar-observatory.nakon.json")
+BOX_DIR = os.path.join(REPO_ROOT, "boxes", "solar-observatory")
+SCENARIO = os.path.join(BOX_DIR, "scenario.yaml")
+BOX = os.path.join(BOX_DIR, "box.yaml")
+NAKON = os.path.join(BOX_DIR, "nakon.json")
 
 CHECK_COUNT = 23
 TOTAL_POINTS = 230
@@ -66,6 +67,24 @@ def test_solar_observatory_box_and_nakon_inputs_resolve():
         "apache-site", "ssh-root-login",
     ):
         assert name in names
+
+
+def test_solar_observatory_file_regex_extracts_have_capturing_groups():
+    """The file_regex collector REQUIRES a capturing group in `extract`
+    (it reports the group text as evidence and errors on `groups < 1`);
+    an ungrouped pattern errors on every run, planted or hardened, so the
+    check can never award its points. Found live on the 2026-09-07
+    deployment round: no_passwordless_login shipped ungrouped and scored
+    260/270 on a fully hardened box."""
+    for check in _load_scenario()["checks"]:
+        if check["type"] != "file_regex":
+            continue
+        pattern = check["collect"]["extract"]
+        compiled = re.compile(pattern)  # raises on an invalid pattern
+        assert compiled.groups >= 1, (
+            f"{check['id']}: file_regex extract {pattern!r} has no capturing "
+            "group; the collector would error on every run"
+        )
 
 
 def test_solar_observatory_pairings_score_secure_states_and_reject_planted_states():

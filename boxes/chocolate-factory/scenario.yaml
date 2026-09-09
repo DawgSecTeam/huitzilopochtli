@@ -279,9 +279,9 @@ theme:
   title: "Cocoa Falls Chocolate Works"
   organization: "Factory Systems Hardening Tour"
   accent: "#8B4A24"
-  logo: assets/chocolate-factory-logo.png
-  wallpaper: assets/chocolate-factory-wallpaper.png
-  readme: assets/chocolate-factory-README.md
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
   motd: |
     Welcome to Cocoa Falls Chocolate Works.
     This is a protected system, unauthorized access will be prosecuted.

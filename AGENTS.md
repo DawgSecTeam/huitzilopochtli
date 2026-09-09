@@ -55,7 +55,7 @@ nakon catalog list --json
 nakon catalog show ssh-root-login --json      # read exactly what it plants
 nakon catalog check --select nginx,ssh-root-login --json
 
-# Author the two files (see boxbuilder/examples/ for a worked pairing), then:
+# Author the two files (see boxes/chocolate-factory/ for a worked pairing), then:
 python3 -m boxbuilder build --spec box.yaml --image-out box.ova --json
 ```
 

@@ -7,12 +7,13 @@ by the intruder.
 
 ## Scenario
 You are tasked with securing an observatory control workstation for the CRSO
-facility. Remove unauthorized users and malicious services, secure access to
-critical services, and ensure limited permissions are set on confidential
-files. The password for all admins must be unique and secure.
+facility. Remove unauthorized users and malicious services and ensure limited
+permissions are set on confidential files. The password for all admins must
+be unique and secure.
 
 **Critical services**
-SSH (`sshd`) and the public status site (`apache2`) must stay running.
+SSH (`sshd`) and the public status site (`apache2`) must be running and enabled
+at startup.
 
 **Authorized users**
 `obsadmin` is the only authorized administrator.
@@ -21,7 +22,6 @@ SSH (`sshd`) and the public status site (`apache2`) must stay running.
 **Confidential files**
 Telescope control keys: `/opt/observatory/telescope-keys.txt`
 Observatory deployment key: `/home/obsadmin/.ssh/id_rsa`
-
 
 ## Forensics questions
 
@@ -36,6 +36,22 @@ To view current score and issues addressed, open the **Scoring Report** shortcut
 the desktop. The report shows checks that have passed and the points gained from each.
 
 
+## Where to start
+If you are new to Linux and incident response, we have a [cheatsheet document](https://nextcloud.dawgsec.com/s/nc5BxLfwm62GNkx) that 
+gives the basic commands and places to look, as well as a [slideshow](https://youtu.be/0rUD1sI_sKI?si=6pLHCgAyNWfKllah) that
+covers the topic. here are some places to start:
+
+- **Accounts** — review `/etc/passwd` and `/etc/shadow` for accounts that
+  shouldn't exist, weak file permissions, and blank passwords.
+- **Administrators** — check who is in the `sudo` group against the
+  authorized users listed above.
+- **Services & processes** — `systemctl list-units` and `ps aux` for
+  anything unfamiliar. Not everything malicious is named obviously; read a
+  unit's definition (`systemctl cat <name>`) before trusting it.
+- **File permissions** — use chmod to limit the permissions of the confidential files listed above.
+- **Remote access** — harden SSH and sudo/PAM login configuration.
+
+If you're stuck or unsure how to continue, you can ask for help or hints in the CyberDawgs Discord.
 
 ## Other
 This is an authorized training image. The payloads planted for the exercise are

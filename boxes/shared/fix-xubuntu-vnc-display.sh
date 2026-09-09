@@ -7,7 +7,7 @@
 # re-sealing it (`qm template`). It is idempotent -- safe to re-run.
 #
 # BACKGROUND (2026-09-05 incident, see boxbuilder/README.md's "VNC desktop
-# caveats" section and boxbuilder/examples/chocolate-factory.box.yaml):
+# caveats" section and boxes/chocolate-factory/box.yaml):
 #
 # A live student box showed a solid-black VNC screen (cursor still moved --
 # x11vnc tracks/draws the pointer separately from the framebuffer capture,

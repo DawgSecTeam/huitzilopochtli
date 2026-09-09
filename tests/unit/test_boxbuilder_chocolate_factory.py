@@ -12,10 +12,10 @@ from common.matchers import evaluate_matcher
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-EXAMPLES = os.path.join(REPO_ROOT, "boxbuilder", "examples")
-SCENARIO = os.path.join(EXAMPLES, "chocolate-factory.scenario.yaml")
-BOX = os.path.join(EXAMPLES, "chocolate-factory.box.yaml")
-NAKON = os.path.join(EXAMPLES, "chocolate-factory.nakon.json")
+BOX_DIR = os.path.join(REPO_ROOT, "boxes", "chocolate-factory")
+SCENARIO = os.path.join(BOX_DIR, "scenario.yaml")
+BOX = os.path.join(BOX_DIR, "box.yaml")
+NAKON = os.path.join(BOX_DIR, "nakon.json")
 
 
 def _load_scenario():
