@@ -351,10 +351,35 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
 """
 
 
+def _render_delta_banner(score_delta) -> str:
+    """One-run score-change banner ("" when None/0): the visual twin of the
+    sound + toast -- green chime for a gain, red alarm for a penalty. Shows
+    only on the run right after the change, then disappears again."""
+    try:
+        # The evaluator supplies an int; coerce anything else defensively so
+        # a hostile/malformed value degrades to "no banner", never to markup.
+        score_delta = int(score_delta)
+    except (TypeError, ValueError):
+        return ""
+    if not score_delta:
+        return ""
+    if score_delta > 0:
+        return (
+            f'<div class="delta-banner up" role="status">&#9650; +'
+            f"{html.escape(str(score_delta))} pts since the last grading pass</div>"
+        )
+    return (
+        '<div class="delta-banner down" role="alert">&#9660; '
+        f"{html.escape(str(score_delta))} pts &mdash; penalty: a scored "
+        "setting was undone or a new issue introduced</div>"
+    )
+
+
 def render_report(score: ScoreBreakdown, mode: Mode,
                    last_confirmed_at: float | None, theme: dict | None = None,
                    manifest=None, honor_interval_s: int | None = None,
-                   next_checkin_s: int | None = None) -> str:
+                   next_checkin_s: int | None = None,
+                   score_delta: int | None = None) -> str:
     """Render ScoreBreakdown to a self-contained HTML string.
 
     Dashboard: total, point-in-time results, SLA status, and in ranked mode a
@@ -368,7 +393,8 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     time until the next re-grade (honor_interval_s, default 60s) or next
     ranked check-in (next_checkin_s), embedded as a render-time remainder
     (seconds from page load) so a stale file reads 00:00 instead of counting
-    down from a long-dead target.
+    down from a long-dead target. ``score_delta`` (this run's total minus the
+    previous run's, from agent/notify.py) adds a transient up/down banner.
     """
     theme = theme or {}
     scenario_version = html.escape(str(score.scenario_version))
@@ -397,7 +423,9 @@ def render_report(score: ScoreBreakdown, mode: Mode,
         countdown_html = ""
     else:
         if is_honor:
-            body_main = _render_honor_board(score, manifest)
+            body_main = _render_delta_banner(score_delta) + _render_honor_board(
+                score, manifest
+            )
             # Countdown target: computed_at + honor interval
             interval = honor_interval_s if honor_interval_s is not None else _HONOR_INTERVAL_S
             try:
@@ -437,6 +465,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                 target_epoch = None
             # countdown element goes inside header when present
             body_main = f"""
+{_render_delta_banner(score_delta)}
 <div class="score-header">
   <div class="total">Total: {html.escape(str(score.total))}<span class="total-suffix"> pts</span></div>
   {rank_countdown_block}

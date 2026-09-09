@@ -216,3 +216,47 @@ def test_stale_render_reads_expired_at_load(monkeypatch):
     monkeypatch.setattr("agent.reporter.time.time", lambda: 1700000300.0)
     out = render_report(_score(), Mode.RANKED, 1700000000.0, next_checkin_s=60)
     assert "endMs=Date.now()+0*1000" in out
+
+
+# --- Score-change banner (score_delta; the visual twin of the siren/chime) --
+
+def test_no_delta_arg_renders_no_banner():
+    out = render_report(_score(), Mode.HONOR, None)
+    assert 'class="delta-banner' not in out
+
+
+def test_zero_delta_renders_no_banner():
+    out = render_report(_score(), Mode.HONOR, None, score_delta=0)
+    assert 'class="delta-banner' not in out
+
+
+def test_gain_delta_banner():
+    out = render_report(_score(), Mode.HONOR, None, score_delta=10)
+    assert 'class="delta-banner up"' in out
+    assert "+10 pts since the last grading pass" in out
+    assert "delta-banner down" not in out
+
+
+def test_penalty_delta_banner():
+    out = render_report(_score(), Mode.HONOR, None, score_delta=-5)
+    assert 'class="delta-banner down"' in out
+    assert "-5 pts" in out
+    assert "penalty" in out
+    assert "delta-banner up" not in out
+
+
+def test_delta_banner_escapes_hostile_delta_values():
+    """score_delta comes from the evaluator as an int, but it flows into raw
+    HTML via an f-string -- a non-int value must degrade to no banner, never
+    to injected markup (defense in depth, same as every other fragment)."""
+    out = render_report(_score(), Mode.HONOR, None,
+                        score_delta="<script>alert(1)</script>")
+    assert 'class="delta-banner' not in out
+    assert "<script>alert(1)</script>" not in out
+
+
+def test_delta_banner_renders_in_ranked_mode_too():
+    out = render_report(_score(), Mode.RANKED, 1700000000.0,
+                        next_checkin_s=60, score_delta=7)
+    assert 'class="delta-banner up"' in out
+    assert "+7 pts since the last grading pass" in out

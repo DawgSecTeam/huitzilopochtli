@@ -55,6 +55,15 @@ def _enrolled_marker_path(identity_path: str) -> str:
     return identity_path + ".enrolled"
 
 
+def _score_state_path(report_path: str) -> str:
+    """Path of the score baseline (agent/notify.py), sibling of the cached
+    report. Mirrors agent/notify.py::state_path_for -- same stdlib-only rule
+    as above."""
+    return os.path.join(
+        os.path.dirname(os.path.abspath(report_path)), "score_state.json"
+    )
+
+
 def _maybe_remove(path: str) -> bool:
     """Remove `path` if it exists. Returns whether it was removed."""
     if path and os.path.exists(path):
@@ -73,6 +82,14 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
         actions.append(f"removed cached report: {config.report_path}")
     else:
         actions.append(f"no cached report to remove at: {config.report_path}")
+
+    # The score baseline must go with the report: a replayed session starts
+    # silent (no baseline -> no spurious penalty alarm on the first re-grade).
+    score_state = _score_state_path(config.report_path)
+    if _maybe_remove(score_state):
+        actions.append(f"removed score baseline: {score_state}")
+    else:
+        actions.append(f"no score baseline to remove at: {score_state}")
 
     if reset_identity:
         if config.identity_path:

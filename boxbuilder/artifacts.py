@@ -1,7 +1,7 @@
 """Generate the on-box install set + agent_config.json per mode.
 
-This module knows the exact agent/config.py::AgentConfig shape (9 fields) and
-the packaging/README.md install layout. It does NOT touch the box -- it returns
+This module knows the exact agent/config.py::AgentConfig shape (10 fields)
+and the packaging/README.md install layout. It does NOT touch the box -- it returns
 a description of what to place; pipeline.install_box applies it via the provider
 handle. Separation makes the per-mode file set unit-testable without a box.
 
@@ -14,6 +14,8 @@ Install layout (see packaging/README.md), all under INSTALL_DIR:
   identity.json                  ranked only, CREATED BY THE AGENT on first boot
                                  (not placed by boxbuilder -- see note below)
   report.html                    written by the agent at runtime
+  score_state.json               written by the agent at runtime (previous
+                                 run's total, for score-change alerts)
   sync-report.sh                 both modes; mirrors report.html into each real
                                  user's $HOME/Desktop (see packaging/sync-report.sh
                                  -- a snap-confined browser can't see /opt)
@@ -65,6 +67,7 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
         "identity_path": None,
         "checkin_interval_s": None,
         "enrollment_token": None,
+        "notifications": True,
     }
     if mode == "honor":
         cfg["rubric_path"] = f"{base}/rubric.json"

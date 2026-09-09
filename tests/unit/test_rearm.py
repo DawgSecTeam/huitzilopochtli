@@ -64,3 +64,23 @@ def test_rearm_without_reset_identity_preserves_marker(tmp_path):
     assert (tmp_path / "identity.enrolled").exists(), \
         "default rearm must not touch the enrollment marker"
     assert identity_path.exists(), "default rearm must not remove identity"
+
+
+def test_rearm_removes_score_baseline(tmp_path):
+    # The score baseline (agent/notify.py) lives next to the cached report;
+    # leaving it behind would make the first post-rearm grade look like a
+    # gain/loss against a stale session and fire a spurious alert.
+    (tmp_path / "score_state.json").write_text('{"total": 50}')
+    config_path = _write_config(tmp_path, tmp_path / "identity")
+
+    actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
+
+    assert not (tmp_path / "score_state.json").exists(), \
+        "rearm must remove the score baseline so the replay starts silent"
+    assert any("score baseline" in a for a in actions)
+
+
+def test_rearm_reports_missing_score_baseline(tmp_path):
+    config_path = _write_config(tmp_path, tmp_path / "identity")
+    actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
+    assert any("no score baseline" in a for a in actions)

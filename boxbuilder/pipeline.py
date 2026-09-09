@@ -326,6 +326,10 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             handle.put(f.local, f.remote, mode=f.mode)
             placed.append(f.remote)
         log(f"[boxbuilder] placed {len(placed)} file(s) under {artifacts_mod.INSTALL_DIR}")
+        # A score baseline left by a previous install (agent/notify.py) would
+        # fire one spurious change alert on the new scenario's first grade;
+        # a (re)install starts silent and baselines on first run.
+        handle.run(f"rm -f {artifacts_mod.INSTALL_DIR}/score_state.json")
 
         # --- init unit ---
         if init_kind is None:
