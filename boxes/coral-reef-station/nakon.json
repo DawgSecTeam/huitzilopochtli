@@ -1,0 +1,111 @@
+{
+  "_comment": "Kalypso Deep Marine Research Station vuln-planting side. Every catalog config referenced here is GENERIC and var-driven (see boxbuilder/vulndb_vuln_configs/): uid0-user, loosen-file-mode, insecure-file-mode, local-user, user-login-shell, user-sudo-nopasswd, systemd-service, pam-permit-auth, apache-site -- all theme detail lives in the vars below, not in the catalog rows, so any future box reuses the same seeds. loosen-file-mode (chmod only, no content write) is used for /etc/shadow and /etc/passwd; insecure-file-mode (rewrites content) is only for files we create. loosen-file-mode for /etc/shadow and /etc/passwd MUST run after every account-creation/shell step (uid0-user, local-user, user-login-shell) -- useradd/usermod/chpasswd rewrite those files and reset their mode on the way out (0666 decays to 0664), so chmod-ing first gets silently undone; confirmed the hard way on the solar 149 round. Each FILE_PATH / SERVICE_NAME / USERNAME here MUST match its paired check's collect.path / service / username in scenario.yaml exactly -- nothing cross-checks them. sonar-relay and oxygen-pump are ALSO scored by a `process_state` check (collect.pattern is a regex matched against /proc/<pid>/cmdline), which is why each needs a distinctively-named EXEC_START/PAYLOAD_PATH (oxygen-pump runs PAYLOAD_PATH=/usr/local/sbin/pump-ctrl instead of a bland `sleep`) -- if you rename either payload path, update the matching `collect.pattern` in scenario.yaml too. `ssh-root-login` comes from the shared vulndb catalog (no local seed). Run `nakon catalog check --config nakon.json --json` after the bundled seeds have been ensured in vulndb.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "station-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "ubuntu-xfce",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "configurations": [
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/opt/reef/dive-logs.txt",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "dive-log encryption key K-7: NE-2231 lagoon gate code 0417 (do not share)"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/reefadmin/.ssh/id_rsa",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "[REDACTED PRIVATE KEY]"
+          }
+        },
+        {
+          "name": "uid0-user",
+          "vars": { "USERNAME": "leviathan", "PASSWORD": "Tides2026!" }
+        },
+        {
+          "name": "local-user",
+          "vars": { "USERNAME": "poseidon", "PASSWORD": "SeaGrant1!", "GROUPS_ADD": "sudo" }
+        },
+        {
+          "name": "local-user",
+          "vars": { "USERNAME": "nemo", "PASSWORD": "Clownfish9!" }
+        },
+        {
+          "name": "local-user",
+          "vars": { "USERNAME": "krill", "PASSWORD": "" }
+        },
+        {
+          "name": "user-login-shell",
+          "vars": { "USERNAME": "diverbot", "LOGIN_SHELL": "/bin/bash", "SYSTEM": "1" }
+        },
+        {
+          "name": "loosen-file-mode",
+          "vars": { "FILE_PATH": "/etc/shadow", "FILE_MODE": "0666" }
+        },
+        {
+          "name": "loosen-file-mode",
+          "vars": { "FILE_PATH": "/etc/passwd", "FILE_MODE": "0666" }
+        },
+        {
+          "name": "user-sudo-nopasswd",
+          "vars": { "USERNAME": "reefadmin", "DROPIN_NAME": "00-reef-nopasswd" }
+        },
+        "pam-permit-auth",
+        {
+          "name": "apache-site",
+          "vars": {
+            "SITE_TITLE": "Kalypso Deep Marine Research Station - Reef Conditions",
+            "SITE_BODY": "<p>Current reef status: <b>HEALTHY</b> &middot; water temp 26.4&deg;C &middot; visibility 24 m</p><p>Public status page. Dive operations are restricted.</p>",
+            "RUN_USER": "root",
+            "EXTRA_DIRECTIVES": "# Public lagoon archive share (planted directory-listing/traversal misconfig)\nAlias /lagoon /\n<Directory />\n    Options Indexes FollowSymLinks\n    AllowOverride None\n    Require all granted\n</Directory>"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "SquidBait3000",
+            "DESCRIPTION": "System Optimizer",
+            "EXEC_START": "/bin/sh -c 'while true; do sleep 300; done'"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "sonar-relay",
+            "DESCRIPTION": "Sonar Data Relay",
+            "EXEC_START": "/usr/bin/python3 /opt/.sonar/beacon.py",
+            "PAYLOAD_PATH": "/opt/.sonar/beacon.py",
+            "PAYLOAD_BODY": "import socket, time\nsrv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"0.0.0.0\", 8443))\nsrv.listen(5)\nwhile True:\n    try:\n        conn, _addr = srv.accept()\n        conn.sendall(b\"sonar-ok\\n\")\n        conn.close()\n    except Exception:\n        time.sleep(5)"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "oxygen-pump",
+            "DESCRIPTION": "Life Support Oxygen Pump Controller",
+            "EXEC_START": "/usr/local/sbin/pump-ctrl",
+            "PAYLOAD_PATH": "/usr/local/sbin/pump-ctrl",
+            "PAYLOAD_BODY": "#!/bin/sh\nwhile true; do sleep 300; done\n"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "tide-sampler",
+            "DESCRIPTION": "Automated Tide Water Sampler",
+            "EXEC_START": "/bin/sh -c 'while true; do sleep 300; done'",
+            "EXTRA_LINE": "Environment=EXFIL_URL=http://harbor.tideanalytics.example/collect"
+          }
+        },
+        "ssh-root-login"
+      ]
+    }
+  ]
+}
