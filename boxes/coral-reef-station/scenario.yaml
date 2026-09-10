@@ -1,0 +1,363 @@
+# Kalypso Deep Marine Research Station: a reef-themed hardening practice box,
+# hand-authored for a new competition round. The theme is flavor only; every
+# task is solvable from ordinary Linux evidence. Structurally parallel to the
+# solar-observatory worked example (same generic, var-driven catalog seeds):
+# students read /etc/passwd, audit sudo, kill look-alike rogue services with
+# ps aux + systemctl, fix Apache, and tighten file permissions.
+
+scenario:
+  name: "Kalypso Deep Marine Research Station"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # Difficulty spread (also called out in the in-box README):
+  #   EASY (10):    no_uid0_user, apache_not_root, service_account_no_shell,
+  #                 squid_inactive, squid_disabled, no_nemo, no_poseidon,
+  #                 no_krill, dive_keys_private, reef_sole_admin
+  #   MODERATE (10): shadow_not_world_writable, passwd_not_world_writable,
+  #                 no_blank_password, no_hidden_unit_flag,
+  #                 apache_no_dir_traversal, sonar_process_killed,
+  #                 sonar_disabled, deploy_key_private, ssh_no_root,
+  #                 pump_process_killed
+  #   HARD (3):     pump_disabled, no_passwordless_sudo, no_passwordless_login
+  #
+  # The three malicious services (SquidBait3000, sonar-relay, oxygen-pump) are
+  # real running processes. SquidBait3000 is scored purely on unit state (the
+  # obvious tier). sonar-relay and oxygen-pump are each scored on BOTH a
+  # process_state check (the live process must actually die -- Restart=always
+  # respawns it until the unit is stopped/disabled) and a service_state
+  # enabled check. oxygen-pump is deliberately named like legitimate station
+  # hardware, so it must be READ (`systemctl cat`), not pattern-matched.
+
+  # --- passwd / shadow ---------------------------------------------------
+  - id: no_uid0_user
+    type: file_regex
+    category: vuln
+    display: "EASY: No second UID-0 (root-equivalent) account in /etc/passwd"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^(?!root:)([^:]+):[^:]*:0:'
+    expect:
+      equals: null
+      points: 10
+
+  - id: shadow_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: /etc/shadow is not world-writable"
+    max_points: 10
+    collect:
+      path: /etc/shadow
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 10
+
+  - id: passwd_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: /etc/passwd is not world-writable"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: no_blank_password
+    type: file_regex
+    category: vuln
+    display: "MODERATE: No account has a blank password in the shadow database"
+    max_points: 10
+    collect:
+      path: /etc/shadow
+      extract: '(?m)^(krill::)'
+    expect:
+      equals: null
+      points: 10
+
+  # --- unauthorized accounts and administration ---------------------------
+  - id: no_nemo
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'nemo' account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: nemo
+      points: 10
+
+  - id: no_poseidon
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'poseidon' account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: poseidon
+      points: 10
+
+  - id: no_krill
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'krill' account is removed (shows as a login tile on the greeter)"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: krill
+      points: 10
+
+  - id: reef_sole_admin
+    type: user_group
+    category: vuln
+    display: "EASY: Only the authorized administrator is in the sudo group"
+    max_points: 10
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: sudo
+      # reefadmin is the only authorized administrator on this box.
+      allowed: [reefadmin]
+      points: 10
+
+  - id: service_account_no_shell
+    type: file_regex
+    category: vuln
+    display: "EASY: The diverbot service account has no interactive shell"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^diverbot:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:(/usr/sbin/nologin|/sbin/nologin)$'
+    expect:
+      regex: '(?m)^/usr/sbin/nologin$|^/sbin/nologin$'
+      points: 10
+
+  # --- sudo / login hardening (hard) --------------------------------------
+  - id: no_passwordless_sudo
+    type: permission
+    category: vuln
+    display: "HARD: No unrestricted passwordless sudo drop-in remains"
+    max_points: 10
+    collect:
+      path: /etc/sudoers.d/00-reef-nopasswd
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: no_passwordless_login
+    type: file_regex
+    category: vuln
+    display: "HARD: No passwordless-login PAM rule (pam_permit.so) in common-auth"
+    max_points: 10
+    collect:
+      path: /etc/pam.d/common-auth
+      # The "sufficient" line only -- stock Ubuntu's common-auth already
+      # references pam_permit.so benignly, so a bare module-name pattern would
+      # never reach the null state. Whole match wrapped in a capturing group:
+      # the file_regex collector REQUIRES one (ungrouped = check unpassable).
+      extract: '(?mi)^\s*(auth\s+sufficient\s+pam_permit\.so)'
+    expect:
+      equals: null
+      points: 10
+
+  - id: ssh_no_root
+    type: file_regex
+    category: vuln
+    display: "MODERATE: SSH root login is disabled"
+    max_points: 10
+    collect:
+      path: /etc/ssh/sshd_config
+      extract: '(?m)^\s*PermitRootLogin\s+(\S+)'
+    expect:
+      equals: "no"
+      points: 10
+
+  # --- file permissions ----------------------------------------------------
+  - id: dive_keys_private
+    type: permission
+    category: vuln
+    display: "EASY: Dive-log encryption keys file is not world-writable"
+    max_points: 10
+    collect:
+      path: /opt/reef/dive-logs.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 10
+
+  - id: deploy_key_private
+    type: permission
+    category: vuln
+    display: "MODERATE: Station deployment key is private"
+    max_points: 10
+    collect:
+      path: /home/reefadmin/.ssh/id_rsa
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0600"
+      points: 10
+
+  # --- Apache ---------------------------------------------------------------
+  - id: apache_not_root
+    type: file_regex
+    category: vuln
+    display: "EASY: Apache does not run its workers as root (/etc/apache2/envvars)"
+    max_points: 10
+    collect:
+      path: /etc/apache2/envvars
+      extract: '(?m)^export APACHE_RUN_USER=(\S+)'
+    expect:
+      equals: "www-data"
+      points: 10
+
+  - id: apache_no_dir_traversal
+    type: file_regex
+    category: vuln
+    display: "MODERATE: Apache filesystem-exposing Alias/traversal block is removed from apache2.conf"
+    max_points: 10
+    collect:
+      # Planted in the always-present main config (a file_regex check errors
+      # on a missing file). The tell is `Alias /lagoon /`; bare `Options
+      # Indexes` is a stock default and must NOT be the signal.
+      path: /etc/apache2/apache2.conf
+      extract: '(?m)^\s*(Alias\s+/lagoon)\b'
+    expect:
+      equals: null
+      points: 10
+
+  # --- systemd services ------------------------------------------------------
+  - id: squid_inactive
+    type: service_state
+    category: vuln
+    display: "EASY: SquidBait3000 service is inactive"
+    max_points: 10
+    collect:
+      service: SquidBait3000.service
+    expect:
+      equals: false
+      field: active
+      points: 10
+
+  - id: squid_disabled
+    type: service_state
+    category: vuln
+    display: "EASY: SquidBait3000 service is disabled"
+    max_points: 10
+    collect:
+      service: SquidBait3000.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: sonar_process_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: No sonar-relay (C2 beacon) process is running (`ps aux`)"
+    max_points: 10
+    collect:
+      pattern: '(?i)\.sonar/beacon\.py'
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: sonar_disabled
+    type: service_state
+    category: vuln
+    display: "MODERATE: Sonar-relay (C2 beacon) service is disabled"
+    max_points: 10
+    collect:
+      service: sonar-relay.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: pump_process_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: No rogue oxygen-pump process is running (read the unit with `systemctl cat` -- it only looks legitimate)"
+    max_points: 10
+    collect:
+      pattern: 'pump-ctrl'
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: pump_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: Rogue oxygen-pump service is disabled"
+    max_points: 10
+    collect:
+      service: oxygen-pump.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: no_hidden_unit_flag
+    type: file_regex
+    category: vuln
+    display: "MODERATE: Hidden exfil flag removed from the tide-sampler unit (find it with `systemctl cat`)"
+    max_points: 10
+    collect:
+      path: /etc/systemd/system/tide-sampler.service
+      extract: '(?m)(EXFIL_URL)'
+    expect:
+      equals: null
+      points: 10
+
+theme:
+  title: "Kalypso Deep Marine Research Station"
+  organization: "Reef Systems Hardening Program"
+  accent: "#006994"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  motd: |
+    Welcome to Kalypso Deep Marine Research Station.
+    This is a protected system, unauthorized access will be prosecuted.
+  issue: |
+    Kalypso Deep Marine Research Station System
+    Disconnect if you are unauthorized.
+  desktop_shortcuts:
+    # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
+    # .desktop Exec= line is not guaranteed to be shell-expanded.
+    - name: "Station Hardening Handbook"
+      exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt on the Desktop; the agent re-grades each pass.
+forensics:
+  - id: fq-uid0-user
+    question: "One non-root account was given UID 0 (full root power). Type that account's username."
+    answer: "leviathan"
+    points: 10
+  - id: fq-pump-service
+    question: "A service is named like legitimate station hardware but is actually malicious. What is its unit filename?"
+    answer: "oxygen-pump.service"
+    answers: ["oxygen-pump"]
+    points: 10
+  - id: fq-sudo-account
+    question: "One unauthorized account was added to the sudo group. Type that account's username."
+    answer: "poseidon"
+    points: 10
+  - id: fq-beacon-port
+    question: "The sonar-relay is really a C2 beacon listening on a TCP port. Which port number?"
+    answer: "8443"
+    points: 10

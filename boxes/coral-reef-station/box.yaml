@@ -1,0 +1,30 @@
+# Xubuntu XFCE VM connection details: station-01, the first build clone of the
+# "coral-reef-station-template" (Proxmox vmid 144, sealed 2026-09-09 from a
+# full clone of base xubuntu-vnc/119 -- there is no previous template for this
+# box yet, so keep VM 144's build lineage notes until the template is field-
+# confirmed). Template prep followed the solar pattern: scenario admin account
+# `reefadmin`/`reefadmin` (sudo-capable, LightDM autologin, boxbuilder
+# ssh-provider login), stock `sysadmin` removed after the scenario account
+# existed, boxes/shared/fix-xubuntu-vnc-display.sh run TWICE with `reefadmin`
+# as login-user (pass 1 wrote the autologin config, pass 2 after reboot so
+# xfconf hit the live session bus), /etc/machine-id wiped empty immediately
+# before `qm template`. Verified pre-seal: report Total: 0 / 0 of 23 +
+# forensics card, all 23 planted vulns present, agent timer clean, framebuffer
+# real (~4.1M xwd, 256 distinct byte values), then a scripted-hardening
+# roundtrip asserted FULL MARKS (Total: 270 / 23 of 23 / forensics 4 of 4)
+# before rolling back to the planted state.
+#
+# provider.host below is whatever IP this specific clone happens to get from
+# DHCP at build time -- it WILL go stale once that clone is destroyed. Point
+# it at your own clone's current IP before running boxbuilder, and connect as
+# `reefadmin` (the only authorized account). Don't assume a box's IP is stable
+# for its whole lifetime either -- it can change on a lease renewal.
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 127.0.0.1
+  port: 22
+  user: reefadmin
+  password: reefadmin
+# authoring_key: ./authoring.key

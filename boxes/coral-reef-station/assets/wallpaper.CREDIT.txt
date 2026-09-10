@@ -1,0 +1,5 @@
+wallpaper.png and logo.png are derived (cropped/resized) from
+"Great Barrier Reef snorkeling 18" by Dmitry Brant, licensed
+CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
+Source: https://commons.wikimedia.org/wiki/File:Great_Barrier_Reef_snorkeling_18.jpg
+Attribution required if this image is redistributed.
