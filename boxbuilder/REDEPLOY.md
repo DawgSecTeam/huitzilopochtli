@@ -18,7 +18,7 @@ identically and needs no login credentials -- see
 ## 0. Preflight
 
 ```bash
-export VULNDB_UI_URL=http://10.0.0.118:3000   # NOT set by default; boxbuilder needs it
+export VULNDB_UI_URL=http://10.0.0.119:3000   # NOT set by default; boxbuilder needs it (VM115 "vulndb"; was 10.0.0.118 until the IP drifted Sept 2026 -- confirm before assuming)
 # vendor/nakon/.env must exist (gitignored, vulndb DB creds + VULNDB_UI_URL)
 git status          # note uncommitted scenario changes — they ARE the deploy
 python3 -m pytest tests/unit/test_boxbuilder_chocolate_factory.py -q
