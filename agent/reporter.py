@@ -435,7 +435,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             except Exception:
                 interval = _HONOR_INTERVAL_S
             target_epoch = float(score.computed_at) + interval
-            countdown_html = countdown_script(target_epoch - time.time())
+            countdown_html = countdown_script(target_epoch, time.time())
         else:
             # Ranked: verbose diagnostic table (rubric off-box, so safe to show)
             results_table = _render_results_table(score.results)
@@ -456,7 +456,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                     if nci > 0:
                         target_epoch = float(last_confirmed_at) + nci
                         rank_countdown_block = '<div class="countdown-wrap" style="margin:0.75rem 0"><div class="countdown-label">Next check-in in</div><div id="countdown" class="countdown">--:--</div></div>'
-                        rank_countdown_script = countdown_script(target_epoch - time.time())
+                        rank_countdown_script = countdown_script(target_epoch, time.time())
                     else:
                         target_epoch = None
                 except Exception:

@@ -43,25 +43,28 @@ def masthead_html(title: str, organization=None, logo_b64=None) -> str:
     )
 
 
-def countdown_script(remaining_s: float) -> str:
-    """Inline JS counting down remaining_s seconds from page load. No deps.
+def countdown_script(target_epoch_s: float, render_epoch_s: float) -> str:
+    """Inline JS counting down to target_epoch_s. No deps.
 
-    Takes a remainder instead of an absolute epoch target on purpose: the
-    report is a static file that outlives its render instant, and the viewing
-    clock may belong to a different machine than the one that computed the
-    deadline (ranked mode bakes in the engine's server_time). Anchoring the
-    deadline to the page-load clock keeps the tick correct under engine/box
-    skew, and a file rendered after its deadline simply reads 00:00 at load.
+    The report is a static file that outlives its render instant: it is
+    re-executed on every reload and on the meta-refresh, so the deadline must
+    be baked into the file (endMs is fixed) -- anchoring it to the page-load
+    clock would restart the countdown on every reload. The anchor is the
+    render instant, not the raw epoch target: the box's browser and the
+    render-time clock() are the same clock, so engine/box skew stays absorbed
+    in (target - render) exactly as it would be in a pre-computed remainder,
+    and a file rendered after its deadline simply reads 00:00 at load.
     """
     # integer seconds, clamped at 0: a render that already past its deadline
     # (stale file) must read 00:00 at load, never a negative countdown.
-    remaining_int = max(0, int(remaining_s))
+    remaining_int = max(0, int(target_epoch_s - render_epoch_s))
+    render_ms = int(render_epoch_s * 1000)
     return f"""
 <script>
 (function(){{
   var el=document.getElementById('countdown');
   if(!el) return;
-  var endMs=Date.now()+{remaining_int}*1000;
+  var endMs={render_ms}+{remaining_int}*1000;
   function pad(n){{return n<10?'0'+n:''+n;}}
   function tick(){{
     var rem=Math.max(0, Math.floor((endMs-Date.now())/1000));
