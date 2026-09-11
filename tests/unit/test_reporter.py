@@ -188,25 +188,26 @@ def test_ranked_countdown_when_next_checkin_known():
     assert "Next check-in in" in out
 
 
-# --- Countdown embeds a render-time remainder, not an absolute target ------
+# --- Countdown embeds a render-anchored deadline, not a page-load anchor ----
 
-def test_honor_countdown_embeds_render_time_remainder(monkeypatch):
-    """The static report outlives its render instant, so the JS must count
-    down from page load ("N seconds left as of render"), not tick an absolute
-    epoch target against whatever clock happens to open the file."""
+def test_honor_countdown_embeds_render_anchored_deadline(monkeypatch):
+    """The report is a static file re-executed on every reload/meta-refresh,
+    so the deadline must be baked in at render time ("N seconds left as of
+    render"); anchoring it to the page-load clock would restart the countdown
+    on every reload."""
     monkeypatch.setattr("agent.reporter.time.time", lambda: 1030.0)
     out = render_report(_score(computed_at=1000.0), Mode.HONOR, None)
-    assert "endMs=Date.now()+30*1000" in out  # 60s honor interval - 30s since scoring
+    assert "endMs=1030000+30*1000" in out  # render instant + (60s interval - 30s since scoring)
     assert "targetMs" not in out
 
 
-def test_ranked_countdown_embeds_render_time_remainder(monkeypatch):
+def test_ranked_countdown_embeds_render_anchored_deadline(monkeypatch):
     """Ranked deadlines come from the engine's clock (server_time +
-    next_checkin_s); converting to a remainder at render keeps the box
-    browser's clock out of the math entirely."""
+    next_checkin_s); subtracting the render-time box clock absorbs any
+    engine/box skew, and the baked anchor is box-local like the browser's."""
     monkeypatch.setattr("agent.reporter.time.time", lambda: 1700000007.0)
     out = render_report(_score(), Mode.RANKED, 1700000000.0, next_checkin_s=123)
-    assert "endMs=Date.now()+116*1000" in out  # 123s - 7s since server confirmation
+    assert "endMs=1700000007000+116*1000" in out  # 123s - 7s since server confirmation
 
 
 def test_stale_render_reads_expired_at_load(monkeypatch):
@@ -215,7 +216,7 @@ def test_stale_render_reads_expired_at_load(monkeypatch):
     resurrect a countdown for a check-in that is already overdue."""
     monkeypatch.setattr("agent.reporter.time.time", lambda: 1700000300.0)
     out = render_report(_score(), Mode.RANKED, 1700000000.0, next_checkin_s=60)
-    assert "endMs=Date.now()+0*1000" in out
+    assert "endMs=1700000300000+0*1000" in out
 
 
 # --- Score-change banner (score_delta; the visual twin of the siren/chime) --
