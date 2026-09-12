@@ -458,3 +458,119 @@ def test_db_query_closed_port():
     assert ev.status == CollectorStatus.OK
     assert ev.raw["ok"] is False
     assert ev.raw["error"] is not None
+
+
+# --- command_json ------------------------------------------------------------
+
+from agent.checks.command_json import CommandJsonCheck
+from common.matchers import evaluate_matcher
+
+
+def test_command_json_parses_json_document():
+    spec = make_spec("command_json", {"script": "echo '{\"policy\": \"DROP\"}'"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.OK
+    assert ev.raw == {"data": {"policy": "DROP"}, "text": '{"policy": "DROP"}'}
+
+
+def test_command_json_scalar_output():
+    spec = make_spec("command_json", {"script": "echo true"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.OK
+    assert ev.raw["data"] is True
+
+
+def test_command_json_no_output_errors():
+    spec = make_spec("command_json", {"script": "true"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "no output" in ev.reason
+
+
+def test_command_json_non_json_output_errors():
+    spec = make_spec("command_json", {"script": "echo 'Chain INPUT (policy ACCEPT)'"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "not a JSON document" in ev.reason
+
+
+def test_command_json_nonzero_rc_without_output_errors():
+    spec = make_spec("command_json", {"script": "echo boom >&2; exit 3"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "exited 3" in ev.reason
+
+
+def test_command_json_nonzero_rc_with_output_still_parses():
+    # Mirrors powershell_json: a nonzero rc is not fatal while there is
+    # stdout to parse (tools chatter to stderr on success paths).
+    spec = make_spec("command_json", {"script": "echo '[1, 2]'; exit 1"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.OK
+    assert ev.raw["data"] == [1, 2]
+
+
+def test_command_json_timeout_errors(monkeypatch):
+    import subprocess as _subprocess
+
+    def _hang(*args, **kwargs):
+        raise _subprocess.TimeoutExpired(cmd="sh", timeout=1)
+
+    monkeypatch.setattr("agent.checks.command_json.subprocess.run", _hang)
+    spec = make_spec("command_json", {"script": "while true; do :; done"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "exceeded" in ev.reason
+
+
+def test_command_json_missing_script_param_returns_clear_error():
+    spec = make_spec("command_json", {})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "missing required 'script'" in ev.reason
+
+
+def test_command_json_non_numeric_timeout_s_errors():
+    spec = make_spec("command_json", {"script": "echo '{}'", "timeout_s": "soon"})
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "non-numeric 'timeout_s'" in ev.reason
+
+
+def test_command_json_windows_platform_errors(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("subprocess must not run on win32")
+
+    monkeypatch.setattr("agent.checks.command_json.subprocess.run", _fail)
+    spec = make_spec("command_json", {"script": "echo '{}'"} )
+    ev = CommandJsonCheck().collect(spec, None)
+    assert_well_formed(ev)
+    assert ev.status == CollectorStatus.ERROR
+    assert "powershell_json" in ev.reason
+
+
+def test_command_json_evidence_scores_through_matcher():
+    # The scoring path: a flat scalar under raw["data"] matched by the
+    # equals matcher, exactly how authored command_json checks score.
+    spec = make_spec("command_json", {"script": "echo '\"DROP\"'"})
+    ev = CommandJsonCheck().collect(spec, None)
+    passed, reason = evaluate_matcher(
+        {"tag": "equals", "field": "data", "value": "DROP"}, ev.raw
+    )
+    assert passed, reason
+
+    passed, _ = evaluate_matcher(
+        {"tag": "regex", "field": "text", "pattern": "DROP"}, ev.raw
+    )
+    assert passed
