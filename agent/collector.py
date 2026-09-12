@@ -11,6 +11,7 @@ from common.schema import CheckSpec, CollectorStatus, Evidence
 _LATE_GRACE_S = 2.0
 
 # Populate CHECKS registry via decorator side-effects.
+import agent.checks.command_json  # noqa: F401
 import agent.checks.db_query  # noqa: F401
 import agent.checks.file_regex  # noqa: F401
 import agent.checks.forensics  # noqa: F401

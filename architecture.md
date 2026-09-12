@@ -338,8 +338,9 @@ class Check(ABC):
 | `http_uptime` | GET against localhost (stdlib `http.client`) | `{status: int\|null, body_match: bool, error: str\|null}` | SLA-capable |
 | `db_query` | runs a fixed test query on a local socket | `{ok: bool, error: str\|null}` | SLA-capable; DB driver must remain optional/stdlib-friendly — if a pure-Python driver is unavailable for a given DB, this check degrades to a socket-connect probe |
 | `forensics_answer` | reads the team-editable answers file, extracts one question's `Answer:` line | `{answer: str}` | empty string = unanswered/blank; scored via the `answer_equals` matcher (§6.4) |
+| `command_json` | runs a read-only POSIX `/bin/sh -c` script that must emit one JSON document on stdout | `{data: <parsed JSON\|null>, text: str}` | POSIX counterpart to `powershell_json`: live firewall state, listening sockets, sysctl; non-JSON/empty/failed output is ERROR evidence (fails closed) |
 
-Each check type's evidence schema is fixed and documented alongside its module.
+Each check type's evidence schema is fixed and documented alongside its module. Two further types are Windows-only and documented in their modules: `powershell_json` (read-only script → one JSON document) and `registry_value` (winreg read).
 
 ### 9.3 Platform Abstraction Layer (`agent/platform/`)
 
