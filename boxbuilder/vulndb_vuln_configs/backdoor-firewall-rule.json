@@ -1,0 +1,10 @@
+{
+  "name": "backdoor-firewall-rule",
+  "description": "Practice-box misconfiguration: adds an attacker-style iptables INPUT ACCEPT rule for an outside source IP on a TCP management port, both to the live ruleset and persisted to /etc/iptables/rules.v4. The live rule is what the paired command_json check scores (hardened = source IP absent from the whole ruleset and rules.v4); the persisted file doubles as the forensics breadcrumb. Vars: SOURCE_IP (required), DST_PORT (required). Use an RFC 5737 TEST-NET address so the planted rule can never actually admit traffic.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\n# backdoor-firewall-rule -- plants an attacker-style firewall allowlist rule:\n# an ACCEPT for an outside source IP on a management port, added to the LIVE\n# iptables ruleset AND persisted to /etc/iptables/rules.v4 (so it survives a\n# reboot once netfilter-persistent/iptables-persistent is installed, and so\n# the persisted file is a forensics artifact even before that).\n#\n# Vars: SOURCE_IP (required, e.g. the attacker's documentation-ONLY address);\n# DST_PORT (required). Idempotent: -C guards the live rule and the rules.v4\n# write is a fixed fresh file. NOTE: writing rules.v4 fresh is intentional --\n# practice boxes plant this before teams touch the box; never run it on a box\n# whose rules.v4 you care about.\nset -eu\n\n: \"${SOURCE_IP:?SOURCE_IP is required}\"\n: \"${DST_PORT:?DST_PORT is required}\"\n\nif ! iptables -C INPUT -p tcp -s \"$SOURCE_IP\" --dport \"$DST_PORT\" -j ACCEPT 2>/dev/null; then\n    iptables -A INPUT -p tcp -s \"$SOURCE_IP\" --dport \"$DST_PORT\" -j ACCEPT\nfi\n\nmkdir -p /etc/iptables\ncat > /etc/iptables/rules.v4 <<RULES\n*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\n-A INPUT -p tcp -s $SOURCE_IP --dport $DST_PORT -j ACCEPT\nCOMMIT\nRULES\n",
+  "depends_on": []
+}

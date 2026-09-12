@@ -1,0 +1,470 @@
+# Opochtli Landing Port Authority: a harbor-themed hardening box built around
+# HOST-BASED FIREWALLS (netfilter/ufw/iptables, CCDC-style techniques), the
+# third in the series after chocolate-factory and Coyolxauhqui Ridge Solar
+# Observatory (the repo itself is Huitzilopochtli -- Opochtli is their sibling,
+# god of fishing, which is why the harbor fits). The theme is flavor only; every
+# task is solvable from ordinary Linux evidence. Companion to the pfSense /
+# host-firewall workshop: the box makes students DO what the talk showed --
+# read `iptables-save`, enable and default-deny a firewall with ufw (or raw
+# iptables; every live-state check accepts either path), persist rules, tune
+# sysctl anti-spoofing, and hunt processes that never listen on a port.
+#
+# Scoring is DIFFICULTY-WEIGHTED (CyberPatriot-style; prior boxes used flat
+# 10-point checks). Same shape, but the tier carries the points:
+#   EASY     5 pts  x  8 checks =  40
+#   MODERATE 10 pts x 12 checks = 120
+#   HARD     20 pts x  6 checks = 120
+#   checks total                    = 280
+#   forensics (5, tiered 5/5/10/10/20) = 50
+#   GRAND TOTAL                     = 330
+# tests/unit/test_boxbuilder_opochtli_landing.py asserts this ledger.
+#
+# Firewall checks are path-agnostic by design: each command_json script scans
+# the LIVE ruleset signatures (iptables-save first, then nft, then the ufw
+# config files), so a team that hardens with ufw and a team that writes raw
+# iptables both score. All command_json scripts are read-only and emit exactly
+# one JSON scalar, matched via {field: data}.
+#
+# Two attacker artifacts anchor the malicious angle, and they teach opposite
+# lessons:
+#   - docking-agent.service: a python payload LISTENING on 0.0.0.0:31337 --
+#     visible in `ss -tlnp`, scored by the usual process_state +
+#     service_state pair (kill the process, disable the launcher).
+#   - cache-prune.service (raw-socket-beacon): a compiled C beacon that forges
+#     SYN packets toward 203.0.113.66:8443 (RFC 5737 TEST-NET-3 -- unroutable
+#     in practice) and LISTENS ON NO PORT. `ss`/port scans never show it; the
+#     journal is silenced; the cmdline leaks nothing (the C2 is compiled in).
+#     Finding it is a HARD process-review exercise (ps aux, systemctl
+#     list-units --type=service, /proc/net/raw) and the C2 address is a
+#     forensics question (strings on the binary, or a packet capture).
+# The attacker's backdoor-firewall-rule plant (ACCEPT from 198.51.100.77,
+# TEST-NET-2) ties the story together: read your ACTUAL ruleset.
+
+scenario:
+  name: "Opochtli Landing Port Authority"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # Difficulty spread, called out explicitly here (and in the in-box README) so
+  # a self-paced beginner can tell what to try first:
+  #   EASY (8):     ufw_installed, firewall_enforcing, beacon_port_quiet,
+  #                 no_stevedore, no_nightwatch, ssh_no_root,
+  #                 manifest_private, pilot_key_private
+  #   MODERATE (12): default_deny_incoming, established_related_allowed,
+  #                 loopback_allowed, ssh_rate_limited, rules_persist_reboot,
+  #                 rp_filter_on, pilot_house_reachable, docking_agent_killed,
+  #                 docking_agent_disabled, cranelift_no_shell,
+  #                 harbormaster_sole_admin, no_planted_pilot_key
+  #   HARD (6):     ssh_office_subnet_only, syncookies_redirects,
+  #                 backdoor_rule_removed, no_passwordless_sudo,
+  #                 beacon_killed, beacon_disabled
+
+  # --- the firewall itself ----------------------------------------------
+  - id: ufw_installed
+    type: package
+    category: vuln
+    display: "EASY: A host firewall package is installed (ufw)"
+    max_points: 5
+    collect:
+      package: ufw
+    expect:
+      equals: true
+      field: installed
+      points: 5
+
+  - id: firewall_enforcing
+    type: command_json
+    category: vuln
+    display: "EASY: The host firewall is active and enforcing (ufw enabled, or a default-drop INPUT policy)"
+    max_points: 5
+    collect:
+      script: |
+        ufw status 2>/dev/null | grep -q 'Status: active' && { echo true; exit 0; }
+        iptables -S INPUT 2>/dev/null | grep -q -- '-P INPUT DROP' && { echo true; exit 0; }
+        nft list ruleset 2>/dev/null | grep -Eq 'hook input.*policy drop' && { echo true; exit 0; }
+        echo false
+    expect:
+      equals: true
+      field: data
+      points: 5
+
+  - id: default_deny_incoming
+    type: command_json
+    category: vuln
+    display: "MODERATE: Default-deny on incoming traffic (INPUT policy DROP / ufw default deny incoming)"
+    max_points: 10
+    collect:
+      script: |
+        iptables -S INPUT 2>/dev/null | head -1 | grep -q -- '-P INPUT DROP' && { echo '"DROP"'; exit 0; }
+        nft list ruleset 2>/dev/null | grep -Eq 'hook input.*policy drop' && { echo '"DROP"'; exit 0; }
+        grep -q '^DEFAULT_INPUT_POLICY="DROP"' /etc/default/ufw 2>/dev/null && { echo '"DROP"'; exit 0; }
+        echo '"ACCEPT"'
+    expect:
+      equals: "DROP"
+      field: data
+      points: 10
+
+  - id: established_related_allowed
+    type: command_json
+    category: vuln
+    display: "MODERATE: Established/related connections are accepted (the rule that keeps the harbor open once you are in)"
+    max_points: 10
+    collect:
+      script: |
+        iptables-save 2>/dev/null | grep -qE 'ESTABLISHED,RELATED' && { echo true; exit 0; }
+        nft list ruleset 2>/dev/null | grep -qi 'established,related' && { echo true; exit 0; }
+        echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: loopback_allowed
+    type: command_json
+    category: vuln
+    display: "MODERATE: Loopback traffic is accepted (a default-drop policy without a -i lo rule breaks the box itself)"
+    max_points: 10
+    collect:
+      script: |
+        iptables-save 2>/dev/null | grep -qE ' -i lo -j ACCEPT' && { echo true; exit 0; }
+        nft list ruleset 2>/dev/null | grep -qiE 'iif(name)? "?lo"? .*accept' && { echo true; exit 0; }
+        echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: ssh_rate_limited
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH is rate-limited (ufw limit 22/tcp, or a recent/limit/hashlimit rule on port 22)"
+    max_points: 10
+    collect:
+      script: |
+        iptables-save 2>/dev/null | grep -E -- '--dports? 22( |$)' | grep -qE 'recent|hashlimit|--limit' && { echo true; exit 0; }
+        nft list ruleset 2>/dev/null | grep -E 'tcp dport 22' | grep -qiE 'limit rate|meter' && { echo true; exit 0; }
+        echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: rules_persist_reboot
+    type: command_json
+    category: vuln
+    display: "MODERATE: The firewall comes back after a reboot (ufw enabled, or netfilter-persistent/iptables-persistent)"
+    max_points: 10
+    collect:
+      script: |
+        systemctl is-enabled ufw >/dev/null 2>&1 && { echo true; exit 0; }
+        systemctl is-enabled netfilter-persistent >/dev/null 2>&1 && { echo true; exit 0; }
+        echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: ssh_office_subnet_only
+    type: command_json
+    category: vuln
+    display: "HARD: SSH is allowed from the harbor office subnet (10.0.0.0/24) -- and nowhere else"
+    max_points: 20
+    collect:
+      script: |
+        iptables-save 2>/dev/null | grep -E -- '--dports? 22( |$)' | grep -q -- '-s 10.0.0.0/24' && { echo true; exit 0; }
+        nft list ruleset 2>/dev/null | grep -qE 'ip saddr 10\.0\.0\.0/24.*tcp dport 22' && { echo true; exit 0; }
+        echo false
+    expect:
+      equals: true
+      field: data
+      points: 20
+
+  - id: pilot_house_reachable
+    type: db_query
+    category: vuln
+    display: "MODERATE: The pilot house can still get in -- SSH answers on localhost (never lock yourself out)"
+    max_points: 10
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: ok
+      points: 10
+
+  - id: rp_filter_on
+    type: command_json
+    category: vuln
+    display: "MODERATE: Anti-spoofing rp_filter is on (net.ipv4.conf.{all,default}.rp_filter >= 1)"
+    max_points: 10
+    collect:
+      script: |
+        a=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null || echo 0)
+        d=$(sysctl -n net.ipv4.conf.default.rp_filter 2>/dev/null || echo 0)
+        [ "${a:-0}" -ge 1 ] && [ "${d:-0}" -ge 1 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: syncookies_redirects
+    type: command_json
+    category: vuln
+    display: "HARD: SYN floods blunted and ICMP redirects refused (tcp_syncookies=1 and conf.all.accept_redirects=0)"
+    max_points: 20
+    collect:
+      script: |
+        s=$(sysctl -n net.ipv4.tcp_syncookies 2>/dev/null || echo 0)
+        r=$(sysctl -n net.ipv4.conf.all.accept_redirects 2>/dev/null || echo 1)
+        [ "${s:-0}" -ge 1 ] && [ "${r:-0}" -eq 0 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 20
+
+  - id: backdoor_rule_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The attacker's backdoor firewall rule is gone -- from the live ruleset AND the persisted rules file (read `iptables-save`, not just the ufw app list)"
+    max_points: 20
+    collect:
+      script: |
+        iptables-save 2>/dev/null | grep -q '198.51.100.77' && { echo false; exit 0; }
+        nft list ruleset 2>/dev/null | grep -q '198.51.100.77' && { echo false; exit 0; }
+        grep -q '198.51.100.77' /etc/iptables/rules.v4 2>/dev/null && { echo false; exit 0; }
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+
+  # --- the rogue listener (visible the usual way) ------------------------
+  - id: beacon_port_quiet
+    type: command_json
+    category: vuln
+    display: "EASY: Nothing is listening on TCP 31337 (the rogue docking-agent's berth) -- `ss -tlnp` is your friend"
+    max_points: 5
+    collect:
+      script: |
+        ss -tln 2>/dev/null | awk 'NR>1 {print $4}' | grep -qE ':31337$' && { echo false; exit 0; }
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+
+  - id: docking_agent_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: No rogue docking-agent process is running (`ps aux`, then stop it -- the unit respawns until disabled)"
+    max_points: 10
+    collect:
+      pattern: '(?i)libexec/docking-agent'
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: docking_agent_disabled
+    type: service_state
+    category: vuln
+    display: "MODERATE: The rogue docking-agent service is disabled"
+    max_points: 10
+    collect:
+      service: docking-agent.service
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  # --- the raw-socket beacon (invisible to port scans) -------------------
+  # The beacon listens on NO port and its cmdline/journal leak nothing: the
+  # C2 destination is compiled into the binary. `ss -tlnp` will not find it.
+  # Hunt it as a process: `ps aux`, `systemctl list-units --type=service`,
+  # or watch for the periodic forged SYNs (`/proc/net/raw`, a capture).
+
+  - id: beacon_killed
+    type: process_state
+    category: vuln
+    display: "HARD: The hidden C2 beacon is gone -- it listens on no port, so port scans never see it; review every running process instead"
+    max_points: 20
+    collect:
+      pattern: '(?i)libexec/\.cache-refresh'
+    expect:
+      equals: false
+      field: running
+      points: 20
+
+  - id: beacon_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: The beacon's launcher is disabled (its unit is named like a cache tidy-up job)"
+    max_points: 20
+    collect:
+      service: cache-prune.service
+    expect:
+      equals: false
+      field: enabled
+      points: 20
+
+  # --- accounts and administration ---------------------------------------
+  - id: no_stevedore
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'stevedore' account is removed (shows as a login tile on the greeter)"
+    max_points: 5
+    collect: {}
+    expect:
+      user_absent: true
+      username: stevedore
+      points: 5
+
+  - id: no_nightwatch
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'nightwatch' account is removed (it was planted with a BLANK password)"
+    max_points: 5
+    collect: {}
+    expect:
+      user_absent: true
+      username: nightwatch
+      points: 5
+
+  - id: ssh_no_root
+    type: file_regex
+    category: vuln
+    display: "EASY: SSH root login is disabled (PermitRootLogin no in /etc/ssh/sshd_config)"
+    max_points: 5
+    collect:
+      path: /etc/ssh/sshd_config
+      extract: '(?im)^\s*PermitRootLogin\s+(\S+)'
+    expect:
+      equals: "no"
+      points: 5
+
+  - id: cranelift_no_shell
+    type: file_regex
+    category: vuln
+    display: "MODERATE: The cranelift service account has no login shell (restore its nologin)"
+    max_points: 10
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^cranelift:[^:]*:[0-9]+:[0-9]+:[^:]*:[^:]*:(\S+)$'
+    expect:
+      regex: "nologin$"
+      field: matched
+      points: 10
+
+  - id: harbormaster_sole_admin
+    type: user_group
+    category: vuln
+    display: "MODERATE: harbormaster is the only sudo-capable account"
+    max_points: 10
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: sudo
+      allowed: ["harbormaster"]
+      points: 10
+
+  - id: no_passwordless_sudo
+    type: permission
+    category: vuln
+    display: "HARD: No passwordless-sudo drop-in for harbormaster (/etc/sudoers.d/00-harbor-nopasswd removed)"
+    max_points: 20
+    collect:
+      path: /etc/sudoers.d/00-harbor-nopasswd
+    expect:
+      equals: false
+      field: exists
+      points: 20
+
+  # --- files and keys -----------------------------------------------------
+  - id: manifest_private
+    type: permission
+    category: vuln
+    display: "EASY: The cargo master manifest is not world-writable (/opt/harbor/manifests/master-manifest.txt)"
+    max_points: 5
+    collect:
+      path: /opt/harbor/manifests/master-manifest.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 5
+
+  - id: pilot_key_private
+    type: permission
+    category: vuln
+    display: "EASY: The pilot's deployment key is private (~harbormaster/.ssh/id_rsa)"
+    max_points: 5
+    collect:
+      path: /home/harbormaster/.ssh/id_rsa
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0600"
+      points: 5
+
+  - id: no_planted_pilot_key
+    type: file_regex
+    category: vuln
+    display: "MODERATE: No attacker-planted key in harbormaster's authorized_keys"
+    max_points: 10
+    collect:
+      path: /home/harbormaster/.ssh/authorized_keys
+      extract: '(?i)(harbor-pilot-key)'
+    expect:
+      equals: null
+      points: 10
+
+theme:
+  title: "Opochtli Landing Port Authority"
+  organization: "Harbor Systems Hardening Program"
+  accent: "#0E5A6D"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  motd: |
+    Welcome to Opochtli Landing Port Authority.
+    This is a protected system, unauthorized access will be prosecuted.
+  issue: |
+    Opochtli Landing Port Authority System
+    Disconnect if you are unauthorized.
+  desktop_shortcuts:
+    # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
+    # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
+    # launches it (GLib's desktop-entry parsing does quote-removal, not
+    # tilde/variable expansion).
+    - name: "Harbor Hardening Handbook"
+      exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt on the Desktop; the agent re-grades the file each
+# pass. Correct answer = full points; wrong or blank = nothing, no penalty.
+# Each question is answerable from the evidence on the box. Points are
+# difficulty-weighted like the checks.
+forensics:
+  - id: fq-key-comment
+    question: "An SSH public key in harbormaster's authorized_keys was planted by an attacker. Type the comment/label written at the end of that key line."
+    answer: "harbor-pilot-key"
+    points: 5
+  - id: fq-docking-unit
+    question: "A service is named like legitimate dock software but is actually a rogue network listener. What is its unit filename?"
+    answer: "docking-agent.service"
+    answers: ["docking-agent"]
+    points: 5
+  - id: fq-docking-port
+    question: "The rogue docking-agent service listens on a TCP port. Which port number?"
+    answer: "31337"
+    points: 10
+  - id: fq-c2-destination
+    question: "A hidden beacon process sends forged packets to an outside C2 address. Type that destination IP address. (It listens on no port -- find the process, then interrogate it: strings on its binary or a packet capture.)"
+    answer: "203.0.113.66"
+    points: 10
+  - id: fq-backdoor-source
+    question: "The attacker left a firewall rule accepting traffic from an unauthorized outside source. Type that source IP address. (Check the live ruleset AND the persisted rules file.)"
+    answer: "198.51.100.77"
+    points: 20
