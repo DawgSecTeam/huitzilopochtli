@@ -9,6 +9,7 @@
       "user": "REPLACED-BY-PROVIDER",
       "password": "REPLACED-BY-PROVIDER",
       "configurations": [
+        "ufw-removed",
         {
           "name": "insecure-file-mode",
           "vars": {
@@ -35,19 +36,33 @@
         },
         {
           "name": "local-user",
-          "vars": { "USERNAME": "stevedore", "PASSWORD": "Dockhand2024!" }
+          "vars": {
+            "USERNAME": "stevedore",
+            "PASSWORD": "Dockhand2024!",
+            "GROUPS_ADD": "sudo"
+          }
         },
         {
           "name": "local-user",
-          "vars": { "USERNAME": "nightwatch", "PASSWORD": "" }
+          "vars": {
+            "USERNAME": "nightwatch",
+            "PASSWORD": ""
+          }
         },
         {
           "name": "user-login-shell",
-          "vars": { "USERNAME": "cranelift", "LOGIN_SHELL": "/bin/bash", "SYSTEM": "1" }
+          "vars": {
+            "USERNAME": "cranelift",
+            "LOGIN_SHELL": "/bin/bash",
+            "SYSTEM": "1"
+          }
         },
         {
           "name": "user-sudo-nopasswd",
-          "vars": { "USERNAME": "harbormaster", "DROPIN_NAME": "00-harbor-nopasswd" }
+          "vars": {
+            "USERNAME": "harbormaster",
+            "DROPIN_NAME": "00-harbor-nopasswd"
+          }
         },
         {
           "name": "systemd-service",

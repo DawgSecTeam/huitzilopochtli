@@ -1,0 +1,10 @@
+{
+  "name": "ufw-removed",
+  "description": "Practice-box misconfiguration: purges ufw from the box (apt-get remove --purge), so the paired 'host firewall installed' check scores real work (installing ufw) instead of passing free on images that ship it, and so no stale /etc/default/ufw DEFAULT_INPUT_POLICY satisfies a default-deny check on an INACTIVE firewall. Teams reinstall ufw (or write raw iptables). Best-effort: exits 0 even when ufw is absent. Idempotent.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -u\n\nif dpkg -s ufw >/dev/null 2>&1; then\n    systemctl stop ufw 2>/dev/null || true\n    systemctl disable ufw 2>/dev/null || true\n    apt-get remove -y --purge ufw >/dev/null 2>&1 || apt-get remove -y ufw >/dev/null 2>&1 || true\nfi\nif command -v ufw >/dev/null 2>&1; then\n    echo \"[ufw-removed] ufw still present after purge\" >&2\nfi\nexit 0\n",
+  "depends_on": []
+}

@@ -73,6 +73,15 @@ def test_opochtli_difficulty_tiers_match_points():
     """The box's signature change: display tier prefix, max_points, and
     expect.points must all agree (EASY=5, MODERATE=10, HARD=20)."""
     for check in _load_scenario()["checks"]:
+        if check["category"] != "vuln":
+            # penalty/prohibited checks don't carry a positive tier
+            assert check["display"].startswith("PENALTY:"), (
+                f"{check['id']}: non-vuln check must say PENALTY"
+            )
+            assert check["expect"]["points"] < 0, (
+                f"{check['id']}: penalty points must be negative"
+            )
+            continue
         match = re.match(r"^(EASY|MODERATE|HARD):", check["display"])
         assert match, f"{check['id']}: display must start with a tier prefix"
         tier = match.group(1)
@@ -133,6 +142,7 @@ def test_opochtli_box_and_nakon_inputs_resolve():
     for name in (
         "user-login-shell", "user-sudo-nopasswd", "systemd-service",
         "raw-socket-beacon", "backdoor-firewall-rule", "ssh-root-login",
+        "ufw-removed",
     ):
         assert name in names
 
