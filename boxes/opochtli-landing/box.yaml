@@ -1,12 +1,20 @@
 # Xubuntu XFCE VM connection details: opochtli-landing-01, a full clone of the
-# "opochtli-landing-template" (Proxmox vmid 121 as of 2026-09-13, sealed from a
-# full clone of the "xubuntu-vnc" template, vmid 119). The candidate round for
-# 121 hit the node-wide qemu-guest-agent breakage (agents dead on every VM for
-# ~a day; a first-boot unattended-upgrade pull installs a matching qga and the
-# agent comes back after a reboot) and heavy-node IO stalls that made agent
-# runs hang in D-state for minutes -- if a report looks stale, check the
-# agent service's MainPID state before suspecting the manifest. The sealed
-# image carries the UPDATED qemu-guest-agent (the upgrade survives the seal).
+# "opochtli-landing-template" (Proxmox vmid 135 as of 2026-09-13, sealed from a
+# full clone of the "xubuntu-vnc" template, vmid 119). Template history: the
+# first seal (vmid 121) shipped two prep-order defects -- the stock `sysadmin`
+# account still present (it stole the forensics answers file from harbormaster)
+# and no LightDM autologin session -- caught by a post-seal spot-check clone,
+# so 121 was destroyed and the corrected image was re-sealed as 135 from that
+# spot-check clone. Lesson: a pre-deploy-clean snapshot only covers the
+# DEPLOY cycle; any prep steps done after it (account surgery, display fix)
+# are NOT in the rollback, so spot-check a fresh clone of the sealed template
+# before calling a round done. The candidate rounds hit the node-wide
+# qemu-guest-agent breakage (agents dead on every VM for ~a day; a first-boot
+# unattended-upgrade pull installs a matching qga and the agent comes back
+# after a reboot) and heavy-node IO stalls that made agent runs hang in
+# D-state for minutes -- if a report looks stale, check the agent service's
+# MainPID state before suspecting the manifest. The sealed image carries the
+# UPDATED qemu-guest-agent (the upgrade survives the seal).
 #
 # This box ships neither `ubuntu` nor `sysadmin`: template prep created a
 # sudo-capable `harbormaster` account (the LightDM/desktop autologin, and the
