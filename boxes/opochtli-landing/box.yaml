@@ -1,23 +1,33 @@
 # Xubuntu XFCE VM connection details: opochtli-landing-01, a full clone of the
-# "opochtli-landing-template" (Proxmox vmid TBD as of 2026-09, sealed from a
-# full clone of the "xubuntu-vnc" template, vmid 119 -- the same base the
-# solar-observatory template lineage uses). This box ships neither `ubuntu` nor
-# `sysadmin`: template prep created a sudo-capable `harbormaster` account (the
-# LightDM/desktop autologin, and the account boxbuilder's ssh provider connects
-# as) and removed the stock `sysadmin` account. The xubuntu-vnc display fix
+# "opochtli-landing-template" (Proxmox vmid 121 as of 2026-09-13, sealed from a
+# full clone of the "xubuntu-vnc" template, vmid 119). The candidate round for
+# 121 hit the node-wide qemu-guest-agent breakage (agents dead on every VM for
+# ~a day; a first-boot unattended-upgrade pull installs a matching qga and the
+# agent comes back after a reboot) and heavy-node IO stalls that made agent
+# runs hang in D-state for minutes -- if a report looks stale, check the
+# agent service's MainPID state before suspecting the manifest. The sealed
+# image carries the UPDATED qemu-guest-agent (the upgrade survives the seal).
+#
+# This box ships neither `ubuntu` nor `sysadmin`: template prep created a
+# sudo-capable `harbormaster` account (the LightDM/desktop autologin, and the
+# account boxbuilder's ssh provider connects as) and removed the stock
+# `sysadmin` account. The xubuntu-vnc display fix
 # (boxes/shared/fix-xubuntu-vnc-display.sh) was run with `harbormaster` as the
 # login-user argument before sealing (twice: once to lay down the autologin
 # config, again after the autologin session was live so the xfconf writes hit
 # the real session bus), and /etc/machine-id was wiped empty immediately
 # before `qm template`.
 #
-# Firewall-box notes: ufw is expected to be present on the base image but
-# INACTIVE (stock Ubuntu behavior) -- the insecure baseline is "no host
-# firewall", so nothing plants it. iptables-persistent is deliberately NOT
-# preinstalled (installing it is part of the rules_persist_reboot exercise for
-# raw-iptables teams). The planted raw-socket beacon requires CAP_NET_RAW and
-# runs as root from its unit; its C2 destination is an RFC 5737 TEST-NET
-# address that dies at the default gateway.
+# Firewall-box notes: the plant PURGES ufw (boxbuilder/vulndb_vuln_configs/
+# ufw-removed.json) so installing it is the first scored finding, and it
+# plants an attacker backdoor iptables rule (TEST-NET-2 source, live +
+# /etc/iptables/rules.v4) plus a raw-socket C2 beacon (cache-prune.service,
+# TEST-NET-3 destination baked into the binary, listens on NO port) and a
+# docking-agent TCP listener on 31337. iptables-persistent is deliberately
+# NOT preinstalled. The template's net0 is untrustedbr,firewall=1 (guests
+# DHCP 192.168.100.0/24 behind untrusted-gateway); for a build round,
+# stop the clone and rebridge it to vmbr0 (PUT net0=model=virtio,bridge=vmbr0,
+# firewall=0) so the dev host can reach it, then rebridge before re-sealing.
 #
 # provider.host below is whatever IP this specific example clone happens to
 # get from DHCP at build time -- it WILL go stale once that clone is
@@ -29,7 +39,7 @@ scenario: scenario.yaml
 nakon_config: nakon.json
 provider:
   name: ssh
-  host: 10.0.0.11
+  host: 10.0.0.126
   port: 22
   user: harbormaster
   password: harbormaster
