@@ -291,45 +291,93 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # --- build the on-box file set + agent_config.json per mode ---
         from boxbuilder import artifacts as artifacts_mod
         scenario_name = compile_result.get("scenario_name") or spec.scenario["scenario"]["name"]
+        # The target OS decides the install layout (paths, seal, init unit).
+        # SshHandle sets os_name at connect; fake providers in tests default
+        # to the historical POSIX behavior.
+        os_name = getattr(handle, "os_name", None) or "posix"
         agent_cfg = artifacts_mod.agent_config_dict(
             scenario_name=scenario_name, mode=mode,
             engine_url=(resolved_engine_url if mode == "ranked" else None),
             checkin_interval_s=(checkin_interval_s if mode == "ranked" else None),
             enrollment_token=enrollment_token,
+            os_name=os_name,
         )
-        files = artifacts_mod.on_box_files(compile_result, mode, agent_cfg)
+        files = artifacts_mod.on_box_files(compile_result, mode, agent_cfg,
+                                           os_name=os_name)
+        install_dir = artifacts_mod.install_dir_for(os_name)
 
         # --- place files ---
         log(f"[boxbuilder] installing agent ({mode}) on {handle.name} ({handle.addr})")
-        # Ensure the install dir exists first. It is created root-owned (via
-        # sudo); if the connecting user is not root, hand the dir to them so the
-        # SFTP puts below succeed (SFTP runs as the SSH user, not via sudo).
-        mk = handle.run(f"mkdir -p {artifacts_mod.INSTALL_DIR}")
-        if not mk.ok:
-            raise RuntimeError(f"could not create {artifacts_mod.INSTALL_DIR}: {mk.stderr.strip()}")
-        if getattr(handle, "user", "root") != "root":
-            ids = handle.run("id -u; id -g", sudo=False)
-            parts = ids.stdout.split()
-            if not ids.ok or len(parts) < 2:
-                raise RuntimeError(
-                    f"could not determine uid:gid for {handle.user} on {handle.addr}; "
-                    f"cannot make {artifacts_mod.INSTALL_DIR} writable"
-                )
-            ch = handle.run(f"chown {parts[0]}:{parts[1]} {artifacts_mod.INSTALL_DIR}")
-            if not ch.ok:
-                raise RuntimeError(
-                    f"could not chown {artifacts_mod.INSTALL_DIR} to {parts[0]}:{parts[1]}: "
-                    f"{ch.stderr.strip()}"
-                )
+        # Ensure the install dir exists first. On POSIX it is created
+        # root-owned (via sudo); if the connecting user is not root, hand the
+        # dir to them so the SFTP puts below succeed (SFTP runs as the SSH
+        # user, not via sudo). On Windows the dir is created directly (an SSH
+        # admin session carries the elevated token) and inherits usable ACLs.
+        if os_name == "windows":
+            mk = handle.run(f"powershell.exe -NoProfile -NonInteractive -Command "
+                            f"New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null")
+            if not mk.ok:
+                raise RuntimeError(f"could not create {install_dir}: {mk.stderr.strip()}")
+        else:
+            mk = handle.run(f"mkdir -p {install_dir}")
+            if not mk.ok:
+                raise RuntimeError(f"could not create {install_dir}: {mk.stderr.strip()}")
+            if getattr(handle, "user", "root") != "root":
+                ids = handle.run("id -u; id -g", sudo=False)
+                parts = ids.stdout.split()
+                if not ids.ok or len(parts) < 2:
+                    raise RuntimeError(
+                        f"could not determine uid:gid for {handle.user} on {handle.addr}; "
+                        f"cannot make {install_dir} writable"
+                    )
+                ch = handle.run(f"chown {parts[0]}:{parts[1]} {install_dir}")
+                if not ch.ok:
+                    raise RuntimeError(
+                        f"could not chown {install_dir} to {parts[0]}:{parts[1]}: "
+                        f"{ch.stderr.strip()}"
+                    )
+                # A previous install's files are root-owned (the seal) and
+                # SFTP cannot overwrite them; clear the dir before placement.
+                clean = handle.run(f"find {install_dir} -mindepth 1 -delete")
+                if not clean.ok:
+                    raise RuntimeError(
+                        f"could not clear stale files in {install_dir}: "
+                        f"{clean.stderr.strip()}"
+                    )
         placed = []
         for f in files:
             handle.put(f.local, f.remote, mode=f.mode)
             placed.append(f.remote)
-        log(f"[boxbuilder] placed {len(placed)} file(s) under {artifacts_mod.INSTALL_DIR}")
+        log(f"[boxbuilder] placed {len(placed)} file(s) under {install_dir}")
         # A score baseline left by a previous install (agent/notify.py) would
         # fire one spurious change alert on the new scenario's first grade;
         # a (re)install starts silent and baselines on first run.
-        handle.run(f"rm -f {artifacts_mod.INSTALL_DIR}/score_state.json")
+        rm_cmd = (
+            f"powershell.exe -NoProfile -NonInteractive -Command "
+            f"Remove-Item -Force -ErrorAction SilentlyContinue "
+            f"'{install_dir}\\score_state.json'"
+            if os_name == "windows"
+            else f"rm -f {install_dir}/score_state.json"
+        )
+        handle.run(rm_cmd)
+        # Seal the dir back to admins-only. POSIX: root:root 0700 (the SFTP
+        # puts above could only run as the SSH login user -- why the dir was
+        # chowned at the top -- so this must come after them). Windows:
+        # strip inheritance, grant only SYSTEM + Administrators. The agent
+        # runs as SYSTEM, so nothing at runtime needs looser ACLs; the seal
+        # keeps the answer key (.score.dat) and, in ranked mode,
+        # identity.json invisible to ordinary accounts on the box.
+        if os_name == "windows":
+            seal = handle.run(
+                f"icacls \"{install_dir}\" /inheritance:r "
+                f"/grant:r \"SYSTEM:(OI)(CI)F\" \"Administrators:(OI)(CI)F\""
+            )
+        else:
+            seal = handle.run(f"chown -R root:root {install_dir} "
+                              f"&& chmod 700 {install_dir}")
+        if not seal.ok:
+            raise RuntimeError(
+                f"could not seal {install_dir}: {seal.stderr.strip()}")
 
         # --- init unit ---
         if init_kind is None:
