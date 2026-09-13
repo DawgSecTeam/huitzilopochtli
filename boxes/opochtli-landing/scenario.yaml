@@ -113,7 +113,7 @@ checks:
     max_points: 10
     collect:
       script: |
-        iptables-save 2>/dev/null | grep -qE 'ESTABLISHED,RELATED' && { echo true; exit 0; }
+        iptables-save 2>/dev/null | grep -qiE 'ESTABLISHED,RELATED|RELATED,ESTABLISHED' && { echo true; exit 0; }
         nft list ruleset 2>/dev/null | grep -qi 'established,related' && { echo true; exit 0; }
         echo false
     expect:
