@@ -1,0 +1,10 @@
+{
+  "name": "theme-shortcuts-win",
+  "description": "Box theming (Windows): writes one .lnk shortcut named $SHORTCUT_NAME with target $SHORTCUT_EXEC onto C:\\Users\\Public\\Desktop (environment strings like %PUBLIC% are expanded). One shortcut per invocation -- nakon dedups by (name, vars) so each distinct pair runs once. Auto-created idempotently by boxbuilder/vulndb.py; do not hand-edit the name.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $SHORTCUT_NAME -or -not $SHORTCUT_EXEC) { Write-Output 'SHORTCUT_NAME/SHORTCUT_EXEC not set; nothing to do'; exit 0 }\n$desktop = Join-Path $env:PUBLIC 'Desktop'\nNew-Item -ItemType Directory -Force -Path $desktop | Out-Null\n$target = [Environment]::ExpandEnvironmentVariables($SHORTCUT_EXEC)\n$shell = New-Object -ComObject WScript.Shell\n$lnk = $shell.CreateShortcut((Join-Path $desktop ($SHORTCUT_NAME + '.lnk')))\n$lnk.TargetPath = $target\n$lnk.Save()\n",
+  "depends_on": []
+}

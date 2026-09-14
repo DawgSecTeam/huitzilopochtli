@@ -6,7 +6,8 @@
 How to roll a new `chocolate-factory-template` from the current one.
 No `qm`/`pvesh` on the dev host — all Proxmox ops go through the
 `proxmoxer` API using `tests/proxmox/.env` (same convention as
-`tests/proxmox/proxmox_helper.py`). SSH to the box works from here
+`tests/proxmox/proxmox_helper.py`). SSH to the box
+works from here
 (`ubuntu`/`ubuntu` once that account exists -- see the 108-round gotchas if
 cloning straight from xubuntu-vnc/119, which has no `ubuntu` account at
 all); only the Proxmox API port + guest agent are assumed. Where SSH isn't
@@ -14,6 +15,9 @@ usable yet (no `ubuntu` account, or password auth denied for another
 reason), the QEMU guest agent's own exec/file-write/file-read API works
 identically and needs no login credentials -- see
 `tests/proxmox/proxmox_helper.py`'s `guest_exec`/`guest_file_write`.
+This loop is Linux/xubuntu-shaped; for the Windows round's differences
+(cloning 903, qemu-ga limits, the VNC-console traps, schtasks/ProgramData
+layout, Windows seal notes) see the "Windows round" section at the bottom.
 
 ## 0. Preflight
 
@@ -62,6 +66,13 @@ python3 -m boxbuilder install --spec /tmp/choc.box.yaml --out /tmp/choc --json
 `plant` is idempotent — safe to re-run after a catalog/script fix without
 rolling back (done twice for 121: once for the initial deploy, once after
 the theme-readme catalog fix below).
+
+Re-deploying a box installed by a pre-2026-09-09 boxbuilder? The install
+now targets `/opt/.huitzilopochtli` (hidden, sealed 0700, rubric encoded
+as `.score.dat`); the old plain `/opt/huitzilopochtli` dir is left
+orphaned but inert — the re-installed systemd units point at the new dir.
+`rm -rf /opt/huitzilopochtli` on the candidate before sealing so the
+template ships without the stale answer key lying around in plaintext.
 
 ## 3. Verify (all must hold; reference: 121 @ 10.0.0.217)
 
@@ -172,3 +183,138 @@ fresh clone is needed.
    approval for a bundle this destructive/irreversible. Worked around by
    having the user run the same script directly (`!python3 <script>`)
    instead of Claude executing it.
+
+## Windows round (pinecrest-hospital, 2026-09-12/13) -- procedure differences + gotchas
+
+The first Windows round deploys a box from the team's windows templates.
+Template 903 (`workshop-template-windows`, Windows 10 Pro for Workstations
+22H2) was tried first and ABANDONED for headless builds: its clones have no
+SSH out of the box and the guest agent can't exec (gotcha 2), so there was no
+way in. The round actually sealed from `windows-server-fix` (vmid 953), which
+ships OpenSSH Server already -- bootstrap is just `agent/set-user-password`
+over the API, then SSH. The Proxmox `ostype` field says `win11`, which is
+only a hint. Everything in sections 0/2-4 above still applies (compile/plant/
+install are OS-agnostic once SSH exists); the differences are clone bring-up,
+prep, and the agent's on-box shape (schtasks instead of systemd,
+`C:\ProgramData\huitzilopochtli` instead of `/opt/.huitzilopochtli`, Public
+Desktop instead of `$HOME/Desktop`). Check types: `registry_value` +
+`powershell_json` are Windows-first; `user_group`/`process_state`/
+`service_state`/`file_regex`/`permission` all work with Windows collect
+params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
+(0 -> 360 -> 0 validated on the sealing VM before `qm template`).
+
+1. **Clone + rebridge.** Full-clone 903 like any template, then put the
+   clone on vmbr0 (903 ships on `untrustedbr,firewall=1`). Two API traps:
+   the `net0=virtio=BC:24:...` shorthand PUTs fail ("duplicate key ... model")
+   or silently drop the bridge when set on a RUNNING vm -- stop the VM, PUT
+   `net0=model=virtio,bridge=vmbr0,firewall=0`, verify the config reads back
+   with the bridge, then start. Task polling: read `status` ("running") and
+   `exitstatus` ("OK") from the task endpoint -- there is no `running` bool.
+   Also, `POST .../qemu/<vmid>/start` 404s on this PVE build; the route is
+   `POST .../qemu/<vmid>/status/start`. A 32G full clone takes ~35 min.
+2. **qemu-ga on Windows: what works and what's broken.** `set-user-password`
+   and `network-get-interfaces` work over the API and are the reliable
+   bootstrap (set `sysadmin`'s password with the former; get the DHCP IP with
+   the latter). **`guest-exec` is broken on this lineage**: every spawn
+   returns "Failed to execute child process (Invalid argument)" -- bare
+   `cmd`, absolute paths, forward slashes, after clean reboots, always. The
+   Linux habit of bootstrapping via `guest_exec` (see the 108-round gotcha)
+   does NOT transfer; don't burn an hour rediscovering this. If a Windows
+   clone ever needs headless exec again, the fix is host-side (`qm guest
+   exec` was proven on this very template per nakon's PROGRESS.md, so suspect
+   the API path + old virtio-win agent; upgrading qemu-ga in the template
+   would be the real fix). Note the agent process itself can die mid-session
+   -- after a failed exec storm it stopped answering until a full VM reboot.
+3. **PVE VNC console over the API is nearly unusable for automation; plan
+   around it.** `vncproxy` + `vncwebsocket` works (auth: the per-session
+   `password` from vncproxy answers the VNC challenge -- DES with each key
+   byte's bits REVERSED; the ws needs subprotocol `binary`), but the proxy
+   closes the session ~2-4s after the guest screen starts producing real
+   update volume (any logon-screen activity), and the console display blanks
+   itself after ~60s idle so screenshots read black. What works: input-only
+   "burst" connections (send keystrokes, close within ~0.7s, before the kill
+   lands -- the keys still reach the guest), and screenshots via
+   hextile-only encodings at 16bpp RGB565 in ~200-row band requests on fresh
+   connections (each response stays under the ~1.1MB where the proxy chokes;
+   raw 32bpp full-screen frames always die). The throwaway tooling lives in
+   `/home/hna/huitz-backups/2026-09-12-windows-box/` (`vnc.py`, `bridge.py`,
+   `gexec.py` -- not repo material). Lesson: don't build the round on console
+   automation; get SSH first.
+4. **OpenSSH bring-up (the prep step that must happen before boxbuilder).**
+   Once SSH exists, everything else is standard:
+   `Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0; Set-Service
+   sshd -StartupType Automatic; Start-Service sshd; New-NetFirewallRule -Name
+   sshdin -Enabled True -Direction Inbound -Protocol TCP -Action Allow
+   -LocalPort 22`. The firewall rule matters beyond prep: the box SCORES
+   "firewall enabled on all profiles", so after hardening the firewall comes
+   back on and the sshd rule is what keeps the build reachable. SSH sessions
+   for a local admin land elevated (no UAC filtering over sshd) -- the
+   elevated-token assumption boxbuilder's Windows provider path relies on.
+5. **Python on the box.** The ssh provider requires `python` on PATH and
+   cannot install it remotely (no apt on Windows). SFTP the python.org
+   installer and run it silently: `python-installer.exe /quiet
+   InstallAllUsers=1 PrependPath=1` (installer pre-staged in the backup dir).
+   Do this during template prep so clones inherit it -- NOT per-clone.
+6. **boxbuilder on a Windows target.** `provider:` is the same ssh provider
+   (no `os` key needed -- the provider detects Windows via `echo %OS%` over
+   the session); `nakon.json`'s machine needs `"os": "windows-*"` (any value
+   containing "win" routes nakon to its PowerShell deploy path and boxbuilder
+   to the `-win` theme seeds). plant runs nakon's Windows path (run.ps1,
+   per-step scripts, elevation from the SSH principal). install places the
+   agent in `C:\ProgramData\huitzilopochtli` (icacls-sealed to
+   SYSTEM+Administrators) and registers the `HuitzilopochtliAgent` scheduled
+   task (SYSTEM, at startup + every 5 min) -- that task IS the honor-mode
+   re-grade timer, the analog of the systemd timer pairing. Forensics: the
+   agent resolves the answers file to `C:\Users\Public\Desktop\
+   Forensics-Questions.txt` on Windows automatically (`_primary_desktop_dir`
+   has a win32 branch); an explicit `path:` in scenario.yaml still wins if
+   you prefer it spelled out.
+7. **Windows seal notes.** No `/etc/machine-id` equivalent to wipe (Windows
+   clones don't collide the way systemd boxes do); snapshot-delete before
+   `qm template` applies unchanged. The seed catalog ids for this round are
+   140-156 (`*-win` configs on vulndb 10.0.0.119); `nakon catalog check
+   --config boxes/pinecrest-hospital/nakon.json --json` must stay green, and
+   remember seeds are create-if-missing -- editing a repo seed does NOT
+   update the catalog row (same trap as gotcha #2 on the 121 round).
+8. **Never put a raw `powershell -Command "..."` one-liner over the ssh
+   provider.** Windows OpenSSH execs commands through cmd.exe, which strips
+   the inner double quotes -- the pipeline's very first Windows install
+   attempt died with `'Out-Null' is not recognized as an internal or
+   external command`. Everything PowerShell now routes through
+   `SshHandle.run_ps` (`-EncodedCommand`, base64 UTF-16LE -- nothing for
+   cmd to mangle, and errors promoted to exit 1 + stderr). If you add a
+   remote PowerShell step, use run_ps; never concatenate a quoted
+   `-Command` string.
+9. **The nakon PowerShell rc trailer bites twice over.** The trailer
+   (render_step_ps1) treats a non-empty `$Error` as failure even when the
+   step's real work succeeded: `Get-Service -ErrorAction SilentlyContinue`
+   on a not-yet-existing service records an error, and a plant step that
+   then creates that service fine still reports rc=1 (malicious-service-win
+   failed five rounds on exactly this). Use `-ErrorAction Ignore`, never
+   `SilentlyContinue`, in any `-win` seed script.
+10. **The 953 image's account APIs are inconsistent; know which one to
+   trust.** `Get-LocalUser`'s `.PasswordNeverExpires` reads NULL for every
+   account (a check keyed on it passes vacuously in ANY state) -- read
+   `Win32_UserAccount.PasswordExpires` over CIM instead (false = never
+   expires). `.PasswordRequired` is real but is NOT flipped by
+   `Set-LocalUser -Password`: on this image the fix path for the
+   blank-password vuln is `net user <u> /passwordreq:yes` (setting a
+   password alone leaves the flag false). And `net accounts` here prints
+   `Minimum password length:` WITHOUT the `(chars)` suffix other builds
+   use -- check regexes must tolerate both forms.
+11. **QEMU wedge recovery (no host shell needed).** Mid-round the sealing
+   VM went dark on the network while PVE still said "running"; QMP and qga
+   were both dead. `POST .../status/stop` still worked (~60s), the first
+   `status/start` failed with "timeout waiting on systemd", and the retry
+   started instantly with no disk-state loss. Don't reach for host SSH on
+   the first wedge -- stop/start through the API, and if start fails once,
+   just fire it again.
+12. **The plant does not restore image-default state on revert.** After the
+   harden->revert loop the Print Spooler stayed stopped+disabled (my
+   hardening did that; no seed plants it) and silently awarded 2 checks in
+   the "0" state. Whatever the scenario scores, the revert pass must
+   restore by hand if no seed sets it -- for this box: `Set-Service Spooler
+   -StartupType Automatic; Start-Service Spooler`, and re-run `plant` after
+   deleting any account a seed must recreate EXACTLY (audit_svc's
+   blank-password state required Remove-LocalUser + re-plant, since the
+   seed's update path never removes a password).

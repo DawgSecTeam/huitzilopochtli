@@ -4,11 +4,11 @@
 # packaging/huitzilopochtli-agent.service.
 #
 # Install layout assumed (see packaging/README.md):
-#   /opt/huitzilopochtli/agent.pyz
-#   /opt/huitzilopochtli/agent_config.json
-#   /opt/huitzilopochtli/manifest.signed.json
-#   /opt/huitzilopochtli/rubric.json          (honor mode only)
-#   /opt/huitzilopochtli/identity.json        (ranked mode only, 0600)
+#   /opt/.huitzilopochtli/agent.pyz
+#   /opt/.huitzilopochtli/agent_config.json
+#   /opt/.huitzilopochtli/manifest.signed.json
+#   /opt/.huitzilopochtli/.score.dat         (honor mode only, 0600, encoded)
+#   /opt/.huitzilopochtli/identity.json      (ranked mode only, 0600)
 #
 # Alpine caveat: minimal Alpine ships without Python at all -- image
 # provisioning must run `apk add python3` before this service can start.
@@ -32,9 +32,9 @@ name="huitzilopochtli-agent"
 description="Huitzilopochtli scoring agent"
 
 command=/usr/bin/python3
-command_args="/opt/huitzilopochtli/agent.pyz /opt/huitzilopochtli/agent_config.json"
+command_args="/opt/.huitzilopochtli/agent.pyz /opt/.huitzilopochtli/agent_config.json"
 command_background=true
-directory=/opt/huitzilopochtli
+directory=/opt/.huitzilopochtli
 
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/${RC_SVCNAME}.log"

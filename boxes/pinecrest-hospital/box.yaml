@@ -1,0 +1,30 @@
+# Pinecrest Community Hospital: a WINDOWS hardening practice box, built on the
+# team's windows-workshop-template (Proxmox template 953; see boxbuilder/REDEPLOY.md
+# for the clone -> prep -> verify -> seal loop -- it is identical here except the prep
+# steps are Windows ones: local admin `sysadmin`, OpenSSH Server + password
+# auth, Python 3 with PrependPath=1). This is the first Windows round; the
+# agent's Windows support (agent/platform/windows.py, registry_value +
+# powershell_json checks, schtasks install unit) ships in the same round.
+#
+# SEALED 2026-09-13: Proxmox vmid 1111 "pinecrest-hospital-template"
+# (validated end-to-end on this VM: plants 21/21 rc=0, 0-state scores exactly
+# 0, hardened state scores 360/360 incl. 4/4 forensics, revert re-verified 0).
+#
+# Connection details: records-01, a full clone of the sealed
+# pinecrest-hospital-template. provider.host below is whatever IP the clone
+# gets from DHCP at build time -- it WILL go stale; point it at your own
+# clone's current IP and connect as `sysadmin` (the only authorized account).
+#
+# Scoring: 32 vuln checks + 1 penalty guard + 4 forensics = 360 points, honor
+# mode (rubric on-box as
+# the encoded .score.dat; agent runs as SYSTEM via the HuitzilopochtliAgent
+# scheduled task every 5 minutes; report mirrored to C:\Users\Public\Desktop).
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 10.0.0.0
+  port: 22
+  user: sysadmin
+  password: CHANGE-ME
+# authoring_key: ./authoring.key

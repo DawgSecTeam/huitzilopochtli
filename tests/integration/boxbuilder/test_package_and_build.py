@@ -171,6 +171,8 @@ def test_build_all_resume_from_install(tmp_path, fake_provider_factory):
     for name in ("agent.pyz", "manifest.signed.json", "authoring_public_key.b64", "rubric.json",
                  "engine_record.json"):
         (ad / name).write_text("x")
+    # install re-encodes the rubric, so the staged compile output must be JSON.
+    (ad / "rubric.json").write_text("{}")
     state = {
         "mode": "honor", "scenario_name": "Demo", "engine_url": None,
         "agent_pyz": str(ad / "agent.pyz"),

@@ -9,8 +9,6 @@ from typing import Optional
 
 from common.matchers import MATCHERS
 
-from common.matchers import MATCHERS
-
 SCHEMA_VERSION = 1
 
 
@@ -163,8 +161,6 @@ class Bundle:
     scenario_version: int
     evidence: list  # list[Evidence]
     created_wall_claim: float  # DIAGNOSTIC ONLY
-    # §14.3: stamped on every bundle; the engine rejects incompatible values.
-    schema_version: int = SCHEMA_VERSION
     # §14.3: stamped on every bundle; the engine rejects incompatible values.
     schema_version: int = SCHEMA_VERSION
 
@@ -327,29 +323,6 @@ def validate_manifest(obj: dict) -> list:
                         )
 
     return errors
-
-
-def _matcher_errors(matcher, ref: str) -> list:
-    """Validate a rubric entry's matcher would resolve at evaluation time.
-
-    evaluate_matcher resolves the predicate via an explicit "tag" or, in
-    shorthand form, by finding exactly one key that names a registered
-    matcher. Anything ambiguous/unknown raises KeyError mid-evaluation today —
-    catch it here at upload time instead.
-    """
-    if not isinstance(matcher, dict):
-        return []  # shape error already reported by the caller
-    tag = matcher.get("tag")
-    if tag is not None:
-        if tag not in MATCHERS:
-            return [f"{ref}.matcher has unknown tag {tag!r}"]
-        return []
-    candidates = [k for k in matcher if k in MATCHERS]
-    if len(candidates) == 1:
-        return []
-    if not candidates:
-        return [f"{ref}.matcher has no resolvable tag (none of its keys name a registered matcher)"]
-    return [f"{ref}.matcher is ambiguous: several keys name registered matchers ({candidates})"]
 
 
 def _matcher_errors(matcher, ref: str) -> list:

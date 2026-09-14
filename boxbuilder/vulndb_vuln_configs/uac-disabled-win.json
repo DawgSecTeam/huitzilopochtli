@@ -1,0 +1,10 @@
+{
+  "name": "uac-disabled-win",
+  "description": "Practice-box helper (Windows): disables User Account Control by setting HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System EnableLUA to 0. The paired hardening check reads the same value via the registry_value collector. Idempotent. Vars: none.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$reg = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System', $true)\n$reg.SetValue('EnableLUA', 0, 'DWord')\n$reg.Close()\nWrite-Output 'EnableLUA=0 set'",
+  "depends_on": []
+}

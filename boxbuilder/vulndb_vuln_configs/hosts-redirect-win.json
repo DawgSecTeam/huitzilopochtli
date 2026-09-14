@@ -1,0 +1,10 @@
+{
+  "name": "hosts-redirect-win",
+  "description": "Practice-box helper (Windows): appends an IP -> hostname redirect to the SYSTEM hosts file (phishing-redirect style finding). Vars: IP (required); HOSTNAME (required). Idempotent (skipped when the mapping is already present).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $IP -or -not $HOSTNAME) { throw 'IP and HOSTNAME are required' }\n$hosts = Join-Path $env:SystemRoot 'System32\\drivers\\etc\\hosts'\n$entry = \"$IP`t$HOSTNAME\"\n$present = Select-String -Path $hosts -SimpleMatch $entry -Quiet\nif (-not $present) {\n    Add-Content -Path $hosts -Value \"`n# Pinecrest portal fast-route`n$entry\"\n}\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "autologin-win",
+  "description": "Practice-box helper (Windows): plants Windows auto-admin-logon (the classic cleartext DefaultPassword finding) via the Winlogon registry values. Vars: USERNAME (required); PASSWORD (required); DOMAIN (optional, defaults to the machine). Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $USERNAME -or -not $PASSWORD) { throw 'USERNAME and PASSWORD are required' }\n$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon', $true)\n$k.SetValue('AutoAdminLogon', '1', 'String')\n$k.SetValue('DefaultUserName', $USERNAME, 'String')\n$k.SetValue('DefaultPassword', $PASSWORD, 'String')\nif ($DOMAIN) { $k.SetValue('DefaultDomainName', $DOMAIN, 'String') }\n$k.Close()\n",
+  "depends_on": []
+}
