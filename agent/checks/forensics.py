@@ -4,26 +4,18 @@ collect_params: {"path": str, "question_id": str, "ordinal": int}.
 Evidence.raw shape: {"answer": str} — empty string when the question is
 unanswered (blank line or the untouched ______ placeholder).
 
-The answers file is team-editable; each question block is
-
-    Q<ordinal>: <question text>
-    Answer: <team's answer>
-
-and the collector extracts the Answer line that follows the Q<ordinal> line
-matching this check's ordinal.
+The answers file is team-editable; its format (one `Q<ordinal>:` block with
+an `Answer:` line per question) lives in agent/answers.py, shared with the
+template writer (agent/__main__.py) and the huitz CLI (agent/cli.py).
 """
-import re
 import time
 
+import agent.answers
 from agent.checks.base import Check, register
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-_ANSWER_PLACEHOLDER_RE = re.compile(r"^_+$")
-_QUESTION_RE = re.compile(r"^Q(\d+):")
-_ANSWER_RE = re.compile(r"^Answer:(.*)$", re.IGNORECASE)
-
-# Cap read size — the answers file is team-editable (see common/matchers.py).
-_CONTENT_LIMIT = 1_000_000  # 1 MB
+# Cap read size — the answers file is team-editable (see agent/answers.py).
+_CONTENT_LIMIT = agent.answers.CONTENT_LIMIT
 
 
 @register("forensics_answer")
@@ -59,7 +51,7 @@ class ForensicsAnswerCheck(Check):
 
         if answer is None:
             reason = f"Q{ordinal} in {path} is unanswered"
-        elif _ANSWER_PLACEHOLDER_RE.match(answer):
+        elif agent.answers.ANSWER_PLACEHOLDER_RE.match(answer):
             reason = f"Q{ordinal} in {path} still has the blank placeholder"
         else:
             reason = f"answer recorded for Q{ordinal} in {path}"
@@ -79,24 +71,7 @@ class ForensicsAnswerCheck(Check):
     def _extract_answer(content: str, ordinal: int) -> tuple:
         """Return (answer_or_None, found). Answer is the text on the Answer:
         line following the Q<ordinal> line, stripped; None when left blank."""
-        lines = content.splitlines()
-        current_ordinal = None
-        found = False
-        answer = None
-        for line in lines:
-            qmatch = _QUESTION_RE.match(line.strip())
-            if qmatch:
-                current_ordinal = int(qmatch.group(1))
-                if current_ordinal == ordinal:
-                    found = True
-                continue
-            if current_ordinal != ordinal:
-                continue
-            amatch = _ANSWER_RE.match(line.strip())
-            if amatch:
-                answer = amatch.group(1).strip() or None
-                break
-        return answer, found
+        return agent.answers.extract_answer(content, ordinal)
 
     @staticmethod
     def _error(spec: CheckSpec, reason: str) -> Evidence:

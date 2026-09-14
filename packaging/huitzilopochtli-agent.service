@@ -1,11 +1,11 @@
 # Huitzilopochtli agent systemd unit. See architecture.md §17.
 #
 # Install layout assumed (see packaging/README.md):
-#   /opt/huitzilopochtli/agent.pyz
-#   /opt/huitzilopochtli/agent_config.json
-#   /opt/huitzilopochtli/manifest.signed.json
-#   /opt/huitzilopochtli/rubric.json          (honor mode only)
-#   /opt/huitzilopochtli/identity.json        (ranked mode only, 0600)
+#   /opt/.huitzilopochtli/agent.pyz
+#   /opt/.huitzilopochtli/agent_config.json
+#   /opt/.huitzilopochtli/manifest.signed.json
+#   /opt/.huitzilopochtli/.score.dat         (honor mode only, 0600, encoded)
+#   /opt/.huitzilopochtli/identity.json      (ranked mode only, 0600)
 #
 # Ranked mode: agent/__main__.py's _run_ranked() loops forever
 # (collect -> check-in -> sleep), so this is modeled as a long-running
@@ -33,24 +33,32 @@
 
 [Unit]
 Description=Huitzilopochtli scoring agent
-Documentation=file:///opt/huitzilopochtli/README.md
+Documentation=file:///opt/.huitzilopochtli/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/huitzilopochtli/agent.pyz /opt/huitzilopochtli/agent_config.json
+ExecStart=/usr/bin/python3 /opt/.huitzilopochtli/agent.pyz /opt/.huitzilopochtli/agent_config.json
 # Mirrors report.html into each real user's $HOME/Desktop (see that script's
 # comments): a snap-confined browser (e.g. Ubuntu's default Firefox) can only
 # see paths under $HOME, never /opt, so a "Scoring Report" desktop shortcut
-# pointed straight at /opt/huitzilopochtli/report.html shows "File not found"
+# pointed straight at /opt/.huitzilopochtli/report.html shows "File not found"
 # from inside one. Honor mode's timer restarts this service every 60s, so the
 # synced copy stays fresh; ranked mode's single long-running process only
 # gets the very first snapshot synced (ExecStartPost fires once, at service
 # start) -- a known limitation, same shape as the honor/ranked asymmetry
 # already documented in huitzilopochtli-agent.timer.
-ExecStartPost=/opt/huitzilopochtli/sync-report.sh
-WorkingDirectory=/opt/huitzilopochtli
+# CAUTION: with Type=simple this fires when the agent process is FORKED,
+# not when it exits — it races the ~2s grade and copies the PREVIOUS
+# cycle's snapshot to the Desktops (mtime fresh, content one grade stale,
+# which pinned the huitz CLI countdown at zero). The agent itself now runs
+# this script at the END of every honor grade (agent/__main__.py:
+# _sync_desktop_copies), which is ordered after the write; this
+# ExecStartPost remains only for ranked mode's first snapshot and as a
+# belt-and-suspenders fallback.
+ExecStartPost=/opt/.huitzilopochtli/sync-report.sh
+WorkingDirectory=/opt/.huitzilopochtli
 Restart=on-failure
 RestartSec=5s
 

@@ -84,3 +84,23 @@ def test_rearm_reports_missing_score_baseline(tmp_path):
     config_path = _write_config(tmp_path, tmp_path / "identity")
     actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
     assert any("no score baseline" in a for a in actions)
+
+
+def test_rearm_removes_report_snapshot(tmp_path):
+    # The CLI snapshot (agent/snapshot.py report.json) lives next to the
+    # cached report; `huitz score` renders whatever snapshot it finds, so a
+    # survivor here would keep showing the dead session's grade.
+    (tmp_path / "report.json").write_text('{"snapshot_version": 1}')
+    config_path = _write_config(tmp_path, tmp_path / "identity")
+
+    actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
+
+    assert not (tmp_path / "report.json").exists(), \
+        "rearm must remove the report snapshot so huitz shows no stale grade"
+    assert any("report snapshot" in a for a in actions)
+
+
+def test_rearm_reports_missing_report_snapshot(tmp_path):
+    config_path = _write_config(tmp_path, tmp_path / "identity")
+    actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
+    assert any("no report snapshot" in a for a in actions)

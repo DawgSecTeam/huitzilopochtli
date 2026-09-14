@@ -197,7 +197,7 @@ def test_honor_countdown_embeds_render_anchored_deadline(monkeypatch):
     on every reload."""
     monkeypatch.setattr("agent.reporter.time.time", lambda: 1030.0)
     out = render_report(_score(computed_at=1000.0), Mode.HONOR, None)
-    assert "endMs=1030000+30*1000" in out  # render instant + (60s interval - 30s since scoring)
+    assert "endMs=1030000+40*1000" in out  # render instant + (70s interval - 30s since scoring)
     assert "targetMs" not in out
 
 

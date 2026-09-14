@@ -2,10 +2,14 @@
 
 Scoring logic and data-driven fragments only; the visual shell (CSS, page
 document, masthead, countdown, accent guard) lives in agent/report_page.py.
+The derived player-facing facts (fixed vulns, active penalties, forensics
+state, progress) come from agent/board.py, shared with the huitz CLI and
+the report.json snapshot.
 """
 import html
 import time
 
+from agent import board as board_mod
 from agent.report_page import accent_css, countdown_script, masthead_html, page_shell
 from common.schema import Mode, ScoreBreakdown
 
@@ -13,40 +17,137 @@ from common.schema import Mode, ScoreBreakdown
 # "00:00 — checking…" expires within one refresh of the file being rewritten.
 REFRESH_SECONDS = 15
 
-# Honor re-grade cadence — mirrors packaging/huitzilopochtli-agent.timer
-# OnUnitActiveSec=60s (local file/service checks, no network).
-_HONOR_INTERVAL_S = 60
+# Honor re-grade cadence — mirrors packaging/huitzilopochtli-agent.timer.
+# OnUnitActiveSec is 60s, but the unit re-fires 60s after the previous
+# ACTIVATION and a grade run takes ~2s plus dispatch overhead, so observed
+# fires land ~70s apart. This is the countdown estimate only (display
+# cadence, never a scoring input).
+_HONOR_INTERVAL_S = 70
 
 
 def _fmt_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
 
 
-def _manifest_lookup(manifest) -> dict:
-    """Build check_id -> {display_title, display_max_points, category} from manifest."""
-    if manifest is None:
-        return {}
-    checks = getattr(manifest, "checks", None)
-    if checks is None:
-        # dict form
-        checks = manifest.get("checks", []) if isinstance(manifest, dict) else []
-    lookup = {}
-    for c in checks:
-        if isinstance(c, dict):
-            cid = c.get("id")
-            lookup[cid] = {
-                "display_title": c.get("display_title") or cid,
-                "display_max_points": c.get("display_max_points", 0),
-                "category": c.get("category"),
-            }
+def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
+    """CyberPatriot-style honor board: positive-only.
+
+    All derived facts (fixed vulns, active penalties, forensics state,
+    progress) come from agent/board.py — the same derivation the huitz CLI
+    and the report.json snapshot render from.
+
+    - Only passed vulns are listed with display_title + points.
+    - Penalties / prohibited only when incurred (awarded != 0).
+    - No check_id, category, reason, or awarded=0 rows ever surface.
+    - Shows k of n + progress bar + remaining count.
+    - Scored forensics questions get their own card and are excluded from the
+      vulnerabilities-fixed accounting (they still add to score.total).
+    """
+    b = board_mod.build_board(score, manifest)
+
+    def _li(title_esc: str, pts: int) -> str:
+        if pts > 0:
+            pts_html = f'<span class="pts pos">+{html.escape(str(pts))} pts</span>'
+        elif pts < 0:
+            pts_html = f'<span class="pts neg">{html.escape(str(pts))} pts</span>'
         else:
-            cid = getattr(c, "id", None)
-            lookup[cid] = {
-                "display_title": getattr(c, "display_title", None) or cid,
-                "display_max_points": getattr(c, "display_max_points", 0),
-                "category": getattr(c, "category", None),
-            }
-    return lookup
+            pts_html = '<span class="pts muted">—</span>'
+        return f'<li><span class="found-title">{title_esc}</span>{pts_html}</li>'
+
+    if b.fixed:
+        vuln_items = "\n".join(
+            _li(html.escape(str(v.title)), v.points) for v in b.fixed
+        )
+    else:
+        vuln_items = '<li class="muted"><em>No vulnerabilities fixed yet</em></li>'
+
+    if b.penalties:
+        pen_items = "\n".join(
+            _li(html.escape(str(p.title)), p.points) for p in b.penalties
+        )
+        pen_header = f"Penalties &mdash; {len(b.penalties)}"
+    else:
+        pen_items = '<li class="muted"><em>No penalties</em></li>'
+        pen_header = "Penalties &mdash; 0"
+
+    remaining_vulns = b.remaining
+    if remaining_vulns > 0:
+        remaining_html = f'<p class="muted remaining">{remaining_vulns} issue(s) remain.</p>'
+    elif b.all_fixed:
+        remaining_html = '<p class="muted remaining">All scored issues fixed</p>'
+    else:
+        remaining_html = ""
+
+    max_label = (
+        f" / {b.max_possible} max"
+        if b.max_possible and b.max_possible != b.vulns_fixed
+        else ""
+    )
+    fraction_label = (
+        f"{b.vulns_fixed} of {b.vulns_total} fixed"
+        if b.vulns_total
+        else f"{b.vulns_fixed} fixed"
+    )
+
+    forensics_card = ""
+    if b.forensics:
+        def _forensics_li(f) -> str:
+            if f.answered:
+                pts_html = (
+                    '<span class="pts pos">+'
+                    f'{html.escape(str(f.points))} pts</span>'
+                )
+                icon = '<span class="icon ok">&#10003;</span> '
+            else:
+                pts_html = '<span class="pts muted">0 pts</span>'
+                icon = ""
+            return (
+                f'<li><span class="found-title">{icon}'
+                f'{html.escape(str(f.question))}</span>{pts_html}</li>'
+            )
+
+        forensics_items = "\n".join(_forensics_li(f) for f in b.forensics)
+        forensics_card = f"""
+  <section class="card forensics">
+    <h2><span class="icon warn">&#128269;</span> Forensics &mdash; {b.forensics_earned} of {len(b.forensics)} correct</h2>
+    <ul>
+      {forensics_items}
+    </ul>
+    <p class="muted remaining">Type your answers into Forensics-Questions.txt &mdash; they are re-graded automatically.</p>
+  </section>"""
+
+    return f"""
+<div class="score-header">
+  <div>
+    <div class="total">Total: {html.escape(str(b.total))}<span class="total-suffix"> pts</span></div>
+    <div class="fraction">{html.escape(fraction_label)}{html.escape(max_label)} &middot; {html.escape(str(b.total))} pts earned</div>
+  </div>
+  <div class="countdown-wrap">
+    <div class="countdown-label">Next check in</div>
+    <div id="countdown" class="countdown" aria-live="polite">--:--</div>
+  </div>
+</div>
+<div class="progress" role="progressbar" aria-valuenow="{b.progress_pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Progress">
+  <div class="fill" style="width: {b.progress_pct}%"></div>
+</div>
+<div class="cards">
+  <section class="card">
+    <h2><span class="icon ok">✓</span> Vulnerabilities Fixed — {b.vulns_fixed} of {b.vulns_total}</h2>
+    <ul>
+      {vuln_items}
+    </ul>
+    {remaining_html}
+  </section>
+  <section class="card penalties">
+    <h2><span class="icon warn">⚠</span> {pen_header}</h2>
+    <ul>
+      {pen_items}
+    </ul>
+  </section>
+{forensics_card}
+</div>
+<p class="stamp honor-stamp">Last checked: {html.escape(_fmt_time(score.computed_at))} &middot; Honor mode — SLA not scored (untimed)</p>
+"""
 
 
 def _render_results_table(results) -> str:
@@ -103,251 +204,6 @@ def _render_sla_table(sla_status) -> str:
     {body}
   </tbody>
 </table>
-"""
-
-
-def _manifest_forensics(manifest) -> list:
-    """Extract manifest forensics questions as [{id, question, max_points}].
-
-    Works for both dataclass Manifests and raw dict manifests.
-    """
-    if manifest is None:
-        return []
-    forensics = getattr(manifest, "forensics", None)
-    if forensics is None and isinstance(manifest, dict):
-        forensics = manifest.get("forensics")
-    out = []
-    for fq in forensics or []:
-        if isinstance(fq, dict):
-            out.append({
-                "id": fq.get("id"),
-                "question": fq.get("question") or fq.get("id"),
-                "max_points": fq.get("max_points", 0),
-            })
-        else:
-            out.append({
-                "id": getattr(fq, "id", None),
-                "question": getattr(fq, "question", None) or getattr(fq, "id", None),
-                "max_points": getattr(fq, "max_points", 0),
-            })
-    return out
-
-
-def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
-    """CyberPatriot-style honor board: positive-only.
-
-    - Only passed vulns are listed with display_title + points.
-    - Penalties / prohibited only when incurred (awarded != 0).
-    - No check_id, category, reason, or awarded=0 rows ever surface.
-    - Shows k of n + progress bar + remaining count.
-    - Scored forensics questions get their own card and are excluded from the
-      vulnerabilities-fixed accounting (they still add to score.total).
-    """
-    lookup = _manifest_lookup(manifest)
-    forensics = _manifest_forensics(manifest)
-    forensics_ids = {f["id"] for f in forensics}
-
-    # Separate results by awarded/penalty semantics.
-    vuln_fixed = []
-    penalties_active = []
-    for r in score.results:
-        cat = r.category.value if hasattr(r.category, "value") else str(r.category)
-        # VULN: show only when passed (positive points earned)
-        if cat == "vuln":
-            if r.passed and r.awarded_points != 0 and r.check_id not in forensics_ids:
-                vuln_fixed.append(r)
-        else:
-            # penalty / prohibited: show only when incurred (negative points applied)
-            if r.awarded_points != 0:
-                penalties_active.append(r)
-
-    # Progress accounting — use manifest for denominator when available.
-    total_checks = len(lookup) if lookup else len(score.results)
-    # Non-SLA checks only; SLA entries are never in results (evaluator skips them)
-    # but use lookup to avoid counting SLA placeholders if present.
-    if lookup:
-        # count non-SLA checks from manifest
-        non_sla_total = 0
-        max_possible = 0
-        for cid, info in lookup.items():
-            if cid in forensics_ids:
-                continue
-            # is_sla check: peek manifest object
-            is_sla = False
-            # need to find original check object
-            checks = getattr(manifest, "checks", None)
-            if checks is None and isinstance(manifest, dict):
-                checks = manifest.get("checks", [])
-            for c in (checks or []):
-                check_id = c.get("id") if isinstance(c, dict) else getattr(c, "id", None)
-                if check_id == cid:
-                    is_sla = c.get("is_sla") if isinstance(c, dict) else getattr(c, "is_sla", False)
-                    break
-            if not is_sla:
-                non_sla_total += 1
-                try:
-                    max_possible += int(info.get("display_max_points", 0) or 0)
-                except Exception:
-                    pass
-        if non_sla_total > 0:
-            total_checks = non_sla_total
-
-    else:
-        max_possible = sum(
-            max(0, r.awarded_points) for r in score.results
-        )  # fallback: at least show earned
-
-    # Max possible for progress: sum of display_max_points for non-SLA, or fallback to earned+remaining estimate
-    vuln_count_total = total_checks  # for "k of n"
-    vuln_fixed_count = len(vuln_fixed)
-    remaining = max(0, vuln_count_total - vuln_fixed_count - len([r for r in penalties_active if r.category.value == "penalty" or str(r.category) == "penalty"]))
-    # Simpler remaining: total - fixed vulns (penalties don't count toward vuln total)
-    # Use vuln-specific total when manifest available
-    vuln_total = 0
-    if lookup:
-        for cid, info in lookup.items():
-            if cid in forensics_ids:
-                continue
-            cat = info.get("category")
-            cat_s = cat.value if hasattr(cat, "value") else str(cat) if cat else "vuln"
-            # lookup category is from manifest; fallback to vuln counting
-            # Re-derive from checks
-            checks = getattr(manifest, "checks", None)
-            if checks is None and isinstance(manifest, dict):
-                checks = manifest.get("checks", [])
-            for c in (checks or []):
-                cid2 = c.get("id") if isinstance(c, dict) else getattr(c, "id", None)
-                if cid2 == cid:
-                    ccat = c.get("category") if isinstance(c, dict) else getattr(c, "category", None)
-                    ccat_s = ccat.value if hasattr(ccat, "value") else str(ccat) if ccat else "vuln"
-                    if ccat_s == "vuln":
-                        vuln_total += 1
-                    break
-        if vuln_total == 0:
-            vuln_total = vuln_count_total
-    else:
-        vuln_total = sum(
-            1 for r in score.results
-            if (r.category.value if hasattr(r.category, "value") else str(r.category)) == "vuln"
-            and r.check_id not in forensics_ids
-        )
-
-    if max_possible <= 0:
-        max_possible = vuln_total * 1  # avoid div0; show count-based progress
-        pct = int((vuln_fixed_count / vuln_total * 100) if vuln_total else 0)
-    else:
-        # progress by points if max known, otherwise by count
-        earned_positive = sum(r.awarded_points for r in vuln_fixed)
-        pct = int((earned_positive / max_possible * 100) if max_possible else 0)
-        if pct == 0 and vuln_total:
-            pct = int((vuln_fixed_count / vuln_total * 100) if vuln_total else 0)
-    pct = max(0, min(100, pct))
-
-    def _li_for_result(r) -> str:
-        cid = r.check_id
-        title = lookup.get(cid, {}).get("display_title") or cid
-        # escape display title (human label), never check_id
-        title_esc = html.escape(str(title))
-        pts = r.awarded_points
-        # pts display: +X pts for vuln, -X pts for penalties (already negative)
-        if pts > 0:
-            pts_html = f'<span class="pts pos">+{html.escape(str(pts))} pts</span>'
-        elif pts < 0:
-            pts_html = f'<span class="pts neg">{html.escape(str(pts))} pts</span>'
-        else:
-            pts_html = '<span class="pts muted">—</span>'
-        return f'<li><span class="found-title">{title_esc}</span>{pts_html}</li>'
-
-    if vuln_fixed:
-        vuln_items = "\n".join(_li_for_result(r) for r in vuln_fixed)
-    else:
-        vuln_items = '<li class="muted"><em>No vulnerabilities fixed yet</em></li>'
-
-    if penalties_active:
-        pen_items = "\n".join(_li_for_result(r) for r in penalties_active)
-        pen_header = f"Penalties &amp; {len(penalties_active)} Penalties"
-    else:
-        pen_items = '<li class="muted"><em>No penalties</em></li>'
-        pen_header = "Penalties &amp; 0 Penalties"
-
-    # Remaining hint: count only, no identities
-    remaining_vulns = max(0, vuln_total - vuln_fixed_count)
-    if remaining_vulns > 0:
-        remaining_html = f'<p class="muted remaining">{remaining_vulns} issue(s) remain.</p>'
-    else:
-        if vuln_total > 0 and vuln_fixed_count == vuln_total:
-            remaining_html = '<p class="muted remaining">All scored issues fixed</p>'
-        else:
-            remaining_html = ""
-
-    max_label = f" / {max_possible} max" if max_possible and max_possible != vuln_fixed_count else ""
-    fraction_label = f"{vuln_fixed_count} of {vuln_total} fixed" if vuln_total else f"{vuln_fixed_count} fixed"
-
-    forensics_card = ""
-    if forensics:
-        results_by_id = {r.check_id: r for r in score.results}
-
-        def _forensics_li(f) -> str:
-            r = results_by_id.get(f["id"])
-            if r is not None and r.passed:
-                pts_html = (
-                    '<span class="pts pos">+'
-                    f'{html.escape(str(r.awarded_points))} pts</span>'
-                )
-                icon = '<span class="icon ok">&#10003;</span> '
-            else:
-                pts_html = '<span class="pts muted">0 pts</span>'
-                icon = ""
-            return (
-                f'<li><span class="found-title">{icon}'
-                f'{html.escape(str(f["question"]))}</span>{pts_html}</li>'
-            )
-
-        forensics_earned = sum(
-            1 for f in forensics
-            if (r := results_by_id.get(f["id"])) is not None and r.passed
-        )
-        forensics_items = "\n".join(_forensics_li(f) for f in forensics)
-        forensics_card = f"""
-  <section class="card forensics">
-    <h2><span class="icon warn">&#128269;</span> Forensics &mdash; {forensics_earned} of {len(forensics)} correct</h2>
-    <ul>
-      {forensics_items}
-    </ul>
-    <p class="muted remaining">Type your answers into Forensics-Questions.txt &mdash; they are re-graded automatically.</p>
-  </section>"""
-
-    return f"""
-<div class="score-header">
-  <div>
-    <div class="total">Total: {html.escape(str(score.total))}<span class="total-suffix"> pts</span></div>
-    <div class="fraction">{html.escape(fraction_label)}{html.escape(max_label)} &middot; {html.escape(str(score.total))} pts earned</div>
-  </div>
-  <div class="countdown-wrap">
-    <div class="countdown-label">Next check in</div>
-    <div id="countdown" class="countdown" aria-live="polite">--:--</div>
-  </div>
-</div>
-<div class="progress" role="progressbar" aria-valuenow="{pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Progress">
-  <div class="fill" style="width: {pct}%"></div>
-</div>
-<div class="cards">
-  <section class="card">
-    <h2><span class="icon ok">✓</span> Vulnerabilities Fixed — {vuln_fixed_count} of {vuln_total}</h2>
-    <ul>
-      {vuln_items}
-    </ul>
-    {remaining_html}
-  </section>
-  <section class="card penalties">
-    <h2><span class="icon warn">⚠</span> {pen_header}</h2>
-    <ul>
-      {pen_items}
-    </ul>
-  </section>
-{forensics_card}
-</div>
-<p class="stamp honor-stamp">Last checked: {html.escape(_fmt_time(score.computed_at))} &middot; Honor mode — SLA not scored (untimed)</p>
 """
 
 

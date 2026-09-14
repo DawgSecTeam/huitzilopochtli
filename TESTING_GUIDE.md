@@ -150,6 +150,40 @@ ls /tmp/huitzilopochtli-manual/honor/report.html 2>&1   # should say "No such fi
 
 Expected: `rearm.py` prints `removed cached report: ...` and the report file is gone.
 
+### 2.5 The huitz terminal console
+
+The agent zipapp doubles as the box's terminal scoring console. Using the same honor-mode dir from step 2 (re-compile + run the agent first if you just re-armed):
+
+```bash
+python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json   # a grade exists
+python3 -m agent score --report /tmp/huitzilopochtli-manual/honor/report.html
+python3 -m agent score --report /tmp/huitzilopochtli-manual/honor/report.html --json | head -20
+```
+
+Expected: a scorecard (total, progress bar, fixed vulns, hints line) rendered with plain text through a pipe; `--json` prints the `report.json` snapshot the CLI reads. Every grade also publishes `report.json` next to `report.html` — on a real box, `sync-report.sh` mirrors both to each user's Desktop so the console works for any account (on a real install, boxbuilder also puts the zipapp on PATH as `huitz` and plants a first-login motd introducing it).
+
+Re-grade to seed a baseline, then change something:
+
+```bash
+python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json    # baseline grade
+# break the check (e.g. delete the flag file), then re-grade:
+python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json
+python3 -m agent score --report /tmp/huitzilopochtli-manual/honor/report.html
+```
+
+Expected: the second grade's scorecard carries a `▼ -N pts` penalty banner (the terminal twin of the HTML banner + desktop alarm).
+
+Forensics, end to end (use a scenario with a `forensics:` block, or just verify the commands behave):
+
+```bash
+python3 -m agent forensics --report /tmp/huitzilopochtli-manual/honor/report.html
+python3 -m agent forensics 1 "my answer" --report /tmp/huitzilopochtli-manual/honor/report.html
+```
+
+Expected: the listing shows each question with your recorded answer and last-grade verdict; answering writes `Answer: my answer` into the answers file, and it scores on the next grade. Re-run the agent to see the points land.
+
+`watch --once` renders one live frame without a terminal; `watch` itself (alternate screen, countdown, change bell, `q` to quit) wants a real TTY. `grade` re-runs the pipeline as root — it exits 1 with a `sudo huitz grade` hint when run as a non-root user, and explains engine-side grading on ranked boxes.
+
 ## 3. Ranked mode, by hand
 
 This mirrors `tests/integration/test_ranked_loopback.py` and `test_admin_endpoints.py`. You'll need two terminals (or background the engine).

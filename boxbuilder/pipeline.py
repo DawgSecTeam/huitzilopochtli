@@ -314,8 +314,11 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # user, not via sudo). On Windows the dir is created directly (an SSH
         # admin session carries the elevated token) and inherits usable ACLs.
         if os_name == "windows":
-            mk = handle.run(f"powershell.exe -NoProfile -NonInteractive -Command "
-                            f"New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null")
+            # run_ps (EncodedCommand) rather than a raw `powershell -Command`
+            # string: Windows OpenSSH execs through cmd.exe, which strips the
+            # inner double quotes and turns the payload into cmd syntax.
+            mk = handle.run_ps(f"New-Item -ItemType Directory -Force "
+                               f"-Path '{install_dir}' | Out-Null")
             if not mk.ok:
                 raise RuntimeError(f"could not create {install_dir}: {mk.stderr.strip()}")
         else:
@@ -353,13 +356,11 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # fire one spurious change alert on the new scenario's first grade;
         # a (re)install starts silent and baselines on first run.
         rm_cmd = (
-            f"powershell.exe -NoProfile -NonInteractive -Command "
-            f"Remove-Item -Force -ErrorAction SilentlyContinue "
-            f"'{install_dir}\\score_state.json'"
+            handle.run_ps(f"Remove-Item -Force -ErrorAction Ignore "
+                          f"'{install_dir}\\score_state.json'")
             if os_name == "windows"
-            else f"rm -f {install_dir}/score_state.json"
+            else handle.run(f"rm -f {install_dir}/score_state.json")
         )
-        handle.run(rm_cmd)
         # Seal the dir back to admins-only. POSIX: root:root 0700 (the SFTP
         # puts above could only run as the SSH login user -- why the dir was
         # chowned at the top -- so this must come after them). Windows:
@@ -368,9 +369,12 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # keeps the answer key (.score.dat) and, in ranked mode,
         # identity.json invisible to ordinary accounts on the box.
         if os_name == "windows":
-            seal = handle.run(
-                f"icacls \"{install_dir}\" /inheritance:r "
-                f"/grant:r \"SYSTEM:(OI)(CI)F\" \"Administrators:(OI)(CI)F\""
+            # Also via run_ps: the /grant tokens contain parens cmd.exe could
+            # mangle, and running inside PowerShell keeps the quoting native.
+            seal = handle.run_ps(
+                f"icacls '{install_dir}' /inheritance:r "
+                f"'/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F'; "
+                f"exit $LASTEXITCODE"
             )
         else:
             seal = handle.run(f"chown -R root:root {install_dir} "
@@ -378,6 +382,32 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         if not seal.ok:
             raise RuntimeError(
                 f"could not seal {install_dir}: {seal.stderr.strip()}")
+
+        # --- first-login motd (POSIX only; Windows has no motd mechanism) ---
+        # Tells a player what to do the first time they get a shell, and
+        # introduces the huitz console. Root-owned target, so: SFTP stage to
+        # /tmp, then sudo-install (same pattern as the init units). Cosmetic
+        # onboarding -- a failure warns, never fails the install. Reported
+        # via result["motd"], not result["files"]: that list is "everything
+        # under the install dir", and the banner deliberately lives in
+        # /etc/update-motd.d.
+        motd_path = None
+        if os_name != "windows":
+            title = spec.theme.get("title") or scenario_name
+            motd_stage = os.path.join(artifacts_dir, "huitzilopochtli-motd.sh")
+            with open(motd_stage, "w", encoding="utf-8") as f:
+                f.write(artifacts_mod.motd_script(
+                    title, spec.theme.get("organization"), mode))
+            motd_tmp = "/tmp/huitzilopochtli-motd.sh"
+            handle.put(motd_stage, motd_tmp)
+            res = handle.run(
+                f"install -m 755 {motd_tmp} {artifacts_mod.MOTD_PATH}")
+            if res.ok:
+                motd_path = artifacts_mod.MOTD_PATH
+                log(f"[boxbuilder] motd banner: {artifacts_mod.MOTD_PATH}")
+            else:
+                log(f"[boxbuilder] WARNING: could not install the motd "
+                    f"banner: {res.stderr.strip()}")
 
         # --- init unit ---
         if init_kind is None:
@@ -402,6 +432,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                         "user": handle.user, "port": getattr(handle, "port", 22)},
             "files": placed,
             "init": init_kind,
+            "motd": motd_path,
             "ranked": ranked,
             "ok": True,
         }

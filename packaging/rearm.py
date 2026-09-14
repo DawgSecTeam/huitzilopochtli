@@ -9,7 +9,7 @@ Usage (run ON the box, as the same user/root that owns the install dir):
 
     python3 rearm.py [install_dir] [--config CONFIG] [--reset-identity]
 
-    install_dir   defaults to /opt/huitzilopochtli
+    install_dir   defaults to /opt/.huitzilopochtli
     --config      path to agent_config.json, defaults to
                   <install_dir>/agent_config.json
     --reset-identity  ALSO delete the ranked-mode identity file (and its
@@ -64,6 +64,15 @@ def _score_state_path(report_path: str) -> str:
     )
 
 
+def _snapshot_path(report_path: str) -> str:
+    """Path of the machine-readable snapshot (agent/snapshot.py), sibling of
+    the cached report. Mirrors snapshot_path_for -- stdlib-only, no agent
+    runtime import."""
+    return os.path.join(
+        os.path.dirname(os.path.abspath(report_path)), "report.json"
+    )
+
+
 def _maybe_remove(path: str) -> bool:
     """Remove `path` if it exists. Returns whether it was removed."""
     if path and os.path.exists(path):
@@ -90,6 +99,15 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
         actions.append(f"removed score baseline: {score_state}")
     else:
         actions.append(f"no score baseline to remove at: {score_state}")
+
+    # The CLI snapshot (report.json) must go too: `huitz score` renders
+    # whatever snapshot it finds, so a survivor here would keep showing the
+    # dead session's grade after a re-arm.
+    snapshot = _snapshot_path(config.report_path)
+    if _maybe_remove(snapshot):
+        actions.append(f"removed report snapshot: {snapshot}")
+    else:
+        actions.append(f"no report snapshot to remove at: {snapshot}")
 
     if reset_identity:
         if config.identity_path:
@@ -135,8 +153,8 @@ def main() -> None:
     parser.add_argument(
         "install_dir",
         nargs="?",
-        default="/opt/huitzilopochtli",
-        help="install directory (default: /opt/huitzilopochtli)",
+        default="/opt/.huitzilopochtli",
+        help="install directory (default: /opt/.huitzilopochtli)",
     )
     parser.add_argument(
         "--config",
