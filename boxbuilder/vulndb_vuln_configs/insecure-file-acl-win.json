@@ -1,0 +1,10 @@
+{
+  "name": "insecure-file-acl-win",
+  "description": "Practice-box helper (Windows): writes $FILE_PATH with $FILE_CONTENT and grants Everyone full control (the classic world-writable analog). Vars: FILE_PATH (required); FILE_CONTENT (optional). Idempotent (file rewritten, ACL re-granted).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $FILE_PATH) { throw 'FILE_PATH is required' }\n$dir = Split-Path $FILE_PATH -Parent\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\nif ($FILE_CONTENT) { Set-Content -Path $FILE_PATH -Value $FILE_CONTENT -Encoding ascii }\nicacls $FILE_PATH /grant 'Everyone:(F)' | Out-Null\n",
+  "depends_on": []
+}

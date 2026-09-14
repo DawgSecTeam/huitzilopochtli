@@ -1,0 +1,10 @@
+{
+  "name": "rdp-group-member-win",
+  "description": "Practice-box helper (Windows): adds a local account to the Remote Desktop Users group. Vars: USERNAME (required). Idempotent (membership re-applied; SilentlyContinue on already-member).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $USERNAME) { throw 'USERNAME is required' }\nAdd-LocalGroupMember -Group 'Remote Desktop Users' -Member $USERNAME -ErrorAction Ignore\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "local-user-win",
+  "description": "Practice-box helper (Windows): creates or updates a local account. Vars: USERNAME (required); PASSWORD (optional -- when empty/omitted the account is created with a BLANK password via -NoPassword); FULLNAME (optional); DESCRIPTION (optional); ADMIN_ADD (optional, default 0 -- add to local Administrators); PASSWORD_NEVER_EXPIRES (optional, default 0). Idempotent: an existing account is updated in place (membership/flags re-applied), never recreated.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $USERNAME) { throw 'USERNAME is required' }\n$existing = Get-LocalUser -Name $USERNAME -ErrorAction Ignore\nif ($existing) {\n    if ($PASSWORD) {\n        $secure = ConvertTo-SecureString $PASSWORD -AsPlainText -Force\n        Set-LocalUser -Name $USERNAME -Password $secure\n    }\n    $u = @{}\n    if ($FULLNAME) { $u.FullName = $FULLNAME }\n    if ($DESCRIPTION) { $u.Description = $DESCRIPTION }\n    if ($u.Count) { Set-LocalUser -Name $USERNAME @u }\n} else {\n    $params = @{ Name = $USERNAME; AccountNeverExpires = $true }\n    if ($FULLNAME) { $params.FullName = $FULLNAME }\n    if ($DESCRIPTION) { $params.Description = $DESCRIPTION }\n    if ($PASSWORD) {\n        $secure = ConvertTo-SecureString $PASSWORD -AsPlainText -Force\n        New-LocalUser @params -Password $secure | Out-Null\n    } else {\n        New-LocalUser @params -NoPassword | Out-Null\n    }\n}\nif ($PASSWORD_NEVER_EXPIRES -eq '1') {\n    Set-LocalUser -Name $USERNAME -PasswordNeverExpires $true\n}\nif ($ADMIN_ADD -eq '1') {\n    Add-LocalGroupMember -Group 'Administrators' -Member $USERNAME -ErrorAction Ignore\n}\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "scheduled-task-persistence-win",
+  "description": "Practice-box helper (Windows): plants a scheduled task running as SYSTEM. Writes the payload script ($PAYLOAD_PATH/$PAYLOAD_BODY) and registers task $TASK_NAME (daily at 03:10, SYSTEM, highest rights), then runs it once so the payload has executed at least once. Vars: TASK_NAME (required); PAYLOAD_PATH (required); PAYLOAD_BODY (optional). Idempotent (/F overwrites).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $TASK_NAME -or -not $PAYLOAD_PATH) { throw 'TASK_NAME and PAYLOAD_PATH are required' }\n$dir = Split-Path $PAYLOAD_PATH -Parent\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\nif ($PAYLOAD_BODY) { Set-Content -Path $PAYLOAD_PATH -Value $PAYLOAD_BODY -Encoding ascii }\n$action = New-ScheduledTaskAction -Execute 'powershell.exe' `\n    -Argument \"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `\"$PAYLOAD_PATH`\"\"\n$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest\n$trigger = New-ScheduledTaskTrigger -Daily -At '03:10'\nRegister-ScheduledTask -TaskName $TASK_NAME -Action $action -Principal $principal -Trigger $trigger -Force | Out-Null\nStart-ScheduledTask -TaskName $TASK_NAME\n",
+  "depends_on": []
+}

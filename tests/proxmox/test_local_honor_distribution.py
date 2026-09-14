@@ -9,13 +9,13 @@ paths. Writing to /opt (usr_t) or /etc/systemd/system fails with a generic
 500 from the guest-agent file-write API even as root -- confirmed via `id`
 (uid=0) and `ls -Z` showing the DAC bits would otherwise allow it. Because
 of this, this test installs to /tmp/huitzilopochtli instead of the production
-/opt/huitzilopochtli path (packaging/README.md), and runs the agent directly via
+/opt/.huitzilopochtli path (packaging/README.md), and runs the agent directly via
 guest-exec rather than registering the real systemd unit. This still
 exercises the thing process-level testing on the dev machine cannot: a
 real .pyz executed by a real system python3 on a genuinely separate,
 freshly-provisioned host. Getting full systemd-unit-registration coverage
 would require adjusting the shared template's SELinux policy (e.g. an
-`semanage fcontext` rule for /opt/huitzilopochtli), which is a real change to
+`semanage fcontext` rule for /opt/.huitzilopochtli), which is a real change to
 shared infrastructure and out of scope here -- flag to the user if that
 level of fidelity is wanted later.
 

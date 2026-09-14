@@ -11,6 +11,7 @@ abstracted"). This exists to reward a team for finding and killing/removing a
 live rogue process (simulated malware/C2), not just for removing the artifact
 (cron entry, systemd unit, autostart file) that would have launched it.
 """
+import json
 import os
 import re
 import time
@@ -73,6 +74,9 @@ class ProcessStateCheck(Check):
         if not pattern:
             return self._error(spec, "collect_params missing required 'pattern'")
 
+        if os.name == "nt":
+            return self._collect_windows(spec, pattern)
+
         if not os.path.isdir("/proc"):
             return self._error(
                 spec,
@@ -124,6 +128,82 @@ class ProcessStateCheck(Check):
         if capped:
             reason += f" (list capped at {_MAX_PIDS})"
 
+        return Evidence(
+            check_id=spec.id,
+            check_type=self.type_key,
+            host_id=spec.host_id,
+            status=CollectorStatus.OK,
+            raw={
+                "running": running,
+                "count": len(matched_pids),
+                "pids": matched_pids,
+                "sample_cmdline": sample_cmdline,
+            },
+            reason=reason,
+            collected_monotonic=time.monotonic(),
+            collected_wall_claim=time.time(),
+        )
+
+    def _collect_windows(self, spec: CheckSpec, pattern: str) -> Evidence:
+        """Windows branch: scan Win32_Process via PowerShell, matching the
+        pattern against each process's command line (falling back to its
+        executable name, the analog of the POSIX comm fallback)."""
+        script = (
+            "Get-CimInstance -ClassName Win32_Process | ForEach-Object { "
+            "[pscustomobject]@{ p = $_.ProcessId; c = $_.CommandLine; "
+            "n = $_.Name } } | ConvertTo-Json -Compress"
+        )
+        try:
+            from agent.platform.windows import run_ps
+            proc = run_ps(script, timeout=30)
+            out = (proc.stdout or "").strip()
+            if not out:
+                raise RuntimeError(
+                    f"powershell exited {proc.returncode}: "
+                    f"{(proc.stderr or '').strip()[:200]}"
+                )
+            entries = json.loads(out)
+        except Exception as exc:
+            return self._error(spec, f"windows process scan failed: {exc}")
+        if isinstance(entries, dict):
+            entries = [entries]  # single-process result is not wrapped in a list
+
+        try:
+            compiled = _compile_pattern(pattern)
+        except re.error as exc:
+            return self._error(spec, f"invalid pattern {pattern!r}: {exc}")
+
+        own_pid = os.getpid()
+        matched_pids = []
+        sample_cmdline = None
+        capped = False
+        for entry in entries:
+            pid = entry.get("p")
+            if not isinstance(pid, int) or pid == own_pid:
+                continue
+            if len(matched_pids) >= _MAX_PIDS:
+                capped = True
+                break
+            haystack = entry.get("c") or entry.get("n") or ""
+            if not haystack:
+                continue
+            try:
+                hit = compiled.search(haystack)
+            except RecursionError:
+                continue
+            if hit:
+                matched_pids.append(pid)
+                if sample_cmdline is None:
+                    sample_cmdline = haystack[:_SAMPLE_CMDLINE_LIMIT]
+
+        running = bool(matched_pids)
+        reason = (
+            f"{len(matched_pids)} process(es) matched pattern {pattern!r}"
+            if running
+            else f"no running process matched pattern {pattern!r}"
+        )
+        if capped:
+            reason += f" (list capped at {_MAX_PIDS})"
         return Evidence(
             check_id=spec.id,
             check_type=self.type_key,

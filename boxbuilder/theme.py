@@ -83,16 +83,20 @@ def _motd_vars(theme: dict) -> dict:
     return v
 
 
-def _shortcut_pairs(theme: dict) -> list:
+def _shortcut_pairs(theme: dict, windows: bool = False) -> list:
     """Author's desktop_shortcuts list plus the auto-appended "Scoring Report" launcher
     (unless opted out) -- one (name, exec) pair per eventual `theme-shortcuts` entry.
 
-    The Scoring Report opens $HOME/Desktop/report.html, not _REPORT_PATH (/opt/...)
-    directly: packaging/sync-report.sh mirrors the real report there specifically
-    because a snap-confined browser (e.g. Ubuntu's default Firefox) can't see /opt at
-    all, and would show "File not found" for it. sh -c wrapped so $HOME actually
-    expands -- a bare `~`/`$HOME` in a .desktop Exec= line isn't guaranteed to be
-    shell-expanded by whatever launches it."""
+    POSIX: The Scoring Report opens $HOME/Desktop/report.html, not _REPORT_PATH
+    (/opt/...) directly: packaging/sync-report.sh mirrors the real report there
+    specifically because a snap-confined browser (e.g. Ubuntu's default Firefox)
+    can't see /opt at all, and would show "File not found" for it. sh -c wrapped
+    so $HOME actually expands -- a bare `~`/`$HOME` in a .desktop Exec= line isn't
+    guaranteed to be shell-expanded by whatever launches it.
+
+    Windows: shortcuts are .lnk files (theme-shortcuts-win) whose exec is the
+    TARGET path, so the report launcher points at the Public Desktop copy the
+    scheduled-task wrapper maintains (always readable by the team account)."""
     shortcuts = list(theme.get("desktop_shortcuts") or [])
     for idx, sc in enumerate(shortcuts):
         if not isinstance(sc, dict) or not sc.get("name") or not sc.get("exec"):
@@ -101,11 +105,25 @@ def _shortcut_pairs(theme: dict) -> list:
                 f"'name' and 'exec' keys, got {sc!r}"
             )
     if theme.get("include_report_shortcut") is not False:
-        shortcuts.append({
-            "name": "Scoring Report",
-            "exec": "sh -c 'xdg-open $HOME/Desktop/report.html'",
-        })
+        if windows:
+            shortcuts.append({
+                "name": "Scoring Report",
+                "exec": r"%PUBLIC%\Desktop\report.html",
+            })
+        else:
+            shortcuts.append({
+                "name": "Scoring Report",
+                "exec": "sh -c 'xdg-open $HOME/Desktop/report.html'",
+            })
     return [(sc["name"], sc["exec"]) for sc in shortcuts]
+
+
+def _target_is_windows(spec: BoxSpec) -> bool:
+    """The box's OS comes from the first nakon machine's `os` field (the same
+    value `derive_deploy_config` threads into the deploy config) -- nakon's
+    own convention: any os containing "win" is a Windows target."""
+    machines = spec.nakon_machines()
+    return bool(machines) and "win" in str(machines[0].get("os", "")).lower()
 
 
 def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None) -> list:
@@ -139,20 +157,26 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
             )
 
     url = vulndb.resolve_vulndb_url(vulndb_url)
+    windows = _target_is_windows(spec)
     entries = []
 
     if wallpaper_abs:
-        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-wallpaper"))
+        seed = "theme-wallpaper-win" if windows else "theme-wallpaper"
+        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed))
         filename = vulndb.ensure_attachment(url, config, wallpaper_abs)
-        entries.append({"name": "theme-wallpaper", "vars": {"WALLPAPER_FILENAME": filename}})
+        entries.append({"name": seed, "vars": {"WALLPAPER_FILENAME": filename}})
 
-    motd_vars = _motd_vars(theme)
-    if motd_vars:
-        vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-motd"))
-        entries.append({"name": "theme-motd", "vars": motd_vars})
+    if not windows:
+        # No motd/issue analog is planted on Windows (the console-banner
+        # concept has no useful equivalent); theme text lives in the README.
+        motd_vars = _motd_vars(theme)
+        if motd_vars:
+            vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-motd"))
+            entries.append({"name": "theme-motd", "vars": motd_vars})
 
     if readme_abs:
-        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-readme"))
+        seed = "theme-readme-win" if windows else "theme-readme"
+        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed))
         readme_vars = {}
         upload_path = _readme_upload_path(readme_abs, theme, spec.base_dir)
         try:
@@ -162,14 +186,15 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
         finally:
             if upload_path != readme_abs:
                 shutil.rmtree(os.path.dirname(upload_path), ignore_errors=True)
-        entries.append({"name": "theme-readme", "vars": readme_vars})
+        entries.append({"name": seed, "vars": readme_vars})
 
-    shortcut_pairs = _shortcut_pairs(theme)
+    shortcut_pairs = _shortcut_pairs(theme, windows=windows)
     if shortcut_pairs:
-        vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-shortcuts"))
+        seed = "theme-shortcuts-win" if windows else "theme-shortcuts"
+        vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed))
         for name, exec_cmd in shortcut_pairs:
             entries.append({
-                "name": "theme-shortcuts",
+                "name": seed,
                 "vars": {"SHORTCUT_NAME": name, "SHORTCUT_EXEC": exec_cmd},
             })
 

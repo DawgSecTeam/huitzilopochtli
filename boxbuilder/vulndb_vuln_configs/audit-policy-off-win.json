@@ -1,0 +1,10 @@
+{
+  "name": "audit-policy-off-win",
+  "description": "Practice-box helper (Windows): disables success+failure auditing for the Logon/Logoff and Account Logon categories via auditpol. Vars: none. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "auditpol /set /subcategory:'Logon' /success:disable /failure:disable | Out-Null\nauditpol /set /subcategory:'Logoff' /success:disable /failure:disable | Out-Null\nauditpol /set /subcategory:'Other Logon/Logoff Events' /success:disable /failure:disable | Out-Null\nauditpol /set /subcategory:'Credential Validation' /success:disable /failure:disable | Out-Null\n",
+  "depends_on": []
+}

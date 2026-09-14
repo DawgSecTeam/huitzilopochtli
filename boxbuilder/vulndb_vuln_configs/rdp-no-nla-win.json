@@ -1,0 +1,10 @@
+{
+  "name": "rdp-no-nla-win",
+  "description": "Practice-box helper (Windows): enables Remote Desktop (fDenyTSConnections=0) and turns OFF Network Level Authentication (UserAuthentication=0 on the RDP-Tcp WinStation). The paired hardening check reads UserAuthentication only -- RDP itself stays ON so the box remains reachable. Vars: none. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$ts = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\\CurrentControlSet\\Control\\Terminal Server', $true)\n$ts.SetValue('fDenyTSConnections', 0, 'DWord')\n$ts.Close()\n$ws = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp', $true)\n$ws.SetValue('UserAuthentication', 0, 'DWord')\n$ws.Close()\nEnable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue\n",
+  "depends_on": []
+}

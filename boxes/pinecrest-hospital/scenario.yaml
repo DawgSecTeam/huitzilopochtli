@@ -1,0 +1,553 @@
+# Pinecrest Community Hospital: a Windows hardening practice box -- the first
+# Windows round. Records server "records-01"; the theme is flavor only, every
+# task is solvable from ordinary Windows evidence (lusrmgr.msc, services.msc,
+# secpol.msc, registry, Task Scheduler, Get-SmbShare, auditpol, icacls).
+# Structurally parallel to the solar-observatory worked example: generic,
+# var-driven catalog seeds (the -win family in boxbuilder/vulndb_vuln_configs/),
+# every planted vulnerability paired with a check. The check that pairs with
+# the Print Spooler plants nothing -- the insecure state (spooler running) is
+# the Windows default; the finding is scoring that it must be stopped/disabled.
+#
+# Name discipline: every FILE_PATH / SERVICE_NAME / USERNAME / registry value
+# name in nakon.json MUST match its paired check's collect params byte-for-byte
+# -- nothing cross-validates them (see solar's header note).
+#
+# Forensics-answer hygiene: the four forensics answers (scheduled-task name,
+# blank-password account, redirected hostname, Run-key value name) are
+# deliberately NOT named in any check's display string -- a team must
+# investigate, not read the report.
+
+scenario:
+  name: "Pinecrest Community Hospital"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # Difficulty spread, called out in the in-box README too:
+  #   EASY (10):    no_mharding, no_jweaver, no_blank_account, admins_sole_admin,
+  #                 rdp_users_no_unauthorized, uac_enabled, no_autologin_password,
+  #                 records_file_present, creds_file_removed, spooler_stopped
+  #   MODERATE (16): guest_disabled, firewall_on, smb1_disabled, rdp_nla, audit_on,
+  #                 password_minlen, hosts_redirect_removed, no_runkey,
+  #                 runkey_payload_removed, no_task, task_payload_removed,
+  #                 backupagent_process_killed, backupagent_stopped,
+  #                 records_acl_restricted, records_share_restricted, no_autologin
+  #   HARD (7):     password_lockout, spooler_disabled, backupagent_disabled,
+  #                 hacktool_process_killed, hacktool_stopped, hacktool_disabled,
+  #                 no_password_never_expires
+  #
+  # The two malicious services (PinecrestBackupAgent -- innocuously named,
+  # HackToolSvc -- obviously bad with its "System Optimizer" description) are
+  # real, running Windows services; each is scored on process_state (the live
+  # payload process must die), service_state active, and service_state enabled,
+  # mirroring the solar-observatory pattern (the failure-recovery action
+  # restarts a merely-killed service until it is disabled for good).
+
+  # --- unauthorized accounts --------------------------------------------
+  - id: no_mharding
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized administrator account 'mharding' is removed"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: mharding
+      points: 10
+
+  - id: no_jweaver
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized account 'jweaver' is removed"
+    max_points: 10
+    collect: {}
+    expect:
+      user_absent: true
+      username: jweaver
+      points: 10
+
+  - id: no_blank_account
+    type: powershell_json
+    category: vuln
+    display: "EASY: The account with a blank password is removed"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # Win32_UserAccount, not Get-LocalUser: this image's LocalAccounts
+        # module returns null for some boolean properties (PasswordRequired is
+        # reliable there, but WMI is authoritative for both flags).
+        $blank = @(Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+            Where-Object { -not $_.Disabled -and -not $_.PasswordRequired }).Count
+        ($blank -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: no_password_never_expires
+    type: powershell_json
+    category: vuln
+    display: "HARD: No enabled account is set to never expire its password"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # Win32_UserAccount, not Get-LocalUser: PasswordNeverExpires reads as
+        # null for every account on this image; PasswordExpires (WMI) is the
+        # reliable mirror of the same flag (false = never expires).
+        $pne = @(Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+            Where-Object { -not $_.Disabled -and -not $_.PasswordExpires }).Count
+        ($pne -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  # --- group membership ---------------------------------------------------
+  - id: admins_sole_admin
+    type: user_group
+    category: vuln
+    display: "EASY: Only the authorized administrator is in the local Administrators group"
+    max_points: 10
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: Administrators
+      # sysadmin is the only authorized administrator; the built-in
+      # Administrator account is allowed to remain a member.
+      allowed: [sysadmin, Administrator]
+      points: 10
+
+  - id: rdp_users_no_unauthorized
+    type: user_group
+    category: vuln
+    display: "EASY: The Remote Desktop Users group has no unauthorized members"
+    max_points: 10
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: Remote Desktop Users
+      allowed: []
+      points: 10
+
+  - id: guest_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The built-in Guest account is disabled"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # WMI Disabled flag, not Get-LocalUser .Enabled: authoritative on this
+        # image and unaffected by the LocalAccounts module's null quirks.
+        $g = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='Guest'"
+        (-not $g -or $g.Disabled) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  # --- password policy ----------------------------------------------------
+  - id: password_minlen
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Minimum password length is at least 8 characters"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # This Server image prints "Minimum password length:" WITHOUT the
+        # "(chars)" suffix other Windows builds use -- tolerate both.
+        $out = net accounts 2>$null | Out-String
+        $m = [regex]::Match($out, 'Minimum password length\s*(?:\(chars\))?\s*:\s*(\d+)')
+        ([int]$m.Groups[1].Value -ge 8) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: password_lockout
+    type: powershell_json
+    category: vuln
+    display: "HARD: Account lockout threshold is at least 5 invalid attempts"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $out = net accounts 2>$null | Out-String
+        $m = [regex]::Match($out, 'Lockout threshold\s*:\s*(\d+)')
+        ([int]$m.Groups[1].Value -ge 5) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  # --- registry hardening ---------------------------------------------------
+  - id: uac_enabled
+    type: registry_value
+    category: vuln
+    display: "EASY: User Account Control is enabled (EnableLUA = 1)"
+    max_points: 10
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+      value: EnableLUA
+    expect:
+      equals: 1
+      field: value
+      points: 10
+
+  - id: rdp_nla
+    type: registry_value
+    category: vuln
+    display: "MODERATE: Remote Desktop requires Network Level Authentication"
+    max_points: 10
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp
+      value: UserAuthentication
+    expect:
+      equals: 1
+      field: value
+      points: 10
+
+  - id: no_autologin
+    type: registry_value
+    category: vuln
+    display: "MODERATE: Automatic logon is disabled"
+    max_points: 10
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+      value: AutoAdminLogon
+    expect:
+      equals: false
+      field: present
+      points: 10
+
+  - id: no_autologin_password
+    type: registry_value
+    category: vuln
+    display: "EASY: The autologon credential stored in the registry is removed"
+    max_points: 10
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+      value: DefaultPassword
+    expect:
+      equals: false
+      field: present
+      points: 10
+
+  # --- platform defenses ----------------------------------------------------
+  - id: firewall_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Windows Firewall is enabled on all profiles"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $off = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled }).Count
+        ($off -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: smb1_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The deprecated SMB1 protocol is disabled on the SMB server"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # ground truth = the registry value the seed sets (the SMB WMI Set path
+        # is unreliable on some hardened images; Get mirrors it only sometimes)
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -ErrorAction Ignore).SMB1
+        ($v -ne 1) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: audit_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Logon auditing records both success and failure"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $out = auditpol /get /subcategory:'Logon' 2>$null | Out-String
+        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  # --- persistence ----------------------------------------------------------
+  - id: no_runkey
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The Run-key persistence entry launching a hidden payload is removed"
+    max_points: 10
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+      value: HealthSyncAgent
+    expect:
+      equals: false
+      field: present
+      points: 10
+
+  - id: runkey_payload_removed
+    type: permission
+    category: vuln
+    display: 'MODERATE: The Run-key payload script under C:\ProgramData\Subsystems is removed'
+    max_points: 10
+    collect:
+      path: C:\ProgramData\Subsystems\hsync.ps1
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: no_task
+    type: powershell_json
+    category: vuln
+    display: 'MODERATE: The rogue scheduled task running a payload from C:\ProgramData\Subsystems is removed'
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        (-not (Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdateCore' -ErrorAction SilentlyContinue)) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: task_payload_removed
+    type: permission
+    category: vuln
+    display: "MODERATE: The scheduled task's payload script is removed"
+    max_points: 10
+    collect:
+      path: C:\ProgramData\Subsystems\edgecore.ps1
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  # --- malicious services (real, running) ------------------------------------
+  - id: backupagent_process_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: The PinecrestBackupAgent payload process is terminated"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      pattern: pcbackup_sync
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: backupagent_stopped
+    type: service_state
+    category: vuln
+    display: "MODERATE: The PinecrestBackupAgent service is stopped"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: PinecrestBackupAgent
+    expect:
+      equals: false
+      field: active
+      points: 10
+
+  - id: backupagent_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: The PinecrestBackupAgent service is disabled at startup"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: PinecrestBackupAgent
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  - id: hacktool_process_killed
+    type: process_state
+    category: vuln
+    display: "HARD: The payload process of the disguised 'optimization' service is terminated"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      pattern: keysvc
+    expect:
+      equals: false
+      field: running
+      points: 10
+
+  - id: hacktool_stopped
+    type: service_state
+    category: vuln
+    display: "HARD: HackToolSvc is stopped"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: HackToolSvc
+    expect:
+      equals: false
+      field: active
+      points: 10
+
+  - id: hacktool_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: HackToolSvc is disabled at startup"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: HackToolSvc
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  # Print Spooler: nothing is planted -- "running and auto-start" is the
+  # Windows default, and that insecure default is the finding (PrintNightmare).
+  - id: spooler_stopped
+    type: service_state
+    category: vuln
+    display: "EASY: The Print Spooler service is stopped"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: Spooler
+    expect:
+      equals: false
+      field: active
+      points: 10
+
+  - id: spooler_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: The Print Spooler service is disabled at startup"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: Spooler
+    expect:
+      equals: false
+      field: enabled
+      points: 10
+
+  # --- files / shares / network ----------------------------------------------
+  - id: records_file_present
+    type: permission
+    category: penalty
+    display: 'PENALTY: Destroying the billing export evidence at C:\HospitalData\billing-export.csv costs 10 points'
+    max_points: 10
+    collect:
+      path: C:\HospitalData\billing-export.csv
+    expect:
+      equals: true
+      field: exists
+      points: -10
+
+  - id: records_acl_restricted
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The billing export is no longer writable by Everyone"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $p = 'C:\HospitalData\billing-export.csv'
+        if (-not (Test-Path $p)) { $false | ConvertTo-Json -Compress; exit }
+        $bad = Get-Acl $p | Select-Object -ExpandProperty Access |
+            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference -match 'Everyone' }
+        (-not $bad) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: records_share_restricted
+    type: powershell_json
+    category: vuln
+    display: 'MODERATE: The SMB share over C:\HospitalData no longer grants Everyone access'
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $share = Get-SmbShare -Name 'Records' -ErrorAction SilentlyContinue
+        if (-not $share) { $true | ConvertTo-Json -Compress; exit }
+        $bad = Get-SmbShareAccess -Name 'Records' |
+            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.AccountName -match 'Everyone' }
+        (-not $bad) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+
+  - id: creds_file_removed
+    type: permission
+    category: vuln
+    display: 'EASY: The leftover credentials file under C:\HospitalData\scripts is removed'
+    max_points: 10
+    collect:
+      path: C:\HospitalData\scripts\legacy_admin_creds.txt
+    expect:
+      equals: false
+      field: exists
+      points: 10
+
+  - id: hosts_redirect_removed
+    type: file_regex
+    category: vuln
+    display: "MODERATE: The hosts-file redirect to the fake portal is removed"
+    max_points: 10
+    collect:
+      path: C:\Windows\System32\drivers\etc\hosts
+      extract: '(?m)^10\.0\.0\.99\s+(portal\.pinecrest\.example)'
+    expect:
+      equals: null
+      points: 10
+
+# --- scored forensics -------------------------------------------------------
+# The answer keys live ONLY in the rubric (compiled from this file's answers).
+# None of the four answers is named by any check display: they require
+# investigating the planted artifacts, not reading the report.
+forensics:
+  - id: fq_task_name
+    question: "A rogue scheduled task ran a payload out of C:\\ProgramData\\Subsystems. What is the task's exact name?"
+    points: 10
+    answer: "MicrosoftEdgeUpdateCore"
+    answers: ["MicrosoftEdgeUpdateCore", "msedgeupdatecore", "MsEdgeUpdateCore"]
+
+  - id: fq_blank_user
+    question: "One local account was created with a blank password. What is its username?"
+    points: 10
+    answer: "audit_svc"
+    answers: ["audit_svc"]
+
+  - id: fq_hosts_hostname
+    question: "The hosts file redirects one Pinecrest portal hostname to a wrong IP. Which hostname is redirected?"
+    points: 10
+    answer: "portal.pinecrest.example"
+    answers: ["portal.pinecrest.example"]
+
+  - id: fq_runkey_value
+    question: "A Run key under HKLM launches a hidden PowerShell payload at logon. What is the exact name of the registry VALUE?"
+    points: 10
+    answer: "HealthSyncAgent"
+    answers: ["HealthSyncAgent", "healthsyncagent"]

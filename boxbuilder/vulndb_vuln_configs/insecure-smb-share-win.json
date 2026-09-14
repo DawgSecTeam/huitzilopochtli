@@ -1,0 +1,10 @@
+{
+  "name": "insecure-smb-share-win",
+  "description": "Practice-box helper (Windows): creates (or reconfigures) an SMB share $SHARE_NAME over $SHARE_PATH with Everyone = Full Control. Vars: SHARE_NAME (required); SHARE_PATH (required); DESCRIPTION (optional). Idempotent: existing share is re-granted.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $SHARE_NAME -or -not $SHARE_PATH) { throw 'SHARE_NAME and SHARE_PATH are required' }\nStart-Service LanmanServer -ErrorAction SilentlyContinue\nNew-Item -ItemType Directory -Force -Path $SHARE_PATH | Out-Null\n$share = Get-SmbShare -Name $SHARE_NAME -ErrorAction SilentlyContinue\nif ($share) {\n    Grant-SmbShareAccess -Name $SHARE_NAME -AccountName 'Everyone' -AccessRight Full -Force | Out-Null\n} else {\n    New-SmbShare -Name $SHARE_NAME -Path $SHARE_PATH -FullAccess 'Everyone' -Description $DESCRIPTION | Out-Null\n}\n",
+  "depends_on": []
+}

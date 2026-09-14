@@ -1,0 +1,106 @@
+{
+  "_comment": "Pinecrest Community Hospital vuln-planting side (Windows; os contains 'win' so nakon uses its powershell deploy path -- SSH transport, Windows OpenSSH, run.ps1 with per-step scripts; elevation comes from the SSH principal, which must be a local admin). Every -win configuration here is a GENERIC var-driven seed in boxbuilder/vulndb_vuln_configs/ (ids 140-156 in the live catalog as of 2026-09-12); all theme detail lives in the vars below, and boxbuilder appends the theme-*-win entries itself. ORDER MATTERS: weak-password-policy-win runs FIRST (secedit complexity off + weak net accounts) so later account creation is unconstrained; insecure-file-acl-win must run BEFORE insecure-smb-share-win (share target dir exists); autologin-win after records-team exists. Name discipline: every FILE_PATH / SHARE_NAME / SERVICE_NAME / USERNAME / RUN_VALUE_NAME / TASK_NAME here MUST match its paired check's collect params in scenario.yaml byte-identically -- nothing cross-validates. The two malicious services are real running services (powershell.exe -File <payload> as BinaryPathName with sc failure auto-restart), each scored by process_state on the payload filename fragment (pcbackup_sync / keysvc) plus service_state active/enabled -- if you rename a PAYLOAD_PATH, update the matching collect.pattern in scenario.yaml too. Spooler is scored but NOT planted here: running+auto is the Windows default, and that insecure default is the finding.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "records-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "weak-password-policy-win",
+          "vars": { "MINPWLEN": "4", "LOCKOUT_THRESHOLD": "0", "MAXPWAGE": "unlimited" }
+        },
+        {
+          "name": "local-user-win",
+          "vars": { "USERNAME": "mharding", "PASSWORD": "Harborline88!", "FULLNAME": "Marcus Harding", "DESCRIPTION": "Contractor - facilities", "ADMIN_ADD": "1", "PASSWORD_NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "local-user-win",
+          "vars": { "USERNAME": "jweaver", "PASSWORD": "Weaver2026!", "FULLNAME": "June Weaver", "DESCRIPTION": "Ward clerk (transferred)" }
+        },
+        {
+          "name": "rdp-group-member-win",
+          "vars": { "USERNAME": "jweaver" }
+        },
+        {
+          "name": "local-user-win",
+          "vars": { "USERNAME": "audit_svc", "DESCRIPTION": "audit agent service account" }
+        },
+        {
+          "name": "local-user-win",
+          "vars": { "USERNAME": "records-team", "PASSWORD": "Records1!", "FULLNAME": "Records Team" }
+        },
+        "guest-enabled-win",
+        "uac-disabled-win",
+        "rdp-no-nla-win",
+        "smb1-enabled-win",
+        "firewall-disabled-win",
+        "audit-policy-off-win",
+        {
+          "name": "autologin-win",
+          "vars": { "USERNAME": "records-team", "PASSWORD": "Records1!" }
+        },
+        {
+          "name": "runkey-persistence-win",
+          "vars": {
+            "RUN_VALUE_NAME": "HealthSyncAgent",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\hsync.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "MicrosoftEdgeUpdateCore",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\edgecore.ps1",
+            "PAYLOAD_BODY": "Start-Sleep -Seconds 5"
+          }
+        },
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "PinecrestBackupAgent",
+            "DESCRIPTION": "Pinecrest nightly backup indexer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\pcbackup_sync.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "HackToolSvc",
+            "DESCRIPTION": "System Optimizer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\keysvc.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "insecure-file-acl-win",
+          "vars": {
+            "FILE_PATH": "C:\\HospitalData\\billing-export.csv",
+            "FILE_CONTENT": "account,mrn,balance\nA-1042,MRN-88231,412.80\nA-2210,MRN-90447,58.25\nA-3317,MRN-77120,1900.00\n"
+          }
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\HospitalData\\scripts\\legacy_admin_creds.txt",
+            "FILE_CONTENT": "# legacy RDP gateway creds (KEEP PRIVATE)\nuser: sysadmin\npassword: FallShift2026!\n"
+          }
+        },
+        {
+          "name": "insecure-smb-share-win",
+          "vars": { "SHARE_NAME": "Records", "SHARE_PATH": "C:\\HospitalData", "DESCRIPTION": "Records department share" }
+        },
+        {
+          "name": "hosts-redirect-win",
+          "vars": { "IP": "10.0.0.99", "HOSTNAME": "portal.pinecrest.example" }
+        }
+      ]
+    }
+  ]
+}

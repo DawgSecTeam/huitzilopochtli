@@ -1,0 +1,10 @@
+{
+  "name": "theme-wallpaper-win",
+  "description": "Box theming (Windows): sets a machine-wide desktop wallpaper via the group-policy registry values (HKLM Policies\\System Wallpaper/WallpaperStyle), which every interactive user inherits. Reads $WALLPAPER_FILENAME, the attachment nakon places in this step's working directory; copies it under C:\\ProgramData\\huitz-theme. Auto-created idempotently by boxbuilder/vulndb.py; do not hand-edit the name.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $WALLPAPER_FILENAME) { Write-Output 'WALLPAPER_FILENAME not set; nothing to do'; exit 0 }\n$src = Join-Path (Get-Location) $WALLPAPER_FILENAME\nif (-not (Test-Path $src)) { throw \"wallpaper attachment $src not found in the working directory\" }\n$destDir = 'C:\\ProgramData\\huitz-theme'\nNew-Item -ItemType Directory -Force -Path $destDir | Out-Null\n$dest = Join-Path $destDir $WALLPAPER_FILENAME\nCopy-Item -Force $src $dest\n$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System', $true)\n$k.SetValue('Wallpaper', $dest, 'String')\n$k.SetValue('WallpaperStyle', '2', 'String')\n$k.Close()\n",
+  "depends_on": []
+}

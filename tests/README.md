@@ -88,7 +88,7 @@ VM via the guest agent, runs it with the VM's own system `python3`, and
 confirms the report is correct. Alpine is skipped for now per instruction.
 
 **Scope note**: installs to `/tmp/huitzilopochtli` rather than the production
-`/opt/huitzilopochtli` path, and runs the agent directly rather than through the
+`/opt/.huitzilopochtli` path, and runs the agent directly rather than through the
 real systemd unit. This is because the Fedora template's `qemu-guest-agent`
 runs SELinux-confined to the `virt_qemu_ga_t` domain, which is denied
 writes to `usr_t`-labeled paths (`/opt`) and `/etc/systemd/system` even as

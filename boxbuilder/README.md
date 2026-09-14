@@ -134,7 +134,7 @@ boxbuilder's side of the fence.
    `/opt`.** `snap connections firefox` shows only the `home` interface
    connected -- no access outside `$HOME`. The auto-appended "Scoring
    Report" shortcut used to point straight at
-   `/opt/huitzilopochtli/report.html`; Firefox would actually launch (so
+   `/opt/.huitzilopochtli/report.html`; Firefox would actually launch (so
    this doesn't look like caveat #2) but show "File not found", because the
    file is genuinely invisible to the sandboxed process, not because it's
    missing. Fixed by `packaging/sync-report.sh` (run via

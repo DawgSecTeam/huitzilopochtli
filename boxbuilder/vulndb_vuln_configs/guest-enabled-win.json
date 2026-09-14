@@ -1,0 +1,10 @@
+{
+  "name": "guest-enabled-win",
+  "description": "Practice-box helper (Windows): enables the built-in Guest account (classic CyberPatriot-style finding). Vars: none. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "net user guest /active:yes | Out-Null\n",
+  "depends_on": []
+}

@@ -83,26 +83,6 @@ def validate_inputs(scenario: dict, nakon_config: dict) -> None:
             raise ValueError(
                 f"nakon config machines[{idx}] must be an object with a 'name'"
             )
-    for idx, machine in enumerate(nakon_config["machines"]):
-        if not isinstance(machine, dict) or not machine.get("name"):
-            raise ValueError(
-                f"nakon config machines[{idx}] must be an object with a 'name'"
-            )
-    for idx, machine in enumerate(nakon_config["machines"]):
-        if not isinstance(machine, dict) or not machine.get("name"):
-            raise ValueError(
-                f"nakon config machines[{idx}] must be an object with a 'name'"
-            )
-    for idx, machine in enumerate(nakon_config["machines"]):
-        if not isinstance(machine, dict) or not machine.get("name"):
-            raise ValueError(
-                f"nakon config machines[{idx}] must be an object with a 'name'"
-            )
-    for idx, machine in enumerate(nakon_config["machines"]):
-        if not isinstance(machine, dict) or not machine.get("name"):
-            raise ValueError(
-                f"nakon config machines[{idx}] must be an object with a 'name'"
-            )
 
 
 def _resolve(path: str, base_dir: str) -> str:

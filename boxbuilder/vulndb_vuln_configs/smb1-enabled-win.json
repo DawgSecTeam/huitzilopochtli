@@ -1,0 +1,10 @@
+{
+  "name": "smb1-enabled-win",
+  "description": "Practice-box helper (Windows): re-enables the deprecated SMB1 protocol flag on the SMB server stack (registry SMB1=1 under LanmanServer\\Parameters -- the WMI Set path is unreliable on some hardened images; the paired check reads the same registry value). Vars: none. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Start-Service LanmanServer -ErrorAction SilentlyContinue\nSet-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters -Name SMB1 -Type DWord -Value 1\nWrite-Output 'SMB1=1 set'\n",
+  "depends_on": []
+}

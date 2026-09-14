@@ -1,0 +1,10 @@
+{
+  "name": "firewall-disabled-win",
+  "description": "Practice-box helper (Windows): disables Windows Defender Firewall for ALL profiles (Domain, Private, Public). Vars: none. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Set-NetFirewallProfile -All -Enabled False\n",
+  "depends_on": []
+}
