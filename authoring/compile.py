@@ -29,10 +29,19 @@ _DEFAULT_HOST_ID = "localhost"
 _DEFAULT_FORENSICS_PATH = "Forensics-Questions.txt"
 
 _MAX_LOGO_BYTES = 150 * 1024  # Keep signed manifest small (logo is data: URI).
+_MAX_README_BYTES = 64 * 1024  # Handbook text for `huitz readme` (plain UTF-8).
 
 
 def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional[dict]:
-    """Build the small cosmetic theme subset that ships in the Manifest."""
+    """Build the small cosmetic theme subset that ships in the Manifest.
+
+    `readme` (the player-facing handbook) is embedded as TEXT: it is what
+    lets `huitz readme` render the handbook from the report snapshot as any
+    user, in both modes, without a desktop or a theme attachment. The
+    desktop-asset side of the theme (wallpaper, shortcuts, the rendered
+    README.html) still flows through the vulndb theme attachments at plant
+    time and is untouched by this.
+    """
     if not theme_raw:
         return None
 
@@ -56,6 +65,20 @@ def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional
                 f"for embedding in the signed manifest: {logo_path}"
             )
         manifest_theme["logo_b64"] = base64.b64encode(data).decode("ascii")
+
+    readme = theme_raw.get("readme")
+    if readme:
+        readme_path = readme if os.path.isabs(readme) else os.path.join(os.path.dirname(yaml_path), readme)
+        if not os.path.isfile(readme_path):
+            raise ValueError(f"theme.readme not found: {readme_path}")
+        with open(readme_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        if len(text.encode("utf-8")) > _MAX_README_BYTES:
+            raise ValueError(
+                f"theme.readme is over the {_MAX_README_BYTES}-byte cap "
+                f"for embedding in the signed manifest: {readme_path}"
+            )
+        manifest_theme["readme_text"] = text
 
     return manifest_theme
 

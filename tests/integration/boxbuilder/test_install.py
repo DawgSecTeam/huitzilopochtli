@@ -13,6 +13,7 @@ import os
 import pytest
 
 from boxbuilder import engine as eng_mod
+from boxbuilder.artifacts import INSTALL_DIR, RUBRIC_BASENAME
 from boxbuilder.pipeline import install_box
 from boxbuilder.spec import BoxSpec
 
@@ -44,7 +45,7 @@ def _compile_result(tmp_path, mode):
         "engine_record": str(ad / "engine_record.json"),
     }
     if mode == "honor":
-        (ad / "rubric.json").write_text("x")
+        (ad / "rubric.json").write_text("{}")   # valid JSON: install encodes it
         cr["rubric"] = str(ad / "rubric.json")
     return cr
 
@@ -74,14 +75,26 @@ def test_install_honor_places_files_and_enables_init(tmp_path, fake_provider_fac
     assert "agent.pyz" in placed
     assert "manifest.signed.json" in placed
     assert "authoring_public_key.b64" in placed
-    assert "rubric.json" in placed            # honor-specific
+    assert RUBRIC_BASENAME in placed           # honor-specific
     assert "agent_config.json" in placed
     # All under INSTALL_DIR.
-    assert all(p.startswith("/opt/huitzilopochtli/") for p in result["files"])
+    assert all(p.startswith(f"{INSTALL_DIR}/") for p in result["files"])
     # init was actually enabled via the handle.
     assert handle.init_kind == "systemd"
+    # The first-login motd banner is installed -- reported via result["motd"]
+    # (it lives in /etc/update-motd.d, deliberately outside the install dir).
+    assert result["motd"] == "/etc/update-motd.d/90-huitzilopochtli"
+    assert any("install -m 755 /tmp/huitzilopochtli-motd.sh" in c
+               for c in handle.runs)
     # mkdir happened.
-    assert any("mkdir -p /opt/huitzilopochtli" in c for c in handle.runs)
+    assert any(f"mkdir -p {INSTALL_DIR}" in c for c in handle.runs)
+    # The install dir was sealed root-only after the puts (the SFTP puts run
+    # as the SSH user, so the seal must come after them).
+    assert any(f"chown -R root:root {INSTALL_DIR}" in c for c in handle.runs)
+    assert any(f"chmod 700 {INSTALL_DIR}" in c for c in handle.runs)
+    # The rubric lands 0600 -- it's the answer key.
+    modes = {remote: mode for _, remote, mode in handle.puts}
+    assert modes[f"{INSTALL_DIR}/{RUBRIC_BASENAME}"] == 0o600
 
 
 def test_install_honor_agent_config_shape(tmp_path, fake_provider_factory):
@@ -90,7 +103,7 @@ def test_install_honor_agent_config_shape(tmp_path, fake_provider_factory):
                 provider_factory=fake_provider_factory, init_kind="none", log=lambda *a: None)
     cfg = json.loads((tmp_path / "artifacts" / "agent_config.json").read_text())
     assert cfg["mode"] == "honor"
-    assert cfg["rubric_path"].endswith("/rubric.json")
+    assert cfg["rubric_path"].endswith(f"/{RUBRIC_BASENAME}")
     assert cfg["identity_path"] is None
     assert cfg["checkin_interval_s"] is None
 
@@ -111,7 +124,7 @@ def test_install_ranked_places_files_without_rubric(tmp_path, fake_provider_fact
     assert result["ok"] is True
     assert result["mode"] == "ranked"
     placed = {os.path.basename(p) for p in result["files"]}
-    assert "rubric.json" not in placed        # stays off-box in ranked
+    assert RUBRIC_BASENAME not in placed      # stays off-box in ranked
     assert "agent.pyz" in placed
     assert result["ranked"]["scenario_uploaded"] is True
     assert result["ranked"]["enrollment_token"] == "STUB-TOKEN-123"
@@ -167,11 +180,13 @@ def test_install_chowns_install_dir_for_non_root_user(tmp_path, fake_provider_fa
     assert result["ok"] is True
     handle = fake_provider.last_handle
     assert any("id -u" in c and "id -g" in c for c in handle.runs)   # uid:gid lookup
-    assert any("chown 1000:1000 /opt/huitzilopochtli" in c for c in handle.runs)
+    assert any(f"chown 1000:1000 {INSTALL_DIR}" in c for c in handle.runs)
 
 
 def test_install_skips_chown_when_root_user(tmp_path, fake_provider_factory, fake_provider):
-    """A root SSH user already owns the install dir; no chown should be issued."""
+    """A root SSH user already owns the install dir; no uid:gid handover chown
+    is issued. The post-install seal (chown root + chmod 700) still runs --
+    it is unconditional, not part of the handover."""
     cr = _compile_result(tmp_path, "honor")
     spec = _spec("honor")
     spec.provider = {"name": "fake", "host": "10.0.0.99", "user": "root", "password": "p"}
@@ -181,7 +196,8 @@ def test_install_skips_chown_when_root_user(tmp_path, fake_provider_factory, fak
     )
     assert result["ok"] is True
     handle = fake_provider.last_handle
-    assert not any("chown" in c for c in handle.runs)
+    assert not any("chown 1000:1000" in c for c in handle.runs)
+    assert any(f"chmod 700 {INSTALL_DIR}" in c for c in handle.runs)
 
 
 def test_install_ranked_requires_admin_token(tmp_path, fake_provider_factory, monkeypatch):

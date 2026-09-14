@@ -2,21 +2,26 @@
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
 
+import agent.answers
+import agent.cli
 import agent.config
 import agent.collector
 import agent.identity
 import agent.notify
 import agent.platform.detect
 import agent.reporter
+import agent.snapshot
 import agent.transport
 import agent.adversary.executor
 import common.evaluator
 from common.canon import canonicalize
 from common.crypto import signing
+from common import rubric_codec
 from common.schema import (
     Bundle,
     Category,
@@ -169,16 +174,18 @@ def _read_boot_id() -> str:
         return str(uuid.uuid4())
 
 
-_ANSWER_BLANK = "_" * 44
-
-
 def _primary_desktop_dir() -> str | None:
     """Best-effort Desktop dir of the first real interactive account.
 
     Mirrors the uid/shell heuristic the boxbuilder theme scripts use
-    (uid >= 1000, real login shell). Returns None when nothing matches or the
-    platform has no pwd module (non-POSIX).
+    (uid >= 1000, real login shell). On Windows there is no passwd; the
+    Public Desktop is the editable surface every account shares (same place
+    the report is mirrored), so it is the answers-file home. Returns None
+    when nothing matches (callers fall back to the agent config dir).
     """
+    if os.name == "nt":
+        pub = os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Desktop")
+        return pub if os.path.isdir(pub) else None
     try:
         import pwd
     except ImportError:
@@ -199,26 +206,14 @@ def _write_forensics_template(path: str, questions: list) -> None:
     Callers handle write-if-missing; here we write via tmp + rename and make
     the file group/other-writable (and owned by the desktop user when it lives
     under one) because the agent typically runs as root while the answers are
-    typed in by a desktop user.
+    typed in by a desktop user. The template format lives in agent/answers.py
+    (shared with the collector and the huitz CLI).
     """
-    lines = [
-        "Forensics Questions",
-        "===================",
-        "",
-        "Answer each question below by replacing the blank on its 'Answer:'",
-        "line. Answers are collected and scored automatically each time the",
-        "box re-grades: a correct answer earns the question's points, a wrong",
-        "or blank answer earns nothing and never deducts.",
-        "",
-    ]
-    for ordinal, question in questions:
-        lines.append(f"Q{ordinal}: {question}")
-        lines.append(f"Answer: {_ANSWER_BLANK}")
-        lines.append("")
+    lines = agent.answers.render_template(questions)
 
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write(lines)
     try:
         os.chmod(tmp, 0o666)
     except OSError:
@@ -297,11 +292,49 @@ def _theme_title(manifest) -> str:
     return theme.get("title") or manifest.scenario_name
 
 
-def _run_honor(config, manifest, ctx) -> None:
+def _sync_desktop_copies(config) -> None:
+    """Mirror report.html + report.json to each user's Desktop, now.
+
+    packaging/sync-report.sh's job too — but the unit's ExecStartPost fires
+    when the Type=simple agent process is FORKED, not when it exits, so it
+    races the grade and lands exactly one grade stale on the Desktop (the
+    countdown the huitz CLI renders from that copy is therefore pinned at
+    zero). Syncing here is ordered after the write, so both the timer's
+    grades and `huitz grade` publish their own result. Best-effort: a
+    hand-rolled install without the script just skips this; the timer's
+    next ExecStartPost copy is the fallback.
+    """
+    script = os.path.join(
+        os.path.dirname(os.path.abspath(config.report_path)), "sync-report.sh")
+    if not os.path.isfile(script):
+        return
+    try:
+        subprocess.run([script], timeout=15, check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass  # never stall a grade on the mirror; ExecStartPost still copies
+
+
+def honor_grade(config, manifest, ctx) -> tuple:
+    """One full honor-mode grade: collect -> evaluate -> report + snapshot.
+
+    This is the whole scoring pipeline the systemd timer (and `huitz
+    grade`) runs. Returns (score, delta, snapshot-dict) so the CLI can
+    render the fresh board without re-reading the file it just wrote.
+    Scoring stays a pure function of (evidence, rubric, clock) — everything
+    here is presentation or bookkeeping around that (§2.1).
+    """
     evidence = agent.collector.run_all(manifest.checks, ctx)
 
-    with open(config.rubric_path, "r", encoding="utf-8") as f:
-        rubric_dict = json.load(f)
+    # The rubric lands obfuscated as a 0600 dotfile (common/rubric_codec.py,
+    # written by boxbuilder at install time). Plain JSON is still accepted so
+    # boxes installed by an older boxbuilder keep scoring.
+    with open(config.rubric_path, "rb") as f:
+        rubric_raw = f.read()
+    if rubric_codec.looks_encoded(rubric_raw):
+        rubric_dict = rubric_codec.decode_rubric(rubric_raw)
+    else:
+        rubric_dict = json.loads(rubric_raw.decode("utf-8"))
     rubric = _rubric_from_dict(rubric_dict)
 
     score = common.evaluator.evaluate(evidence, rubric, _WallClock())
@@ -318,11 +351,23 @@ def _run_honor(config, manifest, ctx) -> None:
     with open(config.report_path, "w", encoding="utf-8") as f:
         f.write(html)
 
+    snap = agent.snapshot.build_snapshot(
+        score, manifest, mode="honor", agent_version=AGENT_VERSION,
+        delta=delta, computed_at=score.computed_at,
+    )
+    agent.snapshot.write(config.report_path, snap)
+
     if delta:
         agent.notify.announce(
             delta, score.total, title=_theme_title(manifest),
             enabled=config.notifications,
         )
+    _sync_desktop_copies(config)
+    return score, delta, snap
+
+
+def _run_honor(config, manifest, ctx) -> None:
+    honor_grade(config, manifest, ctx)
 
 
 def _enrolled_marker_path(identity_path: str) -> str:
@@ -448,6 +493,13 @@ def _run_ranked(config, manifest, ctx) -> None:
                     next_checkin_s=last_response.next_checkin_s,
                     score_delta=delta,
                 )
+                snap = agent.snapshot.build_snapshot(
+                    last_response.score, manifest, mode="ranked",
+                    agent_version=AGENT_VERSION, delta=delta,
+                    computed_at=last_response.score.computed_at,
+                    server_time=last_response.server_time,
+                    next_checkin_s=last_response.next_checkin_s,
+                )
             else:
                 placeholder = ScoreBreakdown(
                     scenario_name=manifest.scenario_name,
@@ -460,8 +512,15 @@ def _run_ranked(config, manifest, ctx) -> None:
                 html = agent.reporter.render_report(
                     placeholder, Mode.RANKED, None, theme=manifest.theme, manifest=manifest
                 )
+                snap = agent.snapshot.build_snapshot(
+                    placeholder, manifest, mode="ranked",
+                    agent_version=AGENT_VERSION, delta=None,
+                    computed_at=placeholder.computed_at,
+                    awaiting_engine=True,
+                )
             with open(config.report_path, "w", encoding="utf-8") as f:
                 f.write(html)
+            agent.snapshot.write(config.report_path, snap)
         except Exception as e:  # noqa: BLE001 — report rendering must never
             # stall the check-in loop (§9.1)
             print(f"WARNING: failed to render/write report: {e}", file=sys.stderr)
@@ -483,7 +542,30 @@ def _run_ranked(config, manifest, ctx) -> None:
 
 
 def main() -> None:
-    config_path = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_CONFIG_PATH
+    argv = sys.argv[1:]
+    # `huitz` verb dispatch (agent/cli.py): score/grade/watch/forensics.
+    # A bare path still means the classic one-shot agent run. Verb-shaped
+    # tokens (no path separator, no extension) route to the CLI so typos
+    # like `huitz scroe` get usage help instead of a confusing
+    # "config file not found"; anything path-like — including a missing
+    # config path — keeps the classic behavior. When the zipapp is installed
+    # under the name `huitz` (boxbuilder copies it to /usr/local/bin/huitz),
+    # a bare invocation is help, not a hunt for a default config — that is
+    # the player's entry point.
+    invoked_as_huitz = (
+        os.path.basename(sys.argv[0] or "").rsplit(".", 1)[0] == "huitz"
+    )
+    if argv:
+        head = argv[0]
+        if head in ("-h", "--help") or head in agent.cli.VERBS or (
+                "/" not in head and "." not in head and "\\" not in head):
+            from agent.cli import main as cli_main
+            raise SystemExit(cli_main(argv))
+    elif invoked_as_huitz:
+        from agent.cli import main as cli_main
+        raise SystemExit(cli_main([]))
+
+    config_path = argv[0] if argv else _DEFAULT_CONFIG_PATH
     config = agent.config.load_config(config_path)
 
     manifest = _load_manifest(

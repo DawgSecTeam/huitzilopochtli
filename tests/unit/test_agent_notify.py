@@ -60,13 +60,24 @@ def test_malformed_state_fields_treated_as_no_baseline(state_path):
     for bad in (
         {"total": "50", "scenario_version": "v1"},   # non-int total
         {"total": True, "scenario_version": "v1"},   # bool is not an int here
-        {"total": 50, "scenario_version": 1},        # non-str version
+        {"total": 50, "scenario_version": 1.5},      # version must be int|str
         {"total": 50},                               # missing version
         [50, "v1"],                                  # wrong container
     ):
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(bad, f)
         assert notify.consume_delta(state_path, 50, "v1") is None, bad
+
+
+def test_int_scenario_version_round_trip(state_path):
+    """The schema's scenario_version is an INT (§6.4) and that is what the
+    agent actually passes (manifest.scenario_version). This used to be
+    rejected as a non-str version, which made the baseline permanently
+    unloadable on real boxes -- every score-change notification silently
+    dead. Regression guard: int versions must round-trip and diff."""
+    assert notify.consume_delta(state_path, 10, 1) is None
+    assert notify.consume_delta(state_path, 30, 1) == 20
+    assert notify.consume_delta(state_path, 25, 1) == -5
 
 
 def test_unwritable_state_dir_does_not_raise(tmp_path):

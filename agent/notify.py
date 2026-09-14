@@ -25,6 +25,8 @@ import sys
 
 import agent.sounds
 
+_IS_WINDOWS = os.name == "nt"
+
 _STATE_FILENAME = "score_state.json"
 # alarm.wav is ~5s; let playback start and finish with headroom.
 _PLAY_TIMEOUT_S = 12.0
@@ -41,7 +43,10 @@ def state_path_for(report_path: str) -> str:
 
 
 def _load_state(path: str) -> dict | None:
-    """Return {'total': int, 'scenario_version': str} or None if absent/bad."""
+    """Return {'total': int, 'scenario_version': int|str} or None if
+    absent/bad. scenario_version is an int in the schema (§6.4) and that is
+    what both call sites pass; str is still accepted so state files written
+    by any other tooling keep comparing."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -53,7 +58,7 @@ def _load_state(path: str) -> dict | None:
     version = data.get("scenario_version")
     if isinstance(total, bool) or not isinstance(total, int):
         return None
-    if not isinstance(version, str):
+    if isinstance(version, bool) or not isinstance(version, (int, str)):
         return None
     return {"total": total, "scenario_version": version}
 
@@ -229,6 +234,9 @@ def announce(delta: int, total: int, title: str = "",
     try:
         kind = "gain" if delta > 0 else "penalty"
         summary, body, urgency = _copy(delta, total, title)
+        if _IS_WINDOWS:
+            _announce_windows(kind, summary, body)
+            return
         sessions = _live_sessions()
         for user, uid in sessions:
             _play_sound(kind, user, uid)
@@ -237,3 +245,48 @@ def announce(delta: int, total: int, title: str = "",
             _play_sound(kind, None, None)
     except Exception as e:  # noqa: BLE001 — cosmetics must never stall a run
         print(f"WARNING: score-change notification failed: {e}", file=sys.stderr)
+
+
+# --- windows: winsound + best-effort toast -----------------------------------
+
+def _announce_windows(kind: str, summary: str, body: str) -> None:
+    """Sound via winsound (plays the embedded WAV bytes directly -- no temp
+    file, stdlib), then a best-effort toast through the Windows Runtime
+    notification API via PowerShell (works unmodified on stock PowerShell
+    5.1; fails silently where the toast stack is unavailable)."""
+    try:
+        import winsound
+        winsound.PlaySound(agent.sounds.wave_bytes(kind),
+                           winsound.SND_MEMORY | winsound.SND_NODEFAULT)
+    except Exception as e:
+        print(f"WARNING: windows sound playback failed: {e}", file=sys.stderr)
+
+    try:
+        ps = (_WINDOWS_TOAST_TEMPLATE
+              .replace("__SUMMARY__", _ps_escape(summary))
+              .replace("__BODY__", _ps_escape(body)))
+        _run(["powershell.exe", "-NoProfile", "-NonInteractive",
+              "-ExecutionPolicy", "Bypass", "-Command", ps], _NOTIFY_TIMEOUT_S)
+    except Exception as e:
+        print(f"WARNING: windows toast failed: {e}", file=sys.stderr)
+
+
+def _ps_escape(text: str) -> str:
+    """Single-quote escaping for string literals inside PowerShell snippets."""
+    return "'" + text.replace("'", "''") + "'"
+
+
+# PowerShell's WinRT toast: text lines via the standard ToastText02 template.
+# Uses the PowerShell exe's own AppUserModelID (a registered AppId on stock
+# Windows) as the toast origin so no helper module needs installing.
+_WINDOWS_TOAST_TEMPLATE = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$texts = $template.GetElementsByTagName('text')
+$null = $texts.Item(0).AppendChild($template.CreateTextNode(__SUMMARY__))
+$null = $texts.Item(1).AppendChild($template.CreateTextNode(__BODY__))
+$toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
+"""

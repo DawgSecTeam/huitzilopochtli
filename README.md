@@ -32,9 +32,13 @@ pytest                    # runs the full unit + integration suite
 To run the agent on a box and generate a score report:
 
 ```bash
-python3 packaging/build_zipapp.py   # builds dist/agent.pyz
-python3 dist/agent.pyz --honor      # honor mode: collects evidence, scores locally
+python3 packaging/build_zipapp.py             # builds dist/agent.pyz
+python3 dist/agent.pyz agent_config.json      # §9.7 on-box config selects the mode
 ```
+
+The agent zipapp is also the box's **terminal console** — `huitz score`,
+`huitz watch`, `huitz forensics`, `huitz grade` render the grade natively in
+the terminal (see [`CLI.md`](CLI.md)).
 
 For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and the report output, see [`TESTING_GUIDE.md`](TESTING_GUIDE.md) in this repo.
 
@@ -61,6 +65,7 @@ The zipapp bundles only `agent/` + `common/` (pure stdlib, runs anywhere `python
 ## Documentation
 
 - [`architecture.md`](architecture.md) — full architecture & implementation spec; source of truth for component contracts.
+- [`CLI.md`](CLI.md) — the `huitz` terminal console: score / watch / forensics / grade.
 - [`TESTING_GUIDE.md`](TESTING_GUIDE.md) — hands-on manual walkthrough end to end.
 - [`tests/README.md`](tests/README.md) — test suite tiers, including the Proxmox live-infrastructure tier.
 - [`packaging/README.md`](packaging/README.md) — build, install, and re-arm/reset details.

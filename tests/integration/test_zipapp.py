@@ -189,3 +189,69 @@ def test_zipapp_matches_source_tree_run(tmp_path):
     # Also sanity-check the report actually reflects the scenario, so an
     # empty-but-matching report on both sides wouldn't slip through unnoticed.
     assert b"Total: 10" in content_a
+
+
+def test_huitz_cli_verbs_through_zipapp(tmp_path):
+    """The built .pyz doubles as the `huitz` console: verb dispatch works
+    from the artifact a box actually runs, and the reading verbs render a
+    snapshot without needing anything else on disk."""
+    pyz_path = str(tmp_path / "agent.pyz")
+    _build(pyz_path)
+
+    # A minimal, hand-written v1 snapshot — the format the CLI reads.
+    snap = {
+        "snapshot_version": 1, "agent_version": "test", "mode": "honor",
+        "scenario_name": "smoke", "scenario_version": 1,
+        "title": "Smoke Box", "organization": None, "accent": None,
+        "awaiting_engine": False, "total": 12, "max_possible": 20,
+        "progress_pct": 60,
+        "fixed": [{"title": "Harden a thing", "points": 12}],
+        "vulns_fixed": 1, "vulns_total": 1, "remaining": 0, "all_fixed": True,
+        "penalties": [], "forensics": [], "forensics_earned": 0,
+        "delta": 12, "computed_at": 1700000000.0,
+        "next_event_at": 1700000060.0, "last_confirmed_at": None,
+        "next_checkin_s": None, "sla_status": [],
+    }
+    report_json = tmp_path / "report.json"
+    report_json.write_text(json.dumps(snap), encoding="utf-8")
+
+    def _cli(*args):
+        return subprocess.run(
+            [sys.executable, pyz_path, *args],
+            cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+        )
+
+    # score renders the board (piped -> plain text, hints shown)
+    r = _cli("score", "--report", str(report_json))
+    assert r.returncode == 0, r.stderr
+    assert "Smoke Box" in r.stdout
+    assert "12 pts" in r.stdout
+    assert "VULNERABILITIES FIXED — 1 of 1" in r.stdout
+    assert "\x1b" not in r.stdout, "piped output must be plain"
+
+    # score --json round-trips the snapshot
+    r = _cli("score", "--json", "--report", str(report_json))
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == snap
+
+    # help succeeds; unknown verb is a usage error (exit 2)
+    assert _cli("help").returncode == 0
+    r = _cli("frobnicate")
+    assert r.returncode == 2
+
+    # Installed under the shim name (what boxbuilder puts on PATH), a bare
+    # invocation is help — not a hunt for agent_config.json. The classic
+    # bare-pyz behavior (default config lookup) is unchanged.
+    import shutil
+    shim = tmp_path / "huitz"
+    shutil.copy(pyz_path, shim)
+    shim.chmod(0o755)
+    r = subprocess.run([str(shim)], cwd=str(tmp_path),
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert "scoring console" in r.stdout
+
+    # a missing snapshot is a clean runtime error (exit 1), not a traceback
+    r = _cli("score", "--report", str(tmp_path / "nope.json"))
+    assert r.returncode == 1
+    assert "no grade found" in r.stderr

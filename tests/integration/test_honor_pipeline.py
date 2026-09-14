@@ -163,6 +163,39 @@ def test_happy_path_end_to_end_report(tmp_path):
     assert 'class="progress"' in html
 
 
+# --- 1b. obfuscated on-box rubric --------------------------------------------
+
+
+def test_encoded_rubric_end_to_end(tmp_path):
+    """The agent loads boxbuilder's obfuscated .score.dat form (the real
+    on-box layout) exactly as it loads plain compile output -- the
+    back-compat plain-JSON path is what every other test here exercises."""
+    from common import rubric_codec
+
+    outputs, _priv_key = _compile_basic_scenario(tmp_path)
+    with open(outputs["rubric"], "r", encoding="utf-8") as f:
+        rubric = json.load(f)
+    encoded_path = tmp_path / ".score.dat"
+    encoded_path.write_bytes(rubric_codec.encode_rubric(rubric))
+
+    report_path = tmp_path / "report.html"
+    config_path = _write_agent_config(
+        tmp_path,
+        manifest_path=outputs["manifest"],
+        rubric_path=encoded_path,
+        report_path=report_path,
+        authoring_public_key_path=outputs["authoring_public_key"],
+    )
+
+    result = _run_agent(config_path)
+
+    assert result.returncode == 0, (
+        f"agent failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert report_path.exists(), "report.html was not written"
+    assert "Total: 10" in report_path.read_text(encoding="utf-8")
+
+
 # --- 2. manifest signature verification: valid -------------------------------
 
 
@@ -400,3 +433,122 @@ def test_rearm_removes_report(tmp_path):
         f"stderr={rearm_result.stderr!r}"
     )
     assert not report_path.exists(), "rearm.py must delete the cached report"
+
+
+# --- huitz CLI over the real pipeline ----------------------------------------
+
+def _compile_scenario_with_forensics(tmp_path):
+    """Compile a scenario with one vuln check + one forensics question whose
+    answers file lives in tmp_path (explicit `path` — never the real
+    Desktop). Returns (outputs, target_file, answers_file)."""
+    target_file = tmp_path / "motd.txt"
+    target_file.write_text("flag=FOUND\n", encoding="utf-8")
+    answers_file = tmp_path / "Forensics-Questions.txt"
+
+    checks_yaml = f"""
+  - id: vuln-flag-present
+    type: file_regex
+    category: vuln
+    display: "Flag file contains FOUND marker"
+    max_points: 10
+    collect:
+      path: "{target_file}"
+      extract: "flag=(\\\\w+)"
+    expect:
+      equals: "FOUND"
+      points: 10
+
+forensics:
+  - id: fq-attacker
+    question: "Which account did the attacker create?"
+    points: 20
+    answer: "svc-backup"
+    path: "{answers_file}"
+"""
+    yaml_path = tmp_path / "scenario.yaml"
+    yaml_text = f"""
+scenario:
+  name: honor-cli-scenario
+  version: 1
+  mode: honor
+  hosts:
+    - localhost
+
+checks:
+{checks_yaml}
+"""
+    yaml_path.write_text(yaml_text, encoding="utf-8")
+
+    priv_key, _pub_key = keypair()
+    out_dir = tmp_path / "compiled"
+    outputs = compile_scenario(str(yaml_path), str(out_dir), priv_key)
+    return outputs, answers_file
+
+
+def _run_cli(args, timeout=_SUBPROCESS_TIMEOUT_S):
+    return subprocess.run(
+        ["python3", "-m", "agent", *args],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_cli_score_forensics_and_regrade_end_to_end(tmp_path):
+    """The full terminal experience against a real grade: score renders the
+    snapshot, forensics writes the answers file, and the next grade awards
+    the question's points (with the score-change banner)."""
+    outputs, answers_file = _compile_scenario_with_forensics(tmp_path)
+    report_path = tmp_path / "report.html"
+    config_path = _write_agent_config(
+        tmp_path,
+        manifest_path=outputs["manifest"],
+        rubric_path=outputs["rubric"],
+        report_path=report_path,
+        authoring_public_key_path=outputs["authoring_public_key"],
+    )
+
+    # First grade: vuln fixed, forensics unanswered.
+    result = _run_agent(config_path)
+    assert result.returncode == 0, result.stderr
+
+    snapshot_path = tmp_path / "report.json"
+    assert snapshot_path.exists(), "agent must publish the CLI snapshot"
+    snap = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snap["total"] == 10
+    assert snap["forensics"][0]["answered"] is False
+    assert "results" not in snap, "honor snapshot must not spoil failed checks"
+
+    # `huitz score` renders that snapshot.
+    score_run = _run_cli(["score", "--report", str(report_path)])
+    assert score_run.returncode == 0, score_run.stderr
+    # 1 of 1: the vuln check is fixed; the forensics question is accounted
+    # separately (excluded from the vulnerabilities-fixed denominator).
+    assert "VULNERABILITIES FIXED — 1 of 1" in score_run.stdout
+    assert "Which account did the attacker create?" in score_run.stdout
+    assert chr(27) not in score_run.stdout, "piped output must be plain (no ANSI)"
+
+    # Answer the forensics question from the terminal.
+    answer_run = _run_cli(
+        ["forensics", "1", "svc-backup", "--report", str(report_path)])
+    assert answer_run.returncode == 0, answer_run.stderr
+    assert "Answer: svc-backup" in answers_file.read_text(encoding="utf-8")
+
+    # Second grade: the answer earns its points; the CLI shows the banner.
+    result = _run_agent(config_path)
+    assert result.returncode == 0, result.stderr
+    snap = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snap["total"] == 30
+    assert snap["forensics"][0]["answered"] is True
+    assert snap["delta"] == 20
+
+    score_run = _run_cli(["score", "--report", str(report_path)])
+    assert score_run.returncode == 0, score_run.stderr
+    assert "+20 pts since the last grading pass" in score_run.stdout
+
+    # `huitz grade` (root-only, honor) refuses for non-root with guidance
+    # rather than silently no-op'ing.
+    grade_run = _run_cli(["grade", "--config", str(config_path)])
+    assert grade_run.returncode == 1
+    assert "sudo huitz grade" in grade_run.stderr

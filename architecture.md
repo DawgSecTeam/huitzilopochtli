@@ -508,6 +508,18 @@ Static HTML generated from the machine-readable `ScoreBreakdown` JSON, so report
 
 Dashboard elements: cumulative total; table of point-in-time results (category, awarded, reason); SLA status table (state UP/DOWN, accrued); and (ranked) a "last confirmed by engine at <time>" stamp.
 
+### 13.1 Derived board (`agent/board.py`)
+
+The player-facing *derived* facts — which vulnerabilities are fixed, which penalties are active, forensics state, progress — are computed once from `(ScoreBreakdown, manifest)` and consumed by every renderer (HTML report, `report.json` snapshot, `huitz` terminal UI). Honor presentation is CyberPatriot positive-only in every medium: failed checks are never identified, only counted. Ranked presentation is the full diagnostic (safe: the rubric is off-box).
+
+### 13.2 Report snapshot (`agent/snapshot.py`, `report.json`)
+
+Every grade also writes a versioned snapshot (`snapshot_version: 1`) next to the HTML report; `sync-report.sh` (or the Windows task wrapper) mirrors both to each user's Desktop. The snapshot is a *presentation* of the score — nothing feeds it back into the evaluator. Honor snapshots carry the derived board only (no per-check results, no reasons), matching the HTML's spoiler contract; ranked snapshots add the diagnostic results + SLA, matching the ranked HTML table.
+
+### 13.3 Terminal report (`agent/cli.py` — the `huitz` command)
+
+The agent zipapp doubles as a terminal console via verb dispatch (`huitz score|watch|forensics|grade`; a bare config path keeps the classic one-shot behavior). `score`/`watch`/`forensics` render the **snapshot**, so they work as any user on the box — the sealed install dir is never touched (the Desktop copy is the source, exactly as for the browser). `watch` is a live frame (1 s tick, alternate screen, terminal bell on changes seen while watching). `forensics` reads/edits the team's answers file in place (`agent/answers.py` is the one implementation of that file format, shared with the collector and template writer). `grade` re-runs the honor pipeline as root (§15 honor flow) and is refused, with explanation, on ranked boxes — grading there is the engine's job. Terminal behavior (color-depth detection honoring `NO_COLOR`, unicode-vs-ASCII, width, key polling without curses for Windows portability) lives in `agent/term.py`.
+
 ## 14. Protocol Specification
 
 All requests over TLS (stdlib `ssl`). All bodies are canonical JSON (§7). All box→engine bodies are signed by the box key; the signature travels in an `X-HUITZILOPOCHTLI-Sig` header (base64) alongside `X-HUITZILOPOCHTLI-Box` (box_id).
@@ -591,7 +603,7 @@ Requirements:
 
 - **Agent artifact:** Python **zipapp** (`.pyz`), pure-Python/stdlib + vendored crypto. Assumes a Python interpreter is present. **Alpine caveat:** minimal Alpine ships without Python — provisioning must `apk add python3`.
 - **Compilation** (PyInstaller/Nuitka) is optional and for packaging convenience only; it is **irrelevant to security** because ranked mode never trusts the box regardless. Note glibc vs musl: a binary built on glibc will not run on Alpine/musl, so prefer the zipapp for portability and only compile per-target if a Python-free box is required.
-- **Install:** systemd unit or OpenRC init script that starts the agent at boot. Restricted install dir (e.g. `/opt/huitzilopochtli/`) holding the `.pyz`, signed manifest, config, and (honor) rubric; identity file separate at `0600`.
+- **Install:** systemd unit or OpenRC init script that starts the agent at boot. Restricted install dir (e.g. `/opt/.huitzilopochtli/`) holding the `.pyz`, signed manifest, config, and (honor) rubric; identity file separate at `0600`. The dir is dot-hidden and sealed `0700 root:root`, and the honor rubric lands obfuscated + `0600` (`common/rubric_codec.py`) — friction against casual discovery on honor boxes, not a security boundary; ranked mode remains the actual answer for rubric secrecy. Provisioning also places the player-facing conveniences: a world-readable copy of the `.pyz` at `/usr/local/bin/huitz` (the §13.3 terminal console; a copy, not a symlink — the sealed dir would block non-root traversal) and an `/etc/update-motd.d/` first-login banner introducing it.
 - **Distribution:** export configured VM as `.ova`/`.qcow2`.
 - **Re-arm/reset:** a documented reset path resets local state (seq, identity optional, cached score, report) so a take-home box can be replayed without a full redeploy.
 - **Version stamping:** engine and scenario versions on every payload (§14.3).
@@ -620,7 +632,14 @@ huitzilopochtli/
     adversary/ { executor.py, actions.py }   # closed vocabulary
     identity.py
     transport.py         # push client + queue-and-forward
-    reporter.py
+    reporter.py          # HTML report (§13)
+    report_page.py       # shared HTML shell (report + README pages)
+    board.py             # derived score board — one derivation, all renderers (§13.1)
+    snapshot.py          # report.json publication (§13.2)
+    cli.py               # huitz terminal console (§13.3)
+    term.py              # terminal kit: color/unicode/width/key polling
+    answers.py           # forensics answers-file format (collector + CLI)
+    notify.py            # score-change sound + toast
   engine/
     server.py            # endpoints
     enrollment.py

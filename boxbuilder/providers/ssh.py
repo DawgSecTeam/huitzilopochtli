@@ -12,6 +12,7 @@ import shlex
 import sys
 from typing import Optional
 
+from boxbuilder import artifacts as artifacts_mod
 from boxbuilder.artifacts import INSTALL_DIR  # noqa: F401 — re-exported for callers
 from boxbuilder.providers.base import (
     BoxHandle, BoxProvider, ExportResult, RunResult, register_provider,
@@ -41,6 +42,7 @@ class SshProvider(BoxProvider):
             password=cfg["password"],
             port=int(cfg.get("port", 22)),
             known_hosts=cfg.get("known_hosts"),
+            os_name=cfg.get("os"),
         ).connect()
 
 
@@ -70,16 +72,24 @@ def _host_key_policy(client, known_hosts, addr, port):
 
 
 class SshHandle(BoxHandle):
-    """A live SSH connection to a box (paramiko)."""
+    """A live SSH connection to a box (paramiko).
+
+    os_name is "windows" when the remote end is Windows OpenSSH (commands run
+    through cmd.exe, no sudo, POSIX sealing skipped) and "posix" otherwise.
+    It comes from the spec's provider.os when given, else auto-detected on
+    connect via `echo %OS%` through the login shell (cmd prints "Windows_NT",
+    a POSIX shell echoes the literal "%OS%").
+    """
 
     def __init__(self, name: str, addr: str, user: str, password: str, port: int = 22,
-                 known_hosts: Optional[str] = None):
+                 known_hosts: Optional[str] = None, os_name: Optional[str] = None):
         self.name = name
         self.addr = addr
         self.user = user
         self.password = password
         self.port = port
         self.known_hosts = known_hosts
+        self.os_name = os_name if os_name in ("windows", "posix") else None
         self._client = None  # paramiko.SSHClient, lazily connected
 
     def connect(self) -> "SshHandle":
@@ -104,33 +114,65 @@ class SshHandle(BoxHandle):
             ) from e
         self._client = client
 
-        # Reachability + python3 presence. Alpine ships without python3; install
-        # it so the agent.pyz can run (see packaging/README.md, "Alpine" note).
-        py = self.run("command -v python3 >/dev/null 2>&1 && echo ok", sudo=False)
-        if not py.ok or "ok" not in py.stdout:
-            # Try to install (apt or apk); ignore failures -- surface a clear
-            # error when the agent install step actually needs it.
-            self.run(
-                "(apt-get update -qq && apt-get install -y -qq python3) 2>/dev/null "
-                "|| apk add --no-cache python3 2>/dev/null || true",
-                sudo=True, timeout=120,
-            )
+        if self.os_name is None:
+            self.os_name = self._detect_os_name()
+
+        if self.os_name == "posix":
+            # Reachability + python3 presence. Alpine ships without python3;
+            # install it so the agent.pyz can run (see packaging/README.md,
+            # "Alpine" note).
             py = self.run("command -v python3 >/dev/null 2>&1 && echo ok", sudo=False)
             if not py.ok or "ok" not in py.stdout:
-                raise RuntimeError(
-                    f"python3 is not present on {self.addr} and could not be installed; "
-                    "the huitzilopochtli agent.pyz requires it"
+                # Try to install (apt or apk); ignore failures -- surface a clear
+                # error when the agent install step actually needs it.
+                self.run(
+                    "(apt-get update -qq && apt-get install -y -qq python3) 2>/dev/null "
+                    "|| apk add --no-cache python3 2>/dev/null || true",
+                    sudo=True, timeout=120,
                 )
+                py = self.run("command -v python3 >/dev/null 2>&1 && echo ok", sudo=False)
+                if not py.ok or "ok" not in py.stdout:
+                    raise RuntimeError(
+                        f"python3 is not present on {self.addr} and could not be installed; "
+                        "the huitzilopochtli agent.pyz requires it"
+                    )
+        else:
+            # Windows: python must already be on PATH (install it during
+            # template prep; boxbuilder cannot apt-get a Windows box).
+            py = self.run("python --version", sudo=False)
+            if not py.ok or "Python 3" not in py.stdout:
+                py = self.run("py -3 --version", sudo=False)
+                if not py.ok or "Python 3" not in py.stdout:
+                    raise RuntimeError(
+                        f"Python 3 is not on PATH for {self.user}@{self.addr}; "
+                        "install it before building (python.org installer with "
+                        "PrependPath=1, template prep step)"
+                    )
         return self
+
+    def _detect_os_name(self) -> str:
+        """One raw exec through the login shell, no wrapping: Windows OpenSSH
+        (cmd.exe) answers `echo %OS%` with "Windows_NT"; a POSIX shell echoes
+        the literal "%OS%" back."""
+        _, stdout, _ = self._client.exec_command("echo %OS%", timeout=15)
+        out = stdout.read().decode("utf-8", "replace").strip()
+        return "windows" if out == "Windows_NT" else "posix"
 
     # --- BoxHandle API ---------------------------------------------------
     def run(self, cmd: str, *, timeout: int = 1800, sudo: bool = True) -> RunResult:
         if self._client is None:
             raise SshProviderError("SSH connection is not open; call connect() first")
-        # Use /bin/sh (POSIX), NOT bash: minimal Alpine ships only busybox /bin/sh,
-        # and the openrc init script targets exactly those boxes. Every command we
-        # issue here is POSIX; shlex.quote() emits POSIX-safe quoting.
-        if sudo and self.user != "root":
+        if self.os_name == "windows":
+            # Windows OpenSSH: exec through the default shell (cmd.exe) with
+            # no wrapper and no sudo -- an SSH session for a local admin
+            # carries the elevated token. Install/file commands that need
+            # more than cmd.exe invoke powershell explicitly.
+            stdin, stdout, stderr = self._client.exec_command(cmd, timeout=timeout)
+            stdin.channel.shutdown_write()
+        elif sudo and self.user != "root":
+            # Use /bin/sh (POSIX), NOT bash: minimal Alpine ships only busybox /bin/sh,
+            # and the openrc init script targets exactly those boxes. Every command we
+            # issue here is POSIX; shlex.quote() emits POSIX-safe quoting.
             # Feed the password to sudo -S over stdin (paramiko exec can write
             # to the channel stdin). Avoids tty allocation needed for -S.
             full = f"sudo -S -p '' /bin/sh -c {shlex.quote(cmd)}"
@@ -179,6 +221,36 @@ class SshHandle(BoxHandle):
             stderr=stderr.read().decode("utf-8", "replace"),
         )
 
+    def run_ps(self, script: str, *, timeout: int = 1800) -> RunResult:
+        """Run a PowerShell script on a windows handle via -EncodedCommand.
+
+        Windows OpenSSH execs the command through cmd.exe, which strips inner
+        double quotes from command lines -- silently corrupting
+        `powershell -Command "New-Item ... | Out-Null"` payloads into bare
+        cmd syntax. -EncodedCommand takes base64 (no quotable characters), so
+        the script survives the trip verbatim; the base64 payload is
+        UTF-16LE, per powershell.exe's documented encoding. Errors are
+        terminating: the wrapper promotes any cmdlet error to exit 1 with the
+        error text on stderr, so RunResult.ok tracks actual success.
+        """
+        if self.os_name != "windows":
+            raise SshProviderError("run_ps is only valid on a windows handle")
+        import base64
+        body = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "try {\n"
+            f"{script}\n"
+            "} catch {\n"
+            "    [Console]::Error.WriteLine(($_ | Out-String).TrimEnd())\n"
+            "    exit 1\n"
+            "}\n"
+        )
+        encoded = base64.b64encode(body.encode("utf-16-le")).decode("ascii")
+        return self.run(
+            f"powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}",
+            timeout=timeout,
+        )
+
     def put(self, local: str, remote: str, mode: Optional[int] = None) -> None:
         if self._client is None:
             raise SshProviderError("SSH connection is not open; call connect() first")
@@ -190,7 +262,9 @@ class SshHandle(BoxHandle):
             ) from e
         try:
             sftp.put(local, remote)
-            if mode is not None:
+            # Windows OpenSSH's SFTP server ignores/rejects chmod; modes are
+            # meaningless on NTFS, so skip silently there.
+            if mode is not None and self.os_name != "windows":
                 sftp.chmod(remote, mode)
         except Exception as e:
             raise SshProviderError(
@@ -202,6 +276,24 @@ class SshHandle(BoxHandle):
     def install_init(self, kind: str, mode: str = "honor") -> None:
         if kind == "none":
             return
+        if kind == "windows":
+            return self._install_init_windows()
+        # The `huitz` console (agent/cli.py): a world-readable copy of the
+        # agent zipapp on PATH. The CLI verbs read the Desktop-mirrored
+        # report.json snapshot (sync-report.sh), so any account can run
+        # score/watch/forensics; `sudo huitz grade` re-grades as root. A
+        # copy, not a symlink: the install dir is sealed 0700, which would
+        # block non-root traversal through a symlink. Best-effort -- the
+        # box grades fine without it (report.html + Desktop shortcut still
+        # work), so a failure warns instead of failing the install.
+        shim = self.run(
+            f"mkdir -p /usr/local/bin && "
+            f"install -m 755 {artifacts_mod.install_dir_for('posix')}/agent.pyz "
+            f"/usr/local/bin/huitz"
+        )
+        if not shim.ok:
+            print(f"WARNING: could not install the huitz CLI shim "
+                  f"(/usr/local/bin/huitz): {shim.stderr.strip()}")
         # Ensure the install dir exists, then copy + enable the unit. We SFTP the
         # template up and let the box's own init system install it, per
         # the templates in packaging/.)
@@ -247,7 +339,41 @@ class SshHandle(BoxHandle):
             if not res.ok:
                 raise RuntimeError(f"failed to enable openrc service: {res.stderr.strip()}")
         else:
-            raise ValueError(f"unknown init kind {kind!r}; want systemd|openrc|none")
+            raise ValueError(
+                f"unknown init kind {kind!r}; want systemd|openrc|windows|none")
+
+    def _install_init_windows(self) -> None:
+        """Windows init: a SYSTEM scheduled task is the agent's timer.
+
+        The installer .ps1 registers the task (at startup + every 5 minutes,
+        the honor-mode re-grade cadence) pointing at huitz-agent-task.ps1,
+        which runs the agent and copies report.html to the Public Desktop --
+        the Windows analog of ExecStartPost + sync-report.sh. Both scripts
+        are SFTP'd into the install dir, which pipeline.install_box has just
+        made writable for the SSH user; the installer tightens nothing (the
+        icacls seal already happened there).
+        """
+        install_dir = artifacts_mod.install_dir_for("windows")
+        installer_local = os.path.join(_PACKAGING, "huitzilopochtli-agent-win.ps1")
+        task_local = os.path.join(_PACKAGING, "huitz-agent-task.ps1")
+        installer_remote = f"{install_dir}\\huitzilopochtli-agent-win.ps1"
+        task_remote = f"{install_dir}\\huitz-agent-task.ps1"
+        self.put(installer_local, installer_remote)
+        self.put(task_local, task_remote)
+        # The installer is a script FILE, so it needs its own powershell with
+        # -ExecutionPolicy Bypass (EncodedCommand text is exempt, invoked
+        # files are not). Nesting inside run_ps keeps the -File argument
+        # away from cmd.exe's quote stripping.
+        res = self.run_ps(
+            f"& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy "
+            f"Bypass -File '{installer_remote}'\n"
+            f"exit $LASTEXITCODE",
+            timeout=600,
+        )
+        if not res.ok:
+            raise RuntimeError(
+                f"failed to register scheduled task: {res.stderr.strip() or res.stdout.strip()}"
+            )
 
     def export(self, out_path: str, fmt: str = "ova") -> ExportResult:
         # A remote box over SSH can't snapshot itself; the operator must export
@@ -270,7 +396,9 @@ class SshHandle(BoxHandle):
 
 
 def detect_init(handle: SshHandle) -> str:
-    """Best-effort init-system detection: 'systemd' | 'openrc' | 'none'."""
+    """Best-effort init-system detection: 'systemd' | 'openrc' | 'windows' | 'none'."""
+    if getattr(handle, "os_name", None) == "windows":
+        return "windows"
     if handle.run("command -v systemctl >/dev/null 2>&1", sudo=False).ok:
         return "systemd"
     if handle.run("command -v rc-service >/dev/null 2>&1", sudo=False).ok:
