@@ -10,77 +10,80 @@ ship through your docks.
 An audit just found that this gateway host was already broken into. Your
 predecessor left in a hurry. Everything the attackers touched is still here.
 
+This box has no desktop — you work from the terminal. Start with `huitz score`
+(your current standing), `huitz readme` (this handbook again), and `huitz
+forensics` (the questions at the bottom). `huitz watch` re-grades live.
+
 Your job: **harden this box before the next ship docks.**
 
 > In production this port's perimeter runs on a dedicated firewall appliance
 > (a pfSense box at the edge). Perimeters matter — but they do nothing for a
-> laptop that phones home from inside. This exercise is about the *host*
-> firewall: netfilter, the engine under Linux firewalls, and `ufw`, the tool
-> that drives it.
+> box that already has an attacker living on it. This exercise is about the
+> *host* firewall: netfilter, driven by raw `iptables` — the way you'll
+> actually use it on a CCDC box. (This host scores raw iptables; firewall
+> front-ends like ufw arrange rules differently and will not satisfy the
+> audit.)
 
 ## Critical services (keep these alive)
 
-- **SSH** must stay running and reachable. The pilot house (harbor office,
-  subnet `10.0.0.0/24`) needs it. A firewall that locks the office out is a
-  finding, not a fix — never lock yourself out.
-- The desktop must stay usable.
+- The **Cargo Manifest Lookup** web app must stay reachable on **port 80** —
+  the dock clerks hit it all day. Whatever firewall you build has to let web
+  traffic IN.
+- The web app pulls manifest rows from its **MariaDB on 127.0.0.1:3306** —
+  that path has to stay alive too.
+- **SSH** must stay running and reachable. Your terminal IS your SSH session;
+  a firewall that locks you out ends your shift. Rule zero of default-deny:
+  allow your management path *before* you drop the default.
 
-## Authorized users
+## The audit findings (what the Harbor Office is asking for)
 
-- `harbormaster` — the admin account (password `harbormaster`; it does not
-  need to be changed).
-- `cranelift` — a crane-control **service account**. Service identities do
-  not get interactive login shells.
+1. Allow inbound traffic to the web app: TCP port **80** on INPUT.
+2. Allow outbound traffic to MySQL: TCP port **3306** on OUTPUT.
+3. Set up **default deny**: INPUT, FORWARD **and** OUTPUT policies to DROP —
+   then make sure loopback, established/related, and the two services above
+   still work. Over-blocking is a finding, not a fix.
+4. Something answering on **port 9090** is an admin web console nobody asked
+   for. Remove it — package or socket, your call — and confirm the port went
+   quiet.
+5. A service that **calls home** (beacon) is running on this box under a name
+   that sounds almost legitimate. Find it, stop it, and disable its launcher.
+6. Delete the beacon's binary from disk so it cannot be restarted by hand.
+7. A **bind shell** is waiting for a connection. Kill it — and make sure it
+   cannot simply come back after the next reboot.
 
-Any other account you find is not ours.
+Hints, if you want them: `ss -tlnp` shows every *listener* — but the thing in
+finding 5 never listens on anything. For that one: `ps aux`,
+`systemctl list-units --type=service`, and a suspicious eye on `/opt`.
 
-## Confidential files
+## Forensics
 
-- `/opt/harbor/manifests/master-manifest.txt` — cargo manifests. Restricted.
-- `/home/harbormaster/.ssh/id_rsa` — the pilot's deployment key.
+Answer these in `huitz forensics` (they live in
+`~/Desktop/Forensics-Questions.txt`):
+
+- **Q1 (20 pts):** The beacon is phoning home. What destination **address and
+  port** is it dialing?
+- **Q2 (20 pts):** Same question for the bind shell: what **address and port**
+  is it bound on?
 
 ## Scoring
 
-- The **Scoring Report** shortcut on the Desktop opens the live score report.
-  It refreshes automatically every few minutes.
-- **Forensics questions** are in `Forensics-Questions.txt` on the Desktop.
-  Type your answers over the `____` blanks. Answers are re-graded
-  automatically; wrong answers cost nothing, so always guess.
+- Graded automatically about once a minute. `huitz score` shows the current
+  report; `huitz watch` follows it live.
 - Checks are **weighted by difficulty** (EASY 5 / MODERATE 10 / HARD 20) —
   the report shows the point value of each finding.
+- Wrong forensics answers cost nothing, so always guess.
 - Do **not** delete or tamper with the scoring agent.
 
-## Where to start
+## Tools worth knowing
 
-Tools worth knowing (all in the workshop cheatsheet and the talk):
-
-- `man ufw` — the simple front end. `ufw enable`, `ufw default deny incoming`,
-  `ufw limit OpenSSH`, `ufw allow from 10.0.0.0/24 to any port 22`.
 - `sudo iptables-save` and `sudo iptables -S` — read the ACTUAL ruleset.
-  Files lie less than memories, but rules can hide in more places than one.
-- `sudo nft list ruleset` — the same engine, newer syntax.
+  Policies (`-P`) are the default-deny knob; `-A` lines are the rules.
 - `ss -tlnp` — who is *listening*.
 - `ps aux` and `systemctl list-units --type=service` — who is *running*.
   **Port scans will not find everything on this box.** One of the intruders
   never listens on any port at all.
-- `sysctl` — kernel network knobs (`net.ipv4.conf.*.rp_filter`,
-  `net.ipv4.tcp_syncookies`, `...accept_redirects`). Persist settings under
-  `/etc/sysctl.d/` and apply them live with `sysctl -w` or `sysctl -p`.
-- `sudo ss -tlnp`, `sudo tcpdump -i any -nn` — when listening sockets aren't
-  the whole story, watch what actually leaves the box.
-
-### Hints by area
-
-- **Firewall**: installed → enabled → default-deny incoming → allow
-  established/related → allow loopback → rate-limit SSH → restrict SSH to the
-  office subnet → make it survive a reboot.
-- **Accounts & admin**: unauthorized users (one had no password at all), a
-  service account that can log in, more than one sudo-capable user, a
-  passwordless-sudo drop-in.
-- **Files & keys**: a restricted file that is world-writable, a deployment
-  key with loose permissions, and someone else's key in `authorized_keys`.
-- **Network oddities**: a rogue listener with an obvious port, and something
-  much quieter. Read every unit with `systemctl cat` — at least one is named
-  to look like it belongs.
+- `systemctl cat UNIT` — read what a service actually executes.
+- `sudo tcpdump -i any -nn` — when listening sockets aren't the whole story,
+  watch what actually leaves the box.
 
 Questions? Ask in the CyberDawgs Discord.

