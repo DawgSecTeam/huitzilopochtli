@@ -374,3 +374,32 @@ def test_primary_desktop_dir_posix_unchanged(monkeypatch):
     fake_pwd.getpwall = lambda: []
     monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
     assert main_mod._primary_desktop_dir() is None
+
+
+def test_pinecrest_theme_block_wired_for_windows():
+    """The theme block must exist and reference real assets: without it
+    boxbuilder plants no theme configs at all (the 2026-09-13 template went
+    out with no Desktop README because this was missing)."""
+    import yaml
+    from boxbuilder.spec import load_spec
+    from boxbuilder.theme import _target_is_windows
+
+    sc = yaml.safe_load(open("boxes/pinecrest-hospital/scenario.yaml"))
+    theme = sc.get("theme") or {}
+    for key in ("title", "wallpaper", "readme"):
+        assert theme.get(key), f"pinecrest theme missing {key}"
+
+    spec = load_spec("boxes/pinecrest-hospital/box.yaml")
+    assert _target_is_windows(spec), "pinecrest must resolve as a windows target"
+    assert spec.theme.get("wallpaper") and spec.theme.get("readme")
+
+
+def test_honor_interval_s_platform_split(monkeypatch):
+    """Windows re-grades every 300s (schtask cadence); POSIX keeps the
+    reporter's 70s default. The countdown anchor must match the platform."""
+    import agent.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod.os, "name", "nt")
+    assert main_mod._honor_interval_s() == 300
+    monkeypatch.setattr(main_mod.os, "name", "posix")
+    assert main_mod._honor_interval_s() is None

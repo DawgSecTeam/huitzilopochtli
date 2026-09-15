@@ -318,3 +318,32 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    deleting any account a seed must recreate EXACTLY (audit_svc's
    blank-password state required Remove-LocalUser + re-plant, since the
    seed's update path never removes a password).
+13. **A Windows box with assets but no `theme:` block ships with an empty
+   Desktop.** The first seal had assets/ (README.md, wallpaper, logo)
+   authored but no `theme:` block in scenario.yaml -- resolve_theme_configurations
+   returned [], so no theme steps ran and players got no README, wallpaper,
+   or Scoring Report shortcut (only the task-mirrored report.html). The
+   theme block goes in scenario.yaml (spec.theme reads the SCENARIO, not
+   box.yaml); for a Windows target it needs title/accent/logo/wallpaper/
+   readme and boxbuilder resolves the -win seeds automatically. Also
+   remember a /tmp spec copy breaks theme asset resolution (gotcha in
+   section 2) -- compile from the real box.yaml.
+14. **The Windows re-grade cadence and the report countdown are coupled.**
+   The schtask fires every 5 minutes and `agent/__main__.py::
+   _honor_interval_s()` anchors the report countdown to 300s on win32
+   (Task Scheduler repetition granularity bottoms out at 1 minute, so the
+   POSIX 70s cadence is unexpressible). With the old 70s anchor the report
+   read "00:00 -- checking..." for ~4 of every 5 minutes, which players
+   read as "the scoring engine isn't updating" even though the task was
+   firing. If you ever change the task's /ri or RepetitionInterval, change
+   _honor_interval_s to match.
+15. **Re-seal loop (2026-09-14) proved the schtask survives cloning.** A
+   raw linked clone of the sealed template, booted and left untouched,
+   fires the inherited task on its 5-minute cadence (LastRunTime advances,
+   report.html rewrites, LastTaskResult 0) -- no reinstall needed. The
+   re-seal procedure: fix-forward on a linked clone (plant + install with
+   the updated bundle), full-clone THAT to the template vmid, boot-verify
+   (Desktop README + shortcut present, report countdown ~5:00, task
+   LastRunTime advancing untouched), then shutdown -> qm template -> rename.
+   Template RAM raised to 6144 MB in the same pass (2 cores / 4 GB made
+   the agent's CIM sweeps crawl during play).
