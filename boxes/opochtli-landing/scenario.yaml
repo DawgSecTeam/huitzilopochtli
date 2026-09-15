@@ -6,8 +6,13 @@
 # challenge drills): checks read `iptables-save` signatures only, so ufw's
 # chain-per-table layout does not satisfy them. The box's legitimate service
 # is a small cargo-manifest web app (apache2 + PHP on port 80) backed by a
-# local MariaDB (127.0.0.1:3306) -- keep both alive while you lock the box
-# down; the default-deny check proves you did not over-block.
+# SHARED MariaDB on the workshop network (workshop-shared-mariadb,
+# 192.168.100.10:3306, SELECT-only user) -- NOT a local database. That makes
+# the OUTPUT 3306 task genuinely load-bearing: under OUTPUT default-deny the
+# web app loses its database until students open the egress path. The shared
+# DB is outside the box: if the DB VM is down, the DB probe (and the web
+# app's data) fail through no fault of the student -- see the template's
+# Proxmox description and box.yaml.
 #
 # Scoring ledger (tests/unit/test_boxbuilder_opochtli_landing.py asserts it):
 #   EASY     5 pts x 2 checks =  10   web_input_80_allowed,
@@ -96,10 +101,12 @@ checks:
         # The cargo-manifest web app must still answer on the loopback path...
         python3 -c 'import sys,urllib.request
         sys.exit(0 if b"Cargo" in urllib.request.urlopen("http://127.0.0.1/", timeout=3).read() else 1)' 2>/dev/null || ok=false
-        # ...and MariaDB must still accept connections on 127.0.0.1:3306.
+        # ...and the shared port-authority database must still be reachable
+        # over the workshop network (workshop-shared-mariadb). This is the
+        # egress path the OUTPUT 3306 rule exists to protect.
         python3 -c 'import socket,sys
         s=socket.socket(); s.settimeout(3)
-        sys.exit(0 if s.connect_ex(("127.0.0.1",3306))==0 else 1)' 2>/dev/null || ok=false
+        sys.exit(0 if s.connect_ex(("192.168.100.10",3306))==0 else 1)' 2>/dev/null || ok=false
         [ "$ok" = true ] && echo true || echo false
     expect:
       equals: true
