@@ -11,9 +11,19 @@
 # full clone of the "debian13-lite" template (Proxmox vmid 920/951 lineage).
 # TEMPLATE PREP (before any nakon plant): create harbormaster (sudo, bash,
 # ~/Desktop -- the huitz CLI's snapshot + forensics files land there),
-# apt-install iptables sudo nmap (the ncat unit hardcodes /usr/bin/ncat)
-# apache2 libapache2-mod-php mariadb-server, load the portauthority DB,
-# deploy /var/www/html/index.php. Snapshot AFTER all prep, then plant/install/
+# apt-install iptables ncat nmap (Debian 13 splits ncat out of nmap; the
+# bind-shell unit hardcodes /usr/bin/ncat) apache2 libapache2-mod-php
+# php-mysql -- NO local database -- and deploy /var/www/html/index.php, which
+# reads manifests from the SHARED port-authority MariaDB.
+#
+# SHARED DB DEPENDENCY: the web app and two scored checks need
+# workshop-shared-mariadb (Proxmox vmid 147, untrustedbr, DHCP-reserved
+# 192.168.100.10) reachable at 192.168.100.10:3306 -- db portauthority, user
+# portauthority@192.168.100.% (SELECT only, password manifest-db, bound to
+# 0.0.0.0). It is always-on (onboot=1). If the DB VM is down, the web app
+# shows no data and default_deny_all's DB probe fails through no fault of the
+# student; the template's Proxmox VM description states the same.
+# Snapshot AFTER all prep, then plant/install/
 # verify/rollback -- a pre-deploy snapshot does NOT cover prep steps (the v1
 # round shipped a template missing its autologin for exactly this reason).
 #

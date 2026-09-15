@@ -29,8 +29,9 @@ Your job: **harden this box before the next ship docks.**
 - The **Cargo Manifest Lookup** web app must stay reachable on **port 80** —
   the dock clerks hit it all day. Whatever firewall you build has to let web
   traffic IN.
-- The web app pulls manifest rows from its **MariaDB on 127.0.0.1:3306** —
-  that path has to stay alive too.
+- The web app pulls manifest rows from the harbor's shared **MariaDB at
+  192.168.100.10:3306** (it is not on this box) — that outbound path has to
+  stay alive too.
 - **SSH** must stay running and reachable. Your terminal IS your SSH session;
   a firewall that locks you out ends your shift. Rule zero of default-deny:
   allow your management path *before* you drop the default.
