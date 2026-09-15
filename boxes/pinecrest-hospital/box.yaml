@@ -25,11 +25,14 @@
 # mode (rubric on-box as
 # the encoded .score.dat; agent runs as SYSTEM via the HuitzilopochtliAgent
 # scheduled task every 5 minutes; report mirrored to C:\Users\Public\Desktop).
+# Rogue accounts (mharding, jweaver) score only when DISABLED, not deleted --
+# deletion earns nothing on those checks and destroys forensics evidence
+# (the in-box README tells the teams; REDEPLOY.md gotcha 16).
 scenario: scenario.yaml
 nakon_config: nakon.json
 provider:
   name: ssh
-  host: 10.0.0.122
+  host: 10.0.0.47
   port: 22
   user: sysadmin
   password: PinecrestBuild2026!

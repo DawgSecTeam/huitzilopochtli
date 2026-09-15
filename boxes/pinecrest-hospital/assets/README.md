@@ -1,16 +1,18 @@
 # Pinecrest Community Hospital: IT Department Debrief
 
 Welcome to the IT Department of Pinecrest Community Hospital. Your first
-assignment is to secure this compromised Windows records server. Remove
+assignment is to secure this compromised Windows records server. Lock out
 unauthorized access, clean up persistence left behind by the intruder, and
 close the platform weaknesses they opened.
 
 ## Scenario
 You are tasked with securing `records-01`, the hospital's Windows records
-server. Remove unauthorized users, clean up malicious services and
-persistence, re-enable the platform defenses that were switched off, and
-protect the patient billing data that is currently exposed. The password for
-all admins must be unique and secure.
+server. **Disable** unauthorized users — do not delete them. Disabled
+accounts preserve the evidence our incident report needs (do still scrub
+their group memberships). Then clean up malicious services and persistence,
+re-enable the platform defenses that were switched off, and protect the
+patient billing data that is currently exposed. The password for all admins
+must be unique and secure.
 
 **Critical access**
 Remote Desktop must stay **ON** (the IT team works remotely), but it must
