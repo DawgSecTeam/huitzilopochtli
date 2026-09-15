@@ -551,3 +551,17 @@ forensics:
     points: 10
     answer: "HealthSyncAgent"
     answers: ["HealthSyncAgent", "healthsyncagent"]
+
+# --- theme -------------------------------------------------------------------
+# Windows target: boxbuilder/theme.py resolves this through the theme-*-win
+# seeds (wallpaper + README.html to every profile's Public Desktop, .lnk
+# shortcuts including the auto-added "Scoring Report" launcher). motd/issue
+# are POSIX-only and skipped; title/organization/accent/logo flow through the
+# signed manifest into the report masthead.
+theme:
+  title: "Pinecrest Community Hospital"
+  organization: "Pinecrest Regional Health System"
+  accent: "#0F766E"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md

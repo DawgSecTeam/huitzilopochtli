@@ -233,6 +233,19 @@ def _write_forensics_template(path: str, questions: list) -> None:
     os.rename(tmp, path)
 
 
+def _honor_interval_s() -> int | None:
+    """Report-countdown anchor for honor mode, per platform.
+
+    POSIX: None -- the reporter's 70s default matches the systemd timer.
+    Windows: the HuitzilopochtliAgent scheduled task re-grades every 5
+    minutes (Task Scheduler repetition granularity bottoms out at 1 minute,
+    so the 70s POSIX cadence isn't expressible); anchoring the countdown to
+    the default there would read "00:00 -- checking..." for 4 of every 5
+    minutes even though nothing is wrong.
+    """
+    return 300 if os.name == "nt" else None
+
+
 def _prepare_forensics(manifest, config_dir: str) -> None:
     """Resolve answers-file paths and write missing templates (both modes).
 
@@ -347,6 +360,7 @@ def honor_grade(config, manifest, ctx) -> tuple:
     html = agent.reporter.render_report(
         score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest,
         score_delta=delta,
+        honor_interval_s=_honor_interval_s(),
     )
     with open(config.report_path, "w", encoding="utf-8") as f:
         f.write(html)
