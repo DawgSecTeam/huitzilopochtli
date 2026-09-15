@@ -1,11 +1,18 @@
-"""Regression coverage for the themed Opochtli Landing Port Authority example.
+"""Regression coverage for the Opochtli Landing Port Authority example, v2.
 
-This box introduces two firsts for the series:
-- DIFFICULTY-WEIGHTED scoring: display tier prefix must agree with the point
-  value (EASY=5, MODERATE=10, HARD=20) and with expect.points/max_points.
-- the command_json check type: every authored script must emit exactly one
-  JSON document; these tests actually run each script (unprivileged, on the
-  dev machine) and assert parseable output.
+The v2 rebuild is the series' first CLI-era box: headless Debian 13 running
+the huitz terminal console, raw-iptables-only firewall scoring, and a
+difficulty-weighted ledger (EASY=5, MODERATE=10, HARD=20) carried over from
+v1. What these tests pin down:
+
+- the ledger itself (check count, tier/points agreement, penalty floor,
+  forensics split) — the ledger IS the contract with the students;
+- every command_json script actually runs and emits exactly one JSON scalar
+  even where iptables is missing or unprivileged (fail-closed shape);
+- the plant<->check pairing discipline (beacon path/unit/C2 target must
+  byte-match between nakon.json vars, scenario collect params, and the
+  forensics answers — nothing cross-checks them at build time);
+- matcher pass/reject pairs for every check's hardened vs planted state.
 """
 import base64
 import json
@@ -27,17 +34,24 @@ BOX_DIR = os.path.join(REPO_ROOT, "boxes", "opochtli-landing")
 SCENARIO = os.path.join(BOX_DIR, "scenario.yaml")
 BOX = os.path.join(BOX_DIR, "box.yaml")
 NAKON = os.path.join(BOX_DIR, "nakon.json")
-BEACON_SEED = os.path.join(
-    REPO_ROOT, "boxbuilder", "vulndb_vuln_configs", "raw-socket-beacon.json")
-BEACON_SOURCE = os.path.join(
-    REPO_ROOT, "boxbuilder", "vulndb_vuln_configs", "raw-socket-beacon.c")
+REALM_SEED = os.path.join(
+    REPO_ROOT, "boxbuilder", "vulndb_vuln_configs", "realm-beacon.json")
+COCKPIT_SEED = os.path.join(
+    REPO_ROOT, "boxbuilder", "vulndb_vuln_configs", "cockpit-installed.json")
 
-CHECK_COUNT = 26
-CHECK_POINTS = 280
-FORENSICS_POINTS = 50
-TOTAL_POINTS = CHECK_POINTS + FORENSICS_POINTS
+CHECK_COUNT = 9          # 8 vuln + 1 penalty
+VULN_POINTS = 100        # penalty floor (-10) excluded from attainable
+FORENSICS_POINTS = 40
+TOTAL_POINTS = VULN_POINTS + FORENSICS_POINTS
 
 TIER_POINTS = {"EASY": 5, "MODERATE": 10, "HARD": 20}
+
+# The DISASTEROUS_PHARMACY plant (realm-beacon seed defaults, mirrored in
+# nakon.json vars) — the single source of truth for the beacon coupling.
+BEACON_UNIT = "tide-sync.service"
+BEACON_PATH = "/opt/tide-sync/tide-syncd"
+BEACON_C2 = "10.233.0.66:8443"
+BIND_UNIT = "system-update.service"
 
 
 def _load_scenario():
@@ -55,9 +69,12 @@ def test_opochtli_scenario_validates_and_compiles(tmp_path):
     checks = parsed["checks"]
     assert len(checks) == CHECK_COUNT
     assert len({check["id"] for check in checks}) == CHECK_COUNT
-    assert sum(check["max_points"] for check in checks) == CHECK_POINTS
+    vuln = [c for c in checks if c["category"] == "vuln"]
+    penalty = [c for c in checks if c["category"] != "vuln"]
+    assert sum(c["max_points"] for c in vuln) == VULN_POINTS
+    assert len(penalty) == 1 and penalty[0]["max_points"] == 10
     assert sum(fq["points"] for fq in parsed["forensics"]) == FORENSICS_POINTS
-    assert sum(check["max_points"] for check in checks) + sum(
+    assert sum(c["max_points"] for c in vuln) + sum(
         fq["points"] for fq in parsed["forensics"]) == TOTAL_POINTS
 
     private_key, _ = signing.keypair()
@@ -66,15 +83,18 @@ def test_opochtli_scenario_validates_and_compiles(tmp_path):
     assert os.path.isfile(outputs["rubric"])
     manifest = json.load(open(outputs["manifest"], encoding="utf-8"))
     assert manifest["theme"]["title"] == "Opochtli Landing Port Authority"
-    assert manifest["theme"]["logo_b64"]
+    # headless CLI box: the handbook rides the manifest, there is no logo
+    assert manifest["theme"]["readme_text"].startswith("# Opochtli Landing")
+    assert manifest["theme"]["logo_b64"] is None
+    # the answers must ride the rubric only, never the signed manifest
+    assert not any(c.get("answer") for c in manifest["checks"])
 
 
 def test_opochtli_difficulty_tiers_match_points():
-    """The box's signature change: display tier prefix, max_points, and
-    expect.points must all agree (EASY=5, MODERATE=10, HARD=20)."""
+    """Display tier prefix, max_points, and expect.points must all agree
+    (EASY=5, MODERATE=10, HARD=20); non-vuln checks are penalties."""
     for check in _load_scenario()["checks"]:
         if check["category"] != "vuln":
-            # penalty/prohibited checks don't carry a positive tier
             assert check["display"].startswith("PENALTY:"), (
                 f"{check['id']}: non-vuln check must say PENALTY"
             )
@@ -94,11 +114,8 @@ def test_opochtli_difficulty_tiers_match_points():
         )
 
     forensics_points = {
-        "fq-key-comment": 5,
-        "fq-docking-unit": 5,
-        "fq-docking-port": 10,
-        "fq-c2-destination": 10,
-        "fq-backdoor-source": 20,
+        "fq-beacon-destination": 20,
+        "fq-bind-shell": 20,
     }
     for fq in _load_scenario()["forensics"]:
         assert fq["points"] == forensics_points[fq["id"]]
@@ -106,15 +123,15 @@ def test_opochtli_difficulty_tiers_match_points():
 
 def test_opochtli_command_json_scripts_emit_valid_json():
     """Every command_json script is read-only and emits exactly one JSON
-    document. Run each one unprivileged: iptables/nft probes degrade to the
-    fallback branch without root, which is exactly the fail-closed shape we
-    want to see -- parseable JSON either way."""
+    document. Run each one unprivileged: iptables/ss probes degrade to the
+    fail-closed branch without root, which is exactly the shape we want --
+    parseable JSON either way, never a traceback and never two documents."""
     for check in _load_scenario()["checks"]:
         if check["type"] != "command_json":
             continue
         proc = subprocess.run(
             ["/bin/sh", "-c", check["collect"]["script"]],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=60,
         )
         out = proc.stdout.strip()
         assert out, f"{check['id']}: script produced no output"
@@ -122,8 +139,40 @@ def test_opochtli_command_json_scripts_emit_valid_json():
             f"{check['id']}: script has a shell syntax problem: {proc.stderr}"
         )
         parsed = json.loads(out)  # raises if the script broke its contract
-        assert parsed in (True, False, "DROP", "ACCEPT"), (
+        assert parsed in (True, False), (
             f"{check['id']}: unexpected emitted value {parsed!r}"
+        )
+
+
+def test_opochtli_command_json_scripts_detect_persisted_rules(tmp_path):
+    """The firewall scripts key off iptables-save signatures; feed one a
+    hardened ruleset through a stub and each must flip to its secure value."""
+    scenario = _load_scenario()
+    checks = {c["id"]: c for c in scenario["checks"]}
+
+    hardened = "\n".join([
+        "-P INPUT DROP", "-P FORWARD DROP", "-P OUTPUT DROP",
+        "-A INPUT -i lo -j ACCEPT",
+        "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        "-A INPUT -p tcp -m tcp --dport 80 -j ACCEPT",
+        "-A OUTPUT -p tcp -m tcp --dport 3306 -j ACCEPT",
+        "",
+    ])
+
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "iptables-save").write_text("#!/bin/sh\ncat <<'RULES'\n" + hardened + "RULES\n")
+    (stub / "iptables-save").chmod(0o755)
+
+    for cid, want in (("web_input_80_allowed", True),
+                      ("db_output_3306_allowed", True)):
+        proc = subprocess.run(
+            ["/bin/sh", "-c",
+             f'PATH={stub}:$PATH {checks[cid]["collect"]["script"]}'],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert json.loads(proc.stdout.strip()) is want, (
+            f"{cid}: hardened ruleset should emit {want}, got {proc.stdout!r}"
         )
 
 
@@ -137,188 +186,99 @@ def test_opochtli_box_and_nakon_inputs_resolve():
     assert len(machines) == 1
     requested = machines[0]["configurations"]
     names = [item if isinstance(item, str) else item["name"] for item in requested]
-    assert names.count("insecure-file-mode") == 3
-    assert names.count("local-user") == 2
-    for name in (
-        "user-login-shell", "user-sudo-nopasswd", "systemd-service",
-        "raw-socket-beacon", "backdoor-firewall-rule", "ssh-root-login",
-        "ufw-removed",
-    ):
+    for name in ("cockpit-installed", "ncat-listener-autostart", "realm-beacon"):
         assert name in names
 
-    # Raw-socket beacon seed: embedded binary decodes to an ELF, source
-    # provenance file present next to it.
-    seed = json.load(open(BEACON_SEED, encoding="utf-8"))
-    assert seed["name"] == "raw-socket-beacon"
+    # realm-beacon seed: embedded binary decodes to an ELF; the documented
+    # defaults are the DISASTEROUS_PHARMACY story (path, C2, codename).
+    seed = json.load(open(REALM_SEED, encoding="utf-8"))
+    assert seed["name"] == "realm-beacon"
+    assert seed["run_as"] == "root"
     embedded = re.search(r"_B64='([A-Za-z0-9+/=]+)'", seed["script"])
-    assert embedded, "beacon seed script must embed the binary as _B64"
+    assert embedded, "realm-beacon seed script must embed the binary as _B64"
     blob = base64.b64decode(embedded.group(1))
     assert blob.startswith(b"\x7fELF"), "embedded beacon must be an ELF binary"
-    assert os.path.isfile(BEACON_SOURCE), (
-        "raw-socket-beacon.c (patched source + provenance) must ship next to the seed"
-    )
+    assert 'BEACON_PATH="${BEACON_PATH:-' + BEACON_PATH + '}"' in seed["script"]
+    assert 'TARGET_IP="${TARGET_IP:-' + BEACON_C2.rsplit(":", 1)[0] + '}"' in seed["script"]
+    assert 'DISASTEROUS_PHARMACY' in seed["script"]
+
+    # cockpit seed: enables the socket (the thing the check scores)
+    cockpit = json.load(open(COCKPIT_SEED, encoding="utf-8"))
+    assert "cockpit.socket" in cockpit["script"]
 
 
 def test_opochtli_plant_vars_match_paired_checks():
-    """The pairing discipline: FILE_PATH/SERVICE_NAME/USERNAME in nakon.json
-    must byte-match the scenario's collect params (nothing cross-checks)."""
+    """The pairing discipline: realm-beacon's vars must byte-match the
+    scenario's collect params and the forensics answers (nothing
+    cross-checks them at build time)."""
     checks = {c["id"]: c for c in _load_scenario()["checks"]}
+    forensics = {f["id"]: f for f in _load_scenario()["forensics"]}
     nakon = json.load(open(NAKON, encoding="utf-8"))
-    vars_list = [
-        item["vars"]
-        for item in nakon["machines"][0]["configurations"]
-        if isinstance(item, dict)
-    ]
+    realm = next(
+        item for item in nakon["machines"][0]["configurations"]
+        if isinstance(item, dict) and item["name"] == "realm-beacon"
+    )["vars"]
 
-    def paths_with(key):
-        return {v[key] for v in vars_list if key in v}
+    assert realm["SERVICE_NAME"] + ".service" == BEACON_UNIT
+    assert checks["beacon_service_removed"]["collect"]["service"] == BEACON_UNIT
+    assert realm["BEACON_PATH"] == BEACON_PATH
+    assert checks["beacon_binary_removed"]["collect"]["path"] == BEACON_PATH
+    assert realm["BEACON_PATH"] == checks["beacon_process_gone"]["collect"]["pattern"]
+    c2 = f"{realm['TARGET_IP']}:{realm['TARGET_PORT']}"
+    assert c2 == BEACON_C2
+    answers = {forensics["fq-beacon-destination"]["answer"], *forensics["fq-beacon-destination"].get("answers", [])}
+    assert c2 in answers
 
-    assert paths_with("FILE_PATH") == {
-        checks["manifest_private"]["collect"]["path"],
-        checks["pilot_key_private"]["collect"]["path"],
-        checks["no_planted_pilot_key"]["collect"]["path"],
-    }
-    services = {v["SERVICE_NAME"] for v in vars_list if "SERVICE_NAME" in v}
-    assert services == {
-        checks["docking_agent_disabled"]["collect"]["service"].removesuffix(".service"),
-        checks["beacon_disabled"]["collect"]["service"].removesuffix(".service"),
-    }
-    users = {v["USERNAME"] for v in vars_list if "USERNAME" in v}
-    assert "stevedore" in users and "nightwatch" in users and "cranelift" in users
-
-    # process_state patterns match the planted payload paths
-    payload_paths = {v["PAYLOAD_PATH"] for v in vars_list if "PAYLOAD_PATH" in v}
-    assert "/usr/local/libexec/docking-agent" in payload_paths
-    planted_binaries = payload_paths | {"/usr/local/libexec/.cache-refresh"}
-    for cid in ("docking_agent_killed", "beacon_killed"):
-        pattern = checks[cid]["collect"]["pattern"]
-        assert any(re.search(pattern, p) for p in planted_binaries), (
-            f"{cid}: pattern {pattern!r} matches nothing planted"
-        )
-
-
-def test_opochtli_file_regex_extracts_have_capturing_groups():
-    """The file_regex collector REQUIRES a capturing group in `extract`
-    (solar-observatory shipped one ungrouped and the check was unpassable)."""
-    for check in _load_scenario()["checks"]:
-        if check["type"] != "file_regex":
-            continue
-        pattern = check["collect"]["extract"]
-        compiled = re.compile(pattern)  # raises on an invalid pattern
-        assert compiled.groups >= 1, (
-            f"{check['id']}: file_regex extract {pattern!r} has no capturing "
-            "group; the collector would error on every run"
-        )
+    # the bind-shell check must target the unit the catalog row installs
+    assert BIND_UNIT in checks["bind_shell_removed"]["collect"]["script"]
+    # ...and the cockpit check must target the socket the seed enables
+    assert "cockpit.socket" in checks["cockpit_removed"]["collect"]["script"]
 
 
 def test_opochtli_pairings_score_secure_states_and_reject_planted_states():
     checks = {check["id"]: check for check in _load_scenario()["checks"]}
 
-    # command_json, boolean emission (firewall enforcing)
-    secure, reason = evaluate_matcher(_matcher(checks["firewall_enforcing"]), {"data": True, "text": "true"})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["firewall_enforcing"]), {"data": False, "text": "false"})
-    assert not planted, reason
+    # command_json, boolean emission (rules present / quiet ports)
+    for cid in ("web_input_80_allowed", "db_output_3306_allowed",
+                "default_deny_all", "cockpit_removed", "bind_shell_removed"):
+        secure, reason = evaluate_matcher(
+            _matcher(checks[cid]), {"data": True, "text": "true"})
+        assert secure, f"{cid}: {reason}"
+        planted, reason = evaluate_matcher(
+            _matcher(checks[cid]), {"data": False, "text": "false"})
+        assert not planted, f"{cid}: {reason}"
 
-    # command_json, string emission (default-deny)
-    secure, reason = evaluate_matcher(_matcher(checks["default_deny_incoming"]), {"data": "DROP"})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["default_deny_incoming"]), {"data": "ACCEPT"})
-    assert not planted, reason
-
-    # command_json, backdoor-rule absence is the hardened state
-    secure, reason = evaluate_matcher(_matcher(checks["backdoor_rule_removed"]), {"data": True})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["backdoor_rule_removed"]), {"data": False})
-    assert not planted, reason
-
-    # package
-    secure, reason = evaluate_matcher(_matcher(checks["ufw_installed"]), {"installed": True, "version": "0.36"})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["ufw_installed"]), {"installed": False, "version": None})
-    assert not planted, reason
-
-    # db_query (pilot house still reachable)
-    secure, reason = evaluate_matcher(_matcher(checks["pilot_house_reachable"]), {"ok": True, "error": None})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["pilot_house_reachable"]), {"ok": False, "error": "refused"})
-    assert not planted, reason
-
-    # permission, file absent (passwordless-sudo drop-in removed)
-    secure, reason = evaluate_matcher(_matcher(checks["no_passwordless_sudo"]), {"exists": False, "mode": None})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["no_passwordless_sudo"]), {"exists": True, "mode": "0440"})
-    assert not planted, reason
-
-    # permission, mode_at_most
-    secure, reason = evaluate_matcher(_matcher(checks["manifest_private"]), {"mode": "0640", "exists": True})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["manifest_private"]), {"mode": "0666", "exists": True})
-    assert not planted, reason
-
-    # file_regex, hardened == no match (planted key removed)
-    secure, reason = evaluate_matcher(_matcher(checks["no_planted_pilot_key"]), {"matched": None})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["no_planted_pilot_key"]), {"matched": "harbor-pilot-key"})
-    assert not planted, reason
-
-    # file_regex, hardened == nologin shell
-    secure, reason = evaluate_matcher(_matcher(checks["cranelift_no_shell"]), {"matched": "/usr/sbin/nologin"})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["cranelift_no_shell"]), {"matched": "/bin/bash"})
-    assert not planted, reason
-
-    # file_regex, sshd root login
-    secure, reason = evaluate_matcher(_matcher(checks["ssh_no_root"]), {"matched": "no"})
-    assert secure, reason
-    planted, reason = evaluate_matcher(_matcher(checks["ssh_no_root"]), {"matched": "yes"})
-    assert not planted, reason
-
-    # user_group
+    # permission, binary deleted is the hardened state
     secure, reason = evaluate_matcher(
-        _matcher(checks["no_stevedore"]),
-        {"users": ["root", "harbormaster"], "group_members": {}},
-    )
+        _matcher(checks["beacon_binary_removed"]), {"exists": False, "mode": None})
     assert secure, reason
     planted, reason = evaluate_matcher(
-        _matcher(checks["no_stevedore"]),
-        {"users": ["root", "harbormaster", "stevedore"], "group_members": {}},
-    )
+        _matcher(checks["beacon_binary_removed"]), {"exists": True, "mode": "0755"})
     assert not planted, reason
 
+    # process_state, beacon dead is the hardened state
     secure, reason = evaluate_matcher(
-        _matcher(checks["harbormaster_sole_admin"]),
-        {"users": ["root", "harbormaster"], "group_members": {"sudo": ["harbormaster"]}},
-    )
+        _matcher(checks["beacon_process_gone"]),
+        {"running": False, "count": 0, "pids": [], "sample_cmdline": None})
     assert secure, reason
     planted, reason = evaluate_matcher(
-        _matcher(checks["harbormaster_sole_admin"]),
-        {"users": ["root", "harbormaster", "stevedore"],
-         "group_members": {"sudo": ["harbormaster", "stevedore"]}},
-    )
+        _matcher(checks["beacon_process_gone"]),
+        {"running": True, "count": 1, "pids": [4321],
+         "sample_cmdline": BEACON_PATH + " -t 10.233.0.66 -p 8443"})
     assert not planted, reason
 
-    # service_state / process_state pairs (rogue listener AND silent beacon)
-    for disabled, killed in (
-        ("docking_agent_disabled", "docking_agent_killed"),
-        ("beacon_disabled", "beacon_killed"),
-    ):
-        secure, reason = evaluate_matcher(
-            _matcher(checks[disabled]), {"active": False, "enabled": False}
-        )
-        assert secure, reason
-        planted, reason = evaluate_matcher(
-            _matcher(checks[disabled]), {"active": True, "enabled": True}
-        )
-        assert not planted, reason
+    # service_state, launcher disabled is the hardened state
+    secure, reason = evaluate_matcher(
+        _matcher(checks["beacon_service_removed"]), {"active": False, "enabled": False})
+    assert secure, reason
+    planted, reason = evaluate_matcher(
+        _matcher(checks["beacon_service_removed"]), {"active": True, "enabled": True})
+    assert not planted, reason
 
-        secure, reason = evaluate_matcher(
-            _matcher(checks[killed]), {"running": False, "count": 0, "pids": [], "sample_cmdline": None}
-        )
-        assert secure, reason
-        planted, reason = evaluate_matcher(
-            _matcher(checks[killed]),
-            {"running": True, "count": 1, "pids": [4321],
-             "sample_cmdline": "/usr/local/libexec/.cache-refresh"},
-        )
-        assert not planted, reason
+    # db_query penalty: sshd answering keeps the management path alive
+    secure, reason = evaluate_matcher(
+        _matcher(checks["console_reachable"]), {"ok": True, "error": None})
+    assert secure, reason
+    planted, reason = evaluate_matcher(
+        _matcher(checks["console_reachable"]), {"ok": False, "error": "refused"})
+    assert not planted, reason

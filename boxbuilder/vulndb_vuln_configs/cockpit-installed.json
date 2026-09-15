@@ -1,0 +1,10 @@
+{
+  "name": "cockpit-installed",
+  "description": "Plants Cockpit, the web-based admin console: apt-installs the cockpit package and enables cockpit.socket, which listens on 0.0.0.0:9090. An always-on management web server nobody asked for is a classic CCDC finding -- remove the package entirely or disable --now the socket, and confirm 9090 has gone quiet in `ss -tlnp`. Idempotent.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\n# cockpit-installed -- apt-installs Cockpit and enables cockpit.socket\n# (0.0.0.0:9090). Runs at deploy time while the box still has network.\nset -eu\nexport DEBIAN_FRONTEND=noninteractive\nif command -v apt-get >/dev/null 2>&1; then\n    apt-get update -qq >/dev/null 2>&1 || true\n    apt-get install -y -qq cockpit >/dev/null 2>&1\nfi\nif command -v systemctl >/dev/null 2>&1; then\n    systemctl enable --now cockpit.socket\nfi\n",
+  "depends_on": []
+}
