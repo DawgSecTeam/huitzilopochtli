@@ -347,3 +347,14 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    LastRunTime advancing untouched), then shutdown -> qm template -> rename.
    Template RAM raised to 6144 MB in the same pass (2 cores / 4 GB made
    the agent's CIM sweeps crawl during play).
+16. **Rogue accounts are scored DISABLED, not deleted (Hamza, 2026-09-14).**
+   `mharding`/`jweaver` award points only when the account exists AND
+   `Win32_UserAccount.Disabled` is true -- deleting the account scores
+   nothing for those checks (deleted evidence is what the forensics
+   questions need). The GROUP checks still scrub memberships either way
+   (deleting a rogue user legitimately empties their group entries), so a
+   deleting team earns group points but loses the account points; the
+   README tells players to disable + scrub groups. Restoring the planted
+   state after a deletion test is re-plant (seed create path) + a manual
+   `net user mharding /active:yes` -- the seed's update path never touches
+   the Enabled flag.

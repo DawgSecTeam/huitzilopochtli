@@ -403,3 +403,24 @@ def test_honor_interval_s_platform_split(monkeypatch):
     assert main_mod._honor_interval_s() == 300
     monkeypatch.setattr(main_mod.os, "name", "posix")
     assert main_mod._honor_interval_s() is None
+
+
+def test_pinecrest_rogue_accounts_scored_disabled_not_removed():
+    """Hamza's rule: unauthorized accounts must be DISABLED, not deleted --
+    the checks require the account to exist AND be Disabled (CIM), so a team
+    that deletes the account scores nothing for it."""
+    import yaml as pyyaml
+
+    sc = pyyaml.safe_load(open("boxes/pinecrest-hospital/scenario.yaml", encoding="utf-8"))
+    by_id = {c["id"]: c for c in sc["checks"]}
+    for cid, user in (("mharding_disabled", "mharding"),
+                      ("jweaver_disabled", "jweaver")):
+        check = by_id[cid]
+        assert check["type"] == "powershell_json"
+        assert check["expect"] == {"equals": True, "field": "data", "points": 10}
+        script = check["collect"]["script"]
+        assert f"Name='{user}'" in script, f"{cid} must match {user} by name"
+        assert ".Disabled" in script, f"{cid} must key on the Disabled flag"
+        assert "$null -ne $u" in script, f"{cid} must require the account to exist"
+        # old removal-based check ids must be gone
+        assert "no_mharding" not in by_id and "no_jweaver" not in by_id

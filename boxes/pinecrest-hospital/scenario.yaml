@@ -25,9 +25,10 @@ scenario:
 
 checks:
   # Difficulty spread, called out in the in-box README too:
-  #   EASY (10):    no_mharding, no_jweaver, no_blank_account, admins_sole_admin,
-  #                 rdp_users_no_unauthorized, uac_enabled, no_autologin_password,
-  #                 records_file_present, creds_file_removed, spooler_stopped
+  #   EASY (10):    mharding_disabled, jweaver_disabled, no_blank_account,
+  #                 admins_sole_admin, rdp_users_no_unauthorized, uac_enabled,
+  #                 no_autologin_password, records_file_present,
+  #                 creds_file_removed, spooler_stopped
   #   MODERATE (16): guest_disabled, firewall_on, smb1_disabled, rdp_nla, audit_on,
   #                 password_minlen, hosts_redirect_removed, no_runkey,
   #                 runkey_payload_removed, no_task, task_payload_removed,
@@ -45,26 +46,42 @@ checks:
   # restarts a merely-killed service until it is disabled for good).
 
   # --- unauthorized accounts --------------------------------------------
-  - id: no_mharding
-    type: user_group
+  # Scored as DISABLED, not deleted: a disabled account preserves the log and
+  # registry evidence the forensics questions need (and "disable, don't
+  # destroy" is the incident-response habit the box teaches). Removing the
+  # account from the Administrators/Remote Desktop Users GROUPS is still
+  # required by the membership checks -- disable the account, scrub the groups.
+  - id: mharding_disabled
+    type: powershell_json
     category: vuln
-    display: "EASY: Unauthorized administrator account 'mharding' is removed"
+    display: "EASY: Unauthorized administrator account 'mharding' is disabled"
     max_points: 10
-    collect: {}
+    timeout_s: 20
+    collect:
+      script: |
+        # Win32_UserAccount.Disabled, not Get-LocalUser: authoritative on this
+        # image. Points require the account to exist AND be disabled -- an
+        # account that was deleted instead of disabled scores nothing here.
+        $u = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='mharding'"
+        ($null -ne $u -and $u.Disabled) | ConvertTo-Json -Compress
     expect:
-      user_absent: true
-      username: mharding
+      equals: true
+      field: data
       points: 10
 
-  - id: no_jweaver
-    type: user_group
+  - id: jweaver_disabled
+    type: powershell_json
     category: vuln
-    display: "EASY: Unauthorized account 'jweaver' is removed"
+    display: "EASY: Unauthorized account 'jweaver' is disabled"
     max_points: 10
-    collect: {}
+    timeout_s: 20
+    collect:
+      script: |
+        $u = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='jweaver'"
+        ($null -ne $u -and $u.Disabled) | ConvertTo-Json -Compress
     expect:
-      user_absent: true
-      username: jweaver
+      equals: true
+      field: data
       points: 10
 
   - id: no_blank_account
