@@ -7,8 +7,12 @@
 # apache2 + PHP "Cargo Manifest Lookup" on port 80 backed by local MariaDB on
 # 127.0.0.1:3306 (all installed during TEMPLATE PREP, not planted).
 #
-# Template lineage: opochtli-landing-cli-template, sealed 2026-09-15 from a
-# full clone of the "debian13-lite" template (Proxmox vmid 920/951 lineage).
+# Template lineage: opochtli-landing-cli-template (Proxmox vmid 140), sealed
+# 2026-09-15 from a full clone of the "debian13-lite-fix" template (vmid 951,
+# Debian 13.6). Validated end-to-end on live clones: Total: 0 at baseline,
+# Total: 140 (8 of 8 + 2 of 2 forensics) after the answer-key harden, both
+# from the workshop network with the shared DB live. The pre-rebuild v1
+# xubuntu-VNC template (vmid 135) is retired.
 # TEMPLATE PREP (before any nakon plant): create harbormaster (sudo, bash,
 # ~/Desktop -- the huitz CLI's snapshot + forensics files land there),
 # apt-install iptables ncat nmap (Debian 13 splits ncat out of nmap; the
