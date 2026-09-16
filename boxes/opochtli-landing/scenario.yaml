@@ -59,7 +59,9 @@ checks:
     max_points: 5
     collect:
       script: |
-        out=$(iptables-save 2>/dev/null) || { echo false; exit 0; }
+        # iptables -S prints the -P policy line and the -A rules; iptables-save
+        # prints policies as ":INPUT DROP", which this grep must not miss.
+        out=$(iptables -S INPUT 2>/dev/null) || { echo false; exit 0; }
         echo "$out" | grep -qE '^-A INPUT .*-p tcp .*--dport 80 .*-j ACCEPT$' && { echo true; exit 0; }
         echo "$out" | grep -qE '^-A INPUT .*-p tcp .*--dports [0-9,:]*80[0-9,:]* .*-j ACCEPT$' && { echo true; exit 0; }
         echo false
@@ -75,7 +77,7 @@ checks:
     max_points: 10
     collect:
       script: |
-        out=$(iptables-save 2>/dev/null) || { echo false; exit 0; }
+        out=$(iptables -S OUTPUT 2>/dev/null) || { echo false; exit 0; }
         echo "$out" | grep -qE '^-A OUTPUT .*-p tcp .*--dport 3306 .*-j ACCEPT$' && { echo true; exit 0; }
         echo "$out" | grep -qE '^-A OUTPUT .*-p tcp .*--dports [0-9,:]*3306[0-9,:]* .*-j ACCEPT$' && { echo true; exit 0; }
         echo false
@@ -92,7 +94,8 @@ checks:
     collect:
       script: |
         ok=true
-        out=$(iptables-save 2>/dev/null) || out=
+        # iptables -S (not -save): save prints policies as ":INPUT DROP".
+        out=$( { iptables -S INPUT 2>/dev/null; iptables -S FORWARD 2>/dev/null; iptables -S OUTPUT 2>/dev/null; } ) || out=
         echo "$out" | grep -qx -- '-P INPUT DROP'    || ok=false
         echo "$out" | grep -qx -- '-P FORWARD DROP'  || ok=false
         echo "$out" | grep -qx -- '-P OUTPUT DROP'   || ok=false
@@ -134,8 +137,11 @@ checks:
     max_points: 10
     collect:
       script: |
-        if systemctl is-enabled cockpit.socket >/dev/null 2>&1; then echo false; exit 0; fi
-        if systemctl is-enabled cockpit.service >/dev/null 2>&1; then echo false; exit 0; fi
+        # is-enabled exits 0 for "static" too -- match the exact "enabled"
+        # output, so a purged, disabled, masked or static-but-quiet state all
+        # pass. Port 9090 going quiet is the real gate.
+        if systemctl is-enabled cockpit.socket 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        if systemctl is-enabled cockpit.service 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
         if ss -tlnH 'sport = :9090' 2>/dev/null | grep -q .; then echo false; exit 0; fi
         echo true
     expect:
