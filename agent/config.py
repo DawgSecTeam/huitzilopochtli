@@ -53,6 +53,13 @@ def load_config(config_path: str) -> AgentConfig:
         notifications=bool(data.get("notifications", True)),
     )
 
+    if config.mode == Mode.HONOR:
+        if not config.rubric_path:
+            raise ValueError(
+                f"config {config_path!r}: honor mode requires a non-empty "
+                "'rubric_path'"
+            )
+
     if config.mode == Mode.RANKED:
         if not config.identity_path:
             raise ValueError(

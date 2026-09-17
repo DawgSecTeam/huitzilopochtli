@@ -4,6 +4,7 @@ No action may open an outbound connection — there is no network-egress
 primitive in this module. Do not add a generic "run command" primitive.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,12 @@ ACTIONS: dict[str, Callable] = {}
 
 #: Directory confining ``drop_inert_artifact`` — resolved paths never escape it.
 _DEFAULT_ARTIFACT_DIR = os.path.join(tempfile.gettempdir(), "huitzilopochtli-adversary")
+
+#: What a service/unit name may look like. The first character cannot be
+#: ``-``, so a params value is never parsed as an option by systemctl /
+#: rc-service; ``/``, whitespace, ``$`` etc. are excluded outright. Real
+#: names (``nginx.service``, ``php8.2-fpm``, ``openvpn@server``) all pass.
+_SERVICE_NAME_RE = re.compile(r"[A-Za-z0-9_.@+][A-Za-z0-9_.@+-]*\Z")
 
 
 def _artifact_base() -> str:
@@ -68,6 +75,13 @@ def _kill_service(params: dict, ctx: "agent.platform.base.PlatformContext") -> N
     """Stop a named service (adversary is the only writer; see §12)."""
     service = params.get("service")
     if not service:
+        return
+    if not isinstance(service, str) or not _SERVICE_NAME_RE.fullmatch(service):
+        print(
+            f"WARNING: refusing kill_service: invalid service name "
+            f"{service!r}",
+            file=sys.stderr,
+        )
         return
     try:
         if os.path.exists("/run/systemd/system"):

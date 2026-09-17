@@ -479,3 +479,114 @@ def test_sla_no_credit_for_down_window_on_transition_to_up(tmp_path):
     # From then on, normal accrual resumes.
     rec = sla.update_sla(store, "b", "c", params, True, 130.0)
     assert rec.accrued_points == 2  # (130-110)/10 = 2 intervals
+
+
+# --- honor-mode rubric loading (agent/__main__._load_rubric) ------------------
+
+def _rubric_dict():
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "scenario_name": "rubric-loader",
+        "scenario_version": 3,
+        "entries": [],
+    }
+
+
+class _RubricPathOnlyConfig:
+    """_load_rubric only touches config.rubric_path."""
+
+    def __init__(self, rubric_path):
+        self.rubric_path = rubric_path
+
+
+def test_load_rubric_decodes_obfuscated_rubric(tmp_path):
+    from common import rubric_codec
+    path = tmp_path / ".score.rubric"
+    path.write_bytes(rubric_codec.encode_rubric(_rubric_dict()))
+    rubric = agent_main._load_rubric(_RubricPathOnlyConfig(str(path)))
+    assert rubric.scenario_name == "rubric-loader"
+    assert rubric.scenario_version == 3
+
+
+def test_load_rubric_accepts_plain_json(tmp_path):
+    path = tmp_path / "rubric.json"
+    path.write_text(json.dumps(_rubric_dict()), encoding="utf-8")
+    rubric = agent_main._load_rubric(_RubricPathOnlyConfig(str(path)))
+    assert rubric.scenario_name == "rubric-loader"
+
+
+def _assert_actionable(excinfo, path):
+    msg = str(excinfo.value)
+    assert str(path) in msg
+    assert "restore the file or reinstall" in msg
+
+
+def test_load_rubric_missing_file_raises_actionable(tmp_path):
+    path = tmp_path / "gone.rubric"
+    with pytest.raises(ValueError) as excinfo:
+        agent_main._load_rubric(_RubricPathOnlyConfig(str(path)))
+    _assert_actionable(excinfo, path)
+
+
+def test_load_rubric_garbage_blob_raises_actionable(tmp_path):
+    path = tmp_path / "rubric.bin"
+    path.write_bytes(b"definitely-not-a-rubric")
+    with pytest.raises(ValueError) as excinfo:
+        agent_main._load_rubric(_RubricPathOnlyConfig(str(path)))
+    _assert_actionable(excinfo, path)
+
+
+def test_load_rubric_structurally_bad_json_raises_actionable(tmp_path):
+    path = tmp_path / "rubric.json"
+    path.write_text(json.dumps({"schema_version": SCHEMA_VERSION}),
+                    encoding="utf-8")
+    with pytest.raises(ValueError) as excinfo:
+        agent_main._load_rubric(_RubricPathOnlyConfig(str(path)))
+    _assert_actionable(excinfo, path)
+
+
+def test_honor_grade_fails_fast_before_collection(tmp_path):
+    """A missing rubric must abort the grade before the evidence-collection
+    pass -- collection is wasted work when the box cannot score at all."""
+
+    def _explode(checks, ctx):
+        raise AssertionError("collector must not run when the rubric is gone")
+
+    from common.schema import Manifest, Mode
+    config = _RubricPathOnlyConfig(str(tmp_path / "gone.rubric"))
+    manifest = Manifest(
+        schema_version=SCHEMA_VERSION, scenario_name="rubric-loader",
+        scenario_version=1, mode=Mode.HONOR, engine_url=None,
+        hosts=[], checks=[],
+    )
+    with patch("agent.collector.run_all", _explode):
+        with pytest.raises(ValueError, match="rubric"):
+            agent_main.honor_grade(config, manifest, ctx=None)
+
+
+# --- honor-mode config validation (agent/config.py) ---------------------------
+
+def _write_agent_config(tmp_path, **overrides):
+    data = {
+        "mode": "honor",
+        "manifest_path": str(tmp_path / "manifest.json"),
+        "report_path": str(tmp_path / "report.html"),
+        "rubric_path": str(tmp_path / ".score.rubric"),
+    }
+    data.update(overrides)
+    path = tmp_path / "agent_config.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return str(path)
+
+
+def test_load_config_honor_requires_rubric_path(tmp_path):
+    import agent.config
+    config_path = _write_agent_config(tmp_path, rubric_path=None)
+    with pytest.raises(ValueError, match="rubric_path"):
+        agent.config.load_config(config_path)
+
+
+def test_load_config_honor_with_rubric_path_loads(tmp_path):
+    import agent.config
+    config = agent.config.load_config(_write_agent_config(tmp_path))
+    assert config.mode.value == "honor"

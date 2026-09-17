@@ -136,11 +136,13 @@ def _live_sessions():
 
 def _run(cmd: list, timeout: float) -> bool:
     try:
-        subprocess.run(
+        proc = subprocess.run(
             cmd, timeout=timeout, check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        return True
+        # A clean exit with a failure status (no session bus, dead audio
+        # stack, ...) is a failure -- the caller's fallbacks must run.
+        return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 

@@ -127,6 +127,31 @@ def test_kill_service_swallows_subprocess_exception():
         ACTIONS["kill_service"]({"service": "sshd"}, ctx)
 
 
+def test_kill_service_refuses_non_service_name_values(capsys):
+    """A params value is never allowed to reach systemctl/rc-service as an
+    option (leading dash), a path, shell-flavored text, or non-str junk --
+    the action runs as root (§12)."""
+    ctx = FakeCtx()
+    for bad in ("--root=/tmp/evil", "-x", "/etc/passwd", "a b", "a;b",
+                ["sshd"]):
+        with patch("agent.adversary.actions.subprocess.run") as mock_run:
+            ACTIONS["kill_service"]({"service": bad}, ctx)
+            mock_run.assert_not_called()
+    assert "WARNING: refusing kill_service" in capsys.readouterr().err
+
+
+def test_kill_service_accepts_realistic_unit_names():
+    ctx = FakeCtx()
+    for name in ("ssh", "sshd", "nginx.service", "php8.2-fpm",
+                 "openvpn@server", "apache2"):
+        with patch("agent.adversary.actions.os.path.exists",
+                   return_value=True), \
+             patch("agent.adversary.actions.subprocess.run") as mock_run:
+            ACTIONS["kill_service"]({"service": name}, ctx)
+        args, _ = mock_run.call_args
+        assert args[0] == ["systemctl", "stop", name]
+
+
 # ---------------------------------------------------------------------------
 # flush_firewall
 # ---------------------------------------------------------------------------

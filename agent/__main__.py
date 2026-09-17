@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zlib
 
 import agent.answers
 import agent.cli
@@ -328,6 +329,33 @@ def _sync_desktop_copies(config) -> None:
         pass  # never stall a grade on the mirror; ExecStartPost still copies
 
 
+def _load_rubric(config):
+    """Read + decode the on-box honor-mode rubric (obfuscated or plain JSON).
+
+    The rubric lands obfuscated as a 0600 dotfile (common/rubric_codec.py,
+    written by boxbuilder at install time). Plain JSON is still accepted so
+    boxes installed by an older boxbuilder keep scoring. A box that cannot
+    load its rubric cannot score at all, so any failure raises ValueError
+    with an actionable message -- the timer retries next interval; a raw
+    TypeError/traceback helps nobody at the console.
+    """
+    try:
+        with open(config.rubric_path, "rb") as f:
+            rubric_raw = f.read()
+        if rubric_codec.looks_encoded(rubric_raw):
+            rubric_dict = rubric_codec.decode_rubric(rubric_raw)
+        else:
+            rubric_dict = json.loads(rubric_raw.decode("utf-8"))
+        return _rubric_from_dict(rubric_dict)
+    except (OSError, ValueError, KeyError, TypeError, EOFError,
+            zlib.error) as e:
+        raise ValueError(
+            f"honor-mode rubric at {config.rubric_path!r} is missing, "
+            f"unreadable, or corrupt ({e}) -- the box cannot score without "
+            f"it; restore the file or reinstall the agent"
+        ) from e
+
+
 def honor_grade(config, manifest, ctx) -> tuple:
     """One full honor-mode grade: collect -> evaluate -> report + snapshot.
 
@@ -337,18 +365,8 @@ def honor_grade(config, manifest, ctx) -> tuple:
     Scoring stays a pure function of (evidence, rubric, clock) — everything
     here is presentation or bookkeeping around that (§2.1).
     """
+    rubric = _load_rubric(config)
     evidence = agent.collector.run_all(manifest.checks, ctx)
-
-    # The rubric lands obfuscated as a 0600 dotfile (common/rubric_codec.py,
-    # written by boxbuilder at install time). Plain JSON is still accepted so
-    # boxes installed by an older boxbuilder keep scoring.
-    with open(config.rubric_path, "rb") as f:
-        rubric_raw = f.read()
-    if rubric_codec.looks_encoded(rubric_raw):
-        rubric_dict = rubric_codec.decode_rubric(rubric_raw)
-    else:
-        rubric_dict = json.loads(rubric_raw.decode("utf-8"))
-    rubric = _rubric_from_dict(rubric_dict)
 
     score = common.evaluator.evaluate(evidence, rubric, _WallClock())
     # Diff against the previous run's total (None on first run / rebuilt
