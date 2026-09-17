@@ -955,7 +955,13 @@ def cmd_grade(argv: list, outstream) -> int:
     agent_main._prepare_forensics(
         manifest, os.path.dirname(os.path.abspath(config_path)))
 
-    score, delta, snap = agent_main.honor_grade(config, manifest, ctx)
+    try:
+        score, delta, snap = agent_main.honor_grade(config, manifest, ctx)
+    except (OSError, ValueError) as e:
+        # Unreadable/missing rubric (and friends) surface as an actionable
+        # ValueError from agent_main.honor_grade; render it as a clean CLI
+        # error instead of a traceback.
+        raise CliError(f"grade failed: {e}") from e
     # Desktop mirroring is honor_grade's last step (ordered after the write —
     # the unit's ExecStartPost races a Type=simple agent and lands one grade
     # stale), so the reading verbs see this grade immediately.

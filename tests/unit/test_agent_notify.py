@@ -212,3 +212,46 @@ def test_announce_never_raises(monkeypatch, sessions, capsys):
 def test_copy_fallback_title():
     summary, _, _ = notify._copy(1, 10, "")
     assert summary.startswith("Scoring engine —")
+
+
+# --- _run exit-status semantics (the fallback chains depend on it) -----------
+
+def test_run_true_only_on_zero_exit(monkeypatch):
+    from subprocess import CompletedProcess
+    monkeypatch.setattr(
+        notify.subprocess, "run",
+        lambda cmd, timeout, **k: CompletedProcess(args=cmd, returncode=0))
+    assert notify._run(["true"], 1.0) is True
+
+
+def test_run_false_on_nonzero_exit(monkeypatch):
+    """rc != 0 (no session bus, dead audio stack, ...) is a failure. A clean
+    exit alone used to be reported as success, silently skipping the
+    paplay/aplay and notify-send/dbus-send fallback chains."""
+    from subprocess import CompletedProcess
+    monkeypatch.setattr(
+        notify.subprocess, "run",
+        lambda cmd, timeout, **k: CompletedProcess(args=cmd, returncode=3))
+    assert notify._run(["paplay", "x.wav"], 1.0) is False
+
+
+def test_paplay_failure_falls_through_to_aplay_chain(monkeypatch):
+    from subprocess import CompletedProcess
+    seen = []
+
+    def fake_run(cmd, timeout, **kwargs):
+        seen.append(cmd)
+        # Everything dropped into the user session exits non-zero, as it
+        # does without a live PulseAudio/bus; only root aplay "works".
+        return CompletedProcess(args=cmd, returncode=1 if cmd[0] == "sudo" else 0)
+
+    monkeypatch.setattr(notify.subprocess, "run", fake_run)
+    notify._play_sound("gain", "sysadmin", 12345)
+
+    def player(cmd):
+        return next(t for t in cmd if t in ("paplay", "aplay"))
+
+    # user paplay, then user aplay, then root aplay -- every fallback ran.
+    assert [player(c) for c in seen] == ["paplay", "aplay", "aplay"]
+    assert seen[0][0] == "sudo" and seen[1][0] == "sudo"
+    assert seen[2][0] == "aplay"  # root playback: no sudo prefix
