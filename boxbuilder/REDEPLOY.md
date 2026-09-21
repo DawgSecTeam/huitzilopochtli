@@ -358,3 +358,73 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    state after a deletion test is re-plant (seed create path) + a manual
    `net user mharding /active:yes` -- the seed's update path never touches
    the Enabled flag.
+
+## AD round (meridian-hq, 2026-09-21) -- promoting a base template to a DC
+
+17. **953's local admin is `Administrator`, not `sysadmin`.** The pinecrest
+   prep created `sysadmin` in ITS sealed template (1111), never in 953 -- so
+   `agent/set-user-password` for sysadmin fails with "The user name could not
+   be found". Set Administrator's password instead. Also: the proxmoxer
+   default timeout is 5s and `set-user-password` routinely takes longer on a
+   busy first boot -- build the client with `timeout=90` or the call times out
+   client-side while still running guest-side, and each wedged call takes the
+   qga channel down with it ("QEMU guest agent is not running" until the
+   service recovers). First boot after the full clone still took ~35 min
+   before the agent answered at all.
+18. **953 does NOT ship Python on PATH.** The pinecrest round's
+   `python-installer.exe /quiet InstallAllUsers=1 PrependPath=1` went into
+   their sealed template, not 953. Base-template prep for any 953 clone must
+   SFTP the installer (pre-staged in the 2026-09-12 backup dir) and run it
+   before boxbuilder will connect (`connect()` gates on `python --version`).
+19. **Promoting to a DC erases the local SAM -- plan the way back in.** After
+   `Install-ADDSForest` there are no local accounts, so SSH as the old local
+   admin dies. The meridian flow registers a SYSTEM scheduled task
+   (`MeridianDomainPrep`, `ONSTART`) BEFORE promoting; it waits for ADWS,
+   then creates the domain `sysadmin` (Domain Admins), three staff users in
+   an OU, sets NIC DNS to 127.0.0.1, and unregisters itself. Belt and
+   suspenders: the new forest's built-in `Administrator` password IS the
+   DSRM password, so `administrator` + DSRM also gets in.
+20. **New-ADUser creates the account DISABLED when the password violates
+   complexity -- and display-name tokens count.** `MeridianBuild2026!` for a
+   user with display name `Meridian IT` fails: "Meridian" is a display-name
+   token longer than two characters, so the password is rejected, the account
+   lands disabled, and everything downstream (SSH auth resets mid-handshake!)
+   mysteriously breaks. Fix: keep tokens like the org name out of passwords,
+   or change the display name (`IT Operations`), then
+   `Set-ADAccountPassword -Reset` + `Enable-ADAccount`. Watch for this in any
+   seed that sets a password containing a name fragment.
+21. **Sealing a DC base template.** RDP ships disabled on this Server image
+   (`fDenyTSConnections=1`): set it to 0 + NLA (`UserAuthentication=1`) and
+   enable the `RemoteDesktop-UserMode-In-*` firewall rules during prep, or
+   players get no RDP once the scored firewall state comes back on. The
+   sealed template (vmid 112 `meridian-dc-base-template`) carries Python
+   3.12, OpenSSH, RDP/NLA, DNS@127.0.0.1, sysadmin + staff, firewall all-on,
+   LDAP signing default. Concurrent clones re-animate the same DC identity
+   (same machine SID/krbtgt) -- fine in this isolated lab because every
+   clone is a self-contained single-DC forest with no replication partners
+   and its own DNS; document but don't fight it.
+
+22. **AD scoring flake #1 -- the DC's auth path rejects VALID credentials
+   for the first minutes after boot** (observed on fresh clones: an LDAP
+   bind with the correct planted password fails with auth-flavored errors
+   until AD finishes starting, so any "old password must stop working"
+   check fake-passes at first boot and the clone scores 20/390 for a few
+   minutes). Fix: gate credential-validation checks on
+   `Win32_OperatingSystem.LastBootUpTime` (meridian-hq uses >= 8 minutes)
+   and use `System.DirectoryServices.AccountManagement.PrincipalContext.
+   ValidateCredentials` for the bind -- the raw
+   `DirectoryEntry.Properties[...]` path throws
+   "Cannot index into a null array" once the DC hardens LDAP signing.
+   The check must fail closed when the DC isn't up; the 5-minute task
+   cadence re-scores, so early-boot noise never sticks.
+23. **AD scoring flake #2 -- secedit snapshots re-assert themselves.**
+   `weak-password-policy-win` round-trips secedit (export -> edit ->
+   configure); on a DC that writes a LOCAL policy store snapshot, and
+   background security-policy processing re-asserts it later -- silently
+   reverting bare `reg add` hardening of values captured in that snapshot
+   (LDAPServerIntegrity flipped 2 -> 1 twice during the same session). Any
+   hardening that must survive the workshop has to go through the policy
+   store (secpol.msc / secedit with the same INF line -- note the INF
+   value form is `LDAPServerIntegrity=4,<value>`; a partial replace leaves
+   a dangling `,1` that secedit silently ignores) or the GPO. Solution
+   texts steer students the same way.

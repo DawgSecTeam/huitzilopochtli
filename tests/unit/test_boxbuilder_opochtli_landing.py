@@ -150,19 +150,26 @@ def test_opochtli_command_json_scripts_detect_persisted_rules(tmp_path):
     scenario = _load_scenario()
     checks = {c["id"]: c for c in scenario["checks"]}
 
-    hardened = "\n".join([
-        "-P INPUT DROP", "-P FORWARD DROP", "-P OUTPUT DROP",
-        "-A INPUT -i lo -j ACCEPT",
-        "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-        "-A INPUT -p tcp -m tcp --dport 80 -j ACCEPT",
-        "-A OUTPUT -p tcp -m tcp --dport 3306 -j ACCEPT",
-        "",
-    ])
-
+    # iptables -S prints "-P CHAIN POLICY" then "-A CHAIN ..."; mirror the
+    # per-chain invocation the scripts use.
+    chains = {
+        "INPUT": ["-P INPUT DROP", "-A INPUT -i lo -j ACCEPT",
+                  "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+                  "-A INPUT -p tcp -m tcp --dport 80 -j ACCEPT"],
+        "FORWARD": ["-P FORWARD DROP"],
+        "OUTPUT": ["-P OUTPUT DROP", "-A OUTPUT -p tcp -m tcp --dport 3306 -j ACCEPT"],
+    }
     stub = tmp_path / "bin"
     stub.mkdir()
-    (stub / "iptables-save").write_text("#!/bin/sh\ncat <<'RULES'\n" + hardened + "RULES\n")
-    (stub / "iptables-save").chmod(0o755)
+    shim = ["#!/bin/sh", 'case "$2" in']
+    for chain, rules in chains.items():
+        shim.append(f'  {chain})')
+        for rule in rules:
+            shim.append(f"    echo '{rule}'")
+        shim.append('    ;;')
+    shim += ["  *) exit 1 ;;", "esac", ""]
+    (stub / "iptables").write_text("\n".join(shim))
+    (stub / "iptables").chmod(0o755)
 
     for cid, want in (("web_input_80_allowed", True),
                       ("db_output_3306_allowed", True)):

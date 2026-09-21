@@ -9,13 +9,29 @@
 # all -win seeds; schtask HuitzilopochtliAgent at 5-min cadence = the honor
 # re-grade timer, coupled to agent _honor_interval_s on win32).
 #
-# BASE TEMPLATE (2026-09-21): vmid 112 "meridian-dc-base" -- 953 clone,
-# 6144 MB RAM, promoted with Install-ADDSForest -DomainName meridian.local
-# -DomainNetbiosName MERIDIAN -InstallDns (DSRM password DsrmRecovery2026!),
+# BASE TEMPLATE (2026-09-21): vmid 112 "meridian-dc-base-template" -- 953
+# clone, 6144 MB RAM, promoted with Install-ADDSForest -DomainName
+# meridian.local -DomainNetbiosName MERIDIAN -InstallDns (DSRM password
+# DsrmRecovery2026! = also the domain Administrator password), Python 3.12
+# (PrependPath) + RDP/NLA enabled + DNS@127.0.0.1 baked in BEFORE sealing,
 # domain admin `sysadmin` (MeridianBuild2026!) + three legit staff users
-# (mchen / pnatarajan / odiaz) + DNS@127.0.0.1 baked in BEFORE sealing.
-# Concurrent clones re-animate the same DC identity; acceptable for this
-# isolated lab (self-contained single-DC forests, no replication partners).
+# (mchen / pnatarajan / odiaz) in OU=Meridian. Gotchas live in REDEPLOY.md:
+# 953's local admin is `Administrator` (not sysadmin); New-ADUser creates the
+# account DISABLED when the password violates complexity (MeridianBuild2026!
+# failed against display name "Meridian IT" -- tokens of the display name
+# count); the domain sysadmin is created by a SYSTEM startup task because
+# the local SAM vanishes on promotion. Concurrent clones re-animate the same
+# DC identity; acceptable for this isolated lab (self-contained single-DC
+# forests, no replication partners).
+#
+# SEALED 2026-09-21: Proxmox vmid 151 "meridian-hq-template", 6144 MB RAM.
+# Validated end-to-end on the sealing VM (vmid 150): plant 25/25 steps rc=0
+# (22 vuln/theme configs + 3 theme), 0-state scores exactly 0 with the
+# Forensics-Questions.txt regenerated blank, hardened state 390/390 (27/27
+# + 6/6 forensics), revert (re-plant + manual spooler/WS-LEGACY01 restores)
+# back to exactly 0; a fresh full clone (151) boot-verified: sysadmin SSH,
+# Python, Desktop README, agent task cadence intact, report regenerating at
+# 0. Keep vmid 150 around until the field confirms.
 #
 # Connection details: dc01, a full clone of the sealed meridian-hq-template.
 # provider.host below is whatever IP the clone gets from DHCP at build time
@@ -34,7 +50,7 @@ scenario: scenario.yaml
 nakon_config: nakon.json
 provider:
   name: ssh
-  host: 10.0.0.0
+  host: 10.0.0.51
   port: 22
   user: sysadmin
   password: MeridianBuild2026!
