@@ -1,0 +1,10 @@
+{
+  "name": "gpo-persistence-win",
+  "description": "Practice-box helper (Active Directory, DC-only): plants domain-level persistence via Group Policy -- a GPO that writes an HKLM Run-key value onto every machine it applies to. Unlike runkey-persistence-win (a one-box local Run key), this survives on any domain-joined host and only vanishes when the GPO or its registry value is removed. Vars: GPO_NAME (required, created if missing); RUN_VALUE_NAME (required, the Run value the GPO deploys); PAYLOAD_PATH (optional, default C:\\ProgramData\\Subsystems\\gpotelemetry.ps1); PAYLOAD_BODY (optional, default an idle sleep loop -- written to PAYLOAD_PATH locally so the payload has something to run). Must run on a DC. Pairs with powershell_json checks over Get-GPO -Name / Get-GPRegistryValue for the planted GPO name and Run value.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $GPO_NAME) { throw 'GPO_NAME is required' }\nif (-not $RUN_VALUE_NAME) { throw 'RUN_VALUE_NAME is required' }\nImport-Module GroupPolicy -ErrorAction Ignore\n$gpo = Get-GPO -Name $GPO_NAME -ErrorAction Ignore\nif (-not $gpo) { $gpo = New-GPO -Name $GPO_NAME }\n$path = if ($PAYLOAD_PATH) { $PAYLOAD_PATH } else { 'C:\\ProgramData\\Subsystems\\gpotelemetry.ps1' }\n$body = if ($PAYLOAD_BODY) { $PAYLOAD_BODY } else { 'while ($true) { Start-Sleep -Seconds 300 }' }\n$dir = Split-Path -Path $path -Parent\nif (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }\nSet-Content -Path $path -Value $body -Encoding UTF8\nSet-GPRegistryValue -Name $GPO_NAME -Key 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -ValueName $RUN_VALUE_NAME -Type String -Value \"powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `\"$path`\"\" | Out-Null\n",
+  "depends_on": []
+}

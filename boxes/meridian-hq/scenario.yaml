@@ -1,0 +1,1370 @@
+# Meridian Logistics: an ACTIVE DIRECTORY hardening practice box -- the
+# second Windows round, built for the dawgsec AD workshop (2026-09-24).
+# Domain controller "dc01" for meridian.local; the theme is flavor only,
+# every task is solvable from ordinary AD evidence (ADUC, Group Policy
+# Management, net accounts, auditpol, registry, Task Scheduler,
+# Get-NetFirewall*, Get-ADUser/Get-ADGroupMember/Get-Acl).
+#
+# Scope (Hamza, 2026-09-21): AD-native only -- securing USERS, COMPUTERS,
+# the DC itself, GPOs, and the firewall -- plus attacker PERSISTENCE
+# mechanisms. No pinecrest-style local host checks (no shares/file
+# ACLs/autologin/UAC/RDP). Forensics questions are the extra content.
+#
+# Structurally parallel to the pinecrest-hospital round: generic var-driven
+# catalog seeds (the ad-*/gpp-*/gpo-*/ldap-*/firewall-allow family plus the
+# reused -win locals in boxbuilder/vulndb_vuln_configs/), every planted
+# vulnerability paired with a check. The Print Spooler pair plants nothing --
+# the insecure state (spooler running on a DC) is the Windows default; the
+# finding is scoring that it must be stopped/disabled (PrintNightmare). Same
+# for the weak domain password policy and auditing: planted weak via
+# weak-password-policy-win / audit-policy-off-win, hardened via the tools
+# the workshop teaches (Default Domain Policy, auditpol).
+#
+# Name discipline: every USERNAME / GROUP / ACCOUNT / SPN / RUN_VALUE_NAME /
+# TASK_NAME / SERVICE_NAME / PAYLOAD_PATH / RULE_NAME / GPO_NAME / PASSWORD
+# in nakon.json MUST match its paired check's collect params byte-for-byte
+# -- nothing cross-validates them (see pinecrest/solar header notes).
+#
+# Forensics-answer hygiene: the six forensics answers (AS-REP account, GPP
+# cleartext password, attacker GPO name, scheduled-task name, Run-key value
+# name, DCSync trustee) are deliberately NOT named in any check's display
+# string -- a team must investigate, not read the report. Check ids are
+# neutral for the same reason (preauth_required, not svc_legacy_preauth).
+#
+# Difficulty weighting (Hamza's standing preference, as shipped on
+# opochtli-landing): EASY 5 / MODERATE 10 / HARD 20, called out in the
+# in-box README too.
+
+scenario:
+  name: "Meridian Logistics"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # --- USERS -----------------------------------------------------------------
+  # Scored as DISABLED / SCRUBBED, not deleted, wherever deletion would
+  # destroy the evidence the forensics questions need (rreyes, the DCSync
+  # trustee): the disable-don't-destroy incident-response habit. Rotation,
+  # re-enabling preauth, and lifting DES restrictions are the fixes that
+  # keep the account (the roster needs it; that is the point).
+  - id: domain_admins_subset
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Only the authorized administrator sits in Domain Admins"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $allowed = @('Administrator', 'sysadmin')
+        $members = @(Get-ADGroupMember -Identity 'Domain Admins' -ErrorAction Ignore |
+            ForEach-Object { $_.SamAccountName })
+        $stray = @($members | Where-Object { $allowed -notcontains $_ })
+        (($stray.Count -eq 0) -and ($members -contains 'sysadmin')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Audit the group.** Domain Admins is the most powerful group in
+      the forest -- every seat in it is a kingdom key:
+
+      ```
+      Get-ADGroupMember 'Domain Admins' | Select-Object SamAccountName, Name
+      Administrator      (built-in)
+      sysadmin           Meridian IT
+      svc_contractor     Contractor Account
+      rreyes             Ramona Reyes
+      ```
+
+      The roster calls for exactly one human administrator: `sysadmin`
+      (the built-in Administrator is tolerated). A contractor service
+      account and a temp helpdesk hire have no business here.
+
+      **2. Trim to the roster** -- this strips their power without
+      touching the accounts themselves (they are handled by their own
+      tasks):
+
+      ```
+      Remove-ADGroupMember 'Domain Admins' -Members svc_contractor, rreyes
+      ```
+
+      GUI route: Active Directory Users and Computers > Builtin (or
+      Users) > Domain Admins > Members tab > select > Remove.
+
+      **3. Confirm.** The Get-ADGroupMember list shows only
+      Administrator and sysadmin.
+
+  - id: rreyes_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The temp helpdesk account with a Domain Admin seat is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $u = Get-ADUser -Filter "SamAccountName -eq 'rreyes'" -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Find the account.** `Get-ADUser rreyes -Properties Enabled,
+      Description` -- "IT helpdesk (temp staffing)" -- and yet it sat in
+      Domain Admins. Temporary staffing with permanent power.
+
+      **2. Disable it -- do NOT delete it.** The scored state is the
+      account existing AND disabled: deleting it earns zero here and
+      destroys the evidence the forensics questions need.
+
+      ```
+      Disable-ADAccount -Identity rreyes
+      ```
+
+      GUI route: ADUC > Users > rreyes > Properties > Account tab >
+      tick "Account is disabled".
+
+      **3. Confirm.** `Get-ADUser rreyes` reports `Enabled : False`.
+      Its Domain Admins seat is a separate task.
+
+  - id: guest_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The domain Guest account is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $g = Get-ADUser -Filter "SamAccountName -eq 'Guest'" -ErrorAction Ignore
+        ($null -ne $g -and $g.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Check it.** In a domain, the Guest account lives in AD (not
+      the local SAM) and a fresh domain ships it disabled -- so if it is
+      on, someone turned it on:
+
+      ```
+      Get-ADUser Guest -Properties Enabled     # Enabled : True
+      ```
+
+      **2. Disable it:**
+
+      ```
+      Disable-ADAccount -Identity Guest
+      ```
+
+      GUI route: ADUC > Users > Guest > Properties > tick "Account is
+      disabled".
+
+      **3. Confirm.** `Get-ADUser Guest -Properties Enabled` reports
+      `Enabled : False`.
+
+  - id: password_minlen
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Minimum password length is at least 8 characters"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # This Server image prints "Minimum password length:" WITHOUT the
+        # "(chars)" suffix other Windows builds use -- tolerate both. On a
+        # DC `net accounts` reads the DOMAIN policy, not a local one.
+        $out = net accounts 2>$null | Out-String
+        $m = [regex]::Match($out, 'Minimum password length\s*(?:\(chars\))?\s*:\s*(\d+)')
+        ([int]$m.Groups[1].Value -ge 8) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the policy.** On a domain controller this IS the domain
+      policy -- the same one every member server inherits:
+
+      ```
+      net accounts
+      Minimum password length:     4
+      ```
+
+      Four characters with complexity switched off is a guessing game.
+
+      **2. Raise it** -- the workshop way is the Default Domain Policy,
+      so the fix survives a policy refresh:
+
+      ```
+      gpmc.msc > Forest: meridian.local > Domains > meridian.local >
+        Default Domain Policy > Edit >
+        Computer Configuration > Policies > Windows Settings >
+        Security Settings > Account Policies > Password Policy >
+        Minimum password length = 12
+      ```
+
+      The quick route also scores: `net accounts /minpwlen:12`.
+
+      **3. Confirm.** `net accounts` (run on the DC) shows the new
+      minimum. `gpupdate /force` applies the GPO route immediately.
+
+  - id: password_lockout
+    type: powershell_json
+    category: vuln
+    display: "HARD: Account lockout threshold is at least 5 invalid attempts"
+    max_points: 20
+    timeout_s: 20
+    collect:
+      script: |
+        $out = net accounts 2>$null | Out-String
+        $m = [regex]::Match($out, 'Lockout threshold\s*(?:\(chars\))?\s*:\s*(\d+)')
+        ([int]$m.Groups[1].Value -ge 5) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Read the policy.**
+
+      ```
+      net accounts
+      Lockout threshold:           Never
+      ```
+
+      "Never" means unlimited password guesses -- the difference between
+      a password spray hitting a wall and a password spray silently
+      winning. (The regex reads the numeric field; this image prints
+      the count here once a threshold is set.)
+
+      **2. Set a threshold** -- Default Domain Policy > Account
+      Policies > Account Lockout Policy > "Account lockout threshold"
+      = 5 (duration 15 minutes, reset 15). The quick route also scores:
+
+      ```
+      net accounts /lockoutthreshold:5 /lockoutduration:15 /lockoutwindow:15
+      ```
+
+      **3. Confirm.** `net accounts` shows Lockout threshold 5 instead
+      of Never. This is HARD because the zero-state hides as "Never",
+      not as a small number -- read the whole policy, not one line.
+
+  - id: svc_report_password_rotated
+    type: powershell_json
+    category: vuln
+    display: "HARD: The reporting service account's password has been rotated off its original"
+    max_points: 20
+    timeout_s: 45
+    collect:
+      script: |
+        # The roasting fix is the ROTATION: the account must still exist
+        # and be enabled, but its ORIGINAL planted password must stop
+        # authenticating. The check attempts one LDAP bind with the
+        # known-weak original -- success means the password was never
+        # changed.
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $u = Get-ADUser -Filter "SamAccountName -eq 'svc_report'" -ErrorAction Ignore
+        $rotated = $false
+        if ($null -ne $u -and $u.Enabled) {
+            $bindOk = $false
+            try {
+                $de = New-Object System.DirectoryServices.DirectoryEntry(
+                    'LDAP://dc01.meridian.local/RootDSE',
+                    'MERIDIAN\svc_report', 'ReportSpring2026!')
+                $null = $de.Properties.Get('defaultNamingContext')
+                $bindOk = $true
+            } catch { $bindOk = $false }
+            $rotated = -not $bindOk
+        }
+        $rotated | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. See the target.** The account carries a service principal
+      name -- any domain user can ask the DC for its service ticket and
+      take the password hash home to crack offline (Kerberoasting).
+      Its password is short, seasonal, and dictionary-shaped:
+
+      ```
+      setspn -L svc_report
+      HTTP/dc01.meridian.local
+      ```
+
+      **2. Rotate it** -- long, random, and recorded wherever the
+      service's config lives. Rotation beats every other mitigation
+      because a cracked hash buys the attacker nothing:
+
+      ```
+      Set-ADAccountPassword -Identity svc_report -Reset -NewPassword (ConvertTo-SecureString -AsPlainText 'J7#vQz2!mLpXw4tR' -Force)
+      ```
+
+      Disabling or deleting the account is scorched earth: the check
+      only scores while the account exists AND is enabled -- the
+      reporting service needs it.
+
+      **3. Confirm** the old password is dead (a bind attempt with it
+      must now fail):
+
+      ```
+      net user svc_report /domain   # account is there
+      ```
+
+      and try an LDAP bind with the original password -- refused.
+      (Bonus, unscored here: if this were AES-protected the ticket
+      would be harder to crack -- see the DES task for the inverse.)
+
+  - id: preauth_required
+    type: powershell_json
+    category: vuln
+    display: "EASY: No account is left with Kerberos preauthentication disabled"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # Sweep every ENABLED account: "Do not require Kerberos
+        # preauthentication" is the AS-REP-roasting misconfiguration --
+        # anyone can request that account's crackable hash without a
+        # ticket first. Disabled accounts are exempt (they cannot roast).
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -Properties DoesNotRequirePreauth -ErrorAction Ignore |
+            Where-Object { $_.DoesNotRequirePreauth })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Sweep for the misconfiguration** -- the same sweep the check
+      runs (do it BEFORE you disable or fix the account; a fixed or
+      disabled account stops matching):
+
+      ```
+      Get-ADUser -Filter 'Enabled -eq $true' -Properties DoesNotRequirePreauth |
+        Where-Object { $_.DoesNotRequirePreauth } |
+        Select-Object SamAccountName, Description
+      <one account>   Legacy line-monitoring agent
+      ```
+
+      With preauthentication off, anyone can ask the DC for that
+      account's AS-REP and crack it offline -- no password needed up
+      front (AS-REP roasting).
+
+      **2. Re-enable preauthentication** -- keep the account (the line
+      monitor needs it; the fix is the flag, not the guillotine):
+
+      ```
+      Set-ADAccountControl -Identity <the account> -DoesNotRequirePreAuth $false
+      ```
+
+      GUI route: ADUC > user > Properties > Account tab > untick "Do
+      not require Kerberos preauthentication".
+
+      **3. Confirm.** The sweep prints nothing.
+
+  - id: des_downgrade_cleared
+    type: powershell_json
+    category: vuln
+    display: "HARD: No account is restricted to legacy DES-only Kerberos encryption"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # Sweep every ENABLED account for the DES-only downgrade: the
+        # msDS-SupportedEncryptionTypes bit 0x1 (DES) makes every ticket
+        # for that account crackable at 1999 speeds. $null/0 = allowed to
+        # negotiate modern AES -- the hardened state.
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Ignore |
+            Where-Object { ($_.'msDS-SupportedEncryptionTypes' -band 1) -ne 0 })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Sweep for the downgrade** (before you fix anything -- a
+      fixed account stops matching):
+
+      ```
+      Get-ADUser -Filter 'Enabled -eq $true' -Properties 'msDS-SupportedEncryptionTypes' |
+        Where-Object { ($_.'msDS-SupportedEncryptionTypes' -band 1) -ne 0 } |
+        Select-Object SamAccountName
+      ```
+
+      One account is pinned to DES-only ("Use Kerberos DES encryption
+      types for this account") -- 56-bit keys, crackable in minutes on
+      a GPU; attackers force this downgrade where they can.
+
+      **2. Lift the restriction** so the account negotiates modern AES:
+
+      ```
+      Set-ADUser -Identity <the account> -KerberosEncryptionType None
+      ```
+
+      (None = clear the restriction and let AES negotiate. If the
+      cmdlet rejects the value on this build, clear the attribute
+      directly: the scored state is the DES bit gone.)
+
+      **3. Confirm.** The sweep prints nothing.
+
+  # --- COMPUTERS -------------------------------------------------------------
+  - id: app01_delegation_cleared
+    type: powershell_json
+    category: vuln
+    display: "HARD: The app server trusted for unconstrained delegation has it removed"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # Both delegation flags must be clear while the computer object
+        # still exists: unconstrained delegation ("Trust this computer
+        # for delegation to any service") makes every visiting admin's
+        # ticket grantable to anyone who compromises that host.
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $c = Get-ADComputer -Filter 'Name -eq "APP01"' -Properties TrustedForDelegation, TrustedToAuthForDelegation -ErrorAction Ignore
+        ($null -ne $c -and -not $c.TrustedForDelegation -and -not $c.TrustedToAuthForDelegation) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Find the delegation.** A computer (or user) object trusted
+      for unconstrained delegation caches a copy of every credential
+      that touches it -- compromise the app server and you replay
+      domain-admin tickets:
+
+      ```
+      Get-ADComputer -Filter 'TrustedForDelegation -eq $true' -Properties TrustedForDelegation
+      ```
+
+      **2. Clear it** -- the app server needs no delegation for its job;
+      keep the object (services are being rebuilt onto it), take away
+      the trust:
+
+      ```
+      Set-ADAccountControl -Identity 'APP01$' -TrustedForDelegation $false -TrustedToAuthForDelegation $false
+      ```
+
+      GUI route: ADUC > Computers > APP01 > Properties > Delegation >
+      "Do not trust this computer for delegation".
+
+      **3. Confirm.** The sweep prints nothing (both flags false while
+      APP01 still exists).
+
+  - id: stale_computer_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The decommissioned workstation's computer account is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $c = Get-ADComputer -Filter 'Name -eq "WS-LEGACY01"' -ErrorAction Ignore
+        ($null -ne $c -and $c.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Find the orphan.** An enabled computer account whose machine
+      left the building two years ago is a free join point for anything
+      that can prove its old identity:
+
+      ```
+      Get-ADComputer -Filter 'Name -eq "WS-LEGACY01"' -Properties Description, Enabled
+      Decommissioned 2024 - awaiting wipe
+      ```
+
+      **2. Disable it:**
+
+      ```
+      Disable-ADAccount -Identity 'WS-LEGACY01$'
+      ```
+
+      GUI route: ADUC > Computers > WS-LEGACY01 > Properties > tick
+      "Account is disabled". (Deleting stale objects is the real
+      cleanup, but disable-then-delete-on-a-schedule is the safe
+      order -- and the scored state here is disabled, not gone.)
+
+      **3. Confirm.** `Enabled : False`.
+
+  # --- DOMAIN CONTROLLER -----------------------------------------------------
+  - id: ldap_signing_required
+    type: registry_value
+    category: vuln
+    display: "HARD: The domain controller requires LDAP signing"
+    max_points: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Services\NTDS\Parameters
+      value: LDAPServerIntegrity
+    expect:
+      equals: 2
+      field: value
+      points: 20
+    solution: |
+      **1. Read the requirement.** With signing not required, NTLM
+      authenticated LDAP traffic can be relayed and tampered in transit:
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters" /v LDAPServerIntegrity
+          LDAPServerIntegrity    REG_DWORD    0x1        # 1 = None, 2 = Require
+      ```
+
+      **2. Require signing** -- the policy way (survives a hardening
+      refresh):
+
+      ```
+      gpmc.msc > Default Domain Controllers Policy > Edit >
+        Computer Configuration > Policies > Windows Settings >
+        Security Settings > Local Policies > Security Options >
+        "Domain controller: LDAP server signing requirements" = Require signing
+      ```
+
+      Then `gpupdate /force`. The direct registry write also scores:
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters" /v LDAPServerIntegrity /t REG_DWORD /d 2 /f
+      ```
+
+      **3. Confirm.** The reg query reads 0x2. (This DC is HARD
+      because it is policy work in the NTDS key, not a toggle in a
+      familiar GUI -- and it is the check the MS17-style scanners
+      flag first on any domain.)
+
+  - id: smb1_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The deprecated SMB1 protocol is disabled on the SMB server"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        # ground truth = the registry value the seed sets (the SMB WMI Set path
+        # is unreliable on some hardened images; Get mirrors it only sometimes)
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -ErrorAction Ignore).SMB1
+        ($v -ne 1) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Check the server side.** SMB1 is the WannaCry/NotPetya
+      worm-door; on a domain controller it should not exist:
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1
+          SMB1 : 1
+      ```
+
+      **2. Switch it off** with the supported toggle:
+
+      ```
+      Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
+      ```
+
+      **3. Confirm the way the check does** -- the registry value is
+      the ground truth, and on some images the SMB WMI view mirrors it
+      late. Re-run the Get-ItemProperty above; if it still reads 1,
+      write the value directly:
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v SMB1 /t REG_DWORD /d 0 /f
+      ```
+
+      Anything but 1 -- a 0, or the value gone -- is the scored state.
+
+  - id: audit_logon_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Logon auditing records both success and failure"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $out = auditpol /get /subcategory:'Logon' 2>$null | Out-String
+        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. See what is being ignored.**
+
+      ```
+      auditpol /get /subcategory:"Logon"
+      Logon                        No Auditing
+      ```
+
+      On a DC, logon auditing is your record of every pass-the-hash,
+      spray run, and service logon in the domain -- switched off, you
+      would investigate yesterday's breach with today's silence.
+
+      **2. Turn on both directions** -- successes AND failures:
+
+      ```
+      auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+      ```
+
+      The GPO route: Default Domain Controllers Policy > Computer
+      Configuration > Policies > Windows Settings > Security Settings >
+      Advanced Audit Policy Configuration > Logon/Logoff > Audit Logon
+      > Success and Failure.
+
+      **3. Confirm.** `auditpol /get /subcategory:"Logon"` lists
+      Success and Failure both enabled.
+
+  - id: spooler_stopped
+    type: service_state
+    category: vuln
+    display: "EASY: The Print Spooler service is stopped"
+    max_points: 5
+    timeout_s: 25
+    collect:
+      service: Spooler
+    expect:
+      equals: false
+      field: active
+      points: 5
+    solution: |
+      **1. Notice the default.** Nothing was planted here -- the
+      spooler ships running on every Windows Server, including domain
+      controllers. That is the finding: a DC has no business printing,
+      and a running spooler on one is the PrintNightmare door
+      (authenticated users get SYSTEM via the print driver path).
+
+      ```
+      Get-Service Spooler        # Running
+      ```
+
+      **2. Stop it:**
+
+      ```
+      Stop-Service Spooler -Force
+      ```
+
+      **3. Confirm.** `Get-Service Spooler` reads Stopped -- and see
+      the next task, because stopping alone is not the win.
+
+  - id: spooler_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: The Print Spooler service is disabled at startup"
+    max_points: 20
+    timeout_s: 25
+    collect:
+      service: Spooler
+    expect:
+      equals: false
+      field: enabled
+      points: 20
+    solution: |
+      **1. Take away the restart.** A stopped service with Automatic
+      startup is one reboot from back -- and the scoring passes every
+      five minutes, so "I stopped it" without "I disabled it" earns
+      only the first task:
+
+      ```
+      Set-Service Spooler -StartupType Disabled
+      ```
+
+      services.msc > Print Spooler > Properties > Startup type:
+      Disabled.
+
+      **2. Confirm.**
+
+      ```
+      Get-CimInstance Win32_Service -Filter "Name='Spooler'" |
+        Select-Object State, StartMode
+      Stopped   Disabled
+      ```
+
+  - id: dcsync_rights_revoked
+    type: powershell_json
+    category: vuln
+    display: "HARD: The account with directory-replication (DCSync) rights on the domain root has them revoked"
+    max_points: 20
+    timeout_s: 45
+    collect:
+      script: |
+        # DS-Replication-Get-Changes / -All on the domain root is the
+        # DCSync primitive: with it, an account asks the DC to hand
+        # over every hash in the domain without logging on anywhere.
+        # Only DCs themselves should hold it. The scored state: the
+        # account still exists (it is the replication monitor; the fix
+        # is the ACL, not the guillotine) with no Allow ACE on either
+        # replication GUID.
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $t = Get-ADUser -Filter "SamAccountName -eq 'svc_replication'" -ErrorAction Ignore
+        $clean = $false
+        if ($null -ne $t) {
+            $rootDn = (Get-ADDomain).DistinguishedName
+            $acl = Get-Acl "AD:\$rootDn"
+            $guids = @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2',
+                       '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')
+            $bad = @($acl.Access | Where-Object {
+                ($_.IdentityReference.Value -like '*svc_replication') -and
+                ($_.AccessControlType.ToString() -eq 'Allow') -and
+                ($guids -contains $_.ObjectType.ToString())
+            })
+            $clean = ($bad.Count -eq 0)
+        }
+        $clean | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Read the domain root's ACL.** Two extended rights matter:
+      DS-Replication-Get-Changes and DS-Replication-Get-Changes-All.
+      Together they are DCSync -- the ability to ask the DC to
+      replicate you every password hash in the domain:
+
+      ```
+      $acl = Get-Acl "AD:DC=meridian,DC=local"
+      $acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' } |
+        Format-Table IdentityReference, ObjectType -AutoSize
+      ```
+
+      One service account holds both GUIDs. It never needs them: only
+      domain controllers do.
+
+      **2. Note the account name (it is a forensics answer), then
+      remove the ACEs** -- keep the account, take the rights:
+
+      ```
+      $acl.Access | Where-Object { $_.IdentityReference -like '*svc_replication' } |
+        ForEach-Object { $acl.RemoveAccessRuleSpecific($_) | Out-Null }
+      Set-Acl -Path "AD:DC=meridian,DC=local" -AclObject $acl
+      ```
+
+      **3. Confirm.** The Format-Table above no longer lists the
+      account against either replication GUID.
+
+  # --- GROUP POLICY ----------------------------------------------------------
+  - id: gpp_cpassword_purged
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: No Group Policy Preferences file under SYSVOL hides an encrypted password"
+    max_points: 10
+    timeout_s: 45
+    collect:
+      script: |
+        # The MS14-025 finding: GPP Groups.xml carries the local-account
+        # password AES-encrypted with a key Microsoft published in 2014
+        # -- any domain user decrypts it (gpp-decrypt). The fix is the
+        # cpassword gone (delete the file or the preference), anywhere
+        # under SYSVOL. A dynamic recurse, not a fixed GPO-GUID path:
+        # New-GPO GUIDs are random.
+        $hits = @(Get-ChildItem 'C:\Windows\SYSVOL\domain\Policies' -Recurse -Filter 'Groups.xml' -ErrorAction Ignore |
+            Select-String -Pattern 'cpassword' -ErrorAction Ignore)
+        ($hits.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Sweep SYSVOL the way the check does** (record what you find
+      first -- one of the values inside is a forensics answer):
+
+      ```
+      Get-ChildItem C:\Windows\SYSVOL\domain\Policies -Recurse -Filter Groups.xml |
+        Select-String -Pattern 'cpassword' -List
+      ```
+
+      One Groups.xml under a GPO's Machine\Preferences\Groups holds a
+      cpassword attribute -- an AES blob whose key has been public
+      since 2014. Decrypt it offline with gpp-decrypt and you have a
+      local-admin password for every machine the GPO touches.
+
+      **2. Remove it.** The GPO itself is a leftover ("Deploy Local
+      Admin") nobody should be deploying that way anymore -- delete the
+      preference (the XML file) or the whole GPO:
+
+      ```
+      Remove-GPO -Name 'Deploy Local Admin'
+      ```
+
+      (or delete just the Groups.xml file under its SYSVOL path).
+
+      **3. Confirm.** The sweep prints nothing.
+
+  - id: gpo_persistence_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The GPO pushing a Run-key payload to every domain machine is removed (or its value cleared)"
+    max_points: 20
+    timeout_s: 45
+    collect:
+      script: |
+        # Domain-level persistence: a GPO whose registry preference
+        # writes an HKLM Run-key value on every machine it applies to.
+        # Unlike a local Run key, deleting the local value is pointless
+        # -- the next policy refresh re-writes it. The fix is the GPO
+        # gone or its registry value gone.
+        Import-Module GroupPolicy -ErrorAction Ignore
+        $clean = $true
+        $g = Get-GPO -Name 'MeridianTelemetry' -ErrorAction Ignore
+        if ($null -ne $g) {
+            $v = $null
+            try {
+                $v = Get-GPRegistryValue -Name 'MeridianTelemetry' -Key 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' -ValueName 'TeamsBootstrapper' -ErrorAction Ignore
+            } catch { $v = $null }
+            $clean = ($null -eq $v)
+        }
+        $clean | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Hunt the attacker's GPO.** List every GPO and look for one
+      nobody recognizes -- its display name borrows a familiar product,
+      but no admin created it:
+
+      ```
+      Get-GPO -All | Select-Object DisplayName, CreationTime, Owner | Sort-Object CreationTime
+      ```
+
+      The fresh one at the top was made by the compromise. Read what it
+      pushes:
+
+      ```
+      Get-GPRegistryValue -Name '<the GPO>' -Key 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run'
+      ```
+
+      A Run-key value launching a hidden PowerShell script from
+      C:\ProgramData\Subsystems -- persistence on every machine the
+      GPO reaches, re-armed by every policy refresh.
+
+      **2. Delete the GPO** (or just its registry value if the name is
+      needed -- it is not):
+
+      ```
+      Remove-GPO -Name '<the GPO>'
+      ```
+
+      **3. Confirm.** Get-GPO -All no longer lists it, and the
+      Get-GPRegistryValue call errors with "value not found". Note the
+      GPO's exact display name before deleting -- it is a forensics
+      answer.
+
+  # --- FIREWALL --------------------------------------------------------------
+  - id: firewall_profiles_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Windows Firewall is enabled on all profiles"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $off = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled }).Count
+        ($off -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. See what is dark.** Every profile off on the machine that
+      holds every password hash in the domain:
+
+      ```
+      Get-NetFirewallProfile | Select-Object Name, Enabled
+      Domain   False
+      Private  False
+      Public   False
+      ```
+
+      **2. Turn them all on:**
+
+      ```
+      Set-NetFirewallProfile -All -Enabled True
+      ```
+
+      The GPO route (the workshop way): Default Domain Controllers
+      Policy > Computer Configuration > Policies > Windows Settings >
+      Security Settings > Windows Defender Firewall with Advanced
+      Security > set "Firewall state" to On in each profile.
+
+      **3. Confirm.** The Select-Object shows True three times -- and
+      your own RDP and SSH sessions survive: both already carry their
+      own inbound allow rules.
+
+  - id: backdoor_rule_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The undocumented inbound firewall allow rule is removed"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        $r = Get-NetFirewallRule -Name 'MeridianSync' -ErrorAction Ignore
+        ($null -eq $r) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the ruleset with fresh eyes** -- after re-enabling the
+      firewall, look at what it was quietly allowing:
+
+      ```
+      Get-NetFirewallRule -Enabled True -Direction Inbound |
+        Select-Object DisplayName, Profile |
+        Sort-Object DisplayName
+      ```
+
+      One allow rule names no product and no admin owns it: an inbound
+      door on a high port. Attackers leave these so a firewall being
+      switched back on costs them nothing.
+
+      **2. Delete the rule** (disabling it would survive one click of
+      a sibling's re-enable -- removal is the scored state):
+
+      ```
+      Remove-NetFirewallRule -Name 'MeridianSync'
+      ```
+
+      **3. Confirm.** `Get-NetFirewallRule -Name 'MeridianSync'`
+      returns nothing.
+
+  # --- PERSISTENCE (post-exploitation, on the DC) ----------------------------
+  - id: rogue_svc_killed
+    type: process_state
+    category: vuln
+    display: "MODERATE: The backup-agent payload process is terminated"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      pattern: mbdeploy
+    expect:
+      equals: false
+      field: running
+      points: 10
+    solution: |
+      **1. Find the payload process.** "Meridian nightly backup
+      indexer" sounds like part of the building -- but nobody
+      authorized it, and behind the service is a hidden PowerShell
+      script in an attacker-made directory:
+
+      ```
+      Get-CimInstance Win32_Process |
+        Where-Object CommandLine -match mbdeploy |
+        Select-Object ProcessId, CommandLine
+      ```
+
+      **2. Stop it the right way.** Killing the powershell process
+      alone gets you one round -- the service's failure-recovery action
+      respawns it. Take away the launcher:
+
+      ```
+      Stop-Service MeridianBackupAgent -Force
+      ```
+
+      **3. Confirm.** The Win32_Process sweep above prints nothing.
+
+  - id: rogue_svc_stopped
+    type: service_state
+    category: vuln
+    display: "MODERATE: The MeridianBackupAgent service is stopped"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: MeridianBackupAgent
+    expect:
+      equals: false
+      field: active
+      points: 10
+    solution: |
+      The payload process dies with the service -- this and the
+      process-termination task are one Stop away from each other:
+
+      ```
+      Stop-Service MeridianBackupAgent -Force
+      ```
+
+      services.msc > MeridianBackupAgent > Stop. Confirm with
+      `Get-Service MeridianBackupAgent` (Stopped) -- then see the next
+      task, because the service still comes back at boot.
+
+  - id: rogue_svc_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: The MeridianBackupAgent service is disabled at startup"
+    max_points: 20
+    timeout_s: 25
+    collect:
+      service: MeridianBackupAgent
+    expect:
+      equals: false
+      field: enabled
+      points: 20
+    solution: |
+      **1. Retire the launcher.** With the service stopped, take away
+      its ability to start again -- at boot, or at a teammate's
+      well-meaning "repair":
+
+      ```
+      Set-Service MeridianBackupAgent -StartupType Disabled
+      ```
+
+      GUI route: services.msc > MeridianBackupAgent > Properties >
+      Startup type: Disabled.
+
+      **2. Confirm.**
+
+      ```
+      Get-CimInstance Win32_Service -Filter "Name='MeridianBackupAgent'" |
+        Select-Object StartMode
+      Disabled
+      ```
+
+      **3. Beyond scoring:** delete the payload
+      C:\ProgramData\Subsystems\mbdeploy.ps1 -- and once every
+      Subsystems implant is gone (telemetry.ps1, odsync.ps1,
+      gpotelemetry.ps1), remove the directory itself.
+
+  - id: runkey_removed
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The Run-key persistence entry launching a hidden payload is removed"
+    max_points: 10
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+      value: TelemetryCore
+    expect:
+      equals: false
+      field: present
+      points: 10
+    solution: |
+      **1. Read the Run key** -- everything under it launches at every
+      interactive logon:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          TelemetryCore    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\Subsystems\telemetry.ps1"
+      ```
+
+      A value named like a diagnostics app starting a hidden
+      PowerShell script from an attacker-made directory is not
+      diagnostics -- it is persistence.
+
+      **2. Note the value's NAME, then delete it** -- the name is a
+      forensics answer; record it before cleaning:
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v TelemetryCore /f
+      ```
+
+      **3. Confirm.** The reg query no longer lists it. The script it
+      launched is the very next task.
+
+  - id: runkey_payload_gone
+    type: permission
+    category: vuln
+    display: 'EASY: The Run-key payload script under C:\ProgramData\Subsystems is removed'
+    max_points: 5
+    collect:
+      path: C:\ProgramData\Subsystems\telemetry.ps1
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Read the payload** (with the Run-key entry already deleted,
+      no logon will relaunch it):
+
+      ```
+      Get-Content C:\ProgramData\Subsystems\telemetry.ps1
+      while ($true) { Start-Sleep -Seconds 300 }
+      ```
+
+      A placeholder loop -- the entry was the persistence, the script
+      the slot.
+
+      **2. Delete it:**
+
+      ```
+      Remove-Item C:\ProgramData\Subsystems\telemetry.ps1 -Force
+      ```
+
+      **3. Confirm.** `Test-Path
+      C:\ProgramData\Subsystems\telemetry.ps1` is False.
+
+  - id: no_task
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The rogue scheduled task running a payload from C:\\ProgramData\\Subsystems is removed"
+    max_points: 10
+    timeout_s: 20
+    collect:
+      script: |
+        (-not (Get-ScheduledTask -TaskName 'OneDriveTelemetrySync' -ErrorAction Ignore)) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Find the impostor.** It sits in the Task Scheduler Library
+      wearing a cloud-sync costume -- but OneDrive does not update from
+      a SYSTEM script in C:\ProgramData:
+
+      ```
+      Get-ScheduledTask -TaskName OneDriveTelemetrySync |
+        Select-Object -ExpandProperty Actions
+      Execute   : powershell.exe
+      Arguments : -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\ProgramData\Subsystems\odsync.ps1"
+      ```
+
+      **2. Note the exact task NAME, then delete it** -- the name is a
+      forensics answer:
+
+      ```
+      Unregister-ScheduledTask -TaskName OneDriveTelemetrySync -Confirm:$false
+      ```
+
+      **3. Confirm.** `Get-ScheduledTask -TaskName
+      'OneDriveTelemetrySync'` returns nothing -- the scored state is
+      gone.
+
+  - id: task_payload_removed
+    type: permission
+    category: vuln
+    display: "EASY: The scheduled task's payload script is removed"
+    max_points: 5
+    collect:
+      path: C:\ProgramData\Subsystems\odsync.ps1
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Read what the task was running** (after unregistering it, so
+      nothing executes it again):
+
+      ```
+      Get-Content C:\ProgramData\Subsystems\odsync.ps1
+      Start-Sleep -Seconds 5
+      ```
+
+      **2. Delete it:**
+
+      ```
+      Remove-Item C:\ProgramData\Subsystems\odsync.ps1 -Force
+      ```
+
+      **3. Confirm.** `Test-Path C:\ProgramData\Subsystems\odsync.ps1`
+      is False.
+
+  # --- penalty guard ---------------------------------------------------------
+  # Anti-scorched-earth: disabling/deleting legitimate business accounts
+  # "fixes" nothing and destroys the roster. The finance user must survive
+  # the exercise -- existing AND enabled. (This only ever subtracts.)
+  - id: legit_user_intact
+    type: powershell_json
+    category: penalty
+    display: "PENALTY: Disabling or deleting the finance user account costs 10 points"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $u = Get-ADUser -Filter "SamAccountName -eq 'mchen'" -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: -10
+    solution: |
+      This one only ever subtracts: the moment the finance user
+      `mchen` is disabled or deleted, 10 points come off the board.
+      The roster is the domain's evidence -- real employees -- and
+      disabling them "fixes" findings that were never theirs. The
+      planted problems belong to the accounts named in the tasks (and
+      those, too, should be disabled, not deleted).
+
+      **Check yourself at any time:**
+
+      ```
+      Get-ADUser mchen -Properties Enabled     # Enabled : True
+      ```
+
+      If it prints False, re-enable the account before anything else --
+      the agent re-scores every pass, so a re-enabled account stops
+      the bleed:
+
+      ```
+      Enable-ADAccount -Identity mchen
+      ```
+
+# --- scored forensics -------------------------------------------------------
+# The answer keys live ONLY in the rubric (compiled from this file's
+# answers). None of the six answers is named by any check display: they
+# require investigating the planted artifacts, not reading the report.
+# Investigate FIRST, harden second -- several fixes (deleting the GPP
+# file, unregistering the task, removing the GPO) destroy the evidence
+# the questions ask about.
+forensics:
+  - id: fq_asrep_user
+    question: "One domain account was left WITHOUT Kerberos preauthentication, making it an AS-REP roasting target. What is that account's username?"
+    points: 10
+    answer: "svc_legacy"
+    answers: ["svc_legacy"]
+    solution: |
+      AS-REP roasting needs no password at all: with "Do not require
+      Kerberos preauthentication" ticked, anyone can ask the DC for
+      that account's encrypted AS-REP and crack it offline. Sweep for
+      it the way the scoring check does:
+
+      ```
+      Get-ADUser -Filter 'Enabled -eq $true' -Properties DoesNotRequirePreauth |
+        Where-Object { $_.DoesNotRequirePreauth } |
+        Select-Object SamAccountName, Description
+      <account>   Legacy line-monitoring agent
+      ```
+
+      The description ("Legacy line-monitoring agent") is the tell: a
+      2019-era "compatibility" checkbox that quietly shipped a 2026
+      roasting target. Answer: the SamAccountName shown above
+      (`svc_legacy`, lowercase, with the underscore).
+
+  - id: fq_gpp_password
+    question: "A Group Policy Preferences file under SYSVOL stores a local-admin password AES-encrypted with Microsoft's published MS14-025 key. What is the DECRYPTED cleartext password?"
+    points: 10
+    answer: "SpringDeploy2026!"
+    answers: ["SpringDeploy2026!"]
+    solution: |
+      **1. Find the file** (do this BEFORE deleting it in the hardening
+      task -- the file is the evidence):
+
+      ```
+      Get-ChildItem C:\Windows\SYSVOL\domain\Policies -Recurse -Filter Groups.xml |
+        Select-String -Pattern 'cpassword' -List
+      ```
+
+      **2. Read the cpassword attribute** -- a base64 AES blob:
+
+      ```
+      [xml]$x = Get-Content <the Groups.xml path>
+      $x.Groups.User.Properties.cpassword
+      ```
+
+      **3. Decrypt it with the published key** -- gpp-decrypt
+      (Kali/SecLists) one-liner, or the same AES-256-CBC/zero-IV
+      recipe in Python or PowerShell. The key shipped inside
+      every Windows image's GPP CLR files until Microsoft published
+      it in MS14-025 (2014):
+
+      ```
+      gpp-decrypt <the cpassword blob>
+      SpringDeploy2026!
+      ```
+
+      Case matters: the password is `SpringDeploy2026!` exactly, as
+      the plaintext argument the preference was authored with.
+
+  - id: fq_rogue_gpo
+    question: "Attackers created a Group Policy Object that pushes a Run-key payload to every machine in the domain. What is that GPO's exact display name?"
+    points: 10
+    answer: "MeridianTelemetry"
+    answers: ["MeridianTelemetry", "meridiantelemetry"]
+    solution: |
+      List every GPO in the domain and sort by creation -- the
+      attacker's is the newest and its owner is not your change
+      process:
+
+      ```
+      Get-GPO -All | Select-Object DisplayName, CreationTime, Owner |
+        Sort-Object CreationTime -Descending | Select-Object -First 5
+      ```
+
+      The one that borrows a familiar product name ("Telemetry") and
+      carries an HKLM Run registry value pointing at
+      C:\ProgramData\Subsystems is the persistence. The display name
+      is one word, no spaces: `MeridianTelemetry` (any casing scores).
+
+  - id: fq_task_name
+    question: "A rogue scheduled task ran a payload out of C:\\ProgramData\\Subsystems. What is the task's exact name?"
+    points: 10
+    answer: "OneDriveTelemetrySync"
+    answers: ["OneDriveTelemetrySync", "onedrivetelemetrysync"]
+    solution: |
+      Browse the Task Scheduler Library (taskschd.msc) or query past
+      the Microsoft folders:
+
+      ```
+      Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microsoft*' } |
+        Select-Object TaskName, State
+      OneDriveTelemetrySync   Ready
+      ```
+
+      The name wears a cloud-sync costume; the action confesses:
+      `(Get-ScheduledTask OneDriveTelemetrySync).Actions` executes
+      `-File "C:\ProgramData\Subsystems\odsync.ps1"` as SYSTEM.
+      Answer: `OneDriveTelemetrySync` (any casing scores).
+
+  - id: fq_runkey_value
+    question: "A Run key under HKLM launches a hidden PowerShell payload at logon. What is the exact name of the registry VALUE?"
+    points: 10
+    answer: "TelemetryCore"
+    answers: ["TelemetryCore", "telemetrycore"]
+    solution: |
+      Walk the autoruns that fire at logon -- the HKLM Run key first:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          TelemetryCore    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\Subsystems\telemetry.ps1"
+      ```
+
+      One value, named like a diagnostics app, starting a hidden
+      PowerShell script from an attacker-made directory. The question
+      asks for the registry VALUE name -- the left-hand column, not
+      the command. Answer: `TelemetryCore` (case-insensitive).
+      (Already deleted it in the hardening task? The name was in this
+      query's output before you cleaned -- which is why findings get
+      noted first.)
+
+  - id: fq_dcsync_trustee
+    question: "One account had been granted directory-replication rights (DS-Replication-Get-Changes) on the domain root -- the DCSync primitive. What is that account's username?"
+    points: 10
+    answer: "svc_replication"
+    answers: ["svc_replication"]
+    solution: |
+      Only domain controllers should hold DS-Replication-Get-Changes
+      on the domain root; anyone else with it can ask the DC to hand
+      over every password hash in the domain (DCSync), without ever
+      logging on. Read the root ACL:
+
+      ```
+      $acl = Get-Acl "AD:DC=meridian,DC=local"
+      $acl.Access | Where-Object {
+        $_.ObjectType -eq [Guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' } |
+        Format-Table IdentityReference, AccessControlType -AutoSize
+      MERIDIAN\<account>   Allow
+      ```
+
+      The trustee is a service account whose description says
+      "Directory replication monitoring" -- monitoring does not need
+      replicating. Answer: `svc_replication` (lowercase, with the
+      underscore).
+
+# --- theme -------------------------------------------------------------------
+# Windows target: boxbuilder/theme.py resolves this through the theme-*-win
+# seeds (wallpaper + README.html to every profile's Public Desktop, .lnk
+# shortcuts including the auto-added "Scoring Report" launcher). motd/issue
+# are POSIX-only and skipped; title/organization/accent/logo flow through the
+# signed manifest into the report masthead.
+theme:
+  title: "Meridian Logistics"
+  organization: "Meridian Logistics, Inc."
+  accent: "#1F4E79"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md

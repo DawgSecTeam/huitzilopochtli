@@ -1,0 +1,10 @@
+{
+  "name": "firewall-allow-rule-win",
+  "description": "Practice-box helper (Windows): plants an inbound firewall ALLOW rule -- an attacker-shaped backdoor (e.g. an undocumented high port) left open in a local firewall. Vars: RULE_NAME (required); LOCAL_PORT (optional, default 8443); PROTOCOL (optional, default TCP); DESCRIPTION (optional). Idempotent: an existing rule of the same name is removed and recreated. Pairs with powershell_json checks over Get-NetFirewallRule/Get-NetFirewallPortFilter expecting the rule (or its port) gone after hardening.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $RULE_NAME) { throw 'RULE_NAME is required' }\n$port = if ($LOCAL_PORT) { $LOCAL_PORT } else { '8443' }\n$proto = if ($PROTOCOL) { $PROTOCOL } else { 'TCP' }\nRemove-NetFirewallRule -Name $RULE_NAME -ErrorAction Ignore\n$desc = if ($DESCRIPTION) { $DESCRIPTION } else { 'Meridian sync channel' }\nNew-NetFirewallRule -Name $RULE_NAME -DisplayName $RULE_NAME -Description $desc -Direction Inbound -Protocol $proto -LocalPort $port -Action Allow -Profile Any | Out-Null\n",
+  "depends_on": []
+}
