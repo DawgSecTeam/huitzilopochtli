@@ -1,0 +1,12 @@
+{
+  "name": "at-job-persistence",
+  "description": "Practice-box persistence finding: queues a one-shot at(1) job that runs a planted payload at a chosen future time. Idempotent: skips if a queued job already references the payload. Vars: PAYLOAD_PATH (required), PAYLOAD_BODY (optional single sh line), WHEN (optional at time spec, default 'now + 3 days').",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [
+    "at"
+  ],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${PAYLOAD_PATH:?PAYLOAD_PATH is required}\"\n\ninstall -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\nprintf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\nchmod 0755 \"$PAYLOAD_PATH\"\n\nqueued=0\nfor j in $(atq 2>/dev/null | cut -f1); do\n    if at -c \"$j\" 2>/dev/null | grep -Fq -- \"$PAYLOAD_PATH\"; then\n        queued=1\n        break\n    fi\ndone\nif [ \"$queued\" = \"0\" ]; then\n    printf '%s\\n' \"$PAYLOAD_PATH\" | at ${WHEN:-\"now + 3 days\"} >/dev/null 2>&1\nfi\n"
+}

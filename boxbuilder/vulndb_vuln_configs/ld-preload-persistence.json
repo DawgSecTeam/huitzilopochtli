@@ -1,0 +1,10 @@
+{
+  "name": "ld-preload-persistence",
+  "description": "Practice-box persistence finding: installs a shared object and points /etc/ld.so.preload at it, so the loader maps it into every dynamically-linked process. The shipped object must be a real, valid DSO (a text file here would make every binary print ld.so errors). Vars: LIB_PATH (required, absolute), SO_B64 (required, base64 of the shared object).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${LIB_PATH:?LIB_PATH is required}\"\n: \"${SO_B64:?SO_B64 is required (base64 of the shared object)}\"\n\ninstall -d -m 0755 \"$(dirname -- \"$LIB_PATH\")\"\nprintf '%s' \"$SO_B64\" | base64 -d > \"$LIB_PATH\"\nchmod 0755 \"$LIB_PATH\"\n\nprintf '%s\\n' \"$LIB_PATH\" > /etc/ld.so.preload\nchmod 0644 /etc/ld.so.preload\n"
+}

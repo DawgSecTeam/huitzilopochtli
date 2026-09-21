@@ -1,0 +1,10 @@
+{
+  "name": "systemd-user-unit-persistence",
+  "description": "Practice-box persistence finding: installs a systemd --user unit for a named user and (by default) turns on linger for them, so the user manager -- and the unit -- start at boot with no login. Vars: USERNAME (required, must already exist), UNIT_NAME (required, no .service suffix), EXEC_START (required), DESCRIPTION (optional), LINGER (optional, default 1), PAYLOAD_PATH + PAYLOAD_BODY (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${USERNAME:?USERNAME is required}\"\n: \"${UNIT_NAME:?UNIT_NAME is required (no .service suffix)}\"\n: \"${EXEC_START:?EXEC_START is required}\"\n\nif [ -n \"${PAYLOAD_PATH-}\" ]; then\n    install -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\n    printf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\n    chmod 0755 \"$PAYLOAD_PATH\"\nfi\n\nhome=$(getent passwd \"$USERNAME\" | cut -d: -f6)\nif [ -z \"$home\" ]; then\n    echo \"systemd-user-unit-persistence: user $USERNAME not found\" >&2\n    exit 1\nfi\n\nud=\"$home/.config/systemd/user\"\ninstall -d -m 0755 \"$ud\"\n{\n    printf '%s\\n' '[Unit]'\n    printf 'Description=%s\\n' \"${DESCRIPTION:-User service}\"\n    printf '\\n%s\\n' '[Service]'\n    printf '%s\\n' 'Type=simple'\n    printf 'ExecStart=%s\\n' \"$EXEC_START\"\n    printf '\\n%s\\n' '[Install]'\n    printf '%s\\n' 'WantedBy=default.target'\n} > \"$ud/${UNIT_NAME}.service\"\nchown \"$USERNAME\" \"$ud/${UNIT_NAME}.service\" 2>/dev/null || :\n\nif [ \"${LINGER:-1}\" = \"1\" ] && command -v loginctl >/dev/null 2>&1; then\n    loginctl enable-linger \"$USERNAME\" 2>/dev/null || :\nfi\n"
+}

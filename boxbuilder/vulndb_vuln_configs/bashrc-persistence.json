@@ -1,0 +1,10 @@
+{
+  "name": "bashrc-persistence",
+  "description": "Practice-box persistence finding: appends a snippet to a shell rc file so it runs in interactive shells -- target a user's ~/.bashrc or the system-wide /etc/bash.bashrc. Idempotent via MARKER. Vars: TARGET_FILE (required, absolute path), SNIPPET (required, shell text), MARKER (optional distinctive substring for the idempotency grep, default SNIPPET).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${TARGET_FILE:?TARGET_FILE is required (absolute path)}\"\n: \"${SNIPPET:?SNIPPET is required}\"\n\nif [ ! -f \"$TARGET_FILE\" ]; then\n    install -d -m 0755 \"$(dirname -- \"$TARGET_FILE\")\"\n    : > \"$TARGET_FILE\"\nfi\nif ! grep -Fq -- \"${MARKER:-$SNIPPET}\" \"$TARGET_FILE\"; then\n    printf '%s\\n' \"$SNIPPET\" >> \"$TARGET_FILE\"\nfi\n"
+}

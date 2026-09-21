@@ -1,0 +1,12 @@
+{
+  "name": "crontab-persistence",
+  "description": "Practice-box persistence finding: appends a job line to a named user's crontab (spool), optionally planting the payload it runs. Idempotent: re-deploy does not duplicate the line. Vars: USERNAME (required), SCHEDULE (required), JOB_COMMAND (required), PAYLOAD_PATH + PAYLOAD_BODY (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [
+    "cron"
+  ],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${USERNAME:?USERNAME is required}\"\n: \"${SCHEDULE:?SCHEDULE is required}\"\n: \"${JOB_COMMAND:?JOB_COMMAND is required}\"\n\nif [ -n \"${PAYLOAD_PATH-}\" ]; then\n    install -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\n    printf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\n    chmod 0755 \"$PAYLOAD_PATH\"\nfi\n\nspool=$(mktemp)\ncrontab -u \"$USERNAME\" -l > \"$spool\" 2>/dev/null || : > \"$spool\"\nif ! grep -Fq -- \"$JOB_COMMAND\" \"$spool\"; then\n    printf '%s %s\\n' \"$SCHEDULE\" \"$JOB_COMMAND\" >> \"$spool\"\n    crontab -u \"$USERNAME\" - < \"$spool\"\nfi\nrm -f \"$spool\"\n"
+}

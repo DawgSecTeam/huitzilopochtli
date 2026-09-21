@@ -1,0 +1,10 @@
+{
+  "name": "systemd-timer-persistence",
+  "description": "Practice-box persistence finding: installs a systemd .timer plus its companion .service and enables+starts the timer -- the timer-based persistence pattern. Vars: TIMER_NAME (required, no .timer suffix), EXEC_START (required), DESCRIPTION (optional), ON_BOOT_SEC (optional, default 2min), ON_UNIT_ACTIVE_SEC (optional, default 15min), PERSISTENT (optional, 1 adds Persistent=true), PAYLOAD_PATH + PAYLOAD_BODY (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${TIMER_NAME:?TIMER_NAME is required (no .timer suffix)}\"\n: \"${EXEC_START:?EXEC_START is required}\"\n\nif [ -n \"${PAYLOAD_PATH-}\" ]; then\n    install -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\n    printf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\n    chmod 0755 \"$PAYLOAD_PATH\"\nfi\n\n{\n    printf '%s\\n' '[Unit]'\n    printf 'Description=%s\\n' \"${DESCRIPTION:-Scheduled task}\"\n    printf '\\n%s\\n' '[Service]'\n    printf '%s\\n' 'Type=oneshot'\n    printf 'ExecStart=%s\\n' \"$EXEC_START\"\n} > \"/etc/systemd/system/${TIMER_NAME}.service\"\n\n{\n    printf '%s\\n' '[Unit]'\n    printf 'Description=%s\\n' \"${DESCRIPTION:-Scheduled task timer}\"\n    printf '\\n%s\\n' '[Timer]'\n    printf 'OnBootSec=%s\\n' \"${ON_BOOT_SEC:-2min}\"\n    printf 'OnUnitActiveSec=%s\\n' \"${ON_UNIT_ACTIVE_SEC:-15min}\"\n    if [ \"${PERSISTENT:-0}\" = \"1\" ]; then\n        printf '%s\\n' 'Persistent=true'\n    fi\n    printf '\\n%s\\n' '[Install]'\n    printf '%s\\n' 'WantedBy=timers.target'\n} > \"/etc/systemd/system/${TIMER_NAME}.timer\"\n\nchmod 0644 \"/etc/systemd/system/${TIMER_NAME}.service\" \\\n           \"/etc/systemd/system/${TIMER_NAME}.timer\"\n\nif command -v systemctl >/dev/null 2>&1; then\n    systemctl daemon-reload\n    systemctl enable --now \"${TIMER_NAME}.timer\"\nfi\n"
+}

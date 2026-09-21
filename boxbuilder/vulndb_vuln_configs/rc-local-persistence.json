@@ -1,0 +1,10 @@
+{
+  "name": "rc-local-persistence",
+  "description": "Practice-box persistence finding: adds a command line to /etc/rc.local (creating an executable one if absent -- on systemd Debian the static rc-local.service runs it at boot as soon as the file is executable). Idempotent via MARKER. Vars: RC_LINE (required), MARKER (optional distinctive substring used for the idempotency grep, default RC_LINE), PAYLOAD_PATH + PAYLOAD_BODY (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${RC_LINE:?RC_LINE is required}\"\n\nif [ -n \"${PAYLOAD_PATH-}\" ]; then\n    install -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\n    printf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\n    chmod 0755 \"$PAYLOAD_PATH\"\nfi\n\nrc=\"/etc/rc.local\"\nmarker=${MARKER:-$RC_LINE}\nif [ ! -f \"$rc\" ]; then\n    {\n        printf '%s\\n' '#!/bin/sh'\n        printf '%s\\n' \"$RC_LINE\"\n        printf '%s\\n' 'exit 0'\n    } > \"$rc\"\nelif ! grep -Fq -- \"$marker\" \"$rc\"; then\n    tmp=$(mktemp)\n    {\n        grep -v '^[[:space:]]*exit 0[[:space:]]*$' \"$rc\" || :\n        printf '%s\\n' \"$RC_LINE\"\n        printf '%s\\n' 'exit 0'\n    } > \"$tmp\"\n    cat \"$tmp\" > \"$rc\"\n    rm -f \"$tmp\"\nfi\nchmod 0755 \"$rc\"\n"
+}

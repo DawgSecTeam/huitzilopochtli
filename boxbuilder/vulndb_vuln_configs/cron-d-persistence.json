@@ -1,0 +1,10 @@
+{
+  "name": "cron-d-persistence",
+  "description": "Practice-box persistence finding: drops a payload script and a root-owned /etc/cron.d entry that runs it on a schedule. Vars: CRON_FILE (required, basename inside /etc/cron.d), SCHEDULE (required, five cron fields or @reboot), PAYLOAD_PATH (required, absolute), PAYLOAD_BODY (optional single sh line, default logs nothing), RUN_AS_USER (optional, default root).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${CRON_FILE:?CRON_FILE is required (basename inside /etc/cron.d)}\"\n: \"${SCHEDULE:?SCHEDULE is required (five fields or @reboot)}\"\n: \"${PAYLOAD_PATH:?PAYLOAD_PATH is required}\"\n\ninstall -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\nprintf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\nchmod 0755 \"$PAYLOAD_PATH\"\n\nprintf '%s %s %s\\n' \"$SCHEDULE\" \"${RUN_AS_USER:-root}\" \"$PAYLOAD_PATH\" \\\n    > \"/etc/cron.d/$CRON_FILE\"\nchmod 0600 \"/etc/cron.d/$CRON_FILE\"\n"
+}
