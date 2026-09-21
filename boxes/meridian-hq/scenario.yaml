@@ -210,6 +210,11 @@ checks:
 
       **3. Confirm.** `net accounts` (run on the DC) shows the new
       minimum. `gpupdate /force` applies the GPO route immediately.
+      One trap: the quick `net accounts` route can be silently
+      reverted when a Default Domain Policy refresh re-asserts the
+      GPO's values (your score would drop again later) -- if that
+      happens, set it in the Default Domain Policy GPO, where it
+      sticks.
 
   - id: password_lockout
     type: powershell_json
@@ -250,6 +255,9 @@ checks:
       **3. Confirm.** `net accounts` shows Lockout threshold 5 instead
       of Never. This is HARD because the zero-state hides as "Never",
       not as a small number -- read the whole policy, not one line.
+      Same trap as the minimum-length task: a Default Domain Policy
+      refresh can silently revert the quick `net accounts` route, so
+      set it in the GPO if your score drops again later.
 
   - id: svc_report_password_rotated
     type: powershell_json
@@ -261,22 +269,31 @@ checks:
       script: |
         # The roasting fix is the ROTATION: the account must still exist
         # and be enabled, but its ORIGINAL planted password must stop
-        # authenticating. The check attempts one LDAP bind with the
-        # known-weak original -- success means the password was never
-        # changed.
+        # authenticating. ValidateCredentials does one real credential
+        # check: True = the weak original still works (no points), False
+        # = rotated (points), throw = DC unreachable (fail closed).
+        # FRESH-CLONE GOTCHA (observed live): for the first minutes after
+        # boot the DC's auth path rejects even VALID credentials, which
+        # would fake a rotation -- so nothing is scored until the box has
+        # been up 8+ minutes; the next 5-minute pass re-scores once the
+        # DC is up, so early-boot noise never sticks.
         Import-Module ActiveDirectory -ErrorAction Ignore
-        $u = Get-ADUser -Filter "SamAccountName -eq 'svc_report'" -ErrorAction Ignore
         $rotated = $false
+        $u = Get-ADUser -Filter "SamAccountName -eq 'svc_report'" -ErrorAction Ignore
         if ($null -ne $u -and $u.Enabled) {
-            $bindOk = $false
-            try {
-                $de = New-Object System.DirectoryServices.DirectoryEntry(
-                    'LDAP://dc01.meridian.local/RootDSE',
-                    'MERIDIAN\svc_report', 'ReportSpring2026!')
-                $null = $de.Properties.Get('defaultNamingContext')
-                $bindOk = $true
-            } catch { $bindOk = $false }
-            $rotated = -not $bindOk
+            $uptimeMin = ((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalMinutes
+            if ($uptimeMin -ge 8) {
+                try {
+                    Add-Type -AssemblyName System.DirectoryServices.AccountManagement -ErrorAction Ignore
+                    $pc = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(
+                        [System.DirectoryServices.AccountManagement.ContextType]::Domain,
+                        'meridian.local')
+                    $rotated = -not $pc.ValidateCredentials('svc_report', 'ReportSpring2026!')
+                } catch {
+                    $bad = (Get-ADUser -Identity svc_report -Properties badPwdCount -ErrorAction Ignore).badPwdCount
+                    $rotated = ($bad -gt 0)
+                }
+            }
         }
         $rotated | ConvertTo-Json -Compress
     expect:
@@ -516,26 +533,30 @@ checks:
           LDAPServerIntegrity    REG_DWORD    0x1        # 1 = None, 2 = Require
       ```
 
-      **2. Require signing** -- the policy way (survives a hardening
-      refresh):
+      **2. Require signing -- through the policy store, not a bare
+      registry write.** On this image a background security-policy
+      refresh re-asserts the stored policy and silently reverts a bare
+      `reg add` (your score would come back minutes later). The fix
+      that sticks is Local Security Policy:
 
       ```
-      gpmc.msc > Default Domain Controllers Policy > Edit >
-        Computer Configuration > Policies > Windows Settings >
-        Security Settings > Local Policies > Security Options >
-        "Domain controller: LDAP server signing requirements" = Require signing
+      secpol.msc > Local Policies > Security Options >
+        "Domain controller: LDAP server signing requirements" >
+        Require signing
       ```
 
-      Then `gpupdate /force`. The direct registry write also scores:
+      Or the same thing via secedit (export, set
+      `LDAPServerIntegrity = 2` under [Registry Values], configure).
+      The GPO route (Default Domain Controllers Policy > Security
+      Options > same setting) works too and follows the workshop
+      teaching. A bare `reg add ... /d 2 /f` also scores -- but if the
+      score drops again a few minutes later, that is the policy
+      refresh reverting it; do it through the policy store instead.
 
-      ```
-      reg add "HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters" /v LDAPServerIntegrity /t REG_DWORD /d 2 /f
-      ```
-
-      **3. Confirm.** The reg query reads 0x2. (This DC is HARD
-      because it is policy work in the NTDS key, not a toggle in a
-      familiar GUI -- and it is the check the MS17-style scanners
-      flag first on any domain.)
+      **3. Confirm.** The reg query reads 0x2 and STAYS 0x2 after
+      `gpupdate /force`. (This one is HARD because it is policy work
+      in the NTDS key, not a toggle in a familiar GUI -- and it is the
+      check the MS17-style scanners flag first on any domain.)
 
   - id: smb1_disabled
     type: powershell_json

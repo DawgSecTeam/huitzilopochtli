@@ -10,6 +10,7 @@ Usage:
     python3 -m boxbuilder install --spec box.yaml --artifacts artifacts/ [--json]
     python3 -m boxbuilder package --spec box.yaml --artifacts artifacts/ --out box.ova [--json]
     python3 -m boxbuilder build   --spec box.yaml [--from-step compile|plant|install|package] [--json]
+    python3 -m boxbuilder answer-key --scenario scenario.yaml [--out PATH] [--html] [--json]
 
 The spec file may be replaced by direct flags (--scenario, --nakon-config,
 --provider-*). See boxbuilder/README.md.
@@ -247,6 +248,22 @@ def cmd_plant(args) -> int:
     return 0 if result.get("ok", False) else 1
 
 
+def cmd_answer_key(args) -> int:
+    from boxbuilder import answerkey
+
+    try:
+        result = answerkey.generate(args.scenario, out_path=args.out,
+                                    want_html=args.html)
+    except Exception as e:
+        _eprint(f"answer-key failed: {e}")
+        if args.json:
+            _emit({"ok": False, "error": str(e), "step": "answer-key"}, as_json=True)
+        return 1
+    result["step"] = "answer-key"
+    _emit(result, args.json)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="boxbuilder",
@@ -308,6 +325,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--format", choices=("ova", "qcow2", "raw"), default="ova")
     p_build.set_defaults(func=cmd_build)
 
+    p_answerkey = sub.add_parser(
+        "answer-key",
+        help="render authored `solution:` walkthroughs into a post-event "
+             "answer-key handout (Markdown, + themed HTML with --html)")
+    p_answerkey.add_argument("--scenario", required=True,
+                             help="huitz scenario YAML")
+    p_answerkey.add_argument("--out", help="output Markdown path "
+                             "(default: artifacts/answer-keys/<slug>.md)")
+    p_answerkey.add_argument("--html", action="store_true",
+                             help="also write a themed HTML page next to it")
+    p_answerkey.add_argument("--json", action="store_true",
+                             help="print result as one JSON line on stdout")
+    p_answerkey.set_defaults(func=cmd_answer_key)
+
     return parser
 
 
@@ -315,7 +346,8 @@ def main(argv=None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     # Direct-flag path requires --nakon-config when --spec is absent.
-    if not args.spec and not args.nakon_config:
+    # answer-key is authoring-side only -- it never touches nakon.
+    if args.command != "answer-key" and not args.spec and not args.nakon_config:
         parser.error("provide --spec FILE, or both --scenario and --nakon-config")
     sys.exit(args.func(args))
 

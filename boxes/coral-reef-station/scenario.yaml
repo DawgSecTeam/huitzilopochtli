@@ -43,6 +43,29 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Count the UID-0 accounts.** Every account with UID 0 is full
+      root, whatever its name is:
+
+      ```
+      awk -F: '$3 == 0 {print $1}' /etc/passwd
+      root
+      leviathan
+      ```
+
+      Two names is one too many -- leviathan has no business being
+      root-equivalent. (This is also the forensics answer for the hidden
+      root; note it before you delete the account.)
+
+      **2. Remove it** the way any account goes:
+
+      ```
+      deluser --remove-home leviathan      # or: userdel -r leviathan
+      ```
+
+      **3. Confirm.** The awk one-liner now prints only `root`, and
+      `grep leviathan /etc/passwd` finds nothing. GUI tell: the
+      "leviathan" tile is gone from the login greeter.
 
   - id: shadow_not_world_writable
     type: permission
@@ -56,6 +79,28 @@ checks:
       field: mode
       max_mode: "0640"
       points: 10
+    solution: |
+      **1. Look at the mode.**
+
+      ```
+      stat -c '%a %U:%G' /etc/shadow
+      666 root:root
+      ```
+
+      0666 means every local user can read every password hash (and take
+      them offline to crack) AND write the file (create or edit accounts at
+      will). No account tool ever leaves shadow like this -- someone chmod-ed
+      it.
+
+      **2. Tighten it** to the distro norm (root writes, group shadow
+      reads):
+
+      ```
+      chmod 640 /etc/shadow
+      ```
+
+      **3. Confirm.** `stat -c %a /etc/shadow` shows 640 (or stricter).
+      Pair it with the /etc/passwd task next.
 
   - id: passwd_not_world_writable
     type: permission
@@ -69,6 +114,21 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Check the mode:** `stat -c %a /etc/passwd` -- the box shipped it
+      0666. passwd is world-readable by design, but never world-WRITABLE: a
+      writable passwd lets any user mint themselves a UID-0 entry (that is
+      exactly what the hidden-root task is about).
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /etc/passwd
+      ```
+
+      **3. Confirm** with stat again -- 644 or stricter. On the desktop you
+      could do the same from the file manager (right-click > Properties >
+      Permissions), but for /etc files the terminal is faster.
 
   - id: no_blank_password
     type: file_regex
@@ -81,6 +141,24 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Hunt for empty hashes.** An empty password field in shadow means
+      login with nothing to type:
+
+      ```
+      sudo awk -F: '($2 == "") {print $1}' /etc/shadow
+      krill
+      ```
+
+      Anyone at the greeter can log in as krill by typing "krill" and
+      pressing Enter.
+
+      **2. Fix the account.** Give it a real password (`passwd krill`) or
+      remove the account entirely (the unauthorized-account task wants it
+      gone anyway -- deletion fixes both). Locking (`passwd -l krill`) also
+      empties the risk, but the roster says krill shouldn't exist at all.
+
+      **3. Confirm.** The awk one-liner prints nothing.
 
   # --- unauthorized accounts and administration ---------------------------
   - id: no_nemo
@@ -93,6 +171,18 @@ checks:
       user_absent: true
       username: nemo
       points: 10
+    solution: |
+      Same hunt as every unauthorized account: the greeter tile, `ls
+      /home`, then `getent passwd nemo` -- a real account with a login
+      shell and a fresh password. Nothing about it belongs to the station
+      roster, so:
+
+      ```
+      deluser --remove-home nemo
+      ```
+
+      Confirm `getent passwd nemo` prints nothing. The lesson to keep: an
+      account nobody can explain gets deleted, not renamed.
 
   - id: no_poseidon
     type: user_group
@@ -104,6 +194,24 @@ checks:
       user_absent: true
       username: poseidon
       points: 10
+    solution: |
+      **1. Spot the tile.** Unauthorized accounts advertise themselves on
+      the login greeter; `ls /home` and `getent passwd poseidon` confirm
+      the account is real, with a login shell and a password set.
+
+      **2. Note the extras first.** `id poseidon` shows it is in the sudo
+      group -- that is also the forensics answer for the sudo question.
+      Record, then remove.
+
+      **3. Remove it:**
+
+      ```
+      deluser --remove-home poseidon
+      ```
+
+      **4. Confirm.** `getent passwd poseidon` prints nothing and the
+      greeter tile is gone. Removing the account also removes it from the
+      sudo group, so the sudo-membership task and this one fall together.
 
   - id: no_krill
     type: user_group
@@ -115,6 +223,19 @@ checks:
       user_absent: true
       username: krill
       points: 10
+    solution: |
+      krill is the account with the blank password (see the blank-password
+      task) -- at the greeter, typing "krill" and pressing Enter logs you
+      in with nothing to type. The roster doesn't include it, so remove it:
+
+      ```
+      deluser --remove-home krill
+      ```
+
+      Confirm `getent passwd krill` prints nothing -- and if you had
+      already fixed the blank-password task by setting a password instead,
+      note that only removal satisfies *this* task: the scored state is
+      absence.
 
   - id: reef_sole_admin
     type: user_group
@@ -128,6 +249,29 @@ checks:
       # reefadmin is the only authorized administrator on this box.
       allowed: [reefadmin]
       points: 10
+    solution: |
+      **1. Audit the group.**
+
+      ```
+      getent group sudo
+      sudo:x:27:reefadmin,poseidon
+      ```
+
+      The roster in the handbook names exactly one administrator:
+      reefadmin. Everyone else on that line is an intruder or a mistake.
+
+      **2. Trim to the roster** (keeping the account, just not the power):
+
+      ```
+      deluser poseidon sudo      # group membership only
+      ```
+
+      Deleting poseidon outright (the unauthorized-account task) also
+      clears this one.
+
+      **3. Confirm.** `getent group sudo` lists only reefadmin. Ground
+      truth of what any account may actually do: log in as it and run
+      `sudo -l`.
 
   - id: service_account_no_shell
     type: file_regex
@@ -140,6 +284,27 @@ checks:
     expect:
       regex: '(?m)^/usr/sbin/nologin$|^/sbin/nologin$'
       points: 10
+    solution: |
+      **1. Read the account.**
+
+      ```
+      getent passwd diverbot
+      diverbot:x:...:...:/bin/bash
+      ```
+
+      diverbot runs the station's dive automation -- it never needs to
+      type commands. A login shell on a service account turns it into an
+      interactive doorway the day its password leaks or gets reset.
+
+      **2. Take the shell away:**
+
+      ```
+      usermod -s /usr/sbin/nologin diverbot      # or: chsh -s /usr/sbin/nologin diverbot
+      ```
+
+      **3. Confirm.** `getent passwd diverbot` now ends in
+      /usr/sbin/nologin (or /sbin/nologin). The account still runs its
+      services -- it just can't log in interactively.
 
   # --- sudo / login hardening (hard) --------------------------------------
   - id: no_passwordless_sudo
@@ -153,6 +318,30 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Find the drop-in.** `sudo -l` (as reefadmin) shows NOPASSWD
+      entries; the source is a planted file, not an edit to sudoers
+      itself:
+
+      ```
+      ls /etc/sudoers.d/
+      cat /etc/sudoers.d/00-reef-nopasswd
+      ```
+
+      A drop-in granting reefadmin NOPASSWD:ALL means any process running
+      as reefadmin becomes root with zero friction -- including malware.
+
+      **2. Remove the drop-in.** Never leave sudoers in a broken state:
+      keep a root shell open while you work, and syntax-check after.
+
+      ```
+      rm /etc/sudoers.d/00-reef-nopasswd
+      visudo -c        # "parsed OK" for every file
+      ```
+
+      **3. Confirm.** `sudo -l` as reefadmin now demands a password. This
+      one is marked HARD because careless sudoers work can take sudo down
+      for the whole box -- the check-and-verify habit is the point.
 
   - id: no_passwordless_login
     type: file_regex
@@ -169,6 +358,30 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. See the bug live.** `su - reefadmin` and type a deliberately
+      WRONG password -- it logs you in. Something is answering "yes" to
+      everyone.
+
+      **2. Find the planted line:**
+
+      ```
+      grep -n pam_permit /etc/pam.d/common-auth
+      ```
+
+      Two hits. One is stock Ubuntu: a benign `auth required
+      ... pam_permit.so` no-op that sits after pam_deny as a safety net --
+      leave it. The other is the plant: `auth sufficient pam_permit.so`.
+      "sufficient" means *if this module succeeds, stop asking and log
+      them in* -- order is everything in a PAM stack, and that one line is
+      the whole backdoor.
+
+      **3. Delete only the `sufficient` line.** Keep a root shell open the
+      whole time -- a PAM mistake locks the entire box out of everything,
+      including you.
+
+      **4. Confirm.** `su - reefadmin` with a wrong password now fails, and
+      real logins still work.
 
   - id: ssh_no_root
     type: file_regex
@@ -181,6 +394,29 @@ checks:
     expect:
       equals: "no"
       points: 10
+    solution: |
+      **1. See what the plant did.**
+
+      ```
+      grep -n '^PermitRootLogin' /etc/ssh/sshd_config
+      1:PermitRootLogin yes
+      ```
+
+      The line was prepended as line 1: root can log in over SSH with a
+      password. This is the single most-checked SSH hardening item -- and
+      the first door an attacker tries.
+
+      **2. Edit the line; do NOT append a second one.** sshd (and this
+      check) honor the FIRST occurrence in the file, so a fresh
+      `PermitRootLogin no` at the bottom would be silently ignored. Change
+      line 1 to `PermitRootLogin no`.
+
+      **3. Restart and confirm:**
+
+      ```
+      systemctl restart ssh
+      sshd -T | grep -i permitrootlogin     # -> permitrootlogin no
+      ```
 
   # --- file permissions ----------------------------------------------------
   - id: dive_keys_private
@@ -195,6 +431,28 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Check the mode:**
+
+      ```
+      stat -c '%a %n' /opt/reef/dive-logs.txt    # 666
+      ```
+
+      The file holds the dive-log encryption keys (and a lagoon gate code).
+      World-writable means any local account can rewrite them -- and read
+      or forge the station's confidential dive logs.
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /opt/reef/dive-logs.txt
+      ```
+
+      (640 or 600 also pass if only the service account needs to read it
+      -- anything at or below 0644.)
+
+      **3. Confirm** with stat again. Desktop route: right-click the file >
+      Properties > Permissions, ungroup "others" write access.
 
   - id: deploy_key_private
     type: permission
@@ -208,6 +466,27 @@ checks:
       field: mode
       max_mode: "0600"
       points: 10
+    solution: |
+      **1. Check the mode:**
+
+      ```
+      stat -c '%a %n' /home/reefadmin/.ssh/id_rsa     # 644
+      ```
+
+      SSH itself refuses to use a private key that group or others can
+      read -- so this mode both leaks the key and breaks every tool that
+      would deploy with it.
+
+      **2. Tighten it to the SSH standard:**
+
+      ```
+      chmod 600 /home/reefadmin/.ssh/id_rsa
+      ```
+
+      **3. Confirm** with stat. While you're in there: `chmod 700
+      /home/reefadmin/.ssh` and `chmod 600
+      /home/reefadmin/.ssh/authorized_keys` -- the whole directory should
+      be private to its owner.
 
   # --- Apache ---------------------------------------------------------------
   - id: apache_not_root
@@ -221,6 +500,28 @@ checks:
     expect:
       equals: "www-data"
       points: 10
+    solution: |
+      **1. Watch the workers.** `ps aux | grep apache2` -- with the plant
+      in place the worker processes run as `root`, which turns any Apache
+      bug into instant root on the box.
+
+      **2. Find the setting.** On Debian/Ubuntu, Apache picks its runtime
+      user from envvars, not the main config:
+
+      ```
+      grep APACHE_RUN_USER /etc/apache2/envvars
+      export APACHE_RUN_USER=root
+      ```
+
+      **3. Put it back** to the distro default:
+
+      ```
+      editor /etc/apache2/envvars      # export APACHE_RUN_USER=www-data
+      systemctl restart apache2
+      ```
+
+      **4. Confirm.** `ps aux | grep apache2` now shows the workers running
+      as www-data (the parent starter process stays root -- that is normal).
 
   - id: apache_no_dir_traversal
     type: file_regex
@@ -236,6 +537,38 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. See the damage first:**
+
+      ```
+      curl -s http://localhost/lagoon/
+      ```
+
+      You get a directory listing of `/` -- the whole filesystem, served to
+      anyone with a browser.
+
+      **2. Find the block that does it:**
+
+      ```
+      grep -n -A6 'Alias /lagoon' /etc/apache2/apache2.conf
+      ```
+
+      `Alias /lagoon /` maps a URL to the filesystem ROOT, and the
+      `<Directory />` stanza under it grants Indexes, FollowSymLinks and
+      Require all granted. Delete that whole planted stanza -- the Alias
+      line plus its `<Directory />...</Directory>` block. Do NOT delete
+      apache2.conf itself, and leave the stock `Options Indexes` lines you
+      may find elsewhere in Ubuntu's defaults -- those are innocent.
+
+      **3. Validate and restart:**
+
+      ```
+      apache2ctl configtest      # Syntax OK
+      systemctl restart apache2
+      ```
+
+      **4. Confirm.** `curl -sI http://localhost/lagoon/` no longer
+      returns a listing (404 is the healthy answer).
 
   # --- systemd services ------------------------------------------------------
   - id: squid_inactive
@@ -249,6 +582,29 @@ checks:
       equals: false
       field: active
       points: 10
+    solution: |
+      **1. Find it.** `ps aux` shows an anonymous
+      `sh -c 'while true; do sleep 300; done'` -- no name, no clue. The
+      unit behind it is less shy:
+
+      ```
+      systemctl list-units --type=service | grep -i squid
+      SquidBait3000.service   loaded active running   System Optimizer
+      ```
+
+      Anything calling itself an "optimizer" on a research station
+      deserves immediate suspicion. This is the easy tier precisely
+      because the name does the work.
+
+      **2. Stop it:**
+
+      ```
+      systemctl stop SquidBait3000.service
+      ```
+
+      **3. Confirm** with `systemctl is-active SquidBait3000.service` ->
+      inactive. Stopping is half the job: the next task disables it, or it
+      returns at boot.
 
   - id: squid_disabled
     type: service_state
@@ -261,6 +617,17 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      `systemctl stop` alone leaves the unit enabled -- one reboot and the
+      "System Optimizer" is back. Take away the launcher:
+
+      ```
+      systemctl disable SquidBait3000.service
+      ```
+
+      Confirm: `systemctl is-enabled SquidBait3000.service` -> disabled.
+      (`systemctl disable --now SquidBait3000.service` covers both this
+      and the previous task in one command.)
 
   - id: sonar_process_killed
     type: process_state
@@ -273,6 +640,37 @@ checks:
       equals: false
       field: running
       points: 10
+    solution: |
+      **1. Spot it by port review** -- unlike the sleep-loop services, this
+      one holds a door open:
+
+      ```
+      ss -tlnp | grep 8443
+      LISTEN 0 5 0.0.0.0:8443  users:(("python3",pid=1145,...))
+      ```
+
+      **2. Trace the PID to its script:**
+
+      ```
+      ps -p 1145 -o pid,user,cmd
+      /usr/bin/python3 /opt/.sonar/beacon.py
+      ```
+
+      A hidden directory (`.sonar`) holding a Python listener is not a
+      "sonar relay". Read it: `cat /opt/.sonar/beacon.py` binds
+      0.0.0.0:8443 and answers any connector with `sonar-ok` -- a staging
+      beacon / backdoor listener. (The port is also a forensics answer.)
+
+      **3. Kill it -- and watch it not die.** `kill 1145`, run `ps aux`
+      again: a NEW pid runs the same script. The unit sets `Restart=always`
+      -- killing the process just proves systemd loves it. Stop the unit:
+
+      ```
+      systemctl stop sonar-relay.service
+      ```
+
+      **4. Confirm.** Port 8443 quiet, and nothing matching `.sonar` in
+      `ps aux`.
 
   - id: sonar_disabled
     type: service_state
@@ -285,6 +683,19 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      With the process stopped (previous task), take away the launcher so
+      it never returns at boot:
+
+      ```
+      systemctl disable sonar-relay.service
+      ```
+
+      Confirm `systemctl is-enabled sonar-relay.service` -> disabled.
+
+      Cleanup beyond scoring: `rm -rf /opt/.sonar` (the implant's
+      payload), remove the unit file, and `systemctl daemon-reload` so
+      nothing of it survives.
 
   - id: pump_process_killed
     type: process_state
@@ -297,6 +708,31 @@ checks:
       equals: false
       field: running
       points: 10
+    solution: |
+      **1. See it in the process list:**
+
+      ```
+      ps aux | grep pump
+      root  ...  /usr/local/sbin/pump-ctrl
+      ```
+
+      **2. Do NOT trust the name.** The unit behind it calls itself
+      "Life Support Oxygen Pump Controller" -- exactly what a real station
+      would run. This is the trap of the exercise: pattern-matching names
+      finds SquidBait3000, but only *reading* finds this one. `systemctl
+      cat oxygen-pump.service`, then compare against the
+      authorized-services list in the handbook: no oxygen-pump hardware
+      exists on the box, and nothing authorizes this unit. The payload
+      itself is a placeholder sleep loop -- a slot for whatever the
+      intruder wanted to run.
+
+      **3. Stop the process (its launcher's disable is the next task):**
+
+      ```
+      systemctl stop oxygen-pump.service
+      ```
+
+      **4. Confirm.** `pgrep -af pump-ctrl` prints nothing.
 
   - id: pump_disabled
     type: service_state
@@ -309,6 +745,19 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      Stopping the pump controller is one half; making sure it never boots
+      again is the HARD half -- precisely because a name scan never flags
+      this unit:
+
+      ```
+      systemctl disable oxygen-pump.service
+      ```
+
+      Confirm `systemctl is-enabled oxygen-pump.service` -> disabled.
+
+      Full remediation: `rm /usr/local/sbin/pump-ctrl` (the payload),
+      remove the unit file, `systemctl daemon-reload`.
 
   - id: no_hidden_unit_flag
     type: file_regex
@@ -321,6 +770,31 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Read a unit you never suspected.** tide-sampler sounds like
+      legitimate station instrument control -- so read it, exactly as the
+      oxygen-pump lesson taught:
+
+      ```
+      systemctl cat tide-sampler.service
+      Environment=EXFIL_URL=http://harbor.tideanalytics.example/collect
+      ```
+
+      A tide sampler with an EXFIL_URL environment variable is not
+      sampling tides -- it is staged to send collected data somewhere.
+      This is how modern implants hide: one line inside an innocent unit.
+
+      **2. Edit, don't delete** -- the check still reads the unit file.
+      Remove exactly the planted line from
+      /etc/systemd/system/tide-sampler.service, then:
+
+      ```
+      systemctl daemon-reload
+      ```
+
+      **3. Confirm.** `grep EXFIL_URL /etc/systemd/system/tide-sampler.service`
+      finds nothing, and `systemctl status tide-sampler.service` shows the
+      unit still loads with no parse errors.
 
 theme:
   title: "Kalypso Deep Marine Research Station"
@@ -348,16 +822,60 @@ forensics:
     question: "One non-root account was given UID 0 (full root power). Type that account's username."
     answer: "leviathan"
     points: 10
+    solution: |
+      List every UID-0 account -- the hidden root's name is whichever
+      answer isn't `root`:
+
+      ```
+      awk -F: '$3 == 0 {print $1}' /etc/passwd
+      root
+      leviathan
+      ```
+
+      Answer: `leviathan`. (If you already deleted the account in the
+      hardening task, the answer was visible in the awk output / the
+      greeter tile before removal -- this is why you note findings before
+      you clean them.)
   - id: fq-pump-service
     question: "A service is named like legitimate station hardware but is actually malicious. What is its unit filename?"
     answer: "oxygen-pump.service"
     answers: ["oxygen-pump"]
     points: 10
+    solution: |
+      Walk the plausible names with `systemctl cat` and compare each
+      against the handbook's authorized list. tide-sampler is a real unit
+      (its problem is one bad line inside -- a different finding). But
+      oxygen-pump: no pump hardware exists on the box, its payload is a
+      placeholder script, and nothing authorizes it. Answer:
+      `oxygen-pump.service` (`oxygen-pump` without the suffix also scores).
   - id: fq-sudo-account
     question: "One unauthorized account was added to the sudo group. Type that account's username."
     answer: "poseidon"
     points: 10
+    solution: |
+      Group membership is one command:
+
+      ```
+      getent group sudo
+      sudo:x:27:reefadmin,poseidon
+      ```
+
+      The roster says reefadmin is the only authorized administrator, so
+      the added account is `poseidon`. (Note it before cleaning the group
+      -- the answer is easy to read in /etc/group before you fix it, and
+      hard to reconstruct after.)
   - id: fq-beacon-port
     question: "The sonar-relay is really a C2 beacon listening on a TCP port. Which port number?"
     answer: "8443"
     points: 10
+    solution: |
+      `ss -tlnp` shows every listener; the python3 one is the oddity on a
+      research station:
+
+      ```
+      LISTEN 0 5 0.0.0.0:8443  users:(("python3",pid=1145,...))
+      ```
+
+      Trace the PID to its command (`ps -p 1145 -o cmd=`) and you get
+      `/opt/.sonar/beacon.py` -- the "sonar relay" script binds and
+      answers on 8443. Answer: `8443`.
