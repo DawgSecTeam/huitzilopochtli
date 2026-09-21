@@ -3,11 +3,11 @@
 The persistence-workshop challenge: headless Debian 13 CLI box (huitz
 terminal console), SIXTEEN planted persistence artifacts — one scored
 finding each, compressed weighting (EASY=5 x8, MODERATE=10 x5, HARD=20 x3
-= 150 attainable) — plus two daemon-health penalties (cron, atd) and NO
-forensics block. What these tests pin down:
+= 150 attainable) — plus two daemon-health penalties (cron, atd), and a
+4-question forensics block (4 x 10 = 40; 190 grand total). What these tests pin down:
 
 - the ledger itself (check count, tier/points agreement, penalty floor,
-  no forensics) — the ledger IS the contract with the students;
+  the forensics split) — the ledger IS the contract with the students;
 - every command_json script actually runs and emits exactly one JSON
   scalar, and the hardened branch is the natural outcome on a clean host
   (nothing planted here);
@@ -43,6 +43,8 @@ SEEDS = os.path.join(REPO_ROOT, "boxbuilder", "vulndb_vuln_configs")
 
 CHECK_COUNT = 18          # 16 vuln + 2 penalties
 VULN_POINTS = 150         # penalty floor (-20 total) excluded from attainable
+FORENSICS_POINTS = 40     # 4 x 10
+TOTAL_POINTS = VULN_POINTS + FORENSICS_POINTS
 TIER_POINTS = {"EASY": 5, "MODERATE": 10, "HARD": 20}
 TIER_COUNTS = {"EASY": 8, "MODERATE": 5, "HARD": 3}
 
@@ -105,8 +107,12 @@ def test_static_pine_scenario_validates_and_compiles(tmp_path):
     assert sum(c["max_points"] for c in vuln) == VULN_POINTS
     assert len(penalty) == 2
     assert all(p["max_points"] == 10 for p in penalty)
-    # persistence box: the discovery hunt IS the forensics test
-    assert "forensics" not in parsed or not parsed["forensics"]
+    forensics = parsed["forensics"]
+    assert len(forensics) == 4
+    assert sum(fq["points"] for fq in forensics) == FORENSICS_POINTS
+    assert VULN_POINTS + FORENSICS_POINTS == TOTAL_POINTS
+    assert len({fq["id"] for fq in forensics}) == 4
+    assert not ({fq["id"] for fq in forensics} & {c["id"] for c in checks})
 
     private_key, _ = signing.keypair()
     outputs = compile_scenario(SCENARIO, str(tmp_path), private_key)

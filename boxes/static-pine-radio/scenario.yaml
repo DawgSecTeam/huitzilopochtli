@@ -24,10 +24,12 @@
 #                                      tapeops_unit_linger_gone
 #   vuln checks total            = 150
 #   penalties (cron/atd health)  = -20 floor (only subtract)
-#   GRAND TOTAL                  = 150
+#   forensics (4 x 10)           =  40
+#   GRAND TOTAL                  = 190
 #
-# No separate forensics block: with sixteen hidden artifacts the discovery
-# hunt IS the forensics test.
+# Forensics questions test the discovery skills themselves: each answer is
+# sitting in an artifact the students must open anyway (at -c, the key
+# comment, a payload's log path, the timer's OnUnitActiveSec).
 #
 # Design rules this file obeys (checked in the unit test where practical):
 #   - Every planted artifact has exactly one paired check; planted names and
@@ -728,3 +730,55 @@ theme:
   issue: |
     Static Pine Community Radio transmitter host (88.3 FM).
     Unauthorized access will be reported to the Board.
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt (created in the player's ~/Desktop; edit with
+# `huitz forensics`); the agent re-grades the file each pass. Correct answer
+# = full points; wrong or blank = nothing, no penalty. Each answer is
+# evidence the students open while hunting the sixteen artifacts.
+forensics:
+  - id: fq-key-comment
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "Someone planted an SSH public key for passwordless access on this box. Type the comment tag at the END of that key line (it names the attacker)."
+    answer: "nightcast@88.3"
+    answers: ["nightcast 88.3", "nightcast"]
+    points: 10
+    solution: |
+      `cat ~/.ssh/authorized_keys` and read every line to the end. Key lines
+      end with a free-text comment naming the key's owner -- the planted one
+      signs itself `nightcast@88.3`. Hardening (removing the key) and
+      forensics (reading it) use the same command; read BEFORE you delete.
+  - id: fq-log-file
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "Most of the Nightcast's payloads report to the same log file. Type its full path."
+    answer: "/var/log/nightcast.log"
+    answers: ["var/log/nightcast.log"]
+    points: 10
+    solution: |
+      Open any payload -- the cron one (`cat /opt/nightcast/nightcast-sync`),
+      the systemd carrier daemon, the rebroadcast payload -- and the same
+      append shows up in every one: `>> /var/log/nightcast.log`. Shared
+      infrastructure is a correlation gift: one log file, one timeline of
+      everything the intruder's persistence did.
+  - id: fq-timer-cadence
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "The nightcast-rebroadcast TIMER re-fires its payload on a fixed cadence. How often does it fire (the OnUnitActiveSec value)?"
+    answer: "30min"
+    answers: ["30 min", "30 minutes", "every 30 min", "every 30 minutes"]
+    points: 10
+    solution: |
+      `systemctl cat nightcast-rebroadcast.timer` and read the [Timer]
+      section: OnBootSec=3min (first fire) and OnUnitActiveSec=30min (the
+      re-fire cadence the question asks for). `systemctl list-timers` shows
+      the same story live as "next trigger". Read the unit BEFORE deleting
+      it -- the answer leaves with the file.
+  - id: fq-at-payload
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "A one-shot at(1) job sits in the queue, waiting to run its payload at a chosen moment. Type the full path of the payload it will run."
+    answer: "/opt/nightcast/late-shift"
+    answers: ["opt/nightcast/late-shift"]
+    points: 10
+    solution: |
+      `atq` lists the queued job id, then `at -c <id>` prints the job -- the
+      last lines are the command it will run: /opt/nightcast/late-shift.
+      `at -c` BEFORE `atrm`: evicting the job destroys the evidence.
