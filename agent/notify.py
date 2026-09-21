@@ -70,7 +70,7 @@ def _write_state(path: str, total: int, scenario_version: str) -> None:
             json.dump(
                 {"total": total, "scenario_version": scenario_version}, f
             )
-        os.rename(tmp, path)
+        os.replace(tmp, path)
     except OSError as e:
         print(
             f"WARNING: could not persist score state {path!r}: {e}",
@@ -167,7 +167,7 @@ def _extract_sound(kind: str) -> str | None:
         with open(tmp, "wb") as f:
             f.write(agent.sounds.wave_bytes(kind))
         os.chmod(tmp, 0o644)
-        os.rename(tmp, path)
+        os.replace(tmp, path)
         return path
     except OSError as e:
         print(f"WARNING: could not extract {kind} sound: {e}", file=sys.stderr)

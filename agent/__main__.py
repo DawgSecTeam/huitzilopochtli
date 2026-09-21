@@ -231,7 +231,7 @@ def _write_forensics_template(path: str, questions: list) -> None:
                     break
         except (ImportError, OSError):
             pass
-    os.rename(tmp, path)
+    os.replace(tmp, path)
 
 
 def _honor_interval_s() -> int | None:
@@ -415,7 +415,7 @@ def _mark_enrolled(identity_path: str) -> None:
     tmp = marker + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("ok")
-    os.rename(tmp, marker)
+    os.replace(tmp, marker)
 
 
 def _ensure_enrolled(config, manifest, identity) -> bool:

@@ -156,7 +156,7 @@ def write(report_path: str, snapshot: dict) -> bool:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=1)
         os.chmod(tmp, 0o644)
-        os.rename(tmp, path)
+        os.replace(tmp, path)
         return True
     except OSError as e:
         print(f"WARNING: could not write snapshot {path!r}: {e}", file=sys.stderr)
