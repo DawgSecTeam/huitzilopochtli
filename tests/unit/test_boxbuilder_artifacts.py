@@ -184,6 +184,15 @@ def test_motd_script_honor_content():
     assert "ranked" not in s
 
 
+def test_motd_script_leads_with_handbook_and_forensics_syntax():
+    s = artifacts.motd_script("X", None, "honor")
+    # A new player's first command is the handbook; it leads the list.
+    assert s.index("huitz readme") < s.index("huitz score")
+    assert "handbook" in s
+    # The answer syntax is spelled out, not just the bare command.
+    assert 'huitz forensics 1 "text"' in s
+
+
 def test_motd_script_ranked_grade_line():
     s = artifacts.motd_script("X", None, "ranked")
     assert "sudo huitz grade" not in s, "ranked boxes cannot grade on-box"

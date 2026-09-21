@@ -26,9 +26,13 @@ Pure stdlib; terminal behavior lives in agent/term.py. Only `grade`
 touches the scoring pipeline (via agent/__main__), and only for honor
 mode — ranked grading is the engine's job (§13).
 """
+import difflib
 import json
 import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 import time
 
@@ -46,8 +50,8 @@ usage:
   huitz score --json             ... as raw JSON (the report.json snapshot)
   huitz watch                    live scorecard: countdown, updates, bell
   huitz watch --once             render one frame and exit
-  huitz readme                   the scenario handbook, in the terminal
-  huitz readme --raw             ... as raw markdown
+  huitz readme                   the scenario handbook, typeset and paged
+  huitz readme --raw             ... as raw markdown, printed flat
   huitz forensics                list forensics questions + your answers
   huitz forensics N "answer"     answer question N (interactive if TEXT omitted)
   huitz grade                    re-grade right now (root; honor boxes)
@@ -57,6 +61,8 @@ options:
   --answers PATH  forensics answers file (default: the one the snapshot names)
   --config PATH   grade: agent_config.json (default: this box's install dir)
   --color WHEN    auto | always | never   (NO_COLOR is always honored)
+  --no-pager      score/readme: print flat even on a terminal (readme pages
+                  by default; score only when it does not fit; $PAGER wins)
   --json          score: print the raw snapshot
   --quiet         grade: print one summary line instead of the board
 
@@ -661,87 +667,206 @@ def set_forensics_answer(snap: dict, ordinal: int, text: str | None,
 # --- readme (the scenario handbook) ------------------------------------------------
 
 _INLINE_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_INLINE_ITAL_RE = re.compile(r"(?<!\*)\*([^*\s][^*]*)\*(?!\*)")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _INLINE_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _LIST_RE = re.compile(r"^[-*]\s+(.*)$")
 _ORDERED_RE = re.compile(r"^(\d+[.)])\s+(.*)$")
+_RULE_LINES = ("---", "***", "___")
 
 
 def _inline(text: str, sty: Style) -> str:
-    """One markdown line rendered for the terminal: **bold** to bold,
-    `code` to dim, [text](url) to text <url>. Line length is left to the
-    terminal (the readme is a static page, not a live frame)."""
+    """Inline markdown rendered for the terminal: **bold**, *italic*, `code`
+    in the theme accent, [text](url) to text <url>. Callers pass a whole
+    folded block, so emphasis spanning a source line break still matches."""
     text = _INLINE_LINK_RE.sub(lambda m: f"{m.group(1)} <{m.group(2)}>", text)
-    parts = []
-    pos = 0
-    for m in _INLINE_BOLD_RE.finditer(text):
-        parts.append(text[pos:m.start()])
-        parts.append(sty.bold(m.group(1)))
-        pos = m.end()
-    parts.append(text[pos:])
-    text = "".join(parts)
-    text = _INLINE_CODE_RE.sub(lambda m: sty.color(m.group(1), "muted"), text)
+    text = _INLINE_BOLD_RE.sub(lambda m: sty.bold(m.group(1)), text)
+    text = _INLINE_ITAL_RE.sub(lambda m: sty.italic(m.group(1)), text)
+    text = _INLINE_CODE_RE.sub(lambda m: sty.color(m.group(1), "accent"), text)
     return text
 
 
-def render_readme(text: str, sty: Style, sym: Symbols, width: int) -> str:
-    """The handbook, typeset for a terminal. Deliberately small: headings,
-    lists, quotes, fenced blocks, rules, inline emphasis. Anything fancier
-    stays in the themed README.html on desktop boxes — the terminal view
-    must stay readable in plain ASCII too."""
-    out = []
-    in_fence = False
+def _readme_blocks(text: str) -> list:
+    """Markdown-subset block parser. Consecutive non-blank lines fold into
+    one block (paragraph, list item, quote), so handbooks that hard-wrap
+    their source reflow as units instead of ragged fragments. Yields tuples:
+    ("heading", level, text), ("para", text), ("item", marker, text),
+    ("quote", text), ("rule",), ("fence", [lines]), ("blank",)."""
+    blocks = []
+    para = None   # ("para", accumulated text)
+    item = None   # ["item", marker, accumulated text]
+    fence = None  # accumulating raw fence lines
+
+    def flush():
+        nonlocal para, item
+        if para is not None:
+            blocks.append(para)
+            para = None
+        if item is not None:
+            blocks.append(tuple(item))
+            item = None
+
     for raw in text.splitlines():
-        if raw.lstrip().startswith("```"):
-            in_fence = not in_fence
+        if fence is not None:
+            if raw.lstrip().startswith("```"):
+                blocks.append(("fence", fence))
+                fence = None
+            else:
+                fence.append(raw)
             continue
-        if in_fence:
-            out.append("  " + sty.color(
-                agent.term.ellipsize(raw, max(20, width - 4), sym), "muted"))
+        if raw.lstrip().startswith("```"):
+            flush()
+            fence = []
             continue
         stripped = raw.strip()
         if not stripped:
-            out.append("")
-            continue
-        if stripped in ("---", "***", "___"):
-            out.append(sty.color(agent.term.rule(min(width, 78), sym), "muted"))
+            flush()
+            blocks.append(("blank",))
             continue
         m = _HEADING_RE.match(stripped)
         if m:
-            level, head = len(m.group(1)), _inline(m.group(2), sty)
-            if level == 1:
-                out.append(sty.color(sty.bold(head), "accent"))
-                out.append(sty.color(agent.term.rule(min(width, 78), sym),
-                                     "accent"))
-            elif level == 2:
-                out.append(sty.bold(head))
-                out.append(sty.color(
-                    agent.term.rule(min(width, len(m.group(2)) + 2), sym),
-                    "muted"))
-            else:
-                out.append(sty.bold(head))
+            flush()
+            blocks.append(("heading", len(m.group(1)), m.group(2).strip()))
             continue
-        m = _LIST_RE.match(stripped)
-        if m:
-            out.append("  " + sty.color(sym.bullet, "muted") + " "
-                       + _inline(m.group(1), sty))
+        if stripped in _RULE_LINES:
+            flush()
+            blocks.append(("rule",))
             continue
         m = _ORDERED_RE.match(stripped)
         if m:
-            out.append("  " + sty.color(m.group(1), "muted") + " "
-                       + _inline(m.group(2), sty))
+            flush()
+            item = ["item", m.group(1), m.group(2).strip()]
+            continue
+        m = _LIST_RE.match(stripped)
+        if m:
+            flush()
+            item = ["item", "", m.group(1).strip()]
             continue
         if stripped.startswith(">"):
-            out.append("  " + sty.color(
-                _inline(stripped.lstrip("> ").strip(), sty), "muted"))
+            flush()
+            blocks.append(("quote", stripped.lstrip("> ").strip()))
             continue
-        out.append(_inline(stripped, sty))
+        if item is not None:
+            item[2] += " " + stripped
+        elif para is not None:
+            para = ("para", para[1] + " " + stripped)
+        else:
+            para = ("para", stripped)
+    if fence is not None:  # unterminated fence: show what is there
+        blocks.append(("fence", fence))
+    flush()
+    return blocks
+
+
+def render_readme(text: str, sty: Style, sym: Symbols, width: int) -> str:
+    """The handbook, typeset for a terminal: paragraphs re-wrap to the
+    terminal width (styling flows across the wrap), fences keep every line
+    (wrapped, never ellipsized), headings/lists/quotes/rules as before. The
+    markdown subset stays deliberately small — anything fancier belongs in
+    the themed README.html on desktop boxes."""
+    out = []
+    for block in _readme_blocks(text):
+        kind = block[0]
+        if kind == "blank":
+            out.append("")
+        elif kind == "heading":
+            _, level, head = block
+            rendered = _inline(head, sty)
+            if level == 1:
+                out.append(agent.term.wrap_ansi(sty.bold(rendered), width))
+                out.append(sty.color(
+                    agent.term.rule(min(width, 78), sym), "accent"))
+            elif level == 2:
+                out.append(agent.term.wrap_ansi(sty.bold(rendered), width))
+                out.append(sty.color(
+                    agent.term.rule(
+                        min(width, agent.term.visible_len(rendered) + 2), sym),
+                    "muted"))
+            else:
+                out.append(agent.term.wrap_ansi(sty.bold(rendered), width))
+        elif kind == "para":
+            out.extend(agent.term.wrap_ansi(
+                _inline(block[1], sty), width).splitlines())
+        elif kind == "item":
+            _, marker, body = block
+            if marker:
+                indent = "  " + marker + " "
+                bullet = "  " + sty.color(marker, "muted") + " "
+            else:
+                indent = "  " + sym.bullet + " "
+                bullet = "  " + sty.color(sym.bullet, "muted") + " "
+            out.extend(agent.term.wrap_ansi(
+                _inline(body, sty), width, indent=bullet,
+                subsequent_indent=" " * agent.term.visible_len(indent)
+            ).splitlines())
+        elif kind == "quote":
+            out.append(sty.color(agent.term.wrap_ansi(
+                _inline(block[1], sty), width, indent="  ",
+                subsequent_indent="  "), "muted"))
+        elif kind == "rule":
+            out.append(sty.color(agent.term.rule(min(width, 78), sym), "muted"))
+        elif kind == "fence":
+            for raw in block[1]:
+                if not raw.strip():
+                    out.append("")
+                    continue
+                out.append(sty.color(agent.term.wrap_ansi(
+                    raw, width, indent="  ", subsequent_indent="  "), "muted"))
     return "\n".join(out)
 
 
+# --- paging ------------------------------------------------------------------------
+
+def _pager_argv() -> list | None:
+    """The pager command line for an interactive terminal, or None to print
+    flat. $PAGER wins verbatim (given -R when it looks like less); otherwise
+    the built-in preference is `less -R`, then `more`."""
+    env = os.environ.get("PAGER", "").strip()
+    if env:
+        try:
+            argv = shlex.split(env)
+        except ValueError:
+            argv = []
+        if argv:
+            if os.path.basename(argv[0]).startswith("less") and not (
+                    any(a.startswith("-") and "R" in a[1:] for a in argv[1:])):
+                argv.append("-R")
+            return argv
+    if shutil.which("less"):
+        return ["less", "-R"]
+    if shutil.which("more"):
+        return ["more"]
+    return None
+
+
+def _page(text: str, outstream) -> bool:
+    """Show `text` through the pager; True when handled. Never engages for a
+    non-interactive stream (pipes, portals, tests) — output bytes there are
+    identical to a plain write. Any pager failure falls back to flat print;
+    ctrl-c keeps the CLI's 130 contract and reaps the child."""
+    if not agent.term.is_interactive(outstream):
+        return False
+    argv = _pager_argv()
+    if not argv:
+        return False
+    proc = None
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE)
+        proc.communicate(text.encode("utf-8", "replace"))
+        return True
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        return False
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+
+
 def cmd_readme(argv: list, outstream) -> int:
-    positional, opts = _split_flags(argv, {"--raw"}, {"--report", "--color"})
+    positional, opts = _split_flags(argv, {"--raw", "--no-pager"},
+                                    {"--report", "--color"})
     if positional:
         raise UsageError(f"readme takes no arguments (got {positional[0]!r})")
     snap = _load_snapshot(opts.get("--report"))
@@ -756,8 +881,10 @@ def cmd_readme(argv: list, outstream) -> int:
     sty = _make_style(opts, outstream, snap)
     sym = Symbols(sty.utf8)
     width = agent.term.detect_width(outstream)
-    for line in render_readme(text, sty, sym, width).splitlines():
-        print(line, file=outstream)
+    page = render_readme(text, sty, sym, width) + "\n"
+    if not opts.get("--no-pager") and _page(page, outstream):
+        return _EXIT_OK
+    outstream.write(page)
     return _EXIT_OK
 
 
@@ -765,7 +892,7 @@ def cmd_readme(argv: list, outstream) -> int:
 
 def cmd_score(argv: list, outstream) -> int:
     positional, opts = _split_flags(
-        argv, {"--json", "--quiet"}, {"--report", "--color"})
+        argv, {"--json", "--quiet", "--no-pager"}, {"--report", "--color"})
     if positional:
         raise UsageError(f"score takes no arguments (got {positional[0]!r})")
     snap = _load_snapshot(opts.get("--report"))
@@ -779,7 +906,14 @@ def cmd_score(argv: list, outstream) -> int:
     sym = Symbols(sty.utf8)
     width = agent.term.detect_width(outstream)
     frame = render_scorecard(snap, sty, sym, width, hints=True)
-    for line in frame.splitlines():
+    lines = frame.splitlines()
+    # Page only when the board actually overflows the window: a glance at a
+    # short board should not cost a keystroke.
+    if (not opts.get("--no-pager")
+            and len(lines) > agent.term.detect_height(outstream) - 1
+            and _page("\n".join(lines) + "\n", outstream)):
+        return _EXIT_OK
+    for line in lines:
         print(agent.term.truncate_ansi(line, width), file=outstream)
     return _EXIT_OK
 
@@ -1038,7 +1172,9 @@ def main(argv: list | None = None, outstream=None, instream=None) -> int:
             return cmd_grade(rest, outstream)
         if verb == "forensics":
             return cmd_forensics(rest, outstream, instream)
-        raise UsageError(f"unknown command {verb!r}\n\n{USAGE}")
+        close = difflib.get_close_matches(verb, VERBS, n=1)
+        hint = f" — did you mean: huitz {close[0]}?" if close else ""
+        raise UsageError(f"unknown command {verb!r}{hint}\n\n{USAGE}")
     except UsageError as e:
         print(f"huitz: {e}", file=sys.stderr)
         return _EXIT_USAGE

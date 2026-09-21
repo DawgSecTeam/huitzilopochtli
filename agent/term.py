@@ -50,6 +50,109 @@ def truncate_ansi(text: str, width: int) -> str:
         out.append("\x1b[0m")
     return "".join(out)
 
+
+_WRAP_TOKEN_RE = re.compile(r"\x1b\[[0-9;]*m|\s+|\S+")
+
+
+def _wrap_words(text: str) -> list:
+    """Split `text` into words as (chunk, visible_len) pairs. SGR runs attach
+    to the following word so styling survives re-wrapping; because SGR state
+    persists across newlines, a styled span simply continues on the next line."""
+    words = []
+    pending = []  # escapes seen since the last word ended
+    for m in _WRAP_TOKEN_RE.finditer(text):
+        tok = m.group(0)
+        if tok.isspace():
+            if pending:
+                # Escapes trailing a word still belong to it (its reset, say).
+                if words:
+                    chunk, vlen = words[-1]
+                    words[-1] = (chunk + "".join(pending), vlen)
+                pending = []
+            continue
+        if tok.startswith("\x1b"):
+            pending.append(tok)
+            continue
+        chunk = "".join(pending) + tok
+        pending = []
+        words.append((chunk, len(tok)))
+    if pending and words:
+        chunk, vlen = words[-1]
+        words[-1] = (chunk + "".join(pending), vlen)
+    elif pending:
+        words.append(("".join(pending), 0))
+    return words
+
+
+def wrap_ansi(text: str, width: int, indent: str = "",
+              subsequent_indent: str | None = None) -> str:
+    """Greedy word-wrap for possibly-styled text: SGR sequences count as zero
+    columns and stay attached to their word, so bold/color spans flow across
+    the wrap intact. Newlines in `text` are treated as spaces (callers pass
+    folded paragraphs). Unbreakable words longer than the line are hard-split.
+    """
+    if subsequent_indent is None:
+        subsequent_indent = indent
+    width = max(1, width)
+    lines = []
+    cur = []
+    cur_len = 0
+
+    def limit():
+        return max(1, width - visible_len(
+            indent if not lines else subsequent_indent))
+
+    def emit():
+        nonlocal cur, cur_len
+        prefix = indent if not lines else subsequent_indent
+        lines.append(prefix + "".join(cur))
+        cur = []
+        cur_len = 0
+
+    for chunk, vlen in _wrap_words(text):
+        if cur and cur_len + 1 + vlen > limit():
+            emit()
+        if not cur and vlen > limit():
+            # Hard-split an unbreakable word at the column limit.
+            while vlen > limit() - cur_len:
+                room = max(1, limit() - cur_len)
+                take = _split_styled(chunk, room)
+                if take <= 0:
+                    break
+                piece, chunk = chunk[:take], chunk[take:]
+                cur.append(piece)
+                cur_len += visible_len(piece)
+                vlen -= visible_len(piece)
+                emit()
+            if chunk:
+                cur.append(chunk)
+                cur_len += vlen
+            continue
+        if cur:
+            cur.append(" ")
+            cur_len += 1
+        cur.append(chunk)
+        cur_len += vlen
+    if cur or not lines:
+        emit()
+    return "\n".join(lines)
+
+
+def _split_styled(chunk: str, room: int) -> int:
+    """Byte index in `chunk` after `room` visible columns (escapes are free)."""
+    used = 0
+    i = 0
+    while i < len(chunk):
+        m = _ANSI_RE.match(chunk, i)
+        if m:
+            i = m.end()
+            continue
+        if used >= room:
+            return i
+        used += 1
+        i += 1
+    return i
+
 # --- color depths ------------------------------------------------------------
 
 NONE, C16, C256, TRUECOLOR = 0, 4, 8, 24
@@ -162,6 +265,16 @@ def detect_width(stream) -> int:
     return max(20, cols)
 
 
+def detect_height(stream) -> int:
+    """Current terminal height in rows, >= 4 (below that, layout is hopeless)."""
+    try:
+        rows = shutil.get_terminal_size(fallback=(80, 24)).lines
+    except Exception:  # noqa: BLE001 — any oddity falls back to 24
+        rows = 24
+    del stream
+    return max(4, rows)
+
+
 def is_interactive(stream) -> bool:
     return hasattr(stream, "isatty") and stream.isatty()
 
@@ -236,6 +349,9 @@ class Style:
 
     def bold(self, text: str) -> str:
         return self.color(text, 1)
+
+    def italic(self, text: str) -> str:
+        return self.color(text, 3)
 
     def dim(self, text: str) -> str:
         return self.color(text, 2)
