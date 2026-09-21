@@ -1,0 +1,10 @@
+{
+  "name": "motd-persistence",
+  "description": "Practice-box persistence finding: writes an executable script into /etc/update-motd.d so it runs every time the dynamic message of the day is rendered (i.e. at every interactive login on Debian/Ubuntu). Vars: SCRIPT_NAME (required, basename inside /etc/update-motd.d), SNIPPET (required, shell text -- keep it harmless: a printf plus a log append).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "depends_on": [],
+  "script": "#!/bin/sh\nset -eu\n\n\n: \"${SCRIPT_NAME:?SCRIPT_NAME is required (basename inside /etc/update-motd.d)}\"\n: \"${SNIPPET:?SNIPPET is required}\"\n\nprintf '%s\\n' \"$SNIPPET\" > \"/etc/update-motd.d/$SCRIPT_NAME\"\nchmod 0755 \"/etc/update-motd.d/$SCRIPT_NAME\"\n"
+}

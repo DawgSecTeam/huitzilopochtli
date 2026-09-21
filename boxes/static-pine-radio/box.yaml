@@ -1,0 +1,53 @@
+# Static Pine Community Radio: persistence-hunting box (huitz terminal
+# console -- NO desktop, NO VNC): players connect over SSH (Guacamole ssh
+# link from the portal) and use `huitz score`, `huitz readme`, `huitz watch`,
+# `huitz forensics`. Built for the "persistence & startup services" workshop
+# (init.d, cron, at, systemd timers, and every other way a service comes
+# back): SIXTEEN planted persistence artifacts, one scored finding each,
+# compressed weighting (8 EASY x5 + 5 MODERATE x10 + 3 HARD x20 = 150) and
+# two penalties (-10 each) because nuking cron/atd instead of evicting the
+# attacker's jobs must cost points. There is NO forensics block: the
+# discovery hunt IS the exercise. The box's only legitimate furniture is the
+# stationlead account (template prep) and the tapeops automation account
+# (planted, story-legitimate, KEEP -- only its hidden crontab/user-unit/
+# linger are scored). Unlike opochtli-landing there is no apache/DB stack
+# and no shared-DB dependency: this box is fully self-contained.
+#
+# Template lineage: static-pine-radio-template (Proxmox vmid 146), sealed
+# 2026-09-21 from a full clone of the "debian13-lite-fix" template (vmid
+# 951, Debian 13.6) -- same base opochtli-landing-cli-template came from.
+# Validated end-to-end on the build clone AND on a fresh clone of the sealed
+# template: Total: 0 at baseline (all 16 artifacts confirmed present), a
+# live penalty probe (cron stopped -> Total -10), and Total: 150 (16 of 16)
+# after the scripted harden. net0 ships on untrustedbr,firewall=1 (student
+# clones DHCP on 192.168.100.0/24 behind untrusted-gateway).
+# TEMPLATE PREP (before any nakon plant): create stationlead (sudo, bash,
+# ~/Desktop -- the huitz CLI's snapshot + forensics files land there).
+# Nothing else: cron ships with Debian; the `at` package arrives via the
+# at-job-persistence seed's depends_on at PLANT time; no web stack.
+# Snapshot AFTER all prep, then plant/install/verify/rollback -- a
+# pre-deploy snapshot does NOT cover prep steps.
+#
+# Attacker material planted by this config (all via GENERIC var-driven
+# "-persistence" seeds in boxbuilder/vulndb_vuln_configs/): see nakon.json's
+# _comment for the full coupling list. Two plants need build-loop attention:
+#   - initd-persistence is enable-only (update-rc.d defaults, no start): the
+#     agent's checks only grade file/links, so nothing must be started
+#     manually; it comes alive at clone boot like the student boxes' boots.
+#   - systemd-timer-persistence enables --now the timer: it may fire once
+#     during the build loop (OnBootSec elapsed); harmless (logs a line).
+# provider.host below is whatever IP this specific build clone happens to
+# get from DHCP -- it WILL go stale. Point it at your clone's current IP and
+# connect as `stationlead` (sudo password: stationlead). The template's net0
+# is untrustedbr (workshop 192.168.100.0/24); for a build round, stop the
+# clone and rebridge to vmbr0 (net0=model=virtio,bridge=vmbr0,firewall=0) so
+# the dev host can reach it, then rebridge back before re-sealing.
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 192.168.100.CHANGE-ME
+  port: 22
+  user: stationlead
+  password: stationlead
+# authoring_key: ./authoring.key
