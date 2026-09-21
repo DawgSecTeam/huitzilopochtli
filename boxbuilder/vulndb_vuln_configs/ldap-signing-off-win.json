@@ -1,0 +1,10 @@
+{
+  "name": "ldap-signing-off-win",
+  "description": "Practice-box helper (Active Directory, DC-only): relaxes the domain controller's LDAP server signing requirement to None by setting HKLM\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Parameters\\LDAPServerIntegrity to 1. Vars: none (parameterless). With signing not required, NTLM-authenticated LDAP traffic can be read/relay tampered in transit; the hardened state is 2 (Require Signing). Must run on a DC (the NTDS key only exists there). Pairs with registry_value or powershell_json checks reading NTDS\\Parameters\\LDAPServerIntegrity and expecting 2 after hardening.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$key = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Parameters'\nif (-not (Test-Path $key)) { throw 'NTDS Parameters key not found -- this seed only applies to a domain controller' }\nSet-ItemProperty -Path $key -Name LDAPServerIntegrity -Value 1 -Type DWord\n",
+  "depends_on": []
+}

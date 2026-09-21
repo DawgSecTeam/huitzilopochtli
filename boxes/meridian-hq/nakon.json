@@ -1,0 +1,102 @@
+{
+  "_comment": "Meridian Logistics: an ACTIVE DIRECTORY hardening practice box (Windows domain controller; os contains 'win' so nakon uses its powershell deploy path -- SSH transport, Windows OpenSSH, run.ps1 with per-step scripts; elevation comes from the SSH principal, which must be a domain admin here). Every ad-*/gpp-*/gpo-*/ldap-*/firewall-allow configuration is a GENERIC var-driven seed in boxbuilder/vulndb_vuln_configs/; the reused local seeds (weak-password-policy-win, smb1-, audit-, guest-, firewall-disabled, runkey-, scheduled-task-, malicious-service) are the pinecrest generation. ORDER MATTERS: weak-password-policy-win runs FIRST (weak policy + complexity off before weak account passwords are set); users are created before group-adds and before the DCSync ACL (its trustee must exist); gpp-/gpo-persistence create their own GPOs independently. On a DC, `net accounts` reads/writes the DOMAIN policy (this is deliberate: the box teaches Default Domain Policy hardening). Name discipline: every USERNAME / GROUP / ACCOUNT / SPN / RUN_VALUE_NAME / TASK_NAME / SERVICE_NAME / PAYLOAD_PATH / RULE_NAME / GPO_NAME / PASSWORD here MUST match its paired check's collect params in scenario.yaml byte-identically -- nothing cross-validates. The malicious service is a real running service (powershell.exe -File <payload> as BinaryPathName, sc failure auto-restart), scored by process_state on the payload filename fragment (mbdeploy) plus service_state active/enabled -- rename a PAYLOAD_PATH and you must update the matching collect.pattern in scenario.yaml. Guest/audit/smb1/firewall are scored but Guest is planted by guest-enabled-win (verify it flips the DOMAIN Guest on a DC -- if it only touches a local SAM, hardening uses Set-ADUser Guest -Enabled $false); Spooler is scored but NOT planted (running+auto is the Server default -- that insecure default is the finding).",
+  "machines": [
+    {
+      "id": 1,
+      "name": "dc01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "weak-password-policy-win",
+          "vars": { "MINPWLEN": "4", "LOCKOUT_THRESHOLD": "0", "MAXPWAGE": "unlimited" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_contractor", "PASSWORD": "ContractSprint88!", "FULLNAME": "Contractor Account", "DESCRIPTION": "Facilities contractor - legacy SCADA reports" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "rreyes", "PASSWORD": "RamonaR!2024", "FULLNAME": "Ramona Reyes", "DESCRIPTION": "IT helpdesk (temp staffing)" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_report", "PASSWORD": "ReportSpring2026!", "FULLNAME": "Quarterly Reporting", "DESCRIPTION": "Reporting service account", "SPN": "HTTP/dc01.meridian.local", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_legacy", "PASSWORD": "LegacyL1ne2025", "FULLNAME": "Line Monitor", "DESCRIPTION": "Legacy line-monitoring agent", "NO_PREAUTH": "1", "DES_ONLY": "1", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_replication", "PASSWORD": "ReplServ1ce2026", "FULLNAME": "Replication Monitor", "DESCRIPTION": "Directory replication monitoring" }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": { "GROUP": "Domain Admins", "USERNAME": "svc_contractor" }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": { "GROUP": "Domain Admins", "USERNAME": "rreyes" }
+        },
+        {
+          "name": "ad-delegation-win",
+          "vars": { "ACCOUNT": "APP01", "ACCOUNT_TYPE": "computer", "MODE": "unconstrained" }
+        },
+        {
+          "name": "ad-computer-win",
+          "vars": { "COMPUTER_NAME": "WS-LEGACY01", "DESCRIPTION": "Decommissioned 2024 - awaiting wipe" }
+        },
+        {
+          "name": "ad-acl-dcsync-win",
+          "vars": { "TRUSTEE": "svc_replication" }
+        },
+        {
+          "name": "gpp-cpassword-win",
+          "vars": { "GPO_NAME": "Deploy Local Admin", "PASSWORD": "SpringDeploy2026!", "LOCAL_USER": "merdeploy", "GROUP_NAME": "Administrators" }
+        },
+        {
+          "name": "gpo-persistence-win",
+          "vars": { "GPO_NAME": "MeridianTelemetry", "RUN_VALUE_NAME": "TeamsBootstrapper", "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\gpotelemetry.ps1", "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }" }
+        },
+        "ldap-signing-off-win",
+        "smb1-enabled-win",
+        "audit-policy-off-win",
+        "guest-enabled-win",
+        "firewall-disabled-win",
+        {
+          "name": "firewall-allow-rule-win",
+          "vars": { "RULE_NAME": "MeridianSync", "LOCAL_PORT": "8443", "PROTOCOL": "TCP", "DESCRIPTION": "Meridian sync channel" }
+        },
+        {
+          "name": "runkey-persistence-win",
+          "vars": {
+            "RUN_VALUE_NAME": "TelemetryCore",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\telemetry.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "OneDriveTelemetrySync",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\odsync.ps1",
+            "PAYLOAD_BODY": "Start-Sleep -Seconds 5"
+          }
+        },
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "MeridianBackupAgent",
+            "DESCRIPTION": "Meridian nightly backup indexer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\mbdeploy.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        }
+      ]
+    }
+  ]
+}

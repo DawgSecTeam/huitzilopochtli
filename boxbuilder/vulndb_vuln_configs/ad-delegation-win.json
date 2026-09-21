@@ -1,0 +1,10 @@
+{
+  "name": "ad-delegation-win",
+  "description": "Practice-box helper (Active Directory, DC-only): sets or clears Kerberos delegation on a domain account. Vars: ACCOUNT (required, account name without the trailing $ for computers); ACCOUNT_TYPE (optional, 'computer' default or 'user'); MODE (optional, 'unconstrained' default or 'none'). MODE=unconstrained sets TrustedForDelegation AND TrustedToAuthForDelegation (the unconstrained-delegation misconfiguration -- any service on that host caches credential delegations); MODE=none clears both (the hardened state / revert path). Computers are created if missing so a lab can fabricate an app server object without a real machine. Must run AFTER the domain exists. Pairs with powershell_json checks over Get-ADComputer -Properties TrustedForDelegation,TrustedToAuthForDelegation.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $ACCOUNT) { throw 'ACCOUNT is required' }\n$type = if ($ACCOUNT_TYPE) { $ACCOUNT_TYPE } else { 'computer' }\n$mode = if ($MODE) { $MODE } else { 'unconstrained' }\n$set = ($mode -eq 'unconstrained')\nif ($type -eq 'computer') {\n    $acct = \"$ACCOUNT`$\"\n    $existing = Get-ADComputer -Filter \"SamAccountName -eq '$acct'\" -ErrorAction Ignore\n    if (-not $existing) { New-ADComputer -Name $ACCOUNT -Enabled $true | Out-Null }\n} else {\n    $existing = Get-ADUser -Filter \"SamAccountName -eq '$ACCOUNT'\" -ErrorAction Ignore\n    if (-not $existing) { throw \"AD user '$ACCOUNT' does not exist (pair with ad-user-win)\" }\n}\nSet-ADAccountControl -Identity $ACCOUNT -TrustedForDelegation $set -TrustedToAuthForDelegation $set\n",
+  "depends_on": []
+}

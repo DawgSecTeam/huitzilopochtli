@@ -1,0 +1,10 @@
+{
+  "name": "ad-group-member-win",
+  "description": "Practice-box helper (Active Directory, DC-only): adds a domain account to a domain group. Vars: GROUP (required, e.g. 'Domain Admins'); USERNAME (required, SamAccountName of an existing account). Idempotent: membership is checked before adding. Domain Admin elevation of a rogue or stale account is a classic privilege-escalation finding. Must run AFTER the account exists (pair with ad-user-win). Pairs with powershell_json checks over Get-ADGroupMember / Get-ADUser -Properties MemberOf.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $GROUP) { throw 'GROUP is required' }\nif (-not $USERNAME) { throw 'USERNAME is required' }\n$members = Get-ADGroupMember -Identity $GROUP -ErrorAction Ignore\nif (-not ($members | Where-Object { $_.SamAccountName -eq $USERNAME })) {\n    Add-ADGroupMember -Identity $GROUP -Members $USERNAME\n}\n",
+  "depends_on": []
+}

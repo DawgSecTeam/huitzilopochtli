@@ -1,0 +1,10 @@
+{
+  "name": "ad-computer-win",
+  "description": "Practice-box helper (Active Directory, DC-only): creates or updates a domain computer OBJECT (no real machine -- a fabricated account for lab storytelling, e.g. an app server or a decommissioned workstation left enabled). Vars: COMPUTER_NAME (required, without trailing $); DESCRIPTION (optional). Idempotent: an existing object is updated in place, never recreated. Stale enabled computer accounts are a hardening finding (orphaned join points). Must run AFTER the domain exists. Pairs with powershell_json checks over Get-ADComputer -Properties Enabled,Description.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $COMPUTER_NAME) { throw 'COMPUTER_NAME is required' }\nImport-Module ActiveDirectory -ErrorAction Ignore\n$acct = \"$COMPUTER_NAME`$\"\n$existing = Get-ADComputer -Filter \"SamAccountName -eq '$acct'\" -ErrorAction Ignore\nif ($existing) {\n    if ($DESCRIPTION) { Set-ADComputer -Identity $COMPUTER_NAME -Description $DESCRIPTION }\n} else {\n    $params = @{ Name = $COMPUTER_NAME; Enabled = $true }\n    if ($DESCRIPTION) { $params.Description = $DESCRIPTION }\n    New-ADComputer @params | Out-Null\n}\n",
+  "depends_on": []
+}

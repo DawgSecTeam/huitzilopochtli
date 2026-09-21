@@ -1,0 +1,10 @@
+{
+  "name": "ad-acl-dcsync-win",
+  "description": "Practice-box helper (Active Directory, DC-only): grants DCSync rights -- DS-Replication-Get-Changes and DS-Replication-Get-Changes-All extended rights on the domain root -- to a trustee account. Vars: TRUSTEE (required, SamAccountName of an existing account, pair with ad-user-win). An account holding these rights can dump every domain hash (DCSync) without ever logging on; nobody but the DCs themselves should hold them. Idempotent: identical ACEs are merged by AddAccessRule. Must run AFTER the domain and the trustee exist. Pairs with powershell_json checks over (Get-Acl \"AD:\\<rootDn>\").Access filtered on the trustee SID and the two replication-right GUIDs.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $TRUSTEE) { throw 'TRUSTEE is required' }\nImport-Module ActiveDirectory -ErrorAction Ignore\n$trustee = Get-ADUser -Filter \"SamAccountName -eq '$TRUSTEE'\" -ErrorAction Ignore\nif (-not $trustee) { throw \"TRUSTEE '$TRUSTEE' does not exist (pair with ad-user-win)\" }\n$rootDn = (Get-ADDomain).DistinguishedName\n$acl = Get-Acl \"AD:\\$rootDn\"\n$rights = [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight\n$allow = [System.Security.AccessControl.AccessControlType]::Allow\n$guids = @(\n    [Guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2',\n    [Guid]'1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'\n)\nforeach ($g in $guids) {\n    $rule = New-Object System.DirectoryServices.ActiveDirectoryAccessRule($trustee.Sid, $rights, $allow, $g)\n    $acl.AddAccessRule($rule)\n}\nSet-Acl -Path \"AD:\\$rootDn\" -AclObject $acl\n",
+  "depends_on": []
+}

@@ -1,0 +1,41 @@
+# Meridian Logistics: an ACTIVE DIRECTORY hardening practice box for the
+# dawgsec Windows workshop (2026-09-24), built on the team's windows lineage:
+# full clone of windows-server-fix (Proxmox template 953) promoted to a
+# domain controller for meridian.local (DC name dc01) during template prep,
+# then seeded with AD misconfigs + attacker persistence (see nakon.json).
+# boxbuilder/REDEPLOY.md "Windows round" is the source of truth for the
+# clone -> prep -> plant/install -> verify -> seal loop (run_ps-only remote
+# PowerShell; guest-exec is broken on this lineage; -ErrorAction Ignore in
+# all -win seeds; schtask HuitzilopochtliAgent at 5-min cadence = the honor
+# re-grade timer, coupled to agent _honor_interval_s on win32).
+#
+# BASE TEMPLATE (2026-09-21): vmid 112 "meridian-dc-base" -- 953 clone,
+# 6144 MB RAM, promoted with Install-ADDSForest -DomainName meridian.local
+# -DomainNetbiosName MERIDIAN -InstallDns (DSRM password DsrmRecovery2026!),
+# domain admin `sysadmin` (MeridianBuild2026!) + three legit staff users
+# (mchen / pnatarajan / odiaz) + DNS@127.0.0.1 baked in BEFORE sealing.
+# Concurrent clones re-animate the same DC identity; acceptable for this
+# isolated lab (self-contained single-DC forests, no replication partners).
+#
+# Connection details: dc01, a full clone of the sealed meridian-hq-template.
+# provider.host below is whatever IP the clone gets from DHCP at build time
+# -- it WILL go stale; point it at your own clone's current IP and connect
+# as `sysadmin` (the only authorized account; if sshd stops resolving the
+# bare name after promotion, use sysadmin@meridian.local).
+#
+# Scoring: 27 vuln checks + 1 penalty guard + 6 forensics = 390 points,
+# honor mode (rubric on-box as the encoded .score.dat; agent runs as SYSTEM
+# via the scheduled task every 5 minutes; report mirrored to
+# C:\Users\Public\Desktop). Sections: Users / Computers / Domain
+# Controllers / GPOs / Firewall / Persistence. Rogue accounts score only
+# when DISABLED, not deleted -- deletion earns nothing on those checks and
+# destroys forensics evidence (the in-box README tells the teams).
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 10.0.0.0
+  port: 22
+  user: sysadmin
+  password: MeridianBuild2026!
+# authoring_key: ./authoring.key
