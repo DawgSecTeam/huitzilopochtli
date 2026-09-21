@@ -369,6 +369,44 @@ Because questions are scored, **pair them with planted vulnerabilities** like ch
 each answer should be discoverable from the box's evidence (see "How vulns and checks
 relate" above). The chocolate-factory example shows four question/vuln pairings.
 
+## Answer keys (post-event handouts)
+
+Each check and each forensics entry may carry an authored `solution:` — a walkthrough
+in post-event handout voice (spot it → trace it → fix it → confirm it). It is a
+string (YAML block scalar) or a list of strings, rendered verbatim as Markdown:
+
+```yaml
+checks:
+  - id: beacon_process_gone
+    # ...id/type/category/display/max_points/collect/expect as always...
+    solution: |
+      **1. Hunt by process list.** `ps aux` shows a root process with a
+      chatty command line:
+      ```
+      /opt/tide-sync/tide-syncd -t 10.233.0.66 -p 8443 ...
+      ```
+      **2. Kill it the right way.** ...
+```
+
+`solution` is authoring-side only: `compile_scenario` never copies it into the
+manifest or rubric (pinned by a leak-guard test in
+`tests/unit/test_boxbuilder_answerkey.py`), so the box never sees it.
+
+Render the handout with:
+
+```
+python3 -m boxbuilder answer-key --scenario boxes/<box>/scenario.yaml [--out PATH] [--html]
+```
+
+Output defaults to `artifacts/answer-keys/<scenario-slug>.md` (gitignored — it gives
+away every point, keep it out of shared media and off boxes). `--html` also writes a
+themed standalone page in the box README's visual language. The generator joins each
+check's player-facing `display`/points, a derived plain-English goal line, and the
+authored walkthrough; forensics questions render with their accepted answers. Items
+without a `solution:` render a visible placeholder and are reported on stderr/in the
+`--json` summary, so backfill progress is trackable (`boxes/opochtli-landing` and
+`boxes/solar-observatory` are fully backfilled).
+
 ## Artifacts
 
 `compile` writes to `artifacts/` (gitignored — contains the authoring key, rubric,

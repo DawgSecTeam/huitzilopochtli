@@ -41,6 +41,27 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Check the mode:**
+
+      ```
+      stat -c '%a %n' /opt/cocoa/recipes/secret-recipe.txt    # 666
+      ```
+
+      The company's most valuable file, and every account on the box can
+      not only read it but REWRITE it -- one `echo` away from a sabotaged
+      recipe. No legitimate process needs that.
+
+      **2. Tighten it** -- terminal or file manager both work:
+
+      ```
+      chmod 644 /opt/cocoa/recipes/secret-recipe.txt
+      ```
+
+      (GUI route: right-click the file > Properties > Permissions, take
+      write away from Group and Others.)
+
+      **3. Confirm** with stat again -- 644 or stricter scores.
 
   - id: desktop_vault_code
     type: permission
@@ -54,6 +75,23 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Spot it in plain sight.** The warehouse vault combination sits
+      on sysadmin's Desktop, shipped 0666: every account can read it (the
+      secret is out) AND write it (anyone can change the code sysadmin
+      types tomorrow). A file like this should never be more than
+      owner-writable.
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /home/sysadmin/Desktop/vault-code.txt
+      ```
+
+      (GUI route: right-click > Properties > Permissions.)
+
+      **3. Confirm** with `stat -c %a` -- 644 or stricter. The file itself
+      stays put: this task scores its permissions, not its absence.
 
   - id: cron_file_private
     type: permission
@@ -67,6 +105,28 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Look at the job file.**
+
+      ```
+      stat -c '%a %n' /etc/cron.d/cocoa-backup     # 666
+      cat /etc/cron.d/cocoa-backup
+      15 * * * * root /usr/local/sbin/cocoa-backup
+      ```
+
+      Files in /etc/cron.d run as root. World-writable means any local
+      user can edit the job into anything they like, and cron executes it
+      with root privileges at the top of every hour.
+
+      **2. Tighten it** to the cron convention (root writes, everyone
+      reads):
+
+      ```
+      chmod 644 /etc/cron.d/cocoa-backup
+      ```
+
+      **3. Confirm** with stat -- 644 or stricter. The job itself is
+      legitimate; only its mode is the finding.
 
   - id: deploy_key_private
     type: permission
@@ -80,6 +140,28 @@ checks:
       field: mode
       max_mode: "0600"
       points: 10
+    solution: |
+      **1. Check the mode:**
+
+      ```
+      stat -c '%a %n' /home/cocoaadm/.ssh/id_rsa     # 644
+      ```
+
+      The factory deployment PRIVATE key, group- and world-readable:
+      anyone on the box can copy it and walk through every door it
+      opens. SSH itself refuses to use a key this loose, so it also
+      breaks every tool that deploys with it.
+
+      **2. Tighten it to the SSH standard:**
+
+      ```
+      chmod 600 /home/cocoaadm/.ssh/id_rsa
+      ```
+
+      **3. Confirm** with stat. While you're in there: `chmod 700
+      /home/cocoaadm/.ssh` and `chmod 600
+      /home/cocoaadm/.ssh/authorized_keys` -- after the backdoor-key
+      task the whole directory should be private to its owner.
 
   # --- basic access control ----------------------------------------------
   - id: ssh_no_root
@@ -93,6 +175,29 @@ checks:
     expect:
       equals: "no"
       points: 10
+    solution: |
+      **1. See what the plant did.**
+
+      ```
+      grep -n '^PermitRootLogin' /etc/ssh/sshd_config
+      1:PermitRootLogin yes
+      ```
+
+      The line sits at the very top of the file: root can log in over
+      SSH with a password. This is the single most-checked SSH hardening
+      item -- and the first door an attacker tries.
+
+      **2. Edit that line; do NOT append a second one.** sshd (and this
+      check) honor the FIRST occurrence in the file, so a fresh
+      `PermitRootLogin no` at the bottom would be silently ignored.
+      Change the existing line to `PermitRootLogin no`.
+
+      **3. Restart and confirm:**
+
+      ```
+      systemctl restart ssh
+      sshd -T | grep -i permitrootlogin     # -> permitrootlogin no
+      ```
 
   - id: cocoaadm_password_set
     type: file_regex
@@ -105,6 +210,27 @@ checks:
     expect:
       regex: '^\$(1|2[aby]?|5|6|y)\$'
       points: 10
+    solution: |
+      **1. Read the administrator's hash field.**
+
+      ```
+      sudo awk -F: '$1 == "cocoaadm" {print $2}' /etc/shadow
+      ```
+
+      Empty -- or a `!`/`*` placeholder -- means the factory
+      administrator has no usable password: nobody can `su` or sudo as
+      cocoaadm, and the box's own administrator role is locked out.
+
+      **2. Set a real password** (the handbook's rule: every admin gets
+      a unique, strong one):
+
+      ```
+      sudo passwd cocoaadm
+      ```
+
+      **3. Confirm.** The awk one-liner now prints a hash starting
+      `$y$`, `$6$`, or similar -- that prefix is exactly what the check
+      requires.
 
   - id: no_passwordless_sudo
     type: permission
@@ -117,6 +243,29 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Find the drop-in.** `sudo -l` shows the NOPASSWD entries; the
+      source is a planted file, not an edit to sudoers itself:
+
+      ```
+      ls /etc/sudoers.d/
+      cat /etc/sudoers.d/00-cocoa-nopasswd
+      cocoaadm ALL=(ALL:ALL) NOPASSWD:ALL
+      ```
+
+      A drop-in granting cocoaadm NOPASSWD:ALL means any process running
+      as cocoaadm becomes root with zero friction -- including malware
+      that lands in cocoaadm's session.
+
+      **2. Remove the drop-in.** Keep a root shell open while you work,
+      and syntax-check after -- never leave sudoers half-edited:
+
+      ```
+      rm /etc/sudoers.d/00-cocoa-nopasswd
+      visudo -c        # "parsed OK" for every file
+      ```
+
+      **3. Confirm.** `sudo -l` as cocoaadm now demands a password.
 
 
   # --- malicious users and unwanted administration ----------------------
@@ -130,6 +279,21 @@ checks:
       user_absent: true
       username: tourguide
       points: 10
+    solution: |
+      **1. Spot the tile.** Unauthorized accounts advertise themselves on
+      the login greeter; `ls /home` and `getent passwd tourguide`
+      confirm the account is real, with a login shell and a password
+      set. No roster item calls for a tour guide.
+
+      **2. Remove it** the way any account goes:
+
+      ```
+      deluser --remove-home tourguide
+      ```
+
+      **3. Confirm.** `getent passwd tourguide` prints nothing and the
+      greeter tile is gone. The lesson to keep: an account nobody can
+      explain gets deleted, not renamed.
 
   - id: no_tempscout
     type: user_group
@@ -141,6 +305,23 @@ checks:
       user_absent: true
       username: tempscout
       points: 10
+    solution: |
+      **1. Spot the tile.** Same hunt as every unauthorized account: the
+      greeter tile, `ls /home`, then `getent passwd tempscout` -- a real
+      account with a login shell. This one is worse than it looks: its
+      shadow entry has an EMPTY hash, so at the greeter typing
+      "tempscout" and pressing Enter is a full login (that is its own
+      scored finding -- see the blank-password task).
+
+      **2. Remove it:**
+
+      ```
+      deluser --remove-home tempscout
+      ```
+
+      **3. Confirm** `getent passwd tempscout` prints nothing. Removing
+      the account also removes its blank password from shadow, so the
+      blank-password task falls with this one.
 
   - id: no_shipping_bot
     type: user_group
@@ -152,6 +333,20 @@ checks:
       user_absent: true
       username: shipping_bot
       points: 10
+    solution: |
+      **1. Spot the tile.** A "shipping contractor" nobody on the roster
+      ever hired: greeter tile, `ls /home`, then `getent passwd
+      shipping_bot` -- real account, login shell, fresh password.
+
+      **2. Remove it:**
+
+      ```
+      deluser --remove-home shipping_bot
+      ```
+
+      **3. Confirm.** `getent passwd shipping_bot` prints nothing and
+      the tile is gone from the greeter. This is a pure GUI-tier
+      finding, but the terminal leaves nothing half-done.
 
   - id: intern_not_admin
     type: user_group
@@ -165,6 +360,32 @@ checks:
       # Ubuntu's connecting account is the legitimate administrator in the example box.
       allowed: [ubuntu, cocoaadm]
       points: 10
+    solution: |
+      **1. Audit the group.**
+
+      ```
+      getent group sudo
+      sudo:x:27:ubuntu,cocoaadm,intern
+      ```
+
+      The handbook's roster names two administrators: ubuntu and
+      cocoaadm. intern is neither -- someone granted a trainee full
+      root-by-sudo, which is how quiet privilege creep becomes a
+      breach.
+
+      **2. Trim to the roster** (membership only; the account itself is
+      not a scored finding, though nothing authorizes keeping it):
+
+      ```
+      deluser intern sudo          # group membership only
+      ```
+
+      Deleting intern outright (`deluser --remove-home intern`) also
+      clears this one.
+
+      **3. Confirm.** `getent group sudo` lists only ubuntu and
+      cocoaadm. Ground truth of what any account may actually do: log
+      in as it and run `sudo -l`.
 
   - id: service_account_no_shell
     type: file_regex
@@ -177,6 +398,28 @@ checks:
     expect:
       regex: '(?m)^/usr/sbin/nologin$|^/sbin/nologin$'
       points: 10
+    solution: |
+      **1. Read the account.**
+
+      ```
+      getent passwd chocobot
+      chocobot:x:...:...:/bin/bash
+      ```
+
+      chocobot is the factory's automation identity -- it never needs to
+      type commands. A login shell on a service account turns it into an
+      interactive doorway the day its password leaks or gets reset.
+
+      **2. Take the shell away:**
+
+      ```
+      usermod -s /usr/sbin/nologin chocobot      # or: chsh -s /usr/sbin/nologin chocobot
+      ```
+
+      **3. Confirm.** `getent passwd chocobot` now ends in
+      /usr/sbin/nologin (or /sbin/nologin). The account still runs
+      whatever automation needs it -- it just can't log in
+      interactively.
 
   - id: no_blank_tempscout_password
     type: file_regex
@@ -189,6 +432,24 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Hunt for empty hashes.** An empty password field in shadow
+      means login with nothing to type:
+
+      ```
+      sudo awk -F: '($2 == "") {print $1}' /etc/shadow
+      tempscout
+      ```
+
+      Anyone at the greeter can log in as tempscout by typing
+      "tempscout" and pressing Enter.
+
+      **2. Fix the account.** Give it a real password (`passwd
+      tempscout`) or remove the account entirely -- the
+      unauthorized-account task wants it gone anyway, and deletion
+      fixes both.
+
+      **3. Confirm.** The awk one-liner prints nothing.
 
   # --- difficult persistence and malicious-file findings ----------------
   - id: no_hidden_cron_file
@@ -202,6 +463,29 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Read the cron directory like an intruder wrote it.**
+
+      ```
+      ls -la /etc/cron.d/
+      sudo cat /etc/cron.d/cocoa-hidden-sync
+      */15 * * * * root /opt/.cocoa/cocoa-sync
+      ```
+
+      `cocoa-backup` is the roster job; `cocoa-hidden-sync` is not --
+      and every 15 minutes it runs a script that lives under a hidden
+      directory. This is persistence: delete the payload and this line
+      quietly brings it back.
+
+      **2. Remove the job file:**
+
+      ```
+      rm /etc/cron.d/cocoa-hidden-sync
+      ```
+
+      **3. Confirm** `ls /etc/cron.d/` no longer lists it -- then follow
+      the trail to /opt/.cocoa/cocoa-sync (the next task). Note the
+      filename before deleting: it is a forensics answer.
 
   - id: no_hidden_payload
     type: permission
@@ -214,6 +498,31 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Follow the cron trail to the payload.** The hidden job points
+      straight at it:
+
+      ```
+      sudo ls -la /opt /opt/.cocoa
+      sudo head /opt/.cocoa/cocoa-sync
+      ```
+
+      A dot-directory under /opt, mode 0700, holding an executable shell
+      script nothing on the roster explains -- the classic hidden-payload
+      pattern. (`ls -la` matters: a plain `ls /opt` hides dotdirs.) Its
+      append-only log, /var/log/cocoa-sync.log, shows how often it has
+      been running.
+
+      **2. Remove it** -- the whole directory, so nothing is left to
+      reschedule:
+
+      ```
+      rm -rf /opt/.cocoa
+      ```
+
+      **3. Confirm.** `ls -la /opt` shows no .cocoa. Take the autostart
+      launcher and the cocoa-update unit down too (their own tasks), or
+      the payload idea simply returns by another door.
 
   - id: no_backdoor_ssh_key
     type: file_regex
@@ -226,6 +535,32 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Read the admin's authorized_keys.**
+
+      ```
+      cat /home/cocoaadm/.ssh/authorized_keys
+      ssh-ed25519 AAAAC3... planted-training-key
+      ```
+
+      SSH key lines end in a comment naming the key's owner -- and this
+      one announces exactly what it is. A key nobody recognizes in an
+      administrator's authorized_keys is passwordless shell access for
+      whoever holds the private half: no password prompt, no failed
+      login noise.
+
+      **2. Delete the line** (here the planted key is the file's only
+      contents, so emptying it is fine -- the check still reads the
+      path):
+
+      ```
+      editor /home/cocoaadm/.ssh/authorized_keys
+      ```
+
+      **3. Confirm** `grep planted /home/cocoaadm/.ssh/authorized_keys`
+      finds nothing, and `chmod 600` the file while you're there. The
+      key's tag is also a forensics answer -- note it before you cut the
+      line.
 
   - id: media_is_not_script
     type: file_regex
@@ -238,6 +573,31 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Ask the file what it is -- never the extension.**
+
+      ```
+      file /var/media/golden-ticket.mp3
+      POSIX shell script, ASCII text executable
+      head -1 /var/media/golden-ticket.mp3
+      #!/bin/sh
+      ```
+
+      An "MP3" that is a shell script is a polyglot: play it in the wrong
+      tool -- or run it -- and its payload executes. Do NOT execute it to
+      "see what it does".
+
+      **2. Replace the payload with real media.** The scored state is a
+      file at that path that is no longer a script (deleting it outright
+      just turns the check into an error, not a pass). Overwrite it with
+      a genuine audio file shipped on the box:
+
+      ```
+      cp /usr/share/sounds/alsa/Front_Center.wav /var/media/golden-ticket.mp3
+      ```
+
+      **3. Confirm.** `file` now reports audio data and `head -1` shows
+      no shebang. The filename itself is a forensics answer.
 
   - id: no_malicious_autostart
     type: permission
@@ -250,6 +610,29 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Find the launcher.** The task title says where: Settings >
+      Session and Startup > Application Autostart lists a "Cocoa Update
+      Helper" nobody asked for. On disk it is a system-wide file:
+
+      ```
+      cat /etc/xdg/autostart/cocoa-update.desktop
+      Exec=/opt/.cocoa/cocoa-sync
+      ```
+
+      It runs the hidden payload at every graphical login -- autostart
+      persistence, the desktop cousin of a cron job. Unchecking the box
+      only masks it for one session; the scored state is the launcher
+      gone from disk.
+
+      **2. Delete the file:**
+
+      ```
+      rm /etc/xdg/autostart/cocoa-update.desktop
+      ```
+
+      **3. Confirm.** The entry disappears from the autostart list and
+      the path is gone.
 
   - id: cocoa_service_inactive
     type: service_state
@@ -262,6 +645,29 @@ checks:
       equals: false
       field: active
       points: 10
+    solution: |
+      **1. Find it and read it before you touch it.**
+
+      ```
+      systemctl list-units --type=service | grep cocoa
+      cocoa-update.service   loaded active exited   Cocoa update helper
+      systemctl cat cocoa-update.service
+      ExecStart=/opt/.cocoa/cocoa-sync
+      ```
+
+      "active (exited)" is the oneshot tell: it ran, claimed success, and
+      stays registered. What it actually launches is the hidden payload,
+      at boot, as root -- an "update helper" updating nothing.
+
+      **2. Stop it:**
+
+      ```
+      systemctl stop cocoa-update.service
+      ```
+
+      **3. Confirm** with `systemctl is-active cocoa-update.service` ->
+      inactive. Stopping is half the job: the next task disables it, or
+      it returns at boot.
 
   - id: cocoa_service_disabled
     type: service_state
@@ -274,6 +680,21 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      `systemctl stop` alone leaves the unit enabled -- one reboot and
+      the "update helper" is back. Take away the launcher:
+
+      ```
+      systemctl disable cocoa-update.service
+      ```
+
+      Confirm: `systemctl is-enabled cocoa-update.service` ->
+      disabled. (`systemctl disable --now cocoa-update.service` covers
+      both this and the previous task in one command.)
+
+      Cleanup beyond scoring: remove the unit file from
+      /etc/systemd/system, `systemctl daemon-reload`, and `rm -rf
+      /opt/.cocoa` -- nothing of the implant should survive.
 
 theme:
   title: "Cocoa Falls Chocolate Works"
@@ -307,16 +728,67 @@ forensics:
     answer: "cocoa-hidden-sync"
     answers: ["/etc/cron.d/cocoa-hidden-sync"]
     points: 10
+    solution: |
+      List the system cron drop-ins -- the rogue one sits next to the
+      legitimate backup job:
+
+      ```
+      ls -la /etc/cron.d/
+      sudo cat /etc/cron.d/cocoa-hidden-sync
+      */15 * * * * root /opt/.cocoa/cocoa-sync
+      ```
+
+      `cocoa-backup` is the roster job; the hidden one runs an unknown
+      payload every 15 minutes as root. Answer: `cocoa-hidden-sync`
+      (the full path `/etc/cron.d/cocoa-hidden-sync` also scores).
+      Read it before you delete it in the hardening task.
   - id: fq-sudo-account
     question: "One account was quietly added to the sudo group. Type that account's username."
     answer: "intern"
     points: 10
+    solution: |
+      Group membership is one command:
+
+      ```
+      getent group sudo
+      sudo:x:27:ubuntu,cocoaadm,intern
+      ```
+
+      The handbook names ubuntu and cocoaadm as this box's
+      administrators, so the quietly added account is `intern`. (Note
+      it before cleaning the group -- after `deluser intern sudo`,
+      /etc/group no longer shows it.)
   - id: fq-media-file
     question: "Something in the shared media shelf (/var/media) is not what it claims to be. Which file?"
     answer: "golden-ticket.mp3"
     answers: ["/var/media/golden-ticket.mp3"]
     points: 10
+    solution: |
+      Ask every file on the shelf what it really is -- by content, not
+      extension:
+
+      ```
+      file /var/media/*
+      /var/media/golden-ticket.mp3: POSIX shell script, ASCII text executable
+      ```
+
+      Everything else reports audio; the "golden ticket" is an
+      executable shell script wearing an MP3 name. Answer:
+      `golden-ticket.mp3` (the full path also scores).
   - id: fq-ssh-key
     question: "The factory admin's authorized_keys contains a key nobody recognizes. Type the comment/tag at the end of that key's line (the last field, e.g. 'someone@host')."
     answer: "planted-training-key"
     points: 10
+    solution: |
+      Read the admin's authorized_keys -- every SSH key line ends in a
+      comment naming who it belongs to:
+
+      ```
+      cat /home/cocoaadm/.ssh/authorized_keys
+      ssh-ed25519 AAAAC3Nza... planted-training-key
+      ```
+
+      One line carries a comment nobody on the roster recognizes; the
+      tag is the last whitespace-separated field of that line. Answer:
+      `planted-training-key`. (Note it before removing the line in the
+      hardening task.)

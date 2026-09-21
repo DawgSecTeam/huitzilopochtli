@@ -47,6 +47,29 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Count the UID-0 accounts.** Every account with UID 0 is full
+      root, whatever its name is:
+
+      ```
+      awk -F: '$3 == 0 {print $1}' /etc/passwd
+      root
+      sunwatch
+      ```
+
+      Two names is one too many -- sunwatch has no business being
+      root-equivalent. (This is also the forensics answer for the hidden
+      root; note it before you delete the account.)
+
+      **2. Remove it** the way any account goes:
+
+      ```
+      deluser --remove-home sunwatch      # or: userdel -r sunwatch
+      ```
+
+      **3. Confirm.** The awk one-liner now prints only `root`, and
+      `grep sunwatch /etc/passwd` finds nothing. GUI tell: the "sunwatch"
+      tile is gone from the login greeter.
 
   - id: shadow_not_world_writable
     type: permission
@@ -60,6 +83,28 @@ checks:
       field: mode
       max_mode: "0640"
       points: 10
+    solution: |
+      **1. Look at the mode.**
+
+      ```
+      stat -c '%a %U:%G' /etc/shadow
+      666 root:root
+      ```
+
+      0666 means every local user can read every password hash (and take
+      them offline to crack) AND write the file (create or edit accounts at
+      will). No account tool ever leaves shadow like this -- someone chmod-ed
+      it.
+
+      **2. Tighten it** to the distro norm (root writes, group shadow
+      reads):
+
+      ```
+      chmod 640 /etc/shadow
+      ```
+
+      **3. Confirm.** `stat -c %a /etc/shadow` shows 640 (or stricter).
+      Pair it with the /etc/passwd task next.
 
   - id: passwd_not_world_writable
     type: permission
@@ -73,6 +118,21 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Check the mode:** `stat -c %a /etc/passwd` -- the box shipped it
+      0666. passwd is world-readable by design, but never world-WRITABLE: a
+      writable passwd lets any user mint themselves a UID-0 entry (that is
+      exactly what the hidden-root task is about).
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /etc/passwd
+      ```
+
+      **3. Confirm** with stat again -- 644 or stricter. On the desktop you
+      could do the same from the file manager (right-click > Properties >
+      Permissions), but for /etc files the terminal is faster.
 
   - id: no_blank_password
     type: file_regex
@@ -85,6 +145,24 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Hunt for empty hashes.** An empty password field in shadow means
+      login with nothing to type:
+
+      ```
+      sudo awk -F: '($2 == "") {print $1}' /etc/shadow
+      dipa
+      ```
+
+      Anyone at the greeter can log in as dipa by typing "dipa" and
+      pressing Enter.
+
+      **2. Fix the account.** Give it a real password (`passwd dipa`) or
+      remove the account entirely (the unauthorized-account task wants it
+      gone anyway -- deletion fixes both). Locking (`passwd -l dipa`) also
+      empties the risk, but the roster says dipa shouldn't exist at all.
+
+      **3. Confirm.** The awk one-liner prints nothing.
 
   # --- unauthorized accounts and administration -------------------------
   - id: no_red
@@ -97,6 +175,24 @@ checks:
       user_absent: true
       username: red
       points: 10
+    solution: |
+      **1. Spot the tile.** Unauthorized accounts advertise themselves on
+      the login greeter; `ls /home` and `getent passwd red` confirm the
+      account is real, with a login shell and a password set.
+
+      **2. Note the extras first.** `id red` shows it is in the sudo group
+      -- that is also the forensics answer for the sudo question. Record,
+      then remove.
+
+      **3. Remove it:**
+
+      ```
+      deluser --remove-home red
+      ```
+
+      **4. Confirm.** `getent passwd red` prints nothing and the greeter
+      tile is gone. Removing the account also removes it from the sudo
+      group, so the sudo-membership task and this one fall together.
 
   - id: no_kalipatriot
     type: user_group
@@ -108,6 +204,18 @@ checks:
       user_absent: true
       username: kalipatriot
       points: 10
+    solution: |
+      Same hunt as every unauthorized account: the greeter tile, `ls
+      /home`, then `getent passwd kalipatriot` -- a real account with a
+      login shell and a fresh password. Nothing about it belongs to the
+      observatory roster, so:
+
+      ```
+      deluser --remove-home kalipatriot
+      ```
+
+      Confirm `getent passwd kalipatriot` prints nothing. The lesson to
+      keep: an account nobody can explain gets deleted, not renamed.
 
   - id: no_dipa
     type: user_group
@@ -119,6 +227,19 @@ checks:
       user_absent: true
       username: dipa
       points: 10
+    solution: |
+      dipa is the account with the blank password (see the blank-password
+      task) -- at the greeter, typing "dipa" and pressing Enter is a root
+      login away from an intruder's first foothold. The roster doesn't
+      include it, so remove it:
+
+      ```
+      deluser --remove-home dipa
+      ```
+
+      Confirm `getent passwd dipa` prints nothing -- and if you had already
+      fixed the blank-password task by setting a password instead, note that
+      only removal satisfies *this* task: the scored state is absence.
 
   - id: obs_sole_admin
     type: user_group
@@ -132,6 +253,29 @@ checks:
       # obsadmin is the only authorized administrator on this box.
       allowed: [obsadmin]
       points: 10
+    solution: |
+      **1. Audit the group.**
+
+      ```
+      getent group sudo
+      sudo:x:27:obsadmin,red
+      ```
+
+      The roster in the handbook names exactly one administrator:
+      obsadmin. Everyone else on that line is an intruder or a mistake.
+
+      **2. Trim to the roster** (keeping the account, just not the power):
+
+      ```
+      deluser red sudo          # group membership only
+      ```
+
+      Deleting red outright (the unauthorized-account task) also clears
+      this one.
+
+      **3. Confirm.** `getent group sudo` lists only obsadmin. Ground
+      truth of what any account may actually do: log in as it and run
+      `sudo -l`.
 
   - id: service_account_no_shell
     type: file_regex
@@ -144,6 +288,27 @@ checks:
     expect:
       regex: '(?m)^/usr/sbin/nologin$|^/sbin/nologin$'
       points: 10
+    solution: |
+      **1. Read the account.**
+
+      ```
+      getent passwd heliobot
+      heliobot:x:...:...:/bin/bash
+      ```
+
+      heliobot runs the telescope's automation -- it never needs to type
+      commands. A login shell on a service account turns it into an
+      interactive doorway the day its password leaks or gets reset.
+
+      **2. Take the shell away:**
+
+      ```
+      usermod -s /usr/sbin/nologin heliobot      # or: chsh -s /usr/sbin/nologin heliobot
+      ```
+
+      **3. Confirm.** `getent passwd heliobot` now ends in
+      /usr/sbin/nologin (or /sbin/nologin). The account still runs its
+      services -- it just can't log in interactively.
 
   # --- sudo / login hardening (hard) ------------------------------------
   - id: no_passwordless_sudo
@@ -157,6 +322,29 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Find the drop-in.** `sudo -l` (as obsadmin) shows NOPASSWD
+      entries; the source is a planted file, not an edit to sudoers itself:
+
+      ```
+      ls /etc/sudoers.d/
+      cat /etc/sudoers.d/00-obs-nopasswd
+      ```
+
+      A drop-in granting obsadmin NOPASSWD:ALL means any process running as
+      obsadmin becomes root with zero friction -- including malware.
+
+      **2. Remove the drop-in.** Never leave sudoers in a broken state:
+      keep a root shell open while you work, and syntax-check after.
+
+      ```
+      rm /etc/sudoers.d/00-obs-nopasswd
+      visudo -c        # "parsed OK" for every file
+      ```
+
+      **3. Confirm.** `sudo -l` as obsadmin now demands a password. This
+      one is marked HARD because careless sudoers work can take sudo down
+      for the whole box -- the check-and-verify habit is the point.
 
   - id: no_passwordless_login
     type: file_regex
@@ -177,6 +365,30 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. See the bug live.** `su - obsadmin` and type a deliberately
+      WRONG password -- it logs you in. Something is answering "yes" to
+      everyone.
+
+      **2. Find the planted line:**
+
+      ```
+      grep -n pam_permit /etc/pam.d/common-auth
+      ```
+
+      Two hits. One is stock Ubuntu: a benign `auth required
+      ... pam_permit.so` no-op that sits after pam_deny as a safety net --
+      leave it. The other is the plant: `auth sufficient pam_permit.so`.
+      "sufficient" means *if this module succeeds, stop asking and log
+      them in* -- order is everything in a PAM stack, and that one line is
+      the whole backdoor.
+
+      **3. Delete only the `sufficient` line.** Keep a root shell open the
+      whole time -- a PAM mistake locks the entire box out of everything,
+      including you.
+
+      **4. Confirm.** `su - obsadmin` with a wrong password now fails, and
+      real logins still work.
 
   - id: ssh_no_root
     type: file_regex
@@ -189,6 +401,29 @@ checks:
     expect:
       equals: "no"
       points: 10
+    solution: |
+      **1. See what the plant did.**
+
+      ```
+      grep -n '^PermitRootLogin' /etc/ssh/sshd_config
+      1:PermitRootLogin yes
+      ```
+
+      The line was prepended as line 1: root can log in over SSH with a
+      password. This is the single most-checked SSH hardening item -- and
+      the first door an attacker tries.
+
+      **2. Edit the line; do NOT append a second one.** sshd (and this
+      check) honor the FIRST occurrence in the file, so a fresh
+      `PermitRootLogin no` at the bottom would be silently ignored. Change
+      line 1 to `PermitRootLogin no`.
+
+      **3. Restart and confirm:**
+
+      ```
+      systemctl restart ssh
+      sshd -T | grep -i permitrootlogin     # -> permitrootlogin no
+      ```
 
   # --- file permissions -------------------------------------------------
   - id: telescope_keys_private
@@ -203,6 +438,28 @@ checks:
       field: mode
       max_mode: "0644"
       points: 10
+    solution: |
+      **1. Check the mode:**
+
+      ```
+      stat -c '%a %n' /opt/observatory/telescope-keys.txt    # 666
+      ```
+
+      The file holds the mount-drive control key for the telescope.
+      World-writable means any local account can rewrite it -- and aim the
+      instrument.
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /opt/observatory/telescope-keys.txt
+      ```
+
+      (640 or 600 also pass if only the instrument account needs to read
+      it -- anything at or below 0644.)
+
+      **3. Confirm** with stat again. Desktop route: right-click the file >
+      Properties > Permissions, ungroup "others" write access.
 
   - id: deploy_key_private
     type: permission
@@ -216,6 +473,27 @@ checks:
       field: mode
       max_mode: "0600"
       points: 10
+    solution: |
+      **1. Check the mode:**
+
+      ```
+      stat -c '%a %n' /home/obsadmin/.ssh/id_rsa     # 644
+      ```
+
+      SSH itself refuses to use a private key that group or others can
+      read -- so this mode both leaks the key and breaks every tool that
+      would deploy with it.
+
+      **2. Tighten it to the SSH standard:**
+
+      ```
+      chmod 600 /home/obsadmin/.ssh/id_rsa
+      ```
+
+      **3. Confirm** with stat. While you're in there: `chmod 700
+      /home/obsadmin/.ssh` and `chmod 600
+      /home/obsadmin/.ssh/authorized_keys` -- the whole directory should
+      be private to its owner.
 
   # --- Apache (the web-service segment of the talk) ---------------------
   - id: apache_not_root
@@ -229,6 +507,28 @@ checks:
     expect:
       equals: "www-data"
       points: 10
+    solution: |
+      **1. Watch the workers.** `ps aux | grep apache2` -- with the plant
+      in place the worker processes run as `root`, which turns any Apache
+      bug into instant root on the box.
+
+      **2. Find the setting.** On Debian/Ubuntu, Apache picks its runtime
+      user from envvars, not the main config:
+
+      ```
+      grep APACHE_RUN_USER /etc/apache2/envvars
+      export APACHE_RUN_USER=root
+      ```
+
+      **3. Put it back** to the distro default:
+
+      ```
+      editor /etc/apache2/envvars      # export APACHE_RUN_USER=www-data
+      systemctl restart apache2
+      ```
+
+      **4. Confirm.** `ps aux | grep apache2` now shows the workers running
+      as www-data (the parent starter process stays root -- that is normal).
 
   - id: apache_no_dir_traversal
     type: file_regex
@@ -245,6 +545,38 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. See the damage first:**
+
+      ```
+      curl -s http://localhost/archive/
+      ```
+
+      You get a directory listing of `/` -- the whole filesystem, served to
+      anyone with a browser.
+
+      **2. Find the block that does it:**
+
+      ```
+      grep -n -A6 'Alias /archive' /etc/apache2/apache2.conf
+      ```
+
+      `Alias /archive /` maps a URL to the filesystem ROOT, and the
+      `<Directory />` stanza under it grants Indexes, FollowSymLinks and
+      Require all granted. Delete that whole planted stanza -- the Alias
+      line plus its `<Directory />...</Directory>` block. Do NOT delete
+      apache2.conf itself, and leave the stock `Options Indexes` lines you
+      may find elsewhere in Ubuntu's defaults -- those are innocent.
+
+      **3. Validate and restart:**
+
+      ```
+      apache2ctl configtest      # Syntax OK
+      systemctl restart apache2
+      ```
+
+      **4. Confirm.** `curl -sI http://localhost/archive/` no longer
+      returns a listing (404 is the healthy answer).
 
   # --- systemd services (the ps aux / systemctl segment) ----------------
   - id: skiddie_inactive
@@ -258,6 +590,29 @@ checks:
       equals: false
       field: active
       points: 10
+    solution: |
+      **1. Find it.** `ps aux` shows an anonymous
+      `sh -c 'while true; do sleep 300; done'` -- no name, no clue. The
+      unit behind it is less shy:
+
+      ```
+      systemctl list-units --type=service | grep -i skiddie
+      SkiddiePwner3000.service   loaded active running   System Optimizer
+      ```
+
+      Anything calling itself an "optimizer" on a telescope deserves
+      immediate suspicion. This is the easy tier precisely because the
+      name does the work.
+
+      **2. Stop it:**
+
+      ```
+      systemctl stop SkiddiePwner3000.service
+      ```
+
+      **3. Confirm** with `systemctl is-active SkiddiePwner3000.service`
+      -> inactive. Stopping is half the job: the next task disables it, or
+      it returns at boot.
 
   - id: skiddie_disabled
     type: service_state
@@ -270,6 +625,17 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      `systemctl stop` alone leaves the unit enabled -- one reboot and the
+      "System Optimizer" is back. Take away the launcher:
+
+      ```
+      systemctl disable SkiddiePwner3000.service
+      ```
+
+      Confirm: `systemctl is-enabled SkiddiePwner3000.service` ->
+      disabled. (`systemctl disable --now SkiddiePwner3000.service` covers
+      both this and the previous task in one command.)
 
   - id: uplink_process_killed
     type: process_state
@@ -282,6 +648,37 @@ checks:
       equals: false
       field: running
       points: 10
+    solution: |
+      **1. Spot it by port review** -- unlike the sleep-loop services, this
+      one holds a door open:
+
+      ```
+      ss -tlnp | grep 4444
+      LISTEN 0 5 0.0.0.0:4444  users:(("python3",pid=1145,...))
+      ```
+
+      **2. Trace the PID to its script:**
+
+      ```
+      ps -p 1145 -o pid,user,cmd
+      /usr/bin/python3 /opt/.uplink/relay.py
+      ```
+
+      A hidden directory (`.uplink`) holding a Python listener is not a
+      "telemetry relay". Read it: `cat /opt/.uplink/relay.py` binds
+      0.0.0.0:4444 and answers any connector with `uplink-ok` -- a staging
+      beacon / backdoor listener. (The port is also a forensics answer.)
+
+      **3. Kill it -- and watch it not die.** `kill 1145`, run `ps aux`
+      again: a NEW pid runs the same script. The unit sets `Restart=always`
+      -- killing the process just proves systemd loves it. Stop the unit:
+
+      ```
+      systemctl stop uplink-relay.service
+      ```
+
+      **4. Confirm.** Port 4444 quiet, and nothing matching `.uplink` in
+      `ps aux`.
 
   - id: uplink_disabled
     type: service_state
@@ -294,6 +691,19 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      With the process stopped (previous task), take away the launcher so
+      it never returns at boot:
+
+      ```
+      systemctl disable uplink-relay.service
+      ```
+
+      Confirm `systemctl is-enabled uplink-relay.service` -> disabled.
+
+      Cleanup beyond scoring: `rm -rf /opt/.uplink` (the implant's
+      payload), remove the unit file, and `systemctl daemon-reload` so
+      nothing of it survives.
 
   - id: mirror_fan_process_killed
     type: process_state
@@ -306,6 +716,31 @@ checks:
       equals: false
       field: running
       points: 10
+    solution: |
+      **1. See it in the process list:**
+
+      ```
+      ps aux | grep fan
+      root  ...  /usr/local/sbin/mirror-fanctl
+      ```
+
+      **2. Do NOT trust the name.** The unit behind it calls itself
+      "Primary Mirror Cooling Fan Controller" -- exactly what a real
+      observatory would run. This is the trap of the exercise:
+      pattern-matching names finds SkiddiePwner3000, but only *reading*
+      finds this one. `systemctl cat mirror-fan.service`, then compare
+      against the authorized-services list in the handbook: no fan
+      hardware exists on the box, and nothing authorizes this unit. The
+      payload itself is a placeholder sleep loop -- a slot for whatever
+      the intruder wanted to run.
+
+      **3. Stop the process (its launcher's disable is the next task):**
+
+      ```
+      systemctl stop mirror-fan.service
+      ```
+
+      **4. Confirm.** `pgrep -af mirror-fanctl` prints nothing.
 
   - id: mirror_fan_disabled
     type: service_state
@@ -318,6 +753,19 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      Stopping the fan controller is one half; making sure it never boots
+      again is the HARD half -- precisely because a name scan never flags
+      this unit:
+
+      ```
+      systemctl disable mirror-fan.service
+      ```
+
+      Confirm `systemctl is-enabled mirror-fan.service` -> disabled.
+
+      Full remediation: `rm /usr/local/sbin/mirror-fanctl` (the payload),
+      remove the unit file, `systemctl daemon-reload`.
 
   - id: no_hidden_unit_flag
     type: file_regex
@@ -330,6 +778,31 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Read a unit you never suspected.** dome-rotate sounds like
+      legitimate instrument control -- so read it, exactly as the
+      mirror-fan lesson taught:
+
+      ```
+      systemctl cat dome-rotate.service
+      Environment=EXFIL_URL=http://feed.ridgemetrics.example/collect
+      ```
+
+      A dome rotator with an EXFIL_URL environment variable is not
+      rotating domes -- it is staged to send collected data somewhere.
+      This is how modern implants hide: one line inside an innocent unit.
+
+      **2. Edit, don't delete** -- the check still reads the unit file.
+      Remove exactly the planted line from
+      /etc/systemd/system/dome-rotate.service, then:
+
+      ```
+      systemctl daemon-reload
+      ```
+
+      **3. Confirm.** `grep EXFIL_URL /etc/systemd/system/dome-rotate.service`
+      finds nothing, and `systemctl status dome-rotate.service` shows the
+      unit still loads with no parse errors.
 
 theme:
   title: "Coyolxauhqui Ridge Solar Observatory"
@@ -361,16 +834,60 @@ forensics:
     question: "One non-root account was given UID 0 (full root power). Type that account's username."
     answer: "sunwatch"
     points: 10
+    solution: |
+      List every UID-0 account -- the hidden root's name is whichever
+      answer isn't `root`:
+
+      ```
+      awk -F: '$3 == 0 {print $1}' /etc/passwd
+      root
+      sunwatch
+      ```
+
+      Answer: `sunwatch`. (If you already deleted the account in the
+      hardening task, the answer was visible in the awk output / the
+      greeter tile before removal -- this is why you note findings before
+      you clean them.)
   - id: fq-fan-service
     question: "A service is named like legitimate instrument hardware but is actually malicious. What is its unit filename?"
     answer: "mirror-fan.service"
     answers: ["mirror-fan"]
     points: 10
+    solution: |
+      Walk the plausible names with `systemctl cat` and compare each
+      against the handbook's authorized list. dome-rotate is a real unit
+      (its problem is one bad line inside -- a different finding). But
+      mirror-fan: no fan hardware exists on the box, its payload is a
+      placeholder script, and nothing authorizes it. Answer:
+      `mirror-fan.service` (`mirror-fan` without the suffix also scores).
   - id: fq-sudo-account
     question: "One unauthorized account was added to the sudo group. Type that account's username."
     answer: "red"
     points: 10
+    solution: |
+      Group membership is one command:
+
+      ```
+      getent group sudo
+      sudo:x:27:obsadmin,red
+      ```
+
+      The roster says obsadmin is the only authorized administrator, so
+      the added account is `red`. (Note it before cleaning the group --
+      the answer is easy to read in /etc/group before you fix it, and hard
+      to reconstruct after.)
   - id: fq-beacon-port
     question: "The telemetry-uplink relay is really a C2 beacon listening on a TCP port. Which port number?"
     answer: "4444"
     points: 10
+    solution: |
+      `ss -tlnp` shows every listener; the python3 one is the oddity on a
+      telescope:
+
+      ```
+      LISTEN 0 5 0.0.0.0:4444  users:(("python3",pid=1145,...))
+      ```
+
+      Trace the PID to its command (`ps -p 1145 -o cmd=`) and you get
+      `/opt/.uplink/relay.py` -- the "telemetry uplink" script binds and
+      answers on 4444. Answer: `4444`.

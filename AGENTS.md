@@ -99,8 +99,9 @@ keep the previous template until the new one is confirmed in the field.
   never commit it, never copy it onto shared media.
 - **nakon discipline:** `catalog list/show/check --json` are read-only and
   agent-safe; `build`/`deploy` mutate. boxbuilder shells out to nakon and
-  `vulndb-cli`, never imports them. Scenario extras (`theme:`, `forensics:`
-  blocks) and the `--json` stdout/stderr contract are documented in
-  `boxbuilder/README.md` — link, don't duplicate.
+  `vulndb-cli`, never imports them. Scenario extras (`theme:`, `forensics:`,
+  `solution:` walkthroughs for the `answer-key` handout generator) and the
+  `--json` stdout/stderr contract are documented in `boxbuilder/README.md` —
+  link, don't duplicate.
 - **`architecture.md` is authoritative.** Where it and intuition disagree,
   follow the doc or raise the conflict.

@@ -79,6 +79,11 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                         f"non-empty mapping (an empty matcher crashes the evaluator)"
                     )
 
+            if "solution" in check:
+                errors.extend(
+                    _validate_solution(check["solution"], f"{source_path}: {ref}.solution")
+                )
+
     if "theme" in parsed_yaml:
         errors.extend(_validate_theme(parsed_yaml.get("theme"), source_path))
 
@@ -88,7 +93,21 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
     return errors
 
 
-_FORENSIC_KEYS = ("id", "question", "answer", "answers", "points", "path")
+_FORENSIC_KEYS = ("id", "question", "answer", "answers", "points", "path", "solution")
+
+
+def _validate_solution(value, ref: str) -> list:
+    """Authored walkthrough body (answer-key handouts only, never compiled):
+    a non-empty string, or a non-empty list of non-empty strings."""
+    valid = isinstance(value, str) and bool(value.strip())
+    if isinstance(value, list):
+        valid = bool(value) and all(isinstance(s, str) and s.strip() for s in value)
+    if not valid:
+        return [
+            f"{ref} must be a non-empty string or a non-empty list "
+            f"of non-empty strings, got {type(value).__name__}"
+        ]
+    return []
 
 
 def _validate_forensics(forensics, checks, source_path: str) -> list:
@@ -168,6 +187,11 @@ def _validate_forensics(forensics, checks, source_path: str) -> list:
         path = fq.get("path")
         if path is not None and (not isinstance(path, str) or not path.strip()):
             errors.append(f"{source_path}: {ref}.path must be a non-empty string")
+
+        if "solution" in fq:
+            errors.extend(
+                _validate_solution(fq["solution"], f"{source_path}: {ref}.solution")
+            )
 
     return errors
 

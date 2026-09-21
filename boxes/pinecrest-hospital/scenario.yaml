@@ -68,6 +68,27 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Find the account.** lusrmgr.msc (or `Get-LocalUser`) shows
+      `mharding` -- "Contractor - facilities" -- with a fresh password,
+      a seat in the local Administrators group, and "Password never
+      expires" ticked. Nothing on a hospital records roster calls for a
+      contractor admin.
+
+      **2. Disable it -- do NOT delete it.** The scored state is the
+      account existing AND disabled: deleting it earns zero here and
+      destroys the evidence other tasks and questions still need.
+
+      ```
+      Disable-LocalUser -Name mharding      # or: net user mharding /active:no
+      ```
+
+      GUI route: lusrmgr.msc > Users > mharding > Properties > tick
+      "Account is disabled".
+
+      **3. Confirm.** `Get-LocalUser mharding` reports `Enabled : False`
+      and the account stops accepting logons. Its group seat and
+      never-expires flag are separate tasks.
 
   - id: jweaver_disabled
     type: powershell_json
@@ -83,6 +104,21 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      Same drill as mharding: `jweaver` -- "Ward clerk (transferred)" --
+      is not on the roster. Its extra is a seat in the Remote Desktop
+      Users group rather than Administrators (that one is its own
+      task).
+
+      ```
+      Disable-LocalUser -Name jweaver
+      ```
+
+      Disable, don't delete: the scored state is the account existing
+      AND disabled, and deletion takes the account's memberships and
+      description with it. Confirm with `Get-LocalUser jweaver`
+      (`Enabled : False`), then strip its RDP group seat (the
+      Remote-Desktop-Users task).
 
   - id: no_blank_account
     type: powershell_json
@@ -102,6 +138,29 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Sweep for passwordless accounts.** An ENABLED account that
+      requires no password is one console away from a login. Run the
+      same sweep the check does:
+
+      ```
+      Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+        Where-Object { -not $_.Disabled -and -not $_.PasswordRequired } |
+        Select-Object Name, Description
+      audit_svc   audit agent service account
+      ```
+
+      **2. Disable it** (keep the name readable -- it is also the
+      forensics answer for the blank-password question):
+
+      ```
+      Disable-LocalUser -Name audit_svc
+      ```
+
+      Setting a strong password (`net user audit_svc *`) satisfies the
+      check too; so does deletion -- but that costs you the evidence.
+
+      **3. Confirm.** The sweep now prints nothing.
 
   - id: no_password_never_expires
     type: powershell_json
@@ -121,6 +180,30 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Sweep every enabled account.** "Password never expires"
+      quietly exempts an account from your password policy forever:
+
+      ```
+      Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+        Where-Object { -not $_.Disabled -and -not $_.PasswordExpires } |
+        Select-Object Name
+      mharding
+      ```
+
+      **2. Clear the flag** on every name the sweep prints:
+
+      ```
+      Set-LocalUser -Name mharding -PasswordNeverExpires $false
+      ```
+
+      GUI route: lusrmgr.msc > user > Properties > untick "Password
+      never expires". This one is HARD because the flag hides
+      per-account: missing any ENABLED account fails the whole check.
+      Disabled accounts are exempt -- the built-in Administrator only
+      matters if someone switched it on.
+
+      **3. Confirm.** The sweep now prints nothing.
 
   # --- group membership ---------------------------------------------------
   - id: admins_sole_admin
@@ -136,6 +219,32 @@ checks:
       # Administrator account is allowed to remain a member.
       allowed: [sysadmin, Administrator]
       points: 10
+    solution: |
+      **1. Audit the group.**
+
+      ```
+      Get-LocalGroupMember Administrators
+      sysadmin        Administrator
+      Administrator   Administrator
+      mharding        Administrator
+      ```
+
+      The roster names exactly one authorized administrator: `sysadmin`
+      (the built-in Administrator is tolerated). Anyone else on that
+      list is a plant or a mistake -- here, mharding.
+
+      **2. Trim to the roster** -- the account itself only gets
+      disabled by another task; this strips its power:
+
+      ```
+      Remove-LocalGroupMember -Group Administrators -Member mharding
+      ```
+
+      GUI route: lusrmgr.msc > Groups > Administrators > Properties >
+      select the member > Remove.
+
+      **3. Confirm.** `Get-LocalGroupMember Administrators` lists only
+      sysadmin and Administrator.
 
   - id: rdp_users_no_unauthorized
     type: user_group
@@ -148,6 +257,31 @@ checks:
       group: Remote Desktop Users
       allowed: []
       points: 10
+    solution: |
+      **1. List the group.**
+
+      ```
+      Get-LocalGroupMember 'Remote Desktop Users'
+      jweaver   User
+      ```
+
+      The scored state is an EMPTY group -- the allow-list here is
+      nobody. RDP access is a doorway, not a perk; grant it per named
+      exception or not at all.
+
+      **2. Remove every member.** Disabling jweaver in the earlier task
+      does NOT clear this seat -- group membership survives a disabled
+      account:
+
+      ```
+      Remove-LocalGroupMember -Group 'Remote Desktop Users' -Member jweaver
+      ```
+
+      GUI route: lusrmgr.msc > Groups > Remote Desktop Users >
+      Properties > select the member > Remove.
+
+      **3. Confirm.** `Get-LocalGroupMember 'Remote Desktop Users'`
+      returns nothing.
 
   - id: guest_disabled
     type: powershell_json
@@ -165,6 +299,28 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Check it.** In lusrmgr.msc the enabled Guest carries the
+      down-arrow badge -- a passwordless, roster-less login anyone can
+      use at the console or over the network:
+
+      ```
+      Get-LocalUser Guest        # Enabled : True
+      ```
+
+      **2. Disable it:**
+
+      ```
+      net user Guest /active:no      # or: Disable-LocalUser -Name Guest
+      ```
+
+      GUI route: lusrmgr.msc > Users > Guest > Properties > tick
+      "Account is disabled".
+
+      **3. Confirm.** `Get-LocalUser Guest` reports `Enabled : False`.
+      (The check also passes if Guest is gone entirely, but a disabled
+      built-in account disturbs nothing -- disabling is the cleaner
+      move.)
 
   # --- password policy ----------------------------------------------------
   - id: password_minlen
@@ -184,6 +340,29 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Read the policy.**
+
+      ```
+      net accounts
+      Minimum password length:     4
+      ```
+
+      Four characters is a guessing game, not a policy -- and password
+      complexity was switched off alongside it, so secpol.msc is worth
+      a full pass while you are here.
+
+      **2. Raise it** -- 8 scores, 12 is better:
+
+      ```
+      net accounts /minpwlen:12
+      ```
+
+      GUI route: secpol.msc > Account Policies > Password Policy >
+      "Minimum password length".
+
+      **3. Confirm.** `net accounts` shows the new minimum. Existing
+      passwords are untouched -- the floor applies at the next change.
 
   - id: password_lockout
     type: powershell_json
@@ -200,6 +379,31 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Read the policy.**
+
+      ```
+      net accounts
+      Lockout threshold:           Never
+      ```
+
+      "Never" means unlimited password guessing against every account,
+      from every protocol that touches a password, forever.
+
+      **2. Set a threshold** -- 5 scores; the first time you set it,
+      Windows pairs it with 30-minute lockout-duration and
+      reset-counter defaults:
+
+      ```
+      net accounts /lockoutthreshold:5
+      ```
+
+      GUI route: secpol.msc > Account Policies > Account Lockout
+      Policy > "Account lockout threshold" (the console prompts for the
+      companion duration and reset values -- 30/30 is fine).
+
+      **3. Confirm.** `net accounts` shows `Lockout threshold: 5` or
+      more.
 
   # --- registry hardening ---------------------------------------------------
   - id: uac_enabled
@@ -215,6 +419,30 @@ checks:
       equals: 1
       field: value
       points: 10
+    solution: |
+      **1. See the state.** With UAC's EnableLUA switched off, every
+      administrator token is full admin all the time -- no consent
+      prompt, and code running as an admin needs no elevation step to
+      own the box:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA
+          EnableLUA    REG_DWORD    0x0
+      ```
+
+      **2. Turn it back on:**
+
+      ```
+      reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
+      ```
+
+      GUI route: regedit to the same key. The consent-prompt slider in
+      Control Panel is cosmetic here -- the scored bit is EnableLUA
+      itself.
+
+      **3. Confirm.** The reg query reads 0x1. Fresh tokens appear at
+      the next sign-in, but the check reads the value, so the point
+      lands immediately.
 
   - id: rdp_nla
     type: registry_value
@@ -229,6 +457,32 @@ checks:
       equals: 1
       field: value
       points: 10
+    solution: |
+      **1. See the state.** The RDP listener accepts clients that have
+      proven nothing yet:
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication
+          UserAuthentication    REG_DWORD    0x0
+      ```
+
+      Without Network Level Authentication every connection gets the
+      full logon handshake -- free pre-auth attack surface on a
+      hospital records server. (RDP itself stays ON -- the box is
+      managed over it; the missing pre-auth requirement is the
+      finding.)
+
+      **2. Require NLA:**
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f
+      ```
+
+      GUI route: System Properties > Remote > tick "Allow connections
+      only from computers running Remote Desktop with Network Level
+      Authentication" -- it writes this same value.
+
+      **3. Confirm.** The reg query reads 0x1.
 
   - id: no_autologin
     type: registry_value
@@ -243,6 +497,29 @@ checks:
       equals: false
       field: present
       points: 10
+    solution: |
+      **1. Look inside Winlogon.** Autologon turns every boot into a
+      signed-in console session for whoever the registry names -- zero
+      credentials, physical access wins:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+          AutoAdminLogon    REG_SZ    1
+          DefaultUserName   REG_SZ    records-team
+          DefaultPassword   REG_SZ    Records1!
+      ```
+
+      **2. DELETE the AutoAdminLogon value** -- do not merely set it to
+      0. The scored state is ABSENT: a leftover `AutoAdminLogon=0` is
+      still present and still fails.
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /f
+      ```
+
+      **3. Confirm.** The reg query errors with "unable to find the
+      specified registry key or value". The stored DefaultPassword
+      beside it is its own task -- clear both.
 
   - id: no_autologin_password
     type: registry_value
@@ -257,6 +534,28 @@ checks:
       equals: false
       field: present
       points: 10
+    solution: |
+      **1. Find it.** In the same Winlogon key sits `DefaultPassword` --
+      the autologon credential in PLAINTEXT, readable out of the
+      registry by anything running with admin rights:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword
+          DefaultPassword    REG_SZ    Records1!
+      ```
+
+      That password is now burned -- treat it as compromised everywhere
+      it was reused.
+
+      **2. Delete the value:**
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /f
+      ```
+
+      **3. Confirm.** The query errors "unable to find ... value". If
+      the autologon user (records-team) keeps an account on the box,
+      rotate its password too.
 
   # --- platform defenses ----------------------------------------------------
   - id: firewall_on
@@ -273,6 +572,31 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. See what is dark.**
+
+      ```
+      Get-NetFirewallProfile | Select-Object Name, Enabled
+      Domain   False
+      Private  False
+      Public   False
+      ```
+
+      Every profile off, on the box whose job is holding patient
+      billing data.
+
+      **2. Turn them all on:**
+
+      ```
+      Set-NetFirewallProfile -All -Enabled True
+      ```
+
+      GUI route: wf.msc > Windows Defender Firewall Properties > set
+      "Firewall state" to On in each profile tab.
+
+      **3. Confirm.** The Select-Object shows True three times -- and
+      your own SSH session survives, because OpenSSH Server already
+      carries its own inbound allow rule.
 
   - id: smb1_disabled
     type: powershell_json
@@ -290,6 +614,31 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Check the server side.** SMB1 is the protocol of the
+      WannaCry-era worms; nothing modern on a records server speaks it:
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1
+          SMB1 : 1
+      ```
+
+      **2. Switch it off** with the supported toggle:
+
+      ```
+      Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
+      ```
+
+      **3. Confirm the way the check does** -- the registry value is
+      the ground truth, and on some images the SMB WMI view mirrors it
+      late. Re-run the Get-ItemProperty above; if it still reads 1,
+      write the value directly:
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v SMB1 /t REG_DWORD /d 0 /f
+      ```
+
+      Anything but 1 -- a 0, or the value gone -- is the scored state.
 
   - id: audit_on
     type: powershell_json
@@ -305,6 +654,29 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. See what is being ignored.**
+
+      ```
+      auditpol /get /subcategory:"Logon"
+      Logon                        No Auditing
+      ```
+
+      No logon auditing means every brute-force run and every
+      unauthorized sign-in lands in silence -- you would investigate
+      an incident with the logs you needed switched off.
+
+      **2. Turn on both directions** -- successes AND failures:
+
+      ```
+      auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+      ```
+
+      GUI route: secpol.msc > Advanced Audit Policy Configuration >
+      Logon/Logoff > Audit Logon > tick Success and Failure.
+
+      **3. Confirm.** `auditpol /get /subcategory:"Logon"` now lists
+      Success and Failure both enabled.
 
   # --- persistence ----------------------------------------------------------
   - id: no_runkey
@@ -320,6 +692,28 @@ checks:
       equals: false
       field: present
       points: 10
+    solution: |
+      **1. Read the Run key** -- everything under it launches at every
+      interactive logon:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          HealthSyncAgent    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\Subsystems\hsync.ps1"
+      ```
+
+      A value named like a wellness app that starts a HIDDEN
+      PowerShell script from an attacker-made directory is not
+      wellness -- it is persistence.
+
+      **2. Note the value's NAME, then delete it** -- the name is the
+      forensics answer; record it before cleaning:
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v HealthSyncAgent /f
+      ```
+
+      **3. Confirm.** The reg query no longer lists HealthSyncAgent.
+      The script it launched is the very next task.
 
   - id: runkey_payload_removed
     type: permission
@@ -332,6 +726,28 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Read the payload** (with the Run-key entry already deleted,
+      no logon will relaunch it):
+
+      ```
+      Get-Content C:\ProgramData\Subsystems\hsync.ps1
+      while ($true) { Start-Sleep -Seconds 300 }
+      ```
+
+      A placeholder sleep loop -- a slot kept warm for whatever the
+      intruder wanted to run later.
+
+      **2. Delete it:**
+
+      ```
+      Remove-Item C:\ProgramData\Subsystems\hsync.ps1 -Force
+      ```
+
+      **3. Confirm.** `Test-Path C:\ProgramData\Subsystems\hsync.ps1`
+      returns False. The other Subsystems payloads (edgecore,
+      pcbackup_sync, keysvc) have their own tasks -- once all are gone,
+      remove the whole attacker-made directory.
 
   - id: no_task
     type: powershell_json
@@ -347,6 +763,32 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Find the impostor.** `MicrosoftEdgeUpdateCore` sits in the
+      Task Scheduler Library wearing a browser-updater costume -- but
+      Edge does not update from a SYSTEM script in C:\ProgramData:
+
+      ```
+      Get-ScheduledTask -TaskName MicrosoftEdgeUpdateCore |
+        Select-Object -ExpandProperty Actions
+      Execute   : powershell.exe
+      Arguments : -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\ProgramData\Subsystems\edgecore.ps1"
+      ```
+
+      (taskschd.msc > Task Scheduler Library shows the same task -- a
+      daily 03:10 run as SYSTEM with highest rights. Read its Actions
+      tab.)
+
+      **2. Note the exact task NAME, then delete it** -- the name is
+      the forensics answer:
+
+      ```
+      Unregister-ScheduledTask -TaskName MicrosoftEdgeUpdateCore -Confirm:$false
+      ```
+
+      **3. Confirm.** `Get-ScheduledTask -TaskName
+      'MicrosoftEdgeUpdateCore' -ErrorAction SilentlyContinue` returns
+      nothing -- the scored state is gone.
 
   - id: task_payload_removed
     type: permission
@@ -359,6 +801,26 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Read what the task was running** (after unregistering it, so
+      nothing executes it again):
+
+      ```
+      Get-Content C:\ProgramData\Subsystems\edgecore.ps1
+      Start-Sleep -Seconds 5
+      ```
+
+      Another placeholder -- the task was the persistence, the script
+      the slot.
+
+      **2. Delete it:**
+
+      ```
+      Remove-Item C:\ProgramData\Subsystems\edgecore.ps1 -Force
+      ```
+
+      **3. Confirm.** `Test-Path C:\ProgramData\Subsystems\edgecore.ps1`
+      is False.
 
   # --- malicious services (real, running) ------------------------------------
   - id: backupagent_process_killed
@@ -373,6 +835,28 @@ checks:
       equals: false
       field: running
       points: 10
+    solution: |
+      **1. Find the payload process.** "Pinecrest nightly backup
+      indexer" sounds like part of the hospital -- but nobody
+      authorized it, and the process behind it is a hidden PowerShell
+      script:
+
+      ```
+      Get-CimInstance Win32_Process |
+        Where-Object CommandLine -match pcbackup_sync |
+        Select-Object ProcessId, CommandLine
+      3116  powershell.exe ... -File "C:/ProgramData/Subsystems/pcbackup_sync.ps1"
+      ```
+
+      **2. Stop it the right way.** Killing the powershell process
+      alone gets you one round -- the service's failure-recovery action
+      respawns it. Take away the launcher:
+
+      ```
+      Stop-Service PinecrestBackupAgent -Force
+      ```
+
+      **3. Confirm.** The Win32_Process sweep above prints nothing.
 
   - id: backupagent_stopped
     type: service_state
@@ -386,6 +870,21 @@ checks:
       equals: false
       field: active
       points: 10
+    solution: |
+      The payload process dies with the service -- this and the
+      process-termination task are one Stop away from each other:
+
+      ```
+      Stop-Service PinecrestBackupAgent -Force
+      ```
+
+      (services.msc > PinecrestBackupAgent > Stop, if you prefer the
+      console.)
+
+      **Confirm:** `Get-Service PinecrestBackupAgent` reports
+      `Status : Stopped`. Stopping is only half the job -- the startup
+      type is still Automatic, so a reboot resurrects it. The disable
+      task finishes it for good.
 
   - id: backupagent_disabled
     type: service_state
@@ -399,6 +898,30 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      **1. Retire the launcher.** With the service stopped, take away
+      its ability to start again -- at boot, or at a teammate's
+      well-meaning "repair":
+
+      ```
+      Set-Service PinecrestBackupAgent -StartupType Disabled
+      ```
+
+      GUI route: services.msc > PinecrestBackupAgent > Properties >
+      Startup type: Disabled.
+
+      **2. Confirm.**
+
+      ```
+      Get-CimInstance Win32_Service -Filter "Name='PinecrestBackupAgent'" |
+        Select-Object StartMode
+      Disabled
+      ```
+
+      **3. Beyond scoring:** delete the payload
+      C:\ProgramData\Subsystems\pcbackup_sync.ps1 and the compiled
+      service wrapper left beside it (Wrap*.exe / Wrap*.cs) -- and once
+      every Subsystems implant is gone, remove the directory itself.
 
   - id: hacktool_process_killed
     type: process_state
@@ -412,6 +935,27 @@ checks:
       equals: false
       field: running
       points: 10
+    solution: |
+      **1. Find it.** This one does not even pretend: the service list
+      offers `HackToolSvc`, description "System Optimizer" -- the same
+      costume malware wears on other boxes. Its payload is another
+      hidden PowerShell script:
+
+      ```
+      Get-CimInstance Win32_Process |
+        Where-Object CommandLine -match keysvc |
+        Select-Object ProcessId, CommandLine
+      4128  powershell.exe ... -File "C:/ProgramData/Subsystems/keysvc.ps1"
+      ```
+
+      **2. Stop the service** -- killing the powershell process alone
+      lets the failure-recovery action respawn it:
+
+      ```
+      Stop-Service HackToolSvc -Force
+      ```
+
+      **3. Confirm.** The Win32_Process sweep above prints nothing.
 
   - id: hacktool_stopped
     type: service_state
@@ -425,6 +969,20 @@ checks:
       equals: false
       field: active
       points: 10
+    solution: |
+      One command, already done if you arrived via the payload task:
+
+      ```
+      Stop-Service HackToolSvc -Force
+      ```
+
+      (services.msc > HackToolSvc > Stop.)
+
+      **Confirm:** `Get-Service HackToolSvc` reports
+      `Status : Stopped`. Then give the name its due: a service that
+      introduces itself as a hack tool is a gift -- the only question
+      left is which of its three scored states (running, stopped,
+      disabled) you have not closed yet.
 
   - id: hacktool_disabled
     type: service_state
@@ -438,6 +996,22 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      Finish the job so the "optimizer" never boots again:
+
+      ```
+      Set-Service HackToolSvc -StartupType Disabled
+      ```
+
+      GUI route: services.msc > HackToolSvc > Properties > Startup
+      type: Disabled.
+
+      **Confirm:** `Get-CimInstance Win32_Service -Filter
+      "Name='HackToolSvc'" | Select-Object StartMode` reports
+      `Disabled`. Beyond scoring: delete
+      C:\ProgramData\Subsystems\keysvc.ps1 and the compiled wrapper
+      beside it -- and when the last Subsystems payload is gone, remove
+      the directory.
 
   # Print Spooler: nothing is planted -- "running and auto-start" is the
   # Windows default, and that insecure default is the finding (PrintNightmare).
@@ -453,6 +1027,24 @@ checks:
       equals: false
       field: active
       points: 10
+    solution: |
+      **1. Ask what a records server prints.** Nothing -- yet the Print
+      Spooler ships running and auto-start on every Windows Server by
+      default, and it is the service behind the PrintNightmare class of
+      remote code execution. Nothing was planted here: the insecure
+      DEFAULT is the finding.
+
+      **2. Stop it:**
+
+      ```
+      Stop-Service Spooler
+      ```
+
+      (services.msc > Print Spooler > Stop.)
+
+      **3. Confirm.** `Get-Service Spooler` reports `Status : Stopped`.
+      Stopping earns the easy half -- the disabled-at-startup task is
+      the HARD half.
 
   - id: spooler_disabled
     type: service_state
@@ -466,6 +1058,22 @@ checks:
       equals: false
       field: enabled
       points: 10
+    solution: |
+      A stopped spooler survives only until the next reboot -- the
+      startup type is still the Windows default (Automatic). Make the
+      off-state permanent:
+
+      ```
+      Set-Service Spooler -StartupType Disabled
+      ```
+
+      GUI route: services.msc > Print Spooler > Properties > Startup
+      type: Disabled.
+
+      **Confirm:** `Get-CimInstance Win32_Service -Filter
+      "Name='Spooler'" | Select-Object StartMode` reports `Disabled`.
+      If the hospital ever truly needs to print, re-enable it that day
+      -- deliberately, not by default.
 
   # --- files / shares / network ----------------------------------------------
   - id: records_file_present
@@ -479,6 +1087,29 @@ checks:
       equals: true
       field: exists
       points: -10
+    solution: |
+      This one only ever subtracts: the moment
+      C:\HospitalData\billing-export.csv stops existing, 10 points come
+      off the board. The CSV is the incident's evidence -- real patient
+      billing rows -- and deleting it is both a scoring penalty and the
+      cardinal incident-response sin: destroying what you were
+      supposed to protect.
+
+      **The trap sits in the tasks next door:** the ACL and share
+      fixes are done IN PLACE (`icacls /remove`,
+      `Revoke-SmbShareAccess`). Never "solve" a permissions problem by
+      removing the file, and never reset the C:\HospitalData tree
+      wholesale.
+
+      **Check yourself at any time:**
+
+      ```
+      Test-Path C:\HospitalData\billing-export.csv     # True
+      ```
+
+      If it prints False, restore the file from your snapshot or
+      backup before anything else -- the agent re-scores every pass,
+      so a restored file stops the bleed.
 
   - id: records_acl_restricted
     type: powershell_json
@@ -497,6 +1128,31 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Read the ACL.**
+
+      ```
+      icacls C:\HospitalData\billing-export.csv
+      Everyone:(F)
+      ```
+
+      Full Control for Everyone on a patient billing export -- anyone
+      who can touch the box (or the Records share, its own task) can
+      rewrite or empty it.
+
+      **2. Remove the Everyone grant -- in place.** The file itself
+      must stay (the penalty check guards it):
+
+      ```
+      icacls C:\HospitalData\billing-export.csv /remove:g Everyone
+      ```
+
+      GUI route: file Properties > Security > select Everyone >
+      Remove. If the strip removes too much, re-grant real access:
+      `icacls <file> /grant "Administrators:F"` -- or restore
+      inheritance with `icacls <file> /inheritance:e`.
+
+      **3. Confirm.** The icacls output lists no Everyone entry.
 
   - id: records_share_restricted
     type: powershell_json
@@ -515,6 +1171,32 @@ checks:
       equals: true
       field: data
       points: 10
+    solution: |
+      **1. Inspect the share.**
+
+      ```
+      Get-SmbShareAccess -Name Records
+      Records   Everyone   Allow   Full
+      ```
+
+      The Records share hands all of C:\HospitalData to the entire
+      world -- the per-file ACL fix counts for little while the share
+      keeps re-exposing the folder over SMB.
+
+      **2. Revoke Everyone**, then grant only who needs it:
+
+      ```
+      Revoke-SmbShareAccess -Name Records -AccountName Everyone -Force
+      Grant-SmbShareAccess -Name Records -AccountName "Authenticated Users" -AccessRight Change -Force
+      ```
+
+      GUI route: folder Properties > Sharing > Advanced Sharing >
+      Permissions. (Removing the share outright -- `Remove-SmbShare
+      -Name Records -Force` -- also satisfies the check, but a records
+      server with a properly locked share is the better ending.)
+
+      **3. Confirm.** `Get-SmbShareAccess -Name Records` shows no
+      Everyone Allow row.
 
   - id: creds_file_removed
     type: permission
@@ -527,6 +1209,29 @@ checks:
       equals: false
       field: exists
       points: 10
+    solution: |
+      **1. Read it first** -- evidence before deletion:
+
+      ```
+      Get-Content C:\HospitalData\scripts\legacy_admin_creds.txt
+      # legacy RDP gateway creds (KEEP PRIVATE)
+      user: sysadmin
+      password: FallShift2026!
+      ```
+
+      The box's admin password, written to disk for anyone to read --
+      planted or lazily left behind, it hands every local process the
+      keys.
+
+      **2. Delete the file:**
+
+      ```
+      Remove-Item C:\HospitalData\scripts\legacy_admin_creds.txt -Force
+      ```
+
+      **3. Confirm.** `Test-Path
+      C:\HospitalData\scripts\legacy_admin_creds.txt` is False -- and
+      rotate the exposed password everywhere it might be reused.
 
   - id: hosts_redirect_removed
     type: file_regex
@@ -539,6 +1244,33 @@ checks:
     expect:
       equals: null
       points: 10
+    solution: |
+      **1. Read the hosts file** -- its entries outrank DNS for every
+      process on the box:
+
+      ```
+      Get-Content C:\Windows\System32\drivers\etc\hosts
+      # Pinecrest portal fast-route
+      10.0.0.99    portal.pinecrest.example
+      ```
+
+      The hospital's own portal name, silently steered to an IP nobody
+      assigned -- staff typing the normal URL land on the wrong host.
+
+      **2. Note the redirected hostname, then delete only that line**
+      (and its planted comment). Leave the stock comments and
+      localhost entries alone:
+
+      ```
+      notepad C:\Windows\System32\drivers\etc\hosts
+      ```
+
+      (Elevated notepad. PowerShell route: Get-Content, filter the line
+      out with `Where-Object { $_ -notmatch 'portal\.pinecrest' }`,
+      Set-Content back.)
+
+      **3. Confirm.** `Select-String portal.pinecrest.example
+      C:\Windows\System32\drivers\etc\hosts` prints nothing.
 
 # --- scored forensics -------------------------------------------------------
 # The answer keys live ONLY in the rubric (compiled from this file's answers).
@@ -550,24 +1282,84 @@ forensics:
     points: 10
     answer: "MicrosoftEdgeUpdateCore"
     answers: ["MicrosoftEdgeUpdateCore", "msedgeupdatecore", "MsEdgeUpdateCore"]
+    solution: |
+      Browse the Task Scheduler Library (taskschd.msc) or query past
+      the Microsoft folders:
+
+      ```
+      Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microsoft*' } |
+        Select-Object TaskName, State
+      MicrosoftEdgeUpdateCore   Ready
+      ```
+
+      The name wears a browser-updater costume; the action confesses:
+      `(Get-ScheduledTask MicrosoftEdgeUpdateCore).Actions` executes
+      `-File "C:\ProgramData\Subsystems\edgecore.ps1"` as SYSTEM.
+      Answer: `MicrosoftEdgeUpdateCore` (any casing scores).
 
   - id: fq_blank_user
     question: "One local account was created with a blank password. What is its username?"
     points: 10
     answer: "audit_svc"
     answers: ["audit_svc"]
+    solution: |
+      Sweep for enabled accounts that require no password -- the same
+      query the scoring check runs (do it BEFORE disabling the account
+      in the hardening task; a disabled account stops matching):
+
+      ```
+      Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+        Where-Object { -not $_.Disabled -and -not $_.PasswordRequired } |
+        Select-Object Name
+      audit_svc
+      ```
+
+      Cross-check in lusrmgr.msc: audit_svc > Properties > "Password
+      required" unticked (or `net user audit_svc` reporting
+      "Password required  No"). Answer: `audit_svc`. (Already fixed
+      the hardening task by disabling it? The name is still there,
+      greyed out, in lusrmgr.msc.)
 
   - id: fq_hosts_hostname
     question: "The hosts file redirects one Pinecrest portal hostname to a wrong IP. Which hostname is redirected?"
     points: 10
     answer: "portal.pinecrest.example"
     answers: ["portal.pinecrest.example"]
+    solution: |
+      Read the hosts file -- its entries outrank DNS for every process
+      on the box:
+
+      ```
+      Get-Content C:\Windows\System32\drivers\etc\hosts
+      # Pinecrest portal fast-route
+      10.0.0.99    portal.pinecrest.example
+      ```
+
+      Skip the stock comments; the planted mapping sends a Pinecrest
+      portal hostname to 10.0.0.99, an address nobody assigned. The
+      redirected HOSTNAME is the answer -- not the IP:
+      `portal.pinecrest.example`.
 
   - id: fq_runkey_value
     question: "A Run key under HKLM launches a hidden PowerShell payload at logon. What is the exact name of the registry VALUE?"
     points: 10
     answer: "HealthSyncAgent"
     answers: ["HealthSyncAgent", "healthsyncagent"]
+    solution: |
+      Walk the autoruns that fire at logon -- the HKLM Run key first:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          HealthSyncAgent    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\Subsystems\hsync.ps1"
+      ```
+
+      One value, named like a wellness app, starting a hidden
+      PowerShell script from an attacker-made directory. The question
+      asks for the registry VALUE name -- the left-hand column, not
+      the command. Answer: `HealthSyncAgent` (case-insensitive).
+      (Already deleted it in the hardening task? The name was in this
+      query's output before you cleaned -- which is why findings get
+      noted first.)
 
 # --- theme -------------------------------------------------------------------
 # Windows target: boxbuilder/theme.py resolves this through the theme-*-win
