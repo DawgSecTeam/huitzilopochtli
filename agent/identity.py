@@ -145,7 +145,7 @@ def save(identity_path: str, identity: Identity) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
         os.chmod(tmp_path, 0o600)
-        os.rename(tmp_path, identity_path)
+        os.replace(tmp_path, identity_path)
     except BaseException:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

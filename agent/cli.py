@@ -512,7 +512,7 @@ def _write_answers_file(path: str, content: str) -> None:
             os.chmod(tmp, 0o666)  # match agent/__main__'s template: team-editable
         except OSError:
             pass
-    os.rename(tmp, path)
+    os.replace(tmp, path)
 
 
 def _ensure_answers_file(path: str, entries: list) -> None:
