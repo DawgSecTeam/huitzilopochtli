@@ -206,7 +206,7 @@ checks:
       script: |
         f=/home/stationlead/.bashrc
         if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fq nightcast "$f" && echo false || echo true
+        grep -Fiq nightcast "$f" && echo false || echo true
     expect:
       equals: true
       field: data
@@ -219,8 +219,8 @@ checks:
       tail -5 ~/.bashrc
       ```
 
-      The last line prints a "carrier hums beneath your prompt" taunt and
-      logs a beacon note -- planted, not part of the Debian skeleton.
+      The last line prints a "carrier hums beneath your prompt" taunt --
+      planted, not part of the Debian skeleton.
 
       **2. Cut the line** (keep the rest of the file intact):
 
@@ -243,7 +243,7 @@ checks:
       script: |
         f=/etc/bash.bashrc
         if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fq nightcast "$f" && echo false || echo true
+        grep -Fiq nightcast "$f" && echo false || echo true
     expect:
       equals: true
       field: data
