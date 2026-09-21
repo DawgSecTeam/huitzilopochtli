@@ -35,9 +35,9 @@ scenario v3 · honor mode · Harbor Port Authority
 
 | Command | What it does |
 |---|---|
-| `huitz score` | One-shot scorecard. `--json` emits the raw snapshot instead. |
+| `huitz score` | One-shot scorecard. Pages through `less` when the board is taller than the terminal (flat otherwise). `--json` emits the raw snapshot instead. |
 | `huitz watch` | Live frame: countdown ticks each second, the board redraws the moment a new grade lands, and score changes ring the terminal bell with a session change-log. `q` quits. If a re-grade is more than a couple of minutes late, the frame says so ("re-grade overdue … timer stalled?") instead of sitting on an eternal "checking…". |
-| `huitz readme` | The scenario handbook in the terminal (the theme's `readme`, embedded in the signed manifest by the compiler, carried by the snapshot). `--raw` dumps the markdown. |
+| `huitz readme` | The scenario handbook in the terminal (the theme's `readme`, embedded in the signed manifest by the compiler, carried by the snapshot). Prose re-wraps to the terminal width with inline emphasis, `code`, and links rendered; on a terminal it opens in a pager. `--raw` dumps the markdown flat. |
 | `huitz forensics` | List the scenario's forensics questions with your recorded answers and last-grade verdicts. |
 | `huitz forensics N` | Answer question N interactively (Enter keeps, `-` clears). |
 | `huitz forensics N "text"` | Answer question N directly (scriptable). |
@@ -47,7 +47,11 @@ scenario v3 · honor mode · Harbor Port Authority
 Flags shared by the reading commands: `--report PATH` pins a snapshot
 (accepts a `report.json`, a `report.html`, or a directory), `--color
 auto|always|never` overrides color detection, and `NO_COLOR` is always
-honored. `grade` takes `--config PATH` for a non-default
+honored. `score`/`readme` take `--no-pager` to print flat even on a
+terminal. Paging engages only on an interactive stream — piped output is
+byte-identical to a plain print, so scripts and portals are unaffected —
+and honors `$PAGER` (falling back to `less -R`, then `more`).
+`grade` takes `--config PATH` for a non-default
 `agent_config.json` and `--quiet` for a one-line summary.
 
 ## How it works

@@ -357,6 +357,27 @@ class TestTerm:
         assert sym.check == "+" and sym.block == "#"
         assert term.Symbols(True).check == "✓"
 
+    def test_wrap_ansi_respects_width(self):
+        out = term.wrap_ansi("aaa bbb ccc ddd eee", 10, subsequent_indent="  ")
+        for line in out.splitlines():
+            assert term.visible_len(line) <= 10
+        assert out.splitlines()[1].startswith("  ")  # hanging indent
+
+    def test_wrap_ansi_styled_span_flows_across_wrap(self):
+        sty = term.Style(term.C256, accent="#0a7ea4")
+        wrapped = term.wrap_ansi(sty.bold("alpha beta gamma delta"), 11)
+        for line in wrapped.splitlines():
+            assert term.visible_len(line) <= 11
+        assert wrapped.count("\x1b[1m") == 1  # style opens once...
+        assert wrapped.endswith("\x1b[0m")    # ...and closes at the very end
+
+    def test_wrap_ansi_hard_splits_unbreakable(self):
+        out = term.wrap_ansi("abcdefghijklm", 5)
+        assert all(term.visible_len(l) <= 5 for l in out.splitlines())
+
+    def test_detect_height_floor(self):
+        assert term.detect_height(_FakeStream()) >= 4
+
 
 # --- cli rendering ---------------------------------------------------------------
 
@@ -623,6 +644,14 @@ class TestDispatch:
             agent_main.main()
         assert exc.value.code == 2
 
+    def test_unknown_verb_suggests_close_match(self, capsys):
+        assert cli.main(["redme"]) == 2
+        assert "did you mean: huitz readme" in capsys.readouterr().err
+
+    def test_unknown_verb_without_close_match(self, capsys):
+        assert cli.main(["frobnicate"]) == 2
+        assert "did you mean" not in capsys.readouterr().err
+
 
 # --- readme: compile embeds, snapshot carries, CLI renders ---------------------
 
@@ -735,6 +764,158 @@ class TestReadme:
         path2, _ = _honor_snapshot(tmp_path / "b")
         assert cli.main(["readme", "--report", path2],
                         outstream=_FakeStream()) == 1
+
+    def test_wrapped_prose_reflows_and_never_spills(self):
+        # Source hard-wraps are an authoring artifact: the renderer folds the
+        # paragraph and re-wraps it to the terminal width.
+        src = ("This is a long paragraph that the author hard-wrapped at\n"
+               "some arbitrary column, expecting the renderer to join the\n"
+               "lines back together before wrapping to the terminal.\n")
+        out = self._render(src, width=40)
+        for line in out.splitlines():
+            assert term.visible_len(line) <= 40
+        assert "hard-wrapped at some arbitrary" in out  # source break removed
+
+    def test_multiline_emphasis_renders_without_asterisks(self):
+        # The handbook hard-wraps mid-span: bold crossing a newline must still
+        # render (the old per-line renderer printed the literal asterisks).
+        src = ("Your job: **find and remove every way\n"
+               "it comes back** in the box. *softly\n"
+               "returns.*\n")
+        out = self._render(src, width=60)
+        assert "*" not in out
+        assert "find and remove every way it comes back" in out
+
+    def test_multiline_emphasis_carries_style(self):
+        sty = term.Style(term.C16, accent="#0a7ea4")
+        out = cli.render_readme("**bold across\na wrap** end",
+                                sty, term.Symbols(True), 80)
+        assert "\x1b[1mbold across a wrap\x1b[0m" in out
+        out2 = cli.render_readme("*softly* now", sty, term.Symbols(True), 80)
+        assert "\x1b[3msoftly\x1b[0m" in out2
+
+    def test_code_spans_use_accent_not_muted(self):
+        sty = term.Style(term.C16, accent="#0a7ea4")
+        out = cli.render_readme("run `huitz score` now",
+                                sty, term.Symbols(True), 80)
+        accent_param = term._rgb_ansi((0x0a, 0x7e, 0xa4), term.C16)
+        muted_param = term._rgb_ansi((0x6e, 0x73, 0x78), term.C16)
+        assert accent_param in out
+        assert muted_param not in out
+
+    def test_h1_title_is_bold_ink_with_accent_rule(self):
+        sty = term.Style(term.C16, accent="#0a7ea4")
+        out = cli.render_readme("# Title\n", sty, term.Symbols(True), 80)
+        assert "\x1b[1mTitle\x1b[0m" in out          # bold, terminal default ink
+        accent_param = term._rgb_ansi((0x0a, 0x7e, 0xa4), term.C16)
+        assert accent_param in out                   # the rule keeps the accent
+
+    def test_fence_lines_wrap_never_ellipsize(self):
+        long_cmd = ("openssl enc -aes-256-cbc -in secret.txt "
+                    "-out secret.enc -k password123456")
+        out = self._render(f"```\n{long_cmd}\n```\n", width=40)
+        assert "…" not in out
+        assert "password123456" in out  # the tail survives (was ellipsized away)
+        for line in out.splitlines():
+            assert term.visible_len(line) <= 40
+
+
+class TestPaging:
+    """readme/score page through less on a terminal; pipes never see a pager."""
+
+    def _snapshot_file(self, tmp_path):
+        report = tmp_path / "report.html"
+        m = _manifest(theme={"title": "X", "readme_text": HANDBOOK})
+        snap = snapshot.build_snapshot(_score(), m, mode="honor",
+                                       agent_version="t", delta=0,
+                                       computed_at=100.0)
+        snapshot.write(str(report), snap)
+        return str(tmp_path / "report.json")
+
+    def _fake_popen(self, monkeypatch):
+        calls = {}
+
+        class FakeProc:
+            def __init__(self, argv, **kw):
+                calls["argv"] = argv
+
+            def communicate(self, data):
+                calls["data"] = data
+                return None, None
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(cli.subprocess, "Popen", FakeProc)
+        return calls
+
+    def test_page_skipped_when_not_tty(self, monkeypatch):
+        monkeypatch.setattr(cli, "_pager_argv", lambda: ["less", "-R"])
+        assert cli._page("hello\n", _FakeStream()) is False
+
+    def test_readme_pages_on_tty(self, tmp_path, monkeypatch):
+        path = self._snapshot_file(tmp_path)
+        calls = self._fake_popen(monkeypatch)
+        monkeypatch.setattr(cli, "_pager_argv", lambda: ["less", "-R"])
+        rc = cli.main(["readme", "--report", path],
+                      outstream=_FakeStream(tty=True))
+        assert rc == 0
+        assert calls["argv"] == ["less", "-R"]
+        assert b"Factory Handbook" in calls["data"]
+
+    def test_readme_no_pager_and_raw_print_flat(self, tmp_path, monkeypatch):
+        path = self._snapshot_file(tmp_path)
+
+        def boom(*a, **kw):
+            raise AssertionError("pager must not spawn")
+
+        monkeypatch.setattr(cli.subprocess, "Popen", boom)
+        tty = _FakeStream(tty=True)
+        assert cli.main(["readme", "--no-pager", "--report", path],
+                        outstream=tty) == 0
+        assert "Factory Handbook" in tty.getvalue()
+        raw = _FakeStream(tty=True)
+        assert cli.main(["readme", "--raw", "--report", path],
+                        outstream=raw) == 0
+        assert raw.getvalue().startswith("# Factory Handbook")
+
+    def test_score_pages_only_when_taller_than_window(self, tmp_path, monkeypatch):
+        path = self._snapshot_file(tmp_path)
+        calls = self._fake_popen(monkeypatch)
+        monkeypatch.setattr(cli, "_pager_argv", lambda: ["less", "-R"])
+        monkeypatch.setattr(cli.agent.term, "detect_height", lambda stream: 5)
+        tty = _FakeStream(tty=True)
+        assert cli.main(["score", "--report", path], outstream=tty) == 0
+        assert "argv" in calls and b"pts" in calls["data"]
+
+        calls.clear()
+        monkeypatch.setattr(cli.agent.term, "detect_height", lambda stream: 500)
+        tty2 = _FakeStream(tty=True)
+        assert cli.main(["score", "--report", path], outstream=tty2) == 0
+        assert calls == {}  # short board: flat print, no pager
+        assert "pts" in tty2.getvalue()
+
+    def test_score_no_pager_flag_prints_flat(self, tmp_path, monkeypatch):
+        path = self._snapshot_file(tmp_path)
+
+        def boom(*a, **kw):
+            raise AssertionError("pager must not spawn")
+
+        monkeypatch.setattr(cli.subprocess, "Popen", boom)
+        monkeypatch.setattr(cli.agent.term, "detect_height", lambda stream: 5)
+        tty = _FakeStream(tty=True)
+        assert cli.main(["score", "--no-pager", "--report", path],
+                        outstream=tty) == 0
+        assert "pts" in tty.getvalue()
+
+    def test_pager_env_and_fallbacks(self, monkeypatch):
+        monkeypatch.setenv("PAGER", "cat -s")
+        assert cli._pager_argv() == ["cat", "-s"]
+        monkeypatch.setenv("PAGER", "less")
+        assert cli._pager_argv() == ["less", "-R"]  # -R added for a bare less
+        monkeypatch.setenv("PAGER", "")
+        monkeypatch.setattr(cli.shutil, "which", lambda name: False)
+        assert cli._pager_argv() is None
 
 
 class TestOverdueCountdown:

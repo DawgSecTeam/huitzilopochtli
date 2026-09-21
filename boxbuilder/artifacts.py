@@ -64,18 +64,22 @@ def motd_script(title: str, organization: Optional[str] = None,
 
     Ubuntu's dynamic motd executes every script in /etc/update-motd.d/ at
     each login (console + SSH), so this is what tells a player what to do
-    the first time they get a shell. Pure text generation here; the pipeline
-    places it (SFTP to /tmp, then `install -m 755` — the target dir is
-    root-owned). Windows has no motd mechanism; the win task script's
-    report shortcut is that box's equivalent pointer.
+    the first time they get a shell. Guidance leads with `huitz readme`
+    (the handbook carries the objective and rules) and spells out the
+    forensics answer syntax — the least discoverable command. Pure text
+    generation here; the pipeline places it (SFTP to /tmp, then
+    `install -m 755` — the target dir is root-owned). Windows has no motd
+    mechanism; the win task script's report shortcut is that box's
+    equivalent pointer.
     """
     heading = f"Welcome to {_sh_single_quoted(title)}"
     if organization:
         heading += f" — {_sh_single_quoted(organization)}"
-    grade_line = ("sudo huitz grade        re-grade right now"
+    grade_line = ("  '  sudo huitz grade           re-grade right now' \\"
                   if mode == "honor" else
-                  "(ranked) scores arrive from the engine at each check-in")
-    # Indentation of the rank/honor line matches the command block below.
+                  "  '  (ranked) scores arrive from the engine at each"
+                  " check-in' \\")
+    # The description column starts at character 29 in every command line.
     return "\n".join([
         "#!/bin/sh",
         "# Huitzilopochtli onboarding banner (placed by boxbuilder).",
@@ -83,18 +87,21 @@ def motd_script(title: str, organization: Optional[str] = None,
         'printf \'%s\\n\' \\',
         f"  '{heading}' \\",
         "  '' \\",
-        "  'This box is a Huitzilopochtli hardening challenge: scored' \\",
-        "  'misconfigurations are hiding on this system. Find them, fix' \\",
-        "  'them properly, and keep them fixed.' \\",
+        "  'This box is a hardening challenge: scored misconfigurations' \\",
+        "  'are hiding on this system. Find them, fix them properly, and' \\",
+        "  'keep them fixed. New here? Start with the handbook:' \\",
         "  '' \\",
-        "  '  huitz score             your current score' \\",
-        "  '  huitz watch             live board (updates as you work)' \\",
-        "  '  huitz forensics         view + answer the forensics questions' \\",
-        f"  '  {grade_line}' \\",
+        "  '  huitz readme               the handbook: objective, rules, login' \\",
         "  '' \\",
-        "  'Progress also lives on the Desktop: report.html +' \\",
-        "  'Forensics-Questions.txt. Fixes re-score automatically about' \\",
-        "  'a minute after you make them. Good luck.'",
+        "  'Then work from the terminal:' \\",
+        "  '  huitz score                your current standing' \\",
+        "  '  huitz watch                live board, re-grades as you work' \\",
+        "  '  huitz forensics 1 \"text\"   answer forensics question 1' \\",
+        grade_line,
+        "  '' \\",
+        "  'Fixes re-score automatically about a minute after you make' \\",
+        "  'them. Also on the Desktop: report.html and' \\",
+        "  'Forensics-Questions.txt. Good luck.'",
         "",
     ])
 
