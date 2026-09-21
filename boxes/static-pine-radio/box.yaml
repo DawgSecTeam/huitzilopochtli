@@ -13,14 +13,19 @@
 # linger are scored). Unlike opochtli-landing there is no apache/DB stack
 # and no shared-DB dependency: this box is fully self-contained.
 #
-# Template lineage: static-pine-radio-template (Proxmox vmid 146), sealed
+# Template lineage: static-pine-radio-template (Proxmox vmid 149), sealed
 # 2026-09-21 from a full clone of the "debian13-lite-fix" template (vmid
 # 951, Debian 13.6) -- same base opochtli-landing-cli-template came from.
+# (Fallback: vmid 146 "static-pine-radio-template-v1", the same box before a
+# cosmetic fix -- login-time snippets logged to a root-owned file and spewed
+# "Permission denied" at every student login; v1 also predates the bashrc
+# checks going case-insensitive. Delete once 149 is field-confirmed.)
 # Validated end-to-end on the build clone AND on a fresh clone of the sealed
 # template: Total: 0 at baseline (all 16 artifacts confirmed present), a
 # live penalty probe (cron stopped -> Total -10), and Total: 150 (16 of 16)
-# after the scripted harden. net0 ships on untrustedbr,firewall=1 (student
-# clones DHCP on 192.168.100.0/24 behind untrusted-gateway).
+# after the scripted harden. Login-time hooks verified silent (taunts print,
+# zero stderr). net0 ships on untrustedbr,firewall=1 (student clones DHCP on
+# 192.168.100.0/24 behind untrusted-gateway).
 # TEMPLATE PREP (before any nakon plant): create stationlead (sudo, bash,
 # ~/Desktop -- the huitz CLI's snapshot + forensics files land there).
 # Nothing else: cron ships with Debian; the `at` package arrives via the

@@ -33,30 +33,30 @@
           "name": "profiled-persistence",
           "vars": {
             "FILE_NAME": "nightcast-greeting.sh",
-            "SNIPPET": "printf '%s\\n' '[static crackle] 88.3 FM -- you are tuned to the Nightcast' ; printf '%s\\n' \"$(date '+%F %T') nightcast: login-shell beacon\" >> /var/log/nightcast.log"
+            "SNIPPET": "printf '%s\\n' '[static crackle] 88.3 FM -- you are tuned to the Nightcast'"
           }
         },
         {
           "name": "bashrc-persistence",
           "vars": {
             "TARGET_FILE": "/home/stationlead/.bashrc",
-            "MARKER": "nightcast",
-            "SNIPPET": "printf '%s\\n' '[88.3 FM] a carrier hums beneath your prompt -- the Nightcast sees you' ; printf '%s\\n' \"$(date '+%F %T') nightcast: bashrc beacon\" >> /var/log/nightcast.log"
+            "MARKER": "Nightcast",
+            "SNIPPET": "printf '%s\\n' '[88.3 FM] a carrier hums beneath your prompt -- the Nightcast sees you'"
           }
         },
         {
           "name": "bashrc-persistence",
           "vars": {
             "TARGET_FILE": "/etc/bash.bashrc",
-            "MARKER": "nightcast",
-            "SNIPPET": "printf '%s\\n' '[88.3 FM] the Nightcast rides every shell on this transmitter' ; printf '%s\\n' \"$(date '+%F %T') nightcast: system-bashrc beacon\" >> /var/log/nightcast.log"
+            "MARKER": "Nightcast",
+            "SNIPPET": "printf '%s\\n' '[88.3 FM] the Nightcast rides every shell on this transmitter'"
           }
         },
         {
           "name": "motd-persistence",
           "vars": {
             "SCRIPT_NAME": "99nightcast",
-            "SNIPPET": "printf '%s\\n' ' .-.-.  88.3 FM  --  the Nightcast never sleeps  .-.-.' ; printf '%s\\n' \"$(date '+%F %T') nightcast: motd beacon\" >> /var/log/nightcast.log"
+            "SNIPPET": "printf '%s\\n' ' .-.-.  88.3 FM  --  the Nightcast never sleeps  .-.-.'"
           }
         },
         {
