@@ -13,11 +13,15 @@
 # linger are scored). Unlike opochtli-landing there is no apache/DB stack
 # and no shared-DB dependency: this box is fully self-contained.
 #
-# Template lineage: static-pine-radio-template (Proxmox vmid 156), sealed
+# Template lineage: static-pine-radio-template (Proxmox vmid 158), sealed
 # 2026-09-21 from a full clone of the "debian13-lite-fix" template (vmid
 # 951, Debian 13.6) -- same base opochtli-landing-cli-template came from.
-# (Fallbacks: vmid 149 "static-pine-radio-template-v2" = same box without
-# the 4 forensics questions; vmid 146 "-v1" = pre login-noise fix. Delete
+# 158 is the pool-served template and the one validated end to end (Total 0
+# baseline, Total 190 full marks incl. forensics, answers blanked and
+# baseline re-verified before sealing). NOTE: two agent sessions sealed
+# this box concurrently; 156 "-v2b" is the other session's near-identical
+# seal (kept as fallback, contents unverified from here). Older fallbacks:
+# vmid 149 "-v2" = no forensics; vmid 146 "-v1" = pre login-noise fix. Delete
 # both once 156 is field-confirmed.)
 # Validated end-to-end: Total 0 at baseline (all 16 artifacts present,
 # forensics file blank on the player's Desktop), a live penalty probe (cron
