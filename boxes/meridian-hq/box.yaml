@@ -24,14 +24,17 @@
 # DC identity; acceptable for this isolated lab (self-contained single-DC
 # forests, no replication partners).
 #
-# SEALED 2026-09-21: Proxmox vmid 151 "meridian-hq-template", 6144 MB RAM.
-# Validated end-to-end on the sealing VM (vmid 150): plant 25/25 steps rc=0
-# (22 vuln/theme configs + 3 theme), 0-state scores exactly 0 with the
-# Forensics-Questions.txt regenerated blank, hardened state 390/390 (27/27
-# + 6/6 forensics), revert (re-plant + manual spooler/WS-LEGACY01 restores)
-# back to exactly 0; a fresh full clone (151) boot-verified: sysadmin SSH,
-# Python, Desktop README, agent task cadence intact, report regenerating at
-# 0. Keep vmid 150 around until the field confirms.
+# SEALED 2026-09-21: Proxmox vmid 153 "meridian-hq-template", 6144 MB RAM.
+# Validated end-to-end on the sealing VM (vmid 150, stopped before cloning --
+# live-cloning a DC rolls NTDS.dit back to its last EDB checkpoint, see
+# REDEPLOY.md gotcha 24): plant 25/25 steps rc=0, 0-state scores exactly 0
+# with Forensics-Questions.txt regenerated blank, hardened state 390/390
+# (27/27 + 6/6 forensics) stable across 9 scoring passes, revert (re-plant +
+# manual spooler/WS-LEGACY01/LDAP-via-secedit restores) back to exactly 0;
+# cold-cloned seal boot-verified (WS-LEGACY01 enabled, LDAP 1, total 0 with
+# settled AD); a full portal dress rehearsal (claim S6QE5 -> provision ->
+# settle at 0) passed before the rehearsal box was destroyed. Keep vmid 150
+# around until the field confirms.
 #
 # Connection details: dc01, a full clone of the sealed meridian-hq-template.
 # provider.host below is whatever IP the clone gets from DHCP at build time
