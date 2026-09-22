@@ -6,24 +6,26 @@
 # back): SIXTEEN planted persistence artifacts, one scored finding each,
 # compressed weighting (8 EASY x5 + 5 MODERATE x10 + 3 HARD x20 = 150) and
 # two penalties (-10 each) because nuking cron/atd instead of evicting the
-# attacker's jobs must cost points. There is NO forensics block: the
-# discovery hunt IS the exercise. The box's only legitimate furniture is the
+# attacker's jobs must cost points, plus a 4-question forensics block
+# (4 x 10 = 40; 190 grand total). The box's only legitimate furniture is the
 # stationlead account (template prep) and the tapeops automation account
 # (planted, story-legitimate, KEEP -- only its hidden crontab/user-unit/
 # linger are scored). Unlike opochtli-landing there is no apache/DB stack
 # and no shared-DB dependency: this box is fully self-contained.
 #
-# Template lineage: static-pine-radio-template (Proxmox vmid 112), sealed
+# Template lineage: challenge-static-pine-radio (Proxmox vmid 112), sealed
 # 2026-09-21 as a FULL clone of the 158 seal (which was itself built from
 # the "debian13-lite-fix" template, vmid 951) -- full clone deliberately
 # severs the linked-clone chain so no superseded template disk backs this
 # one. 112 is the sole template and the pool-served one, validated end to
 # end (Total 0 baseline, Total 190 full marks incl. forensics, answers
-# blanked and baseline re-verified before sealing). Superseded seals 146/
-# 149/158 are destroyed EXCEPT vmid 146, whose base volume is pinned by the
+# blanked and baseline re-verified before sealing), and re-verified 2026-09-21
+# with a fresh-clone deploy test of 112 itself: boots planted at Total 0,
+# all 16 artifacts present, forensics file blank on the player's Desktop,
+# login stderr-clean, machine-id unique. Superseded seals 146/149/156/158
+# are destroyed EXCEPT vmid 146, whose base volume is pinned by the
 # unrelated live "Windows-AD" VM 148 (its disk was carved from base-146);
 # destroy 146 once that VM is retired.
-# both once 156 is field-confirmed.)
 # Validated end-to-end: Total 0 at baseline (all 16 artifacts present,
 # forensics file blank on the player's Desktop), a live penalty probe (cron
 # stopped -> Total -10), the scripted harden to Total 150 (16 of 16), and
