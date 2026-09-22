@@ -18,8 +18,17 @@ $ErrorActionPreference = 'Continue'
 $dir = 'C:\ProgramData\huitzilopochtli'
 $config = Join-Path $dir 'agent_config.json'
 
-if (Get-Command python -ErrorAction SilentlyContinue) {
-    & python (Join-Path $dir 'agent.pyz') $config
+# Resolve python robustly: PATH first, then the py launcher, then the known
+# install roots. A live-box incident (2026-09-21) had C:\Program renamed by
+# an MSI self-repair dialog (the "Rename" answer) -- scoring must survive
+# whatever PATH survives that.
+$pyExe = $null
+foreach ($cand in @((Get-Command python -ErrorAction SilentlyContinue).Source,
+                    'C:\Program\python.exe', 'C:\Program1\python.exe')) {
+    if ($cand -and (Test-Path $cand)) { $pyExe = $cand; break }
+}
+if ($pyExe) {
+    & $pyExe (Join-Path $dir 'agent.pyz') $config
 } else {
     & py -3 (Join-Path $dir 'agent.pyz') $config
 }
@@ -34,5 +43,13 @@ if (Test-Path $report) {
 $snapshot = Join-Path $dir 'report.json'
 if (Test-Path $snapshot) {
     Copy-Item -Force $snapshot (Join-Path $env:PUBLIC 'Desktop\report.json')
+}
+# The forensics answers file is edited by the (UAC-filtered) desktop user
+# but written by this SYSTEM task's agent, and os.chmod cannot express NTFS
+# ACLs -- so re-grant BUILTIN\Users modify every cycle. Heals boxes whose
+# file shipped with the template's read-only ACL too. Harmless when absent.
+$forensics = Join-Path $env:PUBLIC 'Desktop\Forensics-Questions.txt'
+if (Test-Path $forensics) {
+    icacls $forensics /grant '*S-1-5-32-545:M' | Out-Null
 }
 exit 0

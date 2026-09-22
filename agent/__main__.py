@@ -201,6 +201,27 @@ def _primary_desktop_dir() -> str | None:
     return None
 
 
+def _grant_windows_write_acl(path: str) -> None:
+    """Grant BUILTIN\\Users modify on the answers file (Windows only).
+
+    os.chmod cannot express NTFS ACLs (at best it toggles the read-only
+    attribute), and the agent runs as SYSTEM while the answers are typed by
+    a desktop user whose UAC-filtered token carries no Administrators ACE --
+    without this grant the file lands read-only for exactly the people who
+    must edit it (their only rights would be the inherited
+    INTERACTIVE:ReadAndExecute). Best-effort (§9.1): a failed grant never
+    stalls a run; packaging/huitz-agent-task.ps1 re-grants every cycle.
+    """
+    try:
+        subprocess.run(
+            ["icacls", path, "/grant", "*S-1-5-32-545:M"],
+            check=False, timeout=15,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _write_forensics_template(path: str, questions: list) -> None:
     """Write the answers template for `questions` [(ordinal, text)] at `path`.
 
@@ -219,6 +240,8 @@ def _write_forensics_template(path: str, questions: list) -> None:
         os.chmod(tmp, 0o666)
     except OSError:
         pass
+    if os.name == "nt":
+        _grant_windows_write_acl(tmp)
     # When the template lands on a desktop user's Desktop, hand them
     # ownership so their editor never complains about a root-owned file.
     desktop_dir = _primary_desktop_dir()
