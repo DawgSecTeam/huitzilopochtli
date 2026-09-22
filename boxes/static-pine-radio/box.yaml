@@ -23,9 +23,12 @@
 # with a fresh-clone deploy test of 112 itself: boots planted at Total 0,
 # all 16 artifacts present, forensics file blank on the player's Desktop,
 # login stderr-clean, machine-id unique. Superseded seals 146/149/156/158
-# are destroyed EXCEPT vmid 146, whose base volume is pinned by the
-# unrelated live "Windows-AD" VM 148 (its disk was carved from base-146);
-# destroy 146 once that VM is retired.
+# are destroyed EXCEPT vmid 146 (renamed challenge-pine-radio in the
+# template-rename sweep): an ORPHANED thin volume on the hdd pool still has
+# origin=base-146-disk-0 (leaked by a destroyed linked clone; no qemu config
+# references it), so every destroy/detach 500s with "still in use by linked
+# clones". Host fix: lvs --all -o lv_name,origin <hdd_vg> | grep base-146,
+# lvremove the orphan(s) (not base-146 itself), then destroy 146 normally.
 # Validated end-to-end: Total 0 at baseline (all 16 artifacts present,
 # forensics file blank on the player's Desktop), a live penalty probe (cron
 # stopped -> Total -10), the scripted harden to Total 150 (16 of 16), and
