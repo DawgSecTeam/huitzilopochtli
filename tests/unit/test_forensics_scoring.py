@@ -244,6 +244,48 @@ def test_prepare_forensics_noop_without_forensics(tmp_path):
     assert not (tmp_path / "Forensics-Questions.txt").exists()
 
 
+def test_prepare_forensics_grants_users_modify_on_windows(tmp_path, monkeypatch):
+    # The agent runs as SYSTEM while the answers are typed by a desktop user
+    # whose UAC-filtered token carries no Administrators ACE, and os.chmod
+    # cannot express NTFS ACLs -- the Windows write path must issue the
+    # icacls grant (live-found 2026-09-21: the file shipped read-only to the
+    # students who had to edit it).
+    monkeypatch.setattr("agent.__main__._primary_desktop_dir", lambda: str(tmp_path))
+    grants = []
+
+    def fake_run(cmd, **kwargs):
+        grants.append(cmd)
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr("agent.__main__.subprocess.run", fake_run)
+    monkeypatch.setattr(os, "name", "nt")
+    manifest = _manifest_with_forensics(tmp_path)
+
+    _prepare_forensics(manifest, str(tmp_path))
+
+    answers_path = tmp_path / "Forensics-Questions.txt"
+    assert answers_path.exists()
+    assert [
+        "icacls", str(answers_path) + ".tmp", "/grant", "*S-1-5-32-545:M"
+    ] in grants
+
+
+def test_grant_windows_write_acl_is_best_effort(monkeypatch, tmp_path):
+    # A failed grant must never stall a run (§9.1): no icacls binary (OSError)
+    # and a nonzero rc are both swallowed.
+    def boom(*args, **kwargs):
+        raise OSError("no icacls")
+
+    monkeypatch.setattr("agent.__main__.subprocess.run", boom)
+    from agent.__main__ import _grant_windows_write_acl
+
+    _grant_windows_write_acl(str(tmp_path / "x.txt"))  # must not raise
+
+
 # --- reporter forensics card -------------------------------------------------
 
 def test_honor_board_renders_forensics_card():

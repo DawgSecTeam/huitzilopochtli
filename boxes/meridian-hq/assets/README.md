@@ -35,13 +35,15 @@ subtracts.
 
 ## Forensics questions
 
-**Forensics Questions** on the Desktop holds scored questions about what
-happened to this box. Type your answers over the `____` blanks and save;
-questions are graded automatically. Each question wants one short, specific
-answer (an account name, a GPO name, a value) — not yes/no. Investigate
-*before* you clean up: some answers live on artifacts the hardening tasks
-will remove (an encrypted password inside SYSVOL, a task name, a Run-key
-value name).
+The file **`C:\Users\Public\Desktop\Forensics-Questions.txt`** (the *Public*
+desktop — it appears on your desktop view, but it is not inside
+`C:\Users\sysadmin\Desktop`) holds scored questions about what happened to
+this box. Open it in Notepad, type your answers over the `____` blanks, and
+**save it in place** — same name, same folder; answers are graded
+automatically from that file. Each question wants one short, specific answer
+(an account name, a GPO name, a value) — not yes/no. Investigate *before*
+you clean up: some answers live on artifacts the hardening tasks will remove
+(an encrypted password inside SYSVOL, a task name, a Run-key value name).
 
 ## Viewing score report
 

@@ -435,3 +435,57 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    stale-computer score) even though the source verified 0. Shut the
    source down gracefully FIRST, clone, then boot. (Also explains
    "it reverted!" mysteries around any clone of a busy Windows box.)
+25. **A template sealed after a hard stop makes every clone pop a modal
+   at logon.** The clone's first logon raises the **Shutdown Event
+   Tracker** ("Why did the computer shut down unexpectedly?" -- comment
+   REQUIRED). It is a modal: Start menu, search, everything appears dead
+   while it is up (this is exactly the "Start menu doesn't open" report
+   from the live round -- the shell was fine). Seal with a guest-side
+   `shutdown /s /d p:4:1` (clean disk, no dirty bit), and belt-and-braces
+   disable the tracker:
+   `HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Reliability\ShutdownReasonOn=0`
+   (+ `ShutdownReasonUI=0`). Server Manager also auto-opens at logon and
+   carries a Windows Admin Center promo popup; `DoNotOpenAtLogon=1` under
+   `HKCU\Software\Microsoft\ServerManager` set over an SSH session did
+   NOT survive sealing (ssh HKCU writes are unreliable for this) -- set
+   it in `C:\Users\Default\NTUSER.DAT` (reg load/unload) next seal.
+26. **The python MSI self-repair dialog is a scoring-killer trap.** The
+   python.org install's Start-menu shortcuts are advertised MSI entry
+   points; on these clones opening the Start menu can fire MSI
+   self-repair, which pops "Another program called 'C:\Program' ... Would
+   you like to rename it?" -- because the quote-mangled install root IS
+   `C:\Program`. Clicking **Rename** renames the python home away; the
+   agent's PATH and the py-launcher registry then point at nothing and
+   scoring silently dies (the task script exits 0 regardless -- a frozen
+   report that looks fine). Two boxes died this way on 2026-09-21. Fix in
+   the sealed template: `msiexec /faus <product-code> /qn` for every
+   Python product, then delete
+   `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Python 3.12`.
+   Defense in depth: the win task script now falls back to
+   `C:\Program\python.exe` / `C:\Program1\python.exe` when PATH is dead.
+   Recovery for an affected box: repoint machine PATH + the
+   `HKLM\SOFTWARE\Python\PythonCore\3.12\InstallPath` registry value at
+   wherever python.exe actually lives, restart the task.
+27. **pmx full-clones may land on the wrong bridge.** The 2026-09-22
+   meridian re-seal's full clone came up on `untrustedbr` (firewall=1)
+   while the source template is on vmbr0 -- check `net0` after cloning
+   and `pmx rebridge <vmid> --bridge vmbr0 --yes` before installing.
+   (The student-portal dispenser uses untrustedbr on purpose for claim
+   isolation; a BUILD box on it is unreachable for the provider.)
+28. **Forensics answers must be student-writable on Windows.** The agent
+   runs as SYSTEM; `os.chmod` cannot express NTFS ACLs, so the answers
+   file shipped with only inherited INTERACTIVE:ReadAndExecute -- and a
+   UAC-filtered RDP logon of the admin account has no Administrators
+   ACE, so students literally could not save answers. The agent now
+   grants `BUILTIN\Users:M` via icacls on write (agent/__main__.py), and
+   `packaging/huitz-agent-task.ps1` re-grants it every cycle (heals
+   already-sealed boxes too). The README names the real path
+   (`C:\Users\Public\Desktop\Forensics-Questions.txt`) because students
+   look in their own profile folder first.
+29. **Template replacement with live claims = rename + pool cutover.**
+   Linked claim clones pin the old template, so you cannot destroy and
+   re-create it in place. Full-clone -> fix -> `pmx template` the NEW
+   vmid -> rename old to `*-template-old` -> rename new to the canonical
+   name -> flip `template_vm_id` in the portal's configs.json (sed; one
+   occurrence; validate JSON after; no restart needed) -> destroy the
+   old template only when its last claim dies.

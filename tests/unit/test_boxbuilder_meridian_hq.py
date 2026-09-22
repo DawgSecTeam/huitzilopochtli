@@ -224,3 +224,21 @@ def test_answerkey_renders_with_zero_missing_walkthroughs():
     md, gaps = answerkey.render_markdown(sc, SCENARIO)
     assert gaps == [], f"answer key gaps: {gaps}"
     assert answerkey._PLACEHOLDER not in md
+
+
+def test_readme_names_the_forensics_answers_file_path():
+    # Students look in C:\Users\sysadmin\Desktop and report the file missing;
+    # the README must name the real path (Public Desktop) explicitly.
+    readme = open("boxes/meridian-hq/assets/README.md", encoding="utf-8").read()
+    assert "C:\\Users\\Public\\Desktop\\Forensics-Questions.txt" in readme
+    assert "save it in place" in readme
+
+
+def test_win_task_script_self_heals_forensics_acl():
+    # The answers file is written by the SYSTEM agent but edited by a
+    # UAC-filtered desktop user; os.chmod cannot express NTFS ACLs, so the
+    # task script must re-grant BUILTIN\Users modify every cycle (packaging/
+    # huitz-agent-task.ps1 ships to every Windows box at install time).
+    task = open("packaging/huitz-agent-task.ps1", encoding="utf-8").read()
+    assert "Forensics-Questions.txt" in task
+    assert "*S-1-5-32-545:M" in task

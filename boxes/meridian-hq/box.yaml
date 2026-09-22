@@ -36,8 +36,30 @@
 # cold-cloned seal boot-verified (WS-LEGACY01 enabled, LDAP 1, total 0 with
 # settled AD); a full portal dress rehearsal (claim S6QE5 -> provision ->
 # settle at 0) passed before the rehearsal box was destroyed. The build VM
-# (150) and base template (112) were destroyed in the post-seal cleanup;
-# only template 153 remains.
+# (150) and base template (112) were destroyed in the post-seal cleanup.
+#
+# RE-SEALED 2026-09-22 as vmid 155 "meridian-hq-template" (153 survives as
+# "meridian-hq-template-old", pinned by live claim clones until they expire).
+# The first seal shipped three live-round defects, found via the first real
+# student claims (REDEPLOY.md gotchas 25-28 carry the full stories):
+#   1. The answers file was SYSTEM-owned with only INTERACTIVE:RX -- a
+#      UAC-filtered RDP logon could not save forensic answers. Fixed in the
+#      agent (icacls grant BUILTIN\Users:M on write) + the task script
+#      re-grants every cycle; the README now names the file's real path.
+#   2. The template's dirty shutdown made every clone pop the MODAL Shutdown
+#      Event Tracker at first logon -- it blocks all input, which read as
+#      "Start menu/search broken". Tracker disabled by policy; 155 was sealed
+#      with a clean guest shutdown (no dirty bit).
+#   3. Python's advertised Start-menu shortcuts fired MSI self-repair whose
+#      "Rename C:\Program?" dialog, if answered, deletes python from PATH and
+#      silently kills scoring (two live claims died this way). All python
+#      MSIs repaired, shortcuts removed; the task script now falls back to
+#      hard python paths when PATH is dead.
+# The task script also mirrors report.json to the Public Desktop. After the
+# cutover the pool re-verified end to end: a fresh S6QE5 claim provisioned
+# off 155 and its first logon showed the desktop with NO blocking popups
+# (grading itself was verified on the seal VM before templating); pool
+# S6QE5's template_vm_id was flipped 153 -> 155.
 #
 # Connection details: dc01, a full clone of the sealed meridian-hq-template.
 # provider.host below is whatever IP the clone gets from DHCP at build time
