@@ -428,3 +428,10 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    value form is `LDAPServerIntegrity=4,<value>`; a partial replace leaves
    a dangling `,1` that secedit silently ignores) or the GPO. Solution
    texts steer students the same way.
+24. **Never live-clone a domain controller.** A running DC keeps AD
+   transactions in memory/EDB logs; a clone taken while the source runs
+   rolls NTDS.dit back to the last checkpoint -- the seal clone silently
+   lost an `Enable-ADAccount` from 7 minutes before cloning (phantom +5
+   stale-computer score) even though the source verified 0. Shut the
+   source down gracefully FIRST, clone, then boot. (Also explains
+   "it reverted!" mysteries around any clone of a busy Windows box.)
