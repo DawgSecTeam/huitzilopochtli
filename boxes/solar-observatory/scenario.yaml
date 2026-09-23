@@ -823,7 +823,7 @@ theme:
     # launches it (GLib's desktop-entry parsing does quote-removal, not
     # tilde/variable expansion).
     - name: "Observatory Hardening Handbook"
-      exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"
+      exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
 
 # Scored forensics questions (CyberPatriot-style): teams type answers into
 # Forensics-Questions.txt on the Desktop; the agent re-grades the file each

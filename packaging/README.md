@@ -41,7 +41,8 @@ symlink because the sealed install dir is 0700 and would block non-root
 traversal). It serves the CLI verbs — `huitz score`, `huitz watch`,
 `huitz forensics`, `sudo huitz grade` — documented in
 [`CLI.md`](../CLI.md). The reading commands work as any user: they read the
-Desktop-mirrored `report.json`, never the sealed dir. On a hand-rolled
+mirrored `report.json` (every real user's `Documents/huitzilopochtli/` --
+see sync-report.sh below), never the sealed dir. On a hand-rolled
 install, add the shim yourself:
 
 ```
@@ -51,8 +52,8 @@ install -m 755 /opt/.huitzilopochtli/agent.pyz /usr/local/bin/huitz
 sync-report.sh (below) mirrors `report.json` alongside `report.html`; if it
 is missing, the CLI reports "no grade found" with the paths it searched.
 Windows boxes have no shim — `py C:\ProgramData\huitzilopochtli\agent.pyz
-score` — and the scheduled-task wrapper mirrors `report.json` to the Public
-Desktop instead.
+score` — and the scheduled-task wrapper mirrors `report.json` to
+`C:\Users\Public\Documents\huitzilopochtli` instead.
 
 boxbuilder also plants a **first-login banner** at
 `/etc/update-motd.d/90-huitzilopochtli` (POSIX only — Windows has no motd
@@ -225,10 +226,14 @@ phase.
      `HuitzilopochtliAgent` scheduled task (SYSTEM, at startup + every
      5 minutes; that cadence is the honor-mode re-grade timer) pointing
      at `packaging/huitz-agent-task.ps1`, which runs the agent and mirrors
-     `report.html` to `C:\Users\Public\Desktop` (the Windows analog of the
-     ExecStartPost + sync-report.sh pairing; the report shortcut targets
-     that copy). Python 3 must be on PATH (`PrependPath=1` from the
-     python.org installer during template prep). The task script also
+     `report.html` to `C:\Users\Public\Documents\huitzilopochtli` (the
+     Windows analog of the ExecStartPost + sync-report.sh pairing; the
+     report shortcut targets that copy). Python 3 must be on PATH
+     (`PrependPath=1` from the python.org installer during template prep).
+     Also upload and run `packaging/huitz-hardening-win.ps1` once: it kills
+     the Edge first-run wizard, the Shutdown Event Tracker + Server Manager
+     logon modals, and the python advertised-shortcut MSI self-repair trap
+     (REDEPLOY.md gotchas 25/26). The task script also
      needs the agent run once by hand after placement or the first grade
      waits for the next 5-minute tick.
 

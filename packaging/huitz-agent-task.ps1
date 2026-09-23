@@ -2,11 +2,12 @@
 #
 # This is what the HuitzilopochtliAgent scheduled task (registered by
 # huitzilopochtli-agent-win.ps1) executes every cycle: run the agent once and
-# mirror the report to the Public Desktop. It is the Windows analog of the
-# systemd unit's ExecStart + ExecStartPost/sync-report.sh pairing -- honor
+# mirror the report into the Public Documents dir. It is the Windows analog of
+# the systemd unit's ExecStart + ExecStartPost/sync-report.sh pairing -- honor
 # mode's agent runs once and exits, and the task's 5-minute cadence is what
-# re-grades the box. Windows browsers (and the team account) can always read
-# C:\Users\Public\Desktop, so the report shortcut points there.
+# re-grades the box. The report shortcut points at that mirror (off the
+# Desktop, which stays at the forensics answers file + shortcuts), and every
+# account can read C:\Users\Public\Documents.
 #
 # Install layout (created by pipeline.install_box + the win installer):
 #   C:\ProgramData\huitzilopochtli\agent.pyz
@@ -34,16 +35,25 @@ if ($pyExe) {
 }
 
 $report = Join-Path $dir 'report.html'
+$mirror = Join-Path $env:PUBLIC 'Documents\huitzilopochtli'
 if (Test-Path $report) {
-    Copy-Item -Force $report (Join-Path $env:PUBLIC 'Desktop\report.html')
+    New-Item -ItemType Directory -Force -Path $mirror | Out-Null
+    Copy-Item -Force $report (Join-Path $mirror 'report.html')
 }
 # report.json (agent/snapshot.py) is what the `huitz` CLI renders from
 # (py C:\ProgramData\huitzilopochtli\agent.pyz score). Mirror it alongside
-# the HTML so the CLI sees the same grade the Desktop report does.
+# the HTML so the CLI sees the same grade the report shortcut does.
 $snapshot = Join-Path $dir 'report.json'
 if (Test-Path $snapshot) {
-    Copy-Item -Force $snapshot (Join-Path $env:PUBLIC 'Desktop\report.json')
+    New-Item -ItemType Directory -Force -Path $mirror | Out-Null
+    Copy-Item -Force $snapshot (Join-Path $mirror 'report.json')
 }
+# Legacy Public Desktop copies from pre-Documents builds: superseded by the
+# Documents mirror (the shortcuts point there now). Only these two files are
+# ever removed -- the Desktop otherwise belongs to the box.
+Remove-Item -Force -ErrorAction Ignore `
+    (Join-Path $env:PUBLIC 'Desktop\report.html'),
+    (Join-Path $env:PUBLIC 'Desktop\report.json')
 # The forensics answers file is edited by the (UAC-filtered) desktop user
 # but written by this SYSTEM task's agent, and os.chmod cannot express NTFS
 # ACLs -- so re-grant BUILTIN\Users modify every cycle. Heals boxes whose

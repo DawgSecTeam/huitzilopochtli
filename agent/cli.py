@@ -11,8 +11,9 @@ rendered idiomatically for a terminal instead of ported from the web page.
     huitz help
 
 Data source: agent/snapshot.py's report.json, published by the agent on
-every grade and Desktop-mirrored by packaging/sync-report.sh — so every
-command works as ANY user on the box, no root and no sealed-dir access
+every grade and mirrored for every user by packaging/sync-report.sh — so
+every command works as ANY user on the box, no root and no sealed-dir
+access
 needed (except `grade`, which runs the scoring pipeline and therefore
 requires root, exactly like the systemd timer does).
 
@@ -156,19 +157,29 @@ def _report_json_from_config(config_path: str) -> str | None:
 
 
 def _desktop_report_paths() -> list:
-    """Desktop report.json candidates, this user first, then other real
-    accounts (the uid 1000-59999 + login-shell heuristic that sync-report.sh
-    and agent/notify.py use)."""
+    """report.json mirror candidates. Current builds mirror into
+    <home>/Documents/huitzilopochtli/ (off the Desktop, but still readable by
+    a snap-confined browser); older templates mirrored into Desktop/. Both
+    are searched, mirror before legacy, this user before other real accounts
+    (the uid 1000-59999 + login-shell heuristic that sync-report.sh and
+    agent/notify.py use)."""
     out = []
     home = os.path.expanduser("~")
+
+    def add(homedir: str) -> None:
+        for rel in (os.path.join("Documents", "huitzilopochtli", "report.json"),
+                    os.path.join("Desktop", "report.json")):
+            path = os.path.join(homedir, rel)
+            if path not in out:
+                out.append(path)
+
     if os.name == "nt":
-        public_desktop = os.path.join(
-            os.environ.get("PUBLIC", r"C:\Users\Public"), "Desktop")
-        out.append(os.path.join(public_desktop, "report.json"))
-        out.append(os.path.join(home, "Desktop", "report.json"))
+        pub = os.environ.get("PUBLIC", r"C:\Users\Public")
+        out.append(os.path.join(pub, "Documents", "huitzilopochtli", "report.json"))
+        out.append(os.path.join(pub, "Desktop", "report.json"))
+        add(home)
         return out
-    out.append(os.path.join(home, "Desktop", "report.json"))
-    seen = {out[0]}
+    add(home)
     try:
         import pwd
         for entry in pwd.getpwall():
@@ -177,10 +188,7 @@ def _desktop_report_paths() -> list:
             shell = entry.pw_shell or ""
             if shell.endswith("/nologin") or shell.endswith("/false"):
                 continue
-            candidate = os.path.join(entry.pw_dir, "Desktop", "report.json")
-            if candidate not in seen:
-                seen.add(candidate)
-                out.append(candidate)
+            add(entry.pw_dir)
     except ImportError:
         pass
     return out
@@ -1096,9 +1104,9 @@ def cmd_grade(argv: list, outstream) -> int:
         # ValueError from agent_main.honor_grade; render it as a clean CLI
         # error instead of a traceback.
         raise CliError(f"grade failed: {e}") from e
-    # Desktop mirroring is honor_grade's last step (ordered after the write —
-    # the unit's ExecStartPost races a Type=simple agent and lands one grade
-    # stale), so the reading verbs see this grade immediately.
+    # Desktop mirroring is honor_grade's last step (the Documents/huitzilopochtli
+    # mirror — the unit's ExecStartPost races a Type=simple agent and lands one
+    # grade stale), so the reading verbs see this grade immediately.
 
     if opts.get("--quiet"):
         change = f"  (delta {delta:+d})" if delta else ""

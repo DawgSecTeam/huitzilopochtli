@@ -1,10 +1,10 @@
 {
   "name": "theme-readme-win",
-  "description": "Box theming (Windows): copies the README attachment ($README_FILENAME) to C:\\Users\\Public\\Desktop\\README.html (every interactive account sees the Public Desktop). Auto-created idempotently by boxbuilder/vulndb.py; do not hand-edit the name.",
+  "description": "Box theming (Windows): copies the README attachment ($README_FILENAME) to C:\\Users\\Public\\Documents\\huitzilopochtli\\README.html (every interactive account sees the Public profile; the handbook .lnk points here, off the Desktop). Auto-created idempotently by boxbuilder/vulndb.py; do not hand-edit the name.",
   "platform": "windows",
   "category": "misconfiguration",
   "type": "powershell",
   "run_as": "Administrator",
-  "script": "if (-not $README_FILENAME) { Write-Output 'README_FILENAME not set; nothing to do'; exit 0 }\n$src = Join-Path (Get-Location) $README_FILENAME\nif (-not (Test-Path $src)) { throw \"README attachment $src not found in the working directory\" }\n$desktop = Join-Path $env:PUBLIC 'Desktop'\nNew-Item -ItemType Directory -Force -Path $desktop | Out-Null\nCopy-Item -Force $src (Join-Path $desktop 'README.html')\n",
+  "script": "if (-not $README_FILENAME) { Write-Output 'README_FILENAME not set; nothing to do'; exit 0 }\n$src = Join-Path (Get-Location) $README_FILENAME\nif (-not (Test-Path $src)) { throw \"README attachment $src not found in the working directory\" }\n# Off the Desktop (which stays at the forensics answers file + shortcuts): the\n# handbook .lnk points here. Public Documents is readable by every account.\n$mirror = Join-Path $env:PUBLIC 'Documents\\huitzilopochtli'\nNew-Item -ItemType Directory -Force -Path $mirror | Out-Null\nCopy-Item -Force $src (Join-Path $mirror 'README.html')\n",
   "depends_on": []
 }

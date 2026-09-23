@@ -100,8 +100,9 @@ def motd_script(title: str, organization: Optional[str] = None,
         grade_line,
         "  '' \\",
         "  'Fixes re-score automatically about a minute after you make' \\",
-        "  'them. Also on the Desktop: report.html and' \\",
-        "  'Forensics-Questions.txt. Good luck.'",
+        "  'them. The Desktop has the handbook and Scoring Report' \\",
+        "  'shortcuts plus Forensics-Questions.txt; the full report' \\",
+        "  'lives in ~/Documents/huitzilopochtli. Good luck.'",
         "",
     ])
 

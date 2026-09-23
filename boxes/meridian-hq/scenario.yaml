@@ -1389,3 +1389,10 @@ theme:
   logo: assets/logo.png
   wallpaper: assets/wallpaper.png
   readme: assets/README.md
+  # Windows .lnk shortcuts: exec is the TARGET path (%VAR% expanded by the
+  # theme-shortcuts-win seed). The handbook points at the Public Documents copy
+  # theme-readme-win plants -- the Public Desktop itself stays at exactly the
+  # forensics answers file + shortcuts.
+  desktop_shortcuts:
+    - name: "Hardening Handbook"
+      exec: "%PUBLIC%\\Documents\\huitzilopochtli\\README.html"

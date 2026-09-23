@@ -253,7 +253,26 @@ def test_windows_shortcut_pairs_report_target():
     names = [n for n, _ in pairs]
     assert "Scoring Report" in names
     exec_cmd = dict(pairs)["Scoring Report"]
-    assert exec_cmd.endswith("report.html") and "PUBLIC" in exec_cmd
+    # The report mirror lives off the Desktop (Public Documents) so the Public
+    # Desktop stays at exactly the forensics answers file + shortcuts, but it
+    # must still be a plain %PUBLIC% path every account's browser can read.
+    assert exec_cmd == r"%PUBLIC%\Documents\huitzilopochtli\report.html"
+
+
+def test_windows_shortcut_pairs_include_authored_entries():
+    """pinecrest/meridian author a "Hardening Handbook" .lnk (Windows previously
+    had no readme shortcut at all -- just the raw README.html on the Desktop)."""
+    import yaml
+    from boxbuilder.theme import _shortcut_pairs
+
+    for box in ("pinecrest-hospital", "meridian-hq"):
+        sc = yaml.safe_load(open(f"boxes/{box}/scenario.yaml", encoding="utf-8"))
+        pairs = _shortcut_pairs(sc["theme"], windows=True)
+        by_name = dict(pairs)
+        assert "Hardening Handbook" in by_name, box
+        assert by_name["Hardening Handbook"] == \
+            r"%PUBLIC%\Documents\huitzilopochtli\README.html", box
+        assert "Scoring Report" in by_name, box
 
 
 # --- the -win seed definitions themselves ---------------------------------------
@@ -424,3 +443,50 @@ def test_pinecrest_rogue_accounts_scored_disabled_not_removed():
         assert "$null -ne $u" in script, f"{cid} must require the account to exist"
         # old removal-based check ids must be gone
         assert "no_mharding" not in by_id and "no_jweaver" not in by_id
+
+
+# --- logon/browser hardening (the "scary pop-ups" fixes) -------------------------
+
+def test_windows_hardening_script_kills_the_known_popups():
+    """packaging/huitz-hardening-win.ps1 must address every documented popup:
+    Edge first-run, the Shutdown Event Tracker modal, Server Manager auto-open
+    (in the Default user hive -- SSH HKCU writes don't survive sealing), and
+    the python MSI advertised-shortcut self-repair trap (gotcha 26)."""
+    script = open("packaging/huitz-hardening-win.ps1", encoding="utf-8").read()
+    # Edge onboarding
+    assert "Policies\\Microsoft\\Edge" in script
+    assert "HideFirstRunExperience" in script and "AutoImportAtFirstRun" in script
+    # Shutdown Event Tracker (REDEPLOY.md gotcha 25)
+    assert "ShutdownReasonOn" in script and "ShutdownReasonUI" in script
+    # Server Manager in C:\Users\Default\NTUSER.DAT via reg load/unload
+    assert "NTUSER.DAT" in script and "DoNotOpenAtLogon" in script
+    assert "reg load" in script and "reg unload" in script
+    # python advertised shortcuts (gotcha 26): repair + remove the Start-menu folder
+    assert "/faus" in script and "Start Menu\\Programs\\Python" in script
+    # Best-effort contract: every section guarded, script always exits 0.
+    assert script.rstrip().endswith("exit 0")
+    assert script.count("WARNING:") >= 3
+
+
+def test_pipeline_installs_hardening_on_windows_only():
+    """pipeline.install_box must place + run the hardening script inside its
+    windows branch (between the hardening marker and the POSIX-only motd
+    section) -- POSIX machines never see the hardening SFTP/run."""
+    import inspect
+    from boxbuilder import pipeline
+    src = inspect.getsource(pipeline.install_box)
+    assert "huitz-hardening-win.ps1" in src
+    _, _, tail = src.partition("# --- Windows logon/browser hardening")
+    block = tail[:tail.find("# --- first-login motd")]
+    assert 'if os_name == "windows":' in block
+    assert "harden_remote" in block and "harden_local" in block
+
+
+def test_win_task_script_mirrors_to_public_documents():
+    """The scheduled-task wrapper maintains the report mirror in the Public
+    Documents dir (off the Desktop) and purges the legacy Public Desktop copies;
+    the forensics ACL re-grant is untouched."""
+    ps1 = open("packaging/huitz-agent-task.ps1", encoding="utf-8").read()
+    assert "Documents\\huitzilopochtli" in ps1
+    assert "Desktop\\report.html" in ps1 and "Desktop\\report.json" in ps1
+    assert "icacls $forensics /grant '*S-1-5-32-545:M'" in ps1

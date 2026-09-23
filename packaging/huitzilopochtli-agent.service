@@ -40,18 +40,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/.huitzilopochtli/agent.pyz /opt/.huitzilopochtli/agent_config.json
-# Mirrors report.html into each real user's $HOME/Desktop (see that script's
-# comments): a snap-confined browser (e.g. Ubuntu's default Firefox) can only
-# see paths under $HOME, never /opt, so a "Scoring Report" desktop shortcut
-# pointed straight at /opt/.huitzilopochtli/report.html shows "File not found"
-# from inside one. Honor mode's timer restarts this service every 60s, so the
+# Mirrors report.html into each real user's $HOME/Documents/huitzilopochtli
+# dir (see that script's comments): a snap-confined browser (e.g. Ubuntu's
+# default Firefox) can only see plain $HOME paths, never /opt, so a "Scoring
+# Report" desktop shortcut pointed straight at /opt/.huitzilopochtli/
+# report.html shows "File not found" from inside one. Honor mode's timer restarts this service every 60s, so the
 # synced copy stays fresh; ranked mode's single long-running process only
 # gets the very first snapshot synced (ExecStartPost fires once, at service
 # start) -- a known limitation, same shape as the honor/ranked asymmetry
 # already documented in huitzilopochtli-agent.timer.
 # CAUTION: with Type=simple this fires when the agent process is FORKED,
 # not when it exits — it races the ~2s grade and copies the PREVIOUS
-# cycle's snapshot to the Desktops (mtime fresh, content one grade stale,
+# cycle's snapshot to the mirrors (mtime fresh, content one grade stale,
 # which pinned the huitz CLI countdown at zero). The agent itself now runs
 # this script at the END of every honor grade (agent/__main__.py:
 # _sync_desktop_copies), which is ordered after the write; this
@@ -65,7 +65,7 @@ RestartSec=5s
 # Hardening (best-effort; loosen if the agent's checks need broader
 # access to inspect the host -- many checks legitimately need root).
 # ProtectHome is off (not read-only) because ExecStartPost above needs to
-# write into each real user's $HOME/Desktop.
+# write into each real user's $HOME.
 ProtectHome=false
 NoNewPrivileges=false
 

@@ -7,8 +7,10 @@ in exactly one place. No code here opens a socket to vulndb-ui anymore.
 
 The public surface theme.py relies on is unchanged (resolve_vulndb_url, load_seed_definition,
 list_configurations, create_configuration, ensure_configuration, ensure_attachment, VulndbError),
-and so are the semantics: ensure_configuration is idempotent create-if-missing (never overwrites),
-and ensure_attachment is content-addressed (`<sha256[:16]>-<basename>`) so identical bytes reuse
+and so are the semantics: ensure_configuration is idempotent create-if-missing (never overwrites
+by default; sync=True additionally converges a drifted row onto the bundled seed via
+vulndb-cli update — repo-owned theme seeds pass it, so seed edits actually ship), and
+ensure_attachment is content-addressed (`<sha256[:16]>-<basename>`) so identical bytes reuse
 one attachment and different bytes always upload a new one.
 """
 import hashlib
@@ -182,12 +184,52 @@ def _find_by_name(configurations: list, name: str):
     return None
 
 
-def ensure_configuration(base_url: str, definition: dict, timeout: int = 60) -> dict:
-    """Idempotent: find `definition["name"]` in the live catalog; create it if absent. Never
-    updates an existing row — an author who wants to change a seeded script edits it themselves
-    via vulndb-ui/vulndb-cli; boxbuilder only ever ensures presence, never overwrites."""
+def update_configuration(base_url: str, definition: dict, timeout: int = 60) -> dict:
+    """`vulndb-cli update <name> --file -` (full definition on stdin). vulndb-cli PUTs a
+    full replace layered on the current row, so feeding it the whole seed doc converges
+    the catalog row onto the repo seed. Returns the updated row; when nothing differs,
+    vulndb-cli emits no JSON and the seed definition itself is returned (callers only
+    need a name/attachments, which it carries)."""
+    ref = definition.get("name")
+    if not ref:
+        raise VulndbError("update_configuration needs a definition with a 'name'")
+    row = _run_vulndb_cli(["update", ref, "--file", "-"], base_url,
+                          stdin_str=json.dumps(definition), timeout=timeout)
+    if isinstance(row, dict):
+        row.setdefault("attachments", [])
+        return row
+    return dict(definition, attachments=definition.get("attachments") or [])
+
+
+# The fields a bundled seed carries and a catalog row mirrors; drift on any of these
+# is what ensure_configuration(sync=True) converges. Attachments are never compared:
+# they're content-addressed uploads managed by ensure_attachment, not seed content.
+_SEED_FIELDS = ("name", "description", "platform", "category", "type", "run_as",
+                "script", "depends_on")
+
+
+def _seed_drift(existing: dict, definition: dict) -> bool:
+    """True when the catalog row differs from the bundled seed on any seed field."""
+    return any(key in definition and existing.get(key) != definition[key]
+               for key in _SEED_FIELDS)
+
+
+def ensure_configuration(base_url: str, definition: dict, timeout: int = 60,
+                         sync: bool = False) -> dict:
+    """Idempotent: find `definition["name"]` in the live catalog; create it if absent.
+    Never updates an existing row by default — an author who wants to change a seeded
+    script edits it themselves via vulndb-ui/vulndb-cli; boxbuilder only ever ensures
+    presence, never overwrites.
+
+    sync=True opts repo-owned seeds into convergence: a row whose content drifted from
+    the bundled seed (e.g. a theme seed this repo has since edited — the pre-sync rows
+    keep running their old script forever, which is how a seed edit silently never
+    ships) is PUT back into sync via vulndb-cli update. Drift is compared on the seed
+    fields only, never on attachments."""
     existing = _find_by_name(list_configurations(base_url, timeout=timeout), definition["name"])
     if existing is not None:
+        if sync and _seed_drift(existing, definition):
+            return update_configuration(base_url, definition, timeout=timeout)
         return existing
     row = create_configuration(base_url, definition, timeout=timeout)
     # A freshly created row has no attachments yet; normalize so ensure_attachment's check is

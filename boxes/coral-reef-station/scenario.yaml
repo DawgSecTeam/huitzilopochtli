@@ -813,7 +813,7 @@ theme:
     # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
     # .desktop Exec= line is not guaranteed to be shell-expanded.
     - name: "Station Hardening Handbook"
-      exec: "sh -c 'xdg-open $HOME/Desktop/README.html'"
+      exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
 
 # Scored forensics questions (CyberPatriot-style): teams type answers into
 # Forensics-Questions.txt on the Desktop; the agent re-grades each pass.
