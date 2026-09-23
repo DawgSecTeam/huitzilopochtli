@@ -234,7 +234,11 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    over SSH, reboot, then `pmx exec <vmid> -- cmd /c echo ok` as the
    acceptance test) -- and re-verify before trusting old docs. Note the
    agent process itself can die mid-session -- after a failed exec storm it
-   stopped answering until a full VM reboot.
+   stopped answering until a full VM reboot. The storm vector is also closed
+   in tooling: pmx.py's `_retry_transport` and
+   `tests/proxmox/proxmox_helper.py` retry agent endpoints on TRANSPORT
+   failures only -- never blind-retry an answer the API actually gave us,
+   and never wrap exec in a loop (spaced attempts, >=5s).
 3. **PVE VNC console over the API is nearly unusable for automation; plan
    around it.** `vncproxy` + `vncwebsocket` works (auth: the per-session
    `password` from vncproxy answers the VNC challenge -- DES with each key
@@ -426,7 +430,11 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    `DirectoryEntry.Properties[...]` path throws
    "Cannot index into a null array" once the DC hardens LDAP signing.
    The check must fail closed when the DC isn't up; the 5-minute task
-   cadence re-scores, so early-boot noise never sticks.
+   cadence re-scores, so early-boot noise never sticks. The same window
+   hits interactive tooling (SSH/RDP reset mid-handshake until AD serves);
+   `pmx wait-ssh <vmid> --user <admin>` rides it out with bounded, spaced
+   auth attempts (verified 2026-09-23 on a fresh 155 clone) -- never hand-
+   retry auth in a loop.
 23. **AD scoring flake #2 -- secedit snapshots re-assert themselves.**
    `weak-password-policy-win` round-trips secedit (export -> edit ->
    configure); on a DC that writes a LOCAL policy store snapshot, and
