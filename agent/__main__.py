@@ -564,7 +564,7 @@ def _warn_if_plain_http(manifest) -> None:
     production ranked deployments should not. Loud, but not fatal -- there
     is no self-signed-CA story yet to make HTTPS universally usable."""
     from urllib.parse import urlsplit
-    url = urlsplit(manifest.engine_url or "")
+    url = urlsplit(getattr(manifest, "engine_url", None) or "")
     if url.scheme != "http":
         return
     if url.hostname in ("127.0.0.1", "localhost", "::1"):
