@@ -301,7 +301,7 @@ checks:
       path: {target_file}
       extract: "PermitRootLogin (\\\\w+)"
     expect:
-      equals: no
+      equals: 'no'
       points: 10
 """,
             encoding="utf-8",
