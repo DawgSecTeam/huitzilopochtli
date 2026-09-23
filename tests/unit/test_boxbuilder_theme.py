@@ -249,10 +249,11 @@ def test_theme_readme_seed_targets_documents_mirror():
     # Off the Desktop, under $HOME (snap-confined browsers can't see /opt).
     assert "Documents/huitzilopochtli" in seed["script"]
     assert "XDG_DOCUMENTS_DIR" in seed["script"]
-    # The Desktop is no longer a destination (no desktop-dir resolution, no
-    # $desktop target -- path-like mentions only; prose comments are fine).
-    assert "Desktop/" not in seed["script"]
+    # The Desktop is no longer a destination -- but the seed does clean up the
+    # legacy Desktop copy older builds left behind (fixed name, its own file).
+    assert "Desktop/" not in seed["script"].replace("rm -f \"$home/Desktop/README.html\"", "")
     assert "$desktop" not in seed["script"]
+    assert 'rm -f "$home/Desktop/README.html"' in seed["script"]
     assert "nakon_desktop_dir" not in seed["script"]
 
 
@@ -262,8 +263,9 @@ def test_theme_readme_win_seed_targets_public_documents():
                           encoding="utf-8"))
     assert "Documents\\huitzilopochtli" in seed["script"]
     # The Desktop is no longer a destination (no 'Desktop' Join-Path target;
-    # prose mentions in comments are fine).
+    # prose mentions and the legacy-copy cleanup are fine).
     assert "'Desktop'" not in seed["script"]
+    assert "Desktop\\README.html" in seed["script"]
 
 
 def test_theme_shortcuts_seed_trusts_as_the_desktop_user():
