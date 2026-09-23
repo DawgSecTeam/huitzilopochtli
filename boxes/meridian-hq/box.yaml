@@ -10,6 +10,15 @@
 # all -win seeds; schtask HuitzilopochtliAgent at 5-min cadence = the honor
 # re-grade timer, coupled to agent _honor_interval_s on win32).
 #
+# RE-SEALED 2026-09-23 as vmid 156 "challenge-meridian-hq" (155 kept aside as
+# challenge-meridian-hq-pre-fix; pool S6QE5 flipped to 156): decluttered
+# desktop (Forensics-Questions.txt + Hardening Handbook.lnk + Scoring
+# Report.lnk only; mirrors in C:\Users\Public\Documents\huitzilopochtli),
+# huitz-hardening baked in (Edge first-run off, Shutdown Tracker + Server
+# Manager off, python repaired), and python RE-HOMED to C:\Python312 -- the
+# quote-mangled C:\Program home is DELETED, so the logon "File Name Warning"
+# rename dialog can never fire (REDEPLOY.md gotcha 30).
+#
 # BASE TEMPLATE (2026-09-21, SINCE DESTROYED in the post-seal cleanup):
 # vmid 112 was a 953 clone promoted with Install-ADDSForest -DomainName
 # meridian.local -DomainNetbiosName MERIDIAN -InstallDns (DSRM password
@@ -79,7 +88,7 @@ scenario: scenario.yaml
 nakon_config: nakon.json
 provider:
   name: ssh
-  host: 10.0.0.51
+  host: 10.0.0.172
   port: 22
   user: sysadmin
   password: MeridianBuild2026!
