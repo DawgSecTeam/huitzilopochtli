@@ -610,3 +610,53 @@ def test_plain_http_warning_fires_for_non_loopback_only(capsys):
     _warn_if_plain_http(m("https://ranked.example.com"))
     _warn_if_plain_http(m(None))
     assert capsys.readouterr().err == ""
+
+
+def test_file_regex_boolean_expect_is_an_authoring_error(tmp_path):
+    """The YAML 1.1 trap: unquoted `equals: no` compiles to `equals: false`,
+    which never matches string evidence like "no" (PermitRootLogin no) and
+    silently scores 0. file_regex evidence is always a string, so a boolean
+    there is always this trap; permission checks (boolean `exists` evidence)
+    are exempt."""
+    import yaml as yaml_mod
+
+    import authoring.validate as av
+
+    def validate(check_body):
+        text = (
+            "scenario:\n  name: t\n  version: 1\n  mode: honor\n"
+            "  hosts: [localhost]\nchecks:\n  - id: c1\n" + check_body
+        )
+        return av.validate_scenario_yaml(yaml_mod.safe_load(text), "t.yaml")
+
+    bad = (
+        "    type: file_regex\n"
+        "    category: vuln\n"
+        "    host_id: localhost\n"
+        "    display: d\n"
+        "    max_points: 10\n"
+        "    collect: {path: /x, extract: 'PermitRootLogin (\\w+)'}\n"
+        "    expect:\n"
+        "      equals: no\n"
+        "      points: 10\n"
+    )
+    errs = validate(bad)
+    assert any("boolean" in e and "expect.equals" in e for e in errs), errs
+
+    quoted = bad.replace("equals: no", "equals: 'no'")
+    assert validate(quoted) == []
+
+    perm = (
+        "    type: permission\n"
+        "    category: vuln\n"
+        "    host_id: localhost\n"
+        "    display: d\n"
+        "    max_points: 10\n"
+        "    collect: {path: /x}\n"
+        "    expect:\n"
+        "      equals: false\n"
+        "      field: exists\n"
+        "      points: 10\n"
+    )
+    # Intentional boolean matcher on boolean evidence: valid.
+    assert validate(perm) == []

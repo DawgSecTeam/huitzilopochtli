@@ -78,6 +78,25 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                         f"{source_path}: {ref}.expect must be a non-null, "
                         f"non-empty mapping (an empty matcher crashes the evaluator)"
                     )
+                elif check.get("type") == "file_regex":
+                    # YAML 1.1: unquoted no/yes/true/false become booleans, and
+                    # `equals: false` never matches string evidence like "no"
+                    # (PermitRootLogin no) — silently scoring 0 forever.
+                    # file_regex evidence is always the extracted string, so a
+                    # boolean matcher value can only be this trap. (Permission
+                    # checks are exempt: their `exists` evidence is a real
+                    # boolean, and `equals: false` there is correct.)
+                    for exp_key, exp_val in expect.items():
+                        if isinstance(exp_val, bool) or (
+                                isinstance(exp_val, list)
+                                and any(isinstance(i, bool) for i in exp_val)):
+                            errors.append(
+                                f"{source_path}: {ref}.expect.{exp_key} is a "
+                                f"boolean ({exp_val!r}) — YAML parsed an "
+                                f"unquoted yes/no/true/false, but file_regex "
+                                f"evidence is a string. Quote it if a string "
+                                f"was meant (e.g. {exp_key}: 'no')."
+                            )
 
             if "solution" in check:
                 errors.extend(
