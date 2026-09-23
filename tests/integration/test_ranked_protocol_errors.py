@@ -454,6 +454,40 @@ def test_checkin_nan_wall_claim_is_rejected(engine, scenario, enrolled_box,
     assert status == 400, (status, parsed)
 
 
+def test_box_header_mismatch_rejected(engine, scenario, enrolled_box, seqs):
+    """X-HUITZILOPOCHTLI-Box naming a different box than the body is never
+    legitimate; the engine rejects it before any signature work."""
+    name, version = scenario
+    priv, box_id = enrolled_box
+    body = _bundle_dict(box_id, next(seqs), name, version, {"matched": "no"})
+    status, parsed, _ = _post_json(
+        engine, "/checkin", body, sig=b"\x00" * 64,
+        headers={"X-HUITZILOPOCHTLI-Box": "some-other-box"})
+    assert status == 400
+    assert "does not match" in parsed["error"]
+
+    # The matching header (what the real agent sends) is fine -- the request
+    # now fails later, at the deliberately-bad signature, not here.
+    status, parsed, _ = _post_json(
+        engine, "/checkin", body, sig=b"\x00" * 64,
+        headers={"X-HUITZILOPOCHTLI-Box": box_id})
+    assert status == 403
+    assert "bad signature" in parsed["error"]
+
+
+def test_box_header_mismatch_rejected_on_enroll(engine, scenario):
+    name, version = scenario
+    priv, pub = signing.keypair()
+    body = _enroll_body(engine.mint_token(name), "proto-header-box", pub,
+                        name, version)
+    status, parsed, _ = _post_json(
+        engine, "/enroll", body,
+        sig=signing.sign(priv, canon.canonicalize(body)),
+        headers={"X-HUITZILOPOCHTLI-Box": "someone-else"})
+    assert status == 400
+    assert "does not match" in parsed["error"]
+
+
 # --------------------------------------------------------------------------
 # admin surface + GET routing
 # --------------------------------------------------------------------------

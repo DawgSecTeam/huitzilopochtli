@@ -35,8 +35,9 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
       - bad signature -> raise EnrollError(403, ...)
       - already consumed -> raise EnrollError(409, ...)
       - expired -> raise EnrollError(410, ...)
-      - else: store.create_box(...), store.consume_token(token), and return
-        an EnrollResponse-shaped dict {"ok": True, "box_id": ..., "checkin_interval_s": ...}.
+      - else: atomically consume the token + create the box via
+        store.enroll_box_atomic(...) and return an EnrollResponse-shaped
+        dict {"ok": True, "box_id": ..., "checkin_interval_s": ...}.
     """
     # 1. Validate shape. (isinstance(x, int) accepts bool, so scenario_version
     # needs an explicit bool guard like the rest of the codebase.)

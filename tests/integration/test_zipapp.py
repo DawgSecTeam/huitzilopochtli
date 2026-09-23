@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import zipfile
 
 import pytest
@@ -255,3 +256,116 @@ def test_huitz_cli_verbs_through_zipapp(tmp_path):
     r = _cli("score", "--report", str(tmp_path / "nope.json"))
     assert r.returncode == 1
     assert "no grade found" in r.stderr
+
+
+def test_zipapp_ranked_smoke(tmp_path):
+    """The .pyz a box actually runs enrolls and checks in against a real
+    engine, using a real compiled + SIGNED manifest (the fidelity the
+    loopback tier's unsigned fixtures skip)."""
+    import test_ranked_loopback as lb
+    from authoring.compile import compile_scenario
+
+    engine = lb._EngineProc(
+        tmp_path, env_extra={"HUITZILOPOCHTLI_CHECKIN_INTERVAL_S": "2"})
+    try:
+        name = "zipapp-ranked"
+        target_file = tmp_path / "sshd_config"
+        target_file.write_text("PermitRootLogin no\n", encoding="utf-8")
+
+        engine.upload_scenario(lb._base_rubric(name, [
+            {"check_id": "backdoor-absent", "category": "vuln",
+             "matcher": {"tag": "equals", "field": "matched", "value": "no"},
+             "points": 10},
+        ]))
+        token = engine.mint_token(name)
+
+        scenario_yaml = tmp_path / "scenario.yaml"
+        scenario_yaml.write_text(
+            f"""
+scenario:
+  name: {name}
+  version: 1
+  mode: ranked
+  engine_url: "{engine.base_url}"
+  hosts:
+    - localhost
+
+checks:
+  - id: backdoor-absent
+    type: file_regex
+    category: vuln
+    host_id: localhost
+    display: "no root login backdoor"
+    max_points: 10
+    collect:
+      path: {target_file}
+      extract: "PermitRootLogin (\\\\w+)"
+    expect:
+      equals: no
+      points: 10
+""",
+            encoding="utf-8",
+        )
+        out_dir = tmp_path / "compiled"
+        priv, _pub = keypair()
+        outputs = compile_scenario(str(scenario_yaml), str(out_dir), priv)
+
+        identity_path = tmp_path / "identity.json"
+        config = {
+            "mode": "ranked",
+            "manifest_path": outputs["manifest"],
+            "rubric_path": None,
+            "identity_path": str(identity_path),
+            "report_path": str(tmp_path / "report.html"),
+            "checkin_interval_s": 1,
+            "authoring_public_key_path": outputs["authoring_public_key"],
+            "enrollment_token": token,
+        }
+        config_path = tmp_path / "agent_config.json"
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f)
+
+        pyz_path = str(tmp_path / "agent.pyz")
+        _build(pyz_path)
+
+        # The ranked agent loops forever; give it ~3 crypto-bound cycles at
+        # the 2s engine cadence, then stop it and inspect engine state.
+        proc = subprocess.Popen(
+            [sys.executable, pyz_path, str(config_path)],
+            cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            time.sleep(14.0)
+        finally:
+            proc.terminate()
+            try:
+                out, err = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate(timeout=5)
+        assert "Traceback" not in err, f".pyz ranked run crashed:\n{err}"
+
+        assert identity_path.exists(), ".pyz never wrote an identity file"
+        with open(identity_path) as f:
+            box_id = json.load(f)["box_id"]
+        assert os.path.exists(str(identity_path) + ".enrolled"), (
+            ".pyz never confirmed enrollment with a signed check-in"
+        )
+
+        row = lb._query_box(engine.db_path, box_id)
+        assert row is not None, ".pyz never enrolled with the engine"
+        assert row["last_seq"] >= 2, (
+            f"expected multiple check-ins at the 2s cadence, got "
+            f"last_seq={row['last_seq']}"
+        )
+
+        rows = engine.leaderboard(name)
+        assert len(rows) == 1 and rows[0]["total"] == 10, rows
+
+        # The report the player sees reflects the engine's authoritative
+        # score, not a box-local evaluation.
+        report = (tmp_path / "report.html").read_text(encoding="utf-8")
+        assert "Total: 10" in report
+    finally:
+        engine.stop()
