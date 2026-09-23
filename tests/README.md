@@ -154,21 +154,18 @@ from Ubuntu now get distinct IPs). The test now uses Ubuntu for both roles
 and gets past enrollment. It's still not fully green, though, for a
 *third*, previously-undiscovered reason:
 
-3. **From this dev environment, arbitrary VM ports on the Proxmox host's
-   LAN (`10.0.0.0/24`) are not reachable at all** -- confirmed by testing
-   against several already-running, unrelated production VMs (not just
-   test clones): every port except the Proxmox API's own (`:8006`) gets an
-   immediate TCP RST within ~35ms. Only the Proxmox API and the QEMU
-   guest-agent channel (file-write/file-read/exec) are reachable from here;
-   a raw HTTP client on this machine cannot reach a cloned VM's exposed
-   port directly. This is exactly the network boundary
-   `test_ranked_two_machines.py`'s engine/checkin polling needs (it must
-   `GET /health` and `POST /checkin` from the test process, not just push
-   files via the guest agent), so the test is blocked on network
-   reachability from this specific dev environment rather than on anything
-   in the repo. `test_local_honor_distribution.py` and
-   `test_all_check_types_live.py` are unaffected because they only ever use
-   the guest-agent channel, never a raw connection to a VM's IP.
+3. **~~From this dev environment, arbitrary VM ports on the Proxmox host's
+   LAN (`10.0.0.0/24`) are not reachable at all~~ (RESOLVED 2026-09-23 — the
+   boundary is per-bridge, not host-wide)**: the original RST finding was
+   real but its scope was misread. Production/workshop VMs sit on
+   **untrustedbr** (firewalled workshop bridge) and do RST everything from
+   here; build clones **rebridged to `vmbr0`** (the standard build-loop step:
+   `pmx rebridge <vmid> --bridge vmbr0 --firewall 0 --yes`) are fully
+   reachable from the dev host on arbitrary ports. Verified 2026-09-23 with
+   curl to a cloned engine VM's `:8080` and ssh to a cloned agent VM's `:22`
+   (see RANKED_TESTING.md). The ranked round's real-VM E2E ran exactly this
+   way. If a two-VM ranked run fails to connect, check which bridge the clone
+   is on before believing a reachability claim: `pmx status <vmid>`.
 
 ### Bugs found and fixed in this test tier itself, along the way
 
