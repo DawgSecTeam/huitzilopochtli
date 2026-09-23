@@ -489,7 +489,9 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    `C:\Program\python.exe` / `C:\Program1\python.exe` when PATH is dead.
    Recovery for an affected box: repoint machine PATH + the
    `HKLM\SOFTWARE\Python\PythonCore\3.12\InstallPath` registry value at
-   wherever python.exe actually lives, restart the task.
+   wherever python.exe actually lives, restart the task. BUT see gotcha 30:
+   the /faus repair alone did NOT stop the logon dialog -- only removing the
+   `C:\Program` folder itself did (gotcha 30).
 27. **pmx full-clones may land on the wrong bridge.** The 2026-09-22
    meridian re-seal's full clone came up on `untrustedbr` (firewall=1)
    while the source template is on vmbr0 -- check `net0` after cloning
@@ -513,3 +515,24 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    name -> flip `template_vm_id` in the portal's configs.json (sed; one
    occurrence; validate JSON after; no restart needed) -> destroy the
    old template only when its last claim dies.
+30. **The "File Name Warning" dialog ("There is a file or folder called
+   'C:\Program' ... rename it?") is raised by the folder's existence, not by
+   the advertised shortcuts** -- so gotcha 26's /faus repair + Start-menu
+   cleanup, while necessary for the self-repair trap, never stopped the
+   dialog. Its "Rename" button renames python's home away and scoring dies
+   silently (the same trap, now fired at every logon). Only fix: eliminate
+   `C:\Program`. Done in the 2026-09-23 re-seal (template vmid 156,
+   `challenge-meridian-hq`): cleanly uninstall all python MSI products
+   (`python-3.12.10-amd64.exe /uninstall /quiet` handles the bundle; SEVEN
+   components 1603'd on direct `msiexec /x` -- broken cached-MSI state, and
+   the bundle uninstaller no-opped because the bundle registration was
+   already torn down -- so they were msizap-zapped: ARP key +
+   `HKCR\Installer\Products\<packed-guid>` +
+   `...\Installer\UserData\S-1-5-18\Products\<packed-guid>` deleted),
+   delete the folder, reinstall with
+   `TargetDir=C:\Python312 PrependPath=1`, then /faus the NEW products +
+   delete the fresh Start-menu folder. purged `C:\Program*` from machine
+   PATH. The win task script now carries `C:\Python312\python.exe` in its
+   fallback list (before the legacy C:\Program* entries). Note a service
+   restart is not enough for the task's PATH view to refresh -- the reboot
+   before sealing does it; the hard fallback covers any gap.
