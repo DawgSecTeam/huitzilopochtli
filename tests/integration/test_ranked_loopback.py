@@ -81,7 +81,8 @@ def _http_json(url: str, body: dict = None, headers: dict = None, method: str = 
 
 
 class _EngineProc:
-    def __init__(self, tmp_path, port=None, admin_token=ADMIN_TOKEN):
+    def __init__(self, tmp_path, port=None, admin_token=ADMIN_TOKEN,
+                 env_extra=None):
         self.port = port or _free_port()
         self.db_path = str(tmp_path / "engine.db")
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -90,6 +91,8 @@ class _EngineProc:
         env["HUITZILOPOCHTLI_PORT"] = str(self.port)
         env["HUITZILOPOCHTLI_ADMIN_TOKEN"] = admin_token
         env["PYTHONUNBUFFERED"] = "1"
+        if env_extra:
+            env.update(env_extra)
         self.admin_token = admin_token
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "engine.server"],
