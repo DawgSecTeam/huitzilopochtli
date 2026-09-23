@@ -229,6 +229,15 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return b""
 
+    def _box_header_mismatches(self, box_id: str) -> bool:
+        """The X-HUITZILOPOCHTLI-Box header is advisory routing metadata the
+        agents send alongside every enroll/check-in; the signature covers the
+        body, so the body is authoritative. But a header that names a
+        DIFFERENT box is never legitimate -- reject it before doing any
+        expensive verification work."""
+        provided = self.headers.get("X-HUITZILOPOCHTLI-Box")
+        return provided is not None and provided != box_id
+
     def _admin_authorized(self) -> "tuple[bool, int, str]":
         """Returns (ok, status_code_if_not_ok, message_if_not_ok)."""
         if not self.admin_token:
@@ -282,6 +291,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "malformed JSON body"})
             return
         sig = self._sig_header()
+        if self._box_header_mismatches(body.get("box_id")):
+            self._send_json(400, {"error": "X-HUITZILOPOCHTLI-Box does not match body box_id"})
+            return
         try:
             result = enrollment.handle_enroll(self.store, body, sig)
         except EnrollError as e:
@@ -295,11 +307,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send_json(400, {"error": "malformed JSON body", "last_seq": None})
             return
-        sig = self._sig_header()
         try:
             bundle = _bundle_from_dict(body)
         except Exception:
             self._send_json(400, {"error": "malformed bundle", "last_seq": None})
+            return
+        sig = self._sig_header()
+        if self._box_header_mismatches(bundle.box_id):
+            self._send_json(
+                400, {"error": "X-HUITZILOPOCHTLI-Box does not match body box_id",
+                      "last_seq": None},
+            )
             return
 
         scenario_row = self.store.get_scenario(bundle.scenario_name)

@@ -558,10 +558,31 @@ def _ensure_enrolled(config, manifest, identity) -> bool:
     return True
 
 
+def _warn_if_plain_http(manifest) -> None:
+    """A non-loopback plain-HTTP engine_url carries bundles (and the
+    directives the box will execute) in the clear. Labs do this on purpose;
+    production ranked deployments should not. Loud, but not fatal -- there
+    is no self-signed-CA story yet to make HTTPS universally usable."""
+    from urllib.parse import urlsplit
+    url = urlsplit(manifest.engine_url or "")
+    if url.scheme != "http":
+        return
+    if url.hostname in ("127.0.0.1", "localhost", "::1"):
+        return
+    print(
+        f"WARNING: engine_url {manifest.engine_url!r} uses plain HTTP over a "
+        f"non-loopback network: check-ins, scores and adversary directives "
+        f"are readable and forgeable on-path. Set up TLS on the engine and "
+        f"https in the manifest for anything beyond an isolated lab.",
+        file=sys.stderr,
+    )
+
+
 def _run_ranked(config, manifest, ctx) -> None:
     queue_path = config.identity_path + ".queue"
     last_response = None  # cached CheckinResponse across loop iterations
 
+    _warn_if_plain_http(manifest)
     identity = agent.identity.load_or_create(config.identity_path)
     # Retry enrollment in-process: exiting would have systemd restart us
     # every 5s (Restart=on-failure), and each start re-derives the public key
