@@ -199,7 +199,7 @@ HUITZILOPOCHTLI_ADMIN_TOKEN=devtoken \
 python3 -m engine.server
 ```
 
-Expected output: `huitzilopochtli engine listening on http://0.0.0.0:8080 (db=/tmp/huitzilopochtli-manual/ranked/engine.db)` plus a warning about running without TLS (expected/fine for local testing).
+Expected output: `huitzilopochtli engine listening on http://127.0.0.1:8080 (db=/tmp/huitzilopochtli-manual/ranked/engine.db)` plus a warning about running without TLS (expected/fine for local testing). The default bind is loopback; set `HUITZILOPOCHTLI_BIND=0.0.0.0` when boxes must check in over the network (e.g. a Proxmox VM round). `HUITZILOPOCHTLI_CHECKIN_INTERVAL_S` (default 60) sets the engine-authoritative check-in cadence the agents sleep between cycles — it is deliberately independent of rubric SLA intervals.
 
 **Terminal 2 — everything else:**
 
