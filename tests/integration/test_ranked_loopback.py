@@ -220,9 +220,11 @@ def _query_box(db_path: str, box_id: str, retries: int = 30):
     raise last_exc
 
 
-def _run_agent(config_path: str) -> subprocess.Popen:
+def _run_agent(config_path: str, env_extra: dict = None) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    if env_extra:
+        env.update(env_extra)
     # Open stdout/stderr to files for debugging. mode='w+' already opens in
     # text mode; NamedTemporaryFile has no separate text= kwarg.
     stdout_file_obj = tempfile.NamedTemporaryFile(mode='w+', delete=False)
@@ -320,7 +322,8 @@ def _base_config(manifest_path, identity_path, report_path, checkin_interval_s,
 # --------------------------------------------------------------------------
 
 def test_first_boot_enroll_restart_and_crash_recovery(tmp_path):
-    engine = _EngineProc(tmp_path)
+    engine = _EngineProc(
+        tmp_path, env_extra={"HUITZILOPOCHTLI_CHECKIN_INTERVAL_S": "2"})
     try:
         scenario_name = "loopback-basic"
         target_file = tmp_path / "sshd_config"
@@ -523,7 +526,8 @@ def test_sla_accrual_over_repeated_checkins(tmp_path):
     http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
     http_thread.start()
 
-    engine = _EngineProc(tmp_path)
+    engine = _EngineProc(
+        tmp_path, env_extra={"HUITZILOPOCHTLI_CHECKIN_INTERVAL_S": "2"})
     try:
         scenario_name = "loopback-sla"
         rubric = _base_rubric(scenario_name, [

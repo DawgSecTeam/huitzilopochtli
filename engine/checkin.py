@@ -63,7 +63,8 @@ class _Clock:
 
 
 def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
-                    server_secret: bytes, event_pool: list) -> CheckinResponse:
+                    server_secret: bytes, event_pool: list,
+                    next_checkin_s: int = 60) -> CheckinResponse:
     """Fail-closed handler order (§14.2):
       1. Look up box_id -> public key. Unknown box -> 403.
       2. Verify signature over the canonical body. Bad signature -> 403.
@@ -199,15 +200,17 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     # only gets its own evidence reason alongside pass/points.
     _redact_for_box(score, evidence_by_check_id)
 
-    min_sla_interval = min(
-        (entry.sla.interval_s for entry in rubric.entries if entry.sla is not None),
-        default=60,
-    )
+    # The check-in cadence is the engine's poll interval (how often the box
+    # should collect + report), NOT the SLA granularity: SLA accrual is
+    # elapsed-based and capped per check-in, so it works at any cadence.
+    # Deriving the cadence from min SLA interval_s made 1s-interval rubrics
+    # spin the box (seconds of Ed25519 per cycle) and 3600s-interval rubrics
+    # freeze scoreboard updates for an hour.
     return CheckinResponse(
         server_time=received_at,
         score=score,
         directives=directives,
-        next_checkin_s=min_sla_interval,
+        next_checkin_s=max(1, int(next_checkin_s)),
         last_seq=bundle.seq,
         issued_directives=issued_directives,
     )
