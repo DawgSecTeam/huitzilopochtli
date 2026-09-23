@@ -820,6 +820,92 @@ class TestReadme:
             assert term.visible_len(line) <= 40
 
 
+class TestScorecardContrast:
+    """The scoreboard meets the readme contrast standard: no SGR 2 (faint)
+    anywhere — it all but vanishes on several dark terminals — and muted is
+    reserved for chrome; data lines render in default ink."""
+
+    def _styled(self, snap, width=80, **kw):
+        sty = term.Style(term.C16, accent="#0a7ea4")
+        return cli.render_scorecard(snap, sty, term.Symbols(True), width, **kw)
+
+    def _accent(self):
+        return term._rgb_ansi((0x0A, 0x7E, 0xA4), term.C16)
+
+    def _muted(self):
+        return term._rgb_ansi((0x6E, 0x73, 0x78), term.C16)
+
+    def _lines_with(self, out, needle):
+        return [l for l in out.splitlines() if needle in l]
+
+    def test_no_faint_sgr_anywhere(self, tmp_path):
+        _, snap = _honor_snapshot(tmp_path)
+        out = self._styled(snap, hints=True)
+        assert "\x1b[2m" not in out
+
+    def test_data_lines_render_ink_not_muted(self, tmp_path):
+        _, snap = _honor_snapshot(tmp_path)
+        out = self._styled(snap, hints=True)
+        for needle in ("scenario v3", "1 of 2 fixed", "1 issue(s) remain",
+                       "last graded"):
+            hits = self._lines_with(out, needle)
+            assert hits, f"expected a line containing {needle!r}"
+            for line in hits:
+                assert self._muted() not in line, needle
+        _, zero = _honor_snapshot(tmp_path / "zero",
+                                  score=_score(total=0, results=[]))
+        empty = self._lines_with(self._styled(zero),
+                                 "no vulnerabilities fixed yet")
+        assert empty and self._muted() not in empty[0]
+
+    def test_hints_line_is_muted_not_faint(self, tmp_path):
+        _, snap = _honor_snapshot(tmp_path)
+        out = self._styled(snap, hints=True)
+        hits = self._lines_with(out, "try: huitz watch")
+        assert hits and self._muted() in hits[0]
+
+    def test_answers_path_gets_accent(self, tmp_path):
+        _, snap = _honor_snapshot(tmp_path)
+        snap = {**snap, "forensics": [
+            {**snap["forensics"][0],
+             "answers_path": "/home/p/Desktop/Forensics-Questions.txt"}]}
+        out = self._styled(snap)
+        hits = self._lines_with(out, "answers: ")
+        assert hits
+        assert self._accent() in hits[0]   # the path is the actionable bit
+        assert self._muted() in hits[0]    # the label stays chrome
+
+    def test_countdown_note_neutral_is_ink(self):
+        sty = term.Style(term.C16, accent="#0a7ea4")
+        note = cli._countdown_note(
+            {"mode": "honor", "next_event_at": 1700000000.0 + 60},
+            1700000000.0, sty)
+        assert "next re-grade in 01:00" in note
+        assert self._muted() not in note
+        late = cli._countdown_note(
+            {"mode": "honor", "next_event_at": 1700000000.0},
+            1700000000.0 + 3600, sty)
+        assert "overdue" in late and "\x1b[" in late   # still escalates
+
+    def test_watch_restyles_with_snapshot_accent(self, tmp_path, monkeypatch):
+        path, _snap = _honor_snapshot(tmp_path)
+        calls = []
+        real = term.Style.detect.__func__
+
+        @classmethod
+        def spy(cls, stream, override="auto", accent=None):
+            calls.append(accent)
+            return real(cls, stream, override, accent)
+
+        monkeypatch.setattr(term.Style, "detect", spy)
+        rc = cli.cmd_watch(["--once", "--report", path],
+                           _FakeStream(tty=True), _FakeStream(tty=True))
+        assert rc == cli._EXIT_OK
+        assert calls, "watch must create a style"
+        assert calls[0] is None            # built before any snapshot exists
+        assert "#0a7ea4" in calls[1:]      # restyled once the snapshot lands
+
+
 class TestPaging:
     """readme/score page through less on a terminal; pipes never see a pager."""
 
