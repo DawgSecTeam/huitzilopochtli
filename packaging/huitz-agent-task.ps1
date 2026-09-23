@@ -22,9 +22,13 @@ $config = Join-Path $dir 'agent_config.json'
 # Resolve python robustly: PATH first, then the py launcher, then the known
 # install roots. A live-box incident (2026-09-21) had C:\Program renamed by
 # an MSI self-repair dialog (the "Rename" answer) -- scoring must survive
-# whatever PATH survives that.
+# whatever PATH survives that. C:\Python312 is the canonical home as of the
+# 2026-09-24 re-seal (the quote-mangled C:\Program home is GONE -- its mere
+# existence raised the logon "File Name Warning" rename dialog); the old
+# C:\Program* entries remain as fallbacks for boxes sealed before the move.
 $pyExe = $null
 foreach ($cand in @((Get-Command python -ErrorAction SilentlyContinue).Source,
+                    'C:\Python312\python.exe',
                     'C:\Program\python.exe', 'C:\Program1\python.exe')) {
     if ($cand -and (Test-Path $cand)) { $pyExe = $cand; break }
 }
