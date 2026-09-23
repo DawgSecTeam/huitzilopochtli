@@ -15,7 +15,7 @@ from typing import Optional
 from boxbuilder import artifacts as artifacts_mod
 from boxbuilder.artifacts import INSTALL_DIR  # noqa: F401 — re-exported for callers
 from boxbuilder.providers.base import (
-    BoxHandle, BoxProvider, ExportResult, RunResult, register_provider,
+    BoxHandle, BoxProvider, ExportResult, RunResult, register_provider, stage_path,
 )
 
 # packaging/ lives at <repo_root>/packaging/; we reference its init templates.
@@ -303,7 +303,7 @@ class SshHandle(BoxHandle):
         # user can write there), then sudo-install it into place.
         if kind == "systemd":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.service")
-            tmp = "/tmp/huitzilopochtli-agent.service"
+            tmp = stage_path(self, "huitzilopochtli-agent.service")
             self.put(local, tmp)
             res = self.run(
                 f"install -m 644 {tmp} /etc/systemd/system/huitzilopochtli-agent.service && "
@@ -319,7 +319,7 @@ class SshHandle(BoxHandle):
                 # install-time snapshot forever. Ranked mode's agent already
                 # loops forever on its own and doesn't need this.
                 timer_local = os.path.join(_PACKAGING, "huitzilopochtli-agent.timer")
-                timer_tmp = "/tmp/huitzilopochtli-agent.timer"
+                timer_tmp = stage_path(self, "huitzilopochtli-agent.timer")
                 self.put(timer_local, timer_tmp)
                 res = self.run(
                     f"install -m 644 {timer_tmp} /etc/systemd/system/huitzilopochtli-agent.timer && "
@@ -330,7 +330,7 @@ class SshHandle(BoxHandle):
                     raise RuntimeError(f"failed to enable systemd timer: {res.stderr.strip()}")
         elif kind == "openrc":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.openrc")
-            tmp = "/tmp/huitzilopochtli-agent"
+            tmp = stage_path(self, "huitzilopochtli-agent")
             self.put(local, tmp)
             res = self.run(
                 f"install -m 755 {tmp} /etc/init.d/huitzilopochtli-agent && "

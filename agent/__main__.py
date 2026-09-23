@@ -222,16 +222,42 @@ def _grant_windows_write_acl(path: str) -> None:
         pass
 
 
+def _non_root_dir_owner(path: str):
+    """(uid, gid) of path's directory when we run as root on POSIX and that
+    directory belongs to another user; None otherwise (nothing to guard)."""
+    if os.name == "nt" or os.geteuid() != 0:
+        return None
+    try:
+        st = os.stat(os.path.dirname(os.path.abspath(path)))
+    except OSError:
+        return None
+    if st.st_uid == 0:
+        return None
+    try:
+        import pwd
+        return st.st_uid, pwd.getpwuid(st.st_uid).pw_gid
+    except (ImportError, KeyError):
+        return st.st_uid, st.st_gid
+
+
 def _write_forensics_template(path: str, questions: list) -> None:
     """Write the answers template for `questions` [(ordinal, text)] at `path`.
 
     Callers handle write-if-missing; here we write via tmp + rename and make
-    the file group/other-writable (and owned by the desktop user when it lives
-    under one) because the agent typically runs as root while the answers are
+    the file group/other-writable (written as the desktop user when it lives
+    in their directory, see _non_root_dir_owner) because the agent typically runs as root while the answers are
     typed in by a desktop user. The template format lives in agent/answers.py
     (shared with the collector and the huitz CLI).
     """
     lines = agent.answers.render_template(questions)
+
+    # Root writing into a user-owned dir (the Desktop) must not follow any
+    # symlink the user planted there (e.g. <path>.tmp -> /etc/shadow, which
+    # the chmod/chown below would then hand to them): write as that user.
+    owner = _non_root_dir_owner(path)
+    if owner is not None:
+        agent.answers.write_as_owner(path, lines, owner[0], owner[1], 0o666)
+        return
 
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -242,18 +268,6 @@ def _write_forensics_template(path: str, questions: list) -> None:
         pass
     if os.name == "nt":
         _grant_windows_write_acl(tmp)
-    # When the template lands on a desktop user's Desktop, hand them
-    # ownership so their editor never complains about a root-owned file.
-    desktop_dir = _primary_desktop_dir()
-    if desktop_dir and path.startswith(desktop_dir):
-        try:
-            import pwd
-            for entry in pwd.getpwall():
-                if os.path.join(entry.pw_dir, "Desktop") == desktop_dir:
-                    os.chown(tmp, entry.pw_uid, entry.pw_gid)
-                    break
-        except (ImportError, OSError):
-            pass
     os.replace(tmp, path)
 
 
@@ -442,6 +456,74 @@ def _mark_enrolled(identity_path: str) -> None:
     os.replace(tmp, marker)
 
 
+def _executed_directives_path(identity_path: str) -> str:
+    """Event ids this box has already run, adjacent to the identity (same
+    lifetime as box_id: a new identity is a new box with a new schedule)."""
+    return identity_path + ".directives"
+
+
+def _load_executed_directives(identity_path: str) -> set:
+    try:
+        with open(_executed_directives_path(identity_path), "r",
+                  encoding="utf-8") as f:
+            ids = json.load(f)
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError) as e:
+        # Unreadable: fail toward NOT re-running. Re-executing an old
+        # flush_firewall would undo a fix the team already made.
+        raise RuntimeError(
+            f"cannot read executed-directives file: {e}; refusing to run "
+            f"directives until it is repaired or removed") from e
+    return {str(i) for i in ids} if isinstance(ids, list) else set()
+
+
+def _save_executed_directives(identity_path: str, ids: set) -> None:
+    path = _executed_directives_path(identity_path)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(sorted(ids), f)
+    os.replace(tmp, path)
+
+
+def _run_directives(response, identity_path: str, ctx) -> None:
+    """Execute each directive in the response at most once per event_id.
+
+    The engine re-sends every directive it has issued (issued_directives)
+    so a lost response can't lose one (at-least-once delivery); this is the
+    matching dedup. Each id is recorded right after its attempt -- failed
+    attempts too, or an unknown action would warn on every check-in forever.
+    """
+    try:
+        done = _load_executed_directives(identity_path)
+    except RuntimeError as e:
+        print(f"WARNING: {e}", file=sys.stderr)
+        return
+    pending = list(response.directives) + list(
+        getattr(response, "issued_directives", None) or [])
+    for directive in pending:
+        if directive.event_id in done:
+            continue
+        try:
+            agent.adversary.executor.execute(directive, ctx)
+        except Exception as e:  # noqa: BLE001 — one bad directive
+            # must never stall the run (§9.1)
+            print(
+                f"WARNING: directive {directive.event_id!r} "
+                f"({directive.action!r}) failed: {e}",
+                file=sys.stderr,
+            )
+        done.add(directive.event_id)
+        try:
+            _save_executed_directives(identity_path, done)
+        except OSError as e:
+            # Can't record it, so it would re-run next check-in; stop here
+            # rather than run more directives we also couldn't record.
+            print(f"WARNING: could not record executed directive "
+                  f"{directive.event_id!r}: {e}", file=sys.stderr)
+            return
+
+
 def _ensure_enrolled(config, manifest, identity) -> bool:
     """Ensure enrollment; retry every boot until ``.enrolled`` marker exists.
 
@@ -481,7 +563,18 @@ def _run_ranked(config, manifest, ctx) -> None:
     last_response = None  # cached CheckinResponse across loop iterations
 
     identity = agent.identity.load_or_create(config.identity_path)
-    _ensure_enrolled(config, manifest, identity)
+    # Retry enrollment in-process: exiting would have systemd restart us
+    # every 5s (Restart=on-failure), and each start re-derives the public key
+    # and re-signs -- seconds of pure-Python crypto per attempt, forever, on
+    # a permanent failure like an expired token.
+    while True:
+        try:
+            _ensure_enrolled(config, manifest, identity)
+            break
+        except Exception as e:  # noqa: BLE001 — network, 4xx/5xx, config
+            print(f"WARNING: enrollment failed, retrying later: {e}",
+                  file=sys.stderr)
+            time.sleep(max(config.checkin_interval_s or 0, 60))
 
     while True:
         evidence = agent.collector.run_all(manifest.checks, ctx)
@@ -525,16 +618,7 @@ def _run_ranked(config, manifest, ctx) -> None:
             # ambiguity (e.g. a consumed token that may have been used by a
             # different box identity).
             _mark_enrolled(config.identity_path)
-            for directive in response.directives:
-                try:
-                    agent.adversary.executor.execute(directive, ctx)
-                except Exception as e:  # noqa: BLE001 — one bad directive
-                    # must never stall the run (§9.1)
-                    print(
-                        f"WARNING: directive {directive.event_id!r} "
-                        f"({directive.action!r}) failed: {e}",
-                        file=sys.stderr,
-                    )
+            _run_directives(response, config.identity_path, ctx)
 
         delta = None
         try:

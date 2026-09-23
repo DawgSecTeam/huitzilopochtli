@@ -16,9 +16,12 @@ import base64
 import dataclasses
 import hmac
 import json
+import math
 import os
 import secrets
 import ssl
+import sys
+import threading
 import time
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -182,7 +185,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.admin_token:
             return False, 503, "admin endpoints disabled (HUITZILOPOCHTLI_ADMIN_TOKEN not set)"
         provided = self.headers.get("X-HUITZILOPOCHTLI-Admin-Token", "")
-        if not hmac.compare_digest(self.admin_token, provided):
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII str,
+        # and header values arrive latin-1-decoded.
+        if not hmac.compare_digest(self.admin_token.encode("utf-8"),
+                                   provided.encode("latin-1", "replace")):
             return False, 403, "bad admin token"
         return True, 0, ""
 
@@ -283,9 +289,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         except Exception as e:  # noqa: BLE001 — fail closed with a mapped 500
             # rather than dropping the connection (the agent would treat that
-            # as a transient failure and retry forever).
+            # as a transient failure and retry forever). The exception text
+            # stays engine-side: it can carry rubric content (§2.4).
+            print(f"ERROR: check-in for box {bundle.box_id!r} failed: {e!r}",
+                  file=sys.stderr)
             self._send_json(
-                500, {"error": f"internal error during check-in: {e}", "last_seq": None}
+                500, {"error": "internal error during check-in", "last_seq": None}
             )
             return
         self._send_json(200, response)
@@ -299,8 +308,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             scenario_name = body["scenario_name"]
             ttl_s = body.get("ttl_s", 3600)
-            if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
-                raise ValueError("ttl_s must be a number")
+            # json.loads accepts NaN/Infinity: Infinity would mint a token
+            # that never expires, NaN would break the NOT NULL insert.
+            if (isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float))
+                    or not math.isfinite(ttl_s) or ttl_s <= 0):
+                raise ValueError("ttl_s must be a positive finite number")
             expires_at = time.time() + ttl_s
         except Exception:
             self._send_json(400, {"error": "malformed body; expected {scenario_name, ttl_s?: number}"})
@@ -341,6 +353,51 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "scenario_name": scenario_name})
 
 
+class _EngineHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a connection cap and per-thread TLS.
+
+    Wrapping the listening socket would run each TLS handshake inside the
+    single accept loop with no timeout, so one idle client could freeze the
+    engine. Here the handshake runs in the worker thread under
+    Handler.timeout, and connections beyond max_conns are closed at once.
+    """
+
+    def __init__(self, addr, handler, ssl_ctx=None, max_conns=64):
+        self._ssl_ctx = ssl_ctx
+        self._slots = threading.BoundedSemaphore(max_conns)
+        super().__init__(addr, handler)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def finish_request(self, request, client_address):
+        request.settimeout(self.RequestHandlerClass.timeout)
+        if self._ssl_ctx is None:
+            super().finish_request(request, client_address)
+            return
+        try:
+            tls = self._ssl_ctx.wrap_socket(request, server_side=True)
+        except (ssl.SSLError, OSError):
+            return
+        try:
+            self.RequestHandlerClass(tls, client_address, self)
+        finally:
+            tls.close()
+
+
 def _resolve_server_secret(store: Store) -> bytes:
     """Resolve server secret from env, store, or generate and persist."""
     secret_env = os.environ.get("HUITZILOPOCHTLI_SERVER_SECRET")
@@ -378,21 +435,24 @@ def main() -> None:
 
     port = int(os.environ.get("HUITZILOPOCHTLI_PORT", "8080"))
     bind_host = os.environ.get("HUITZILOPOCHTLI_BIND", "127.0.0.1")
-    httpd = ThreadingHTTPServer((bind_host, port), Handler)
+    max_conns = int(os.environ.get("HUITZILOPOCHTLI_MAX_CONNS", "64"))
 
     tls_cert = os.environ.get("HUITZILOPOCHTLI_TLS_CERT")
     tls_key = os.environ.get("HUITZILOPOCHTLI_TLS_KEY")
     scheme = "http"
+    context = None
     if tls_cert and tls_key:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(tls_cert, tls_key)
-        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         scheme = "https"
     else:
         print(
             "WARNING: running without TLS; set HUITZILOPOCHTLI_TLS_CERT/HUITZILOPOCHTLI_TLS_KEY "
             "to enable it"
         )
+
+    httpd = _EngineHTTPServer((bind_host, port), Handler, ssl_ctx=context,
+                              max_conns=max_conns)
 
     print(f"huitzilopochtli engine listening on {scheme}://{bind_host}:{port} (db={db_path})")
     try:
