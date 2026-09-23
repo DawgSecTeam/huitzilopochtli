@@ -290,19 +290,17 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     sub = [f"scenario v{snap.get('scenario_version', '?')}", f"{mode} mode"]
     if snap.get("organization"):
         sub.append(str(snap["organization"]))
-    lines.append(sty.color("  ·  ".join(sub), "muted"))
+    lines.append("  ·  ".join(sub))
     lines.append(sty.color(agent.term.rule(min(width, 78), sym), "accent"))
     lines.append("")
 
     if snap.get("awaiting_engine"):
         lines.append(sty.color("  submitted — awaiting engine", 1))
         lines.append("")
-        lines.append(sty.color(
-            "  The engine has not confirmed a check-in from this box yet.",
-            "muted"))
-        lines.append(sty.color(
-            "  This view updates the moment the first score arrives.",
-            "muted"))
+        lines.append(
+            "  The engine has not confirmed a check-in from this box yet.")
+        lines.append(
+            "  This view updates the moment the first score arrives.")
         return "\n".join(agent.term.truncate_ansi(l, width) for l in lines)
 
     total = snap.get("total") or 0
@@ -318,12 +316,12 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     if mode == "honor":
         counts = (f"{snap.get('vulns_fixed', 0)} of {snap.get('vulns_total', 0)}"
                   " fixed")
-        row += sty.color(f"  ·  {counts}", "muted")
+        row += f"  ·  {counts}"
         remaining = int(snap.get("remaining") or 0)
         if remaining:
-            row += sty.color(f"  ·  {remaining} issue(s) remain", "muted")
+            row += f"  ·  {remaining} issue(s) remain"
     else:
-        row += "  " + sty.color("the engine's authoritative score", "muted")
+        row += "  the engine's authoritative score"
     lines.append(row)
     lines.append("")
 
@@ -367,10 +365,12 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
             stamps.append(f"{label} due now")
     if stamps:
         lines.append("")
-        lines.append("  " + sty.color("  ·  ".join(stamps), "muted"))
+        lines.append("  " + "  ·  ".join(stamps))
     if hints:
+        # Chrome, but readable: semantic muted, never SGR 2 (faint) — faint
+        # all but disappears on several dark terminals.
         lines.append(sty.color(
-            "  try: huitz watch  ·  huitz forensics  ·  huitz grade", 2))
+            "  try: huitz watch  ·  huitz forensics  ·  huitz grade", "muted"))
     return "\n".join(agent.term.truncate_ansi(l, width) for l in lines)
 
 
@@ -390,7 +390,7 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
                                       _pts_plain(points), _pts_cell(sty, points),
                                       width))
     else:
-        lines.append("      " + sty.color("no vulnerabilities fixed yet", "muted"))
+        lines.append("      no vulnerabilities fixed yet")
     if snap.get("all_fixed"):
         lines.append("      " + sty.color(sym.check + " all scored issues fixed",
                                           "ok"))
@@ -407,7 +407,7 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
                                       _pts_plain(points), _pts_cell(sty, points),
                                       width))
     else:
-        lines.append("      " + sty.color("none", "muted"))
+        lines.append("      none")
     lines.append("")
 
     forensics = snap.get("forensics") or []
@@ -427,8 +427,10 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
         answers_paths = sorted({f.get("answers_path") for f in forensics
                                 if f.get("answers_path")})
         if answers_paths:
-            lines.append("      " + sty.color(
-                f"answers: {answers_paths[0]}", "muted"))
+            # The path is the actionable bit — accent, like a readme code
+            # span; the label stays chrome.
+            lines.append("      " + sty.color("answers: ", "muted")
+                         + sty.color(answers_paths[0], "accent"))
     return lines
 
 
@@ -454,9 +456,9 @@ def _ranked_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
             pad = " " * (pts_w - len(plain))
             lines.append(
                 f"  {cid:<{id_w}}  {sty.color(cat, 'muted')} {pad}"
-                f"{_pts_cell(sty, points)}  {sty.color(reason, 'muted')}")
+                f"{_pts_cell(sty, points)}  {reason}")
     else:
-        lines.append("      " + sty.color("no point-in-time checks", "muted"))
+        lines.append("      no point-in-time checks")
 
     sla = snap.get("sla_status") or []
     if sla:
@@ -469,7 +471,7 @@ def _ranked_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
             cid = agent.term.ellipsize(str(s.get("check_id", "")), 30, sym)
             lines.append(
                 f"  {cid:<30}  {colored}  "
-                + sty.color(f"accrued {s.get('accrued_points', 0)}", "muted"))
+                + f"accrued {s.get('accrued_points', 0)}")
     return lines
 
 
@@ -602,9 +604,10 @@ def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
     lines.append("")
     lines.append(sty.color(
         '  set an answer:  huitz forensics N "your answer"   '
-        "(or just: huitz forensics N)", 2))
+        "(or just: huitz forensics N)", "muted"))
     lines.append(sty.color(
-        "  answers re-grade automatically (about a minute), or: sudo huitz grade", 2))
+        "  answers re-grade automatically (about a minute), or: sudo huitz grade",
+        "muted"))
     return "\n".join(lines)
 
 
@@ -953,6 +956,7 @@ def cmd_watch(argv: list, outstream, instream) -> int:
     raw_bytes = None        # last seen snapshot file content
     last_snap = None        # last successfully parsed snapshot
     session_log = []        # [(wallclock, delta)] — changes seen while watching
+    restyled = False        # accent applied once a snapshot provides it
     try:
         while True:
             now = time.time()
@@ -965,6 +969,13 @@ def cmd_watch(argv: list, outstream, instream) -> int:
                     is_regrade = raw_bytes is not None
                     raw_bytes = current
                     last_snap = agent.snapshot.read(snap_path)
+                    if not restyled:
+                        # Unlike score, watch had no snapshot when it built
+                        # its style — restyle once so the theme accent
+                        # reaches the frame.
+                        restyled = True
+                        sty = _make_style(opts, outstream, last_snap)
+                        sym = Symbols(sty.utf8)
                     delta = last_snap.get("delta")
                     if is_regrade and isinstance(delta, int) \
                             and not isinstance(delta, bool) and delta != 0:
@@ -1000,7 +1011,7 @@ def cmd_watch(argv: list, outstream, instream) -> int:
                 countdown = _countdown_note(last_snap, now, sty)
                 if countdown:
                     frame += "\n" + countdown
-                frame += "\n" + sty.color("  q quit", 2)
+                frame += "\n" + sty.color("  q quit", "muted")
 
             if once:
                 for line in frame.splitlines():
@@ -1051,13 +1062,12 @@ def _countdown_note(snap: dict | None, now: float, sty: Style) -> str:
         due = "checking…" if mode == "honor" else "checking in…"
         note = f"00:00 — {due}"
         overdue = -remaining
-        tone = "muted"
         if overdue > _OVERDUE_NOTE_AFTER_S:
             note += _overdue_suffix(mode, overdue)
-            tone = "warn"
-        return "  " + sty.color(note, tone)
+            return "  " + sty.color(note, "warn")
+        return "  " + note
     label = "next re-grade" if mode == "honor" else "next check-in"
-    return "  " + sty.color(f"{label} in {agent.term.fmt_mmss(remaining)}", "muted")
+    return "  " + f"{label} in {agent.term.fmt_mmss(remaining)}"
 
 
 def cmd_grade(argv: list, outstream) -> int:

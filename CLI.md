@@ -54,6 +54,24 @@ and honors `$PAGER` (falling back to `less -R`, then `more`).
 `grade` takes `--config PATH` for a non-default
 `agent_config.json` and `--quiet` for a one-line summary.
 
+### Terminal styling conventions
+
+The readme and scorecard share one contrast standard (no dim-gray
+"nearly invisible" text):
+
+- **SGR 2 (faint) is never used** — it disappears on several dark
+  terminals. Chrome that should recede uses semantic `muted` instead
+  (the report page's `--muted` gray).
+- **`muted` is for chrome only**: rules, dot leaders, bullets, the
+  `try:` hints, the `answers:` label. Anything carrying information —
+  counts, stamps, empty states, check reasons, countdowns — renders in
+  the terminal's default ink, so it stays readable on any background.
+- **Accent marks the actionable**: the theme accent highlights values
+  and paths (total points, progress bar, `answers: <path>`, readme code
+  spans), bold ink carries headers.
+- Verdicts keep the semantic colors: `ok` green / `bad` red / `warn`
+  amber, matching `report.html`.
+
 ## How it works
 
 Nothing in `huitz score`/`watch`/`forensics` re-scores the box. Every grade
