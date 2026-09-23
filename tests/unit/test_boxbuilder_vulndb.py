@@ -136,6 +136,49 @@ def test_ensure_configuration_never_overwrites_existing(fake_vulndb):
     assert state["configurations"][0]["script"] == _DEFINITION["script"]
 
 
+def test_ensure_configuration_sync_updates_drifted_row(fake_vulndb):
+    """sync=True converges a row whose stored content drifted from the bundled seed --
+    the reason theme seeds pass it: without it, a seed edit never ships (the catalog
+    keeps executing the old script forever)."""
+    base_url, state_file = fake_vulndb
+    vulndb.ensure_configuration(base_url, _DEFINITION)
+    modified = dict(_DEFINITION, script="#!/bin/sh\necho v2\n")
+    row = vulndb.ensure_configuration(base_url, modified, sync=True)
+    state = _state(state_file)
+    assert len(state["configurations"]) == 1
+    assert state["configurations"][0]["script"] == modified["script"]
+    assert row["script"] == modified["script"]
+
+
+def test_ensure_configuration_sync_noop_when_in_sync(fake_vulndb):
+    base_url, state_file = fake_vulndb
+    vulndb.ensure_configuration(base_url, _DEFINITION)
+    vulndb.ensure_configuration(base_url, _DEFINITION, sync=True)
+    state = _state(state_file)
+    assert len(state["configurations"]) == 1
+    assert state["configurations"][0]["script"] == _DEFINITION["script"]
+
+
+def test_ensure_configuration_sync_preserves_attachments(fake_vulndb, tmp_path):
+    """Attachments are never seed content: a synced update must keep them intact."""
+    base_url, state_file = fake_vulndb
+    config = vulndb.ensure_configuration(base_url, _DEFINITION)
+    f = tmp_path / "wallpaper.png"
+    f.write_bytes(b"bytes")
+    vulndb.ensure_attachment(base_url, config, str(f))
+    drifted = dict(_DEFINITION, description="updated description")
+    row = vulndb.ensure_configuration(base_url, drifted, sync=True)
+    state = _state(state_file)
+    assert state["configurations"][0]["description"] == "updated description"
+    assert len(row["attachments"]) == 1
+
+
+def test_seed_drift_ignores_attachments():
+    existing = dict(_DEFINITION, attachments=[{"id": 1, "original_name": "x"}])
+    assert vulndb._seed_drift(existing, _DEFINITION) is False
+    assert vulndb._seed_drift(dict(_DEFINITION, script="other"), _DEFINITION) is True
+
+
 def test_ensure_attachment_uploads_and_returns_content_addressed_filename(fake_vulndb, tmp_path):
     base_url, _ = fake_vulndb
     config = vulndb.ensure_configuration(base_url, vulndb.load_seed_definition("theme-wallpaper"))

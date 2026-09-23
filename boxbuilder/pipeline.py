@@ -383,6 +383,35 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             raise RuntimeError(
                 f"could not seal {install_dir}: {seal.stderr.strip()}")
 
+        # --- Windows logon/browser hardening (best-effort) ---
+        # Kills the Edge first-run wizard, the Shutdown Event Tracker and
+        # Server Manager logon modals, and the python advertised-shortcut
+        # MSI self-repair trap (REDEPLOY.md gotchas 25/26) -- the pop-ups a
+        # player would otherwise meet on first logon. Runs once over the
+        # elevated SSH session; the script guards every section and always
+        # exits 0, so this warns instead of failing the install. Reported
+        # via result["hardening"], not result["files"] (that list stays
+        # "everything under the install dir" placed via SFTP).
+        hardening = None
+        if os_name == "windows":
+            harden_local = os.path.join(_REPO_ROOT, "packaging", "huitz-hardening-win.ps1")
+            harden_remote = f"{install_dir}\\huitz-hardening-win.ps1"
+            handle.put(harden_local, harden_remote)
+            # Nested powershell with -ExecutionPolicy Bypass: it is a script
+            # FILE, so EncodedCommand's exemption does not apply.
+            res = handle.run_ps(
+                f"& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy "
+                f"Bypass -File '{harden_remote}'\n"
+                f"exit $LASTEXITCODE",
+                timeout=600,
+            )
+            hardening = res.ok
+            if res.ok:
+                log("[boxbuilder] windows hardening applied (logon popups + Edge first-run)")
+            else:
+                log(f"[boxbuilder] WARNING: windows hardening failed (box will "
+                    f"still work): {res.stderr.strip() or res.stdout.strip()}")
+
         # --- first-login motd (POSIX only; Windows has no motd mechanism) ---
         # Tells a player what to do the first time they get a shell, and
         # introduces the huitz console. Root-owned target, so: SFTP stage to
@@ -433,6 +462,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             "files": placed,
             "init": init_kind,
             "motd": motd_path,
+            "hardening": hardening,
             "ranked": ranked,
             "ok": True,
         }

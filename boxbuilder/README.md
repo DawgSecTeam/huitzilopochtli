@@ -119,17 +119,17 @@ boxbuilder's side of the fence.
    attachment to each user's Desktop *under that same name*, so the icon
    read as e.g. `158f3cbb4e51da58-chocolate-factory-README.md` instead of
    `README.html`, and any shortcut assuming the clean name (like a scenario's
-   own `desktop_shortcuts` entry pointing at `~/Desktop/README.html`) never
+   own `desktop_shortcuts` entry pointing at the handbook copy) never
    resolved. Fixed by always copying out under a fixed `README.html` (authored
    Markdown is rendered to that themed page at build time by
    `boxbuilder/mdhtml.py`).
 2. **A bare `~`/`$HOME` in a `.desktop` `Exec=` line is not guaranteed to be
    shell-expanded.** GLib's desktop-entry launcher does quote-removal, not
-   tilde/variable expansion, so `Exec=xdg-open ~/Desktop/README.html` can
+   tilde/variable expansion, so `Exec=xdg-open ~/Documents/x.html` can
    silently fail to resolve regardless of whether the target file exists.
    Wrap any such Exec in `sh -c '...'` (e.g. `sh -c 'xdg-open
-   $HOME/Desktop/README.html'`) so the shell -- not the launcher -- does the
-   expansion.
+   $HOME/Documents/huitzilopochtli/README.html'`) so the shell -- not the
+   launcher -- does the expansion.
 3. **A strictly-confined snap browser (Ubuntu's default Firefox) can't see
    `/opt`.** `snap connections firefox` shows only the `home` interface
    connected -- no access outside `$HOME`. The auto-appended "Scoring
@@ -140,11 +140,28 @@ boxbuilder's side of the fence.
    missing. Fixed by `packaging/sync-report.sh` (run via
    `huitzilopochtli-agent.service`'s `ExecStartPost`, which is why that
    unit's `ProtectHome` is `false` rather than `read-only`) mirroring
-   `report.html` into each real user's `$HOME/Desktop`, and pointing the
-   shortcut there instead. Honor mode's re-grade timer keeps that copy
-   fresh; a ranked-mode box's single long-running process only gets the
-   very first snapshot synced (`ExecStartPost` fires once, at service
-   start) -- a known, currently-unaddressed limitation for that mode.
+   `report.html` into each real user's `$HOME/Documents/huitzilopochtli/`,
+   and pointing the shortcut there instead. Honor mode's re-grade timer
+   keeps that copy fresh; a ranked-mode box's single long-running process
+   only gets the very first snapshot synced (`ExecStartPost` fires once, at
+   service start) -- a known, currently-unaddressed limitation for that
+   mode. The mirror lives off the Desktop on purpose: the desktop stays at
+   exactly three items per user -- `Forensics-Questions.txt`, the handbook
+   launcher, and the Scoring Report launcher (anything a scenario plants as
+   challenge content, like chocolate-factory's `vault-code.txt`, is exempt).
+   `sync-report.sh` also deletes the legacy `$HOME/Desktop/report.html|.json`
+   copies older builds used to make, and the `huitz` CLI searches both
+   locations (Documents first). The Windows mirror is
+   `C:\Users\Public\Documents\huitzilopochtli\` (same rules).
+4. **A `.desktop` launcher's "trusted" flag is stored per-user.** gio's
+   `metadata::trusted` lives in each user's gvfs-metadata store, so setting
+   it as root at plant time does nothing for the player: double-clicking
+   still popped the "Untrusted application launcher" dialog.
+   `theme-shortcuts.json` now re-runs the `gio set` **as the desktop user**
+   (`runuser`/`su` + `dbus-launch`, which provides a session bus with no X
+   session up), keeping the `chmod 755`. `/etc/skel` copies cannot be
+   pre-trusted (metadata is per-user); team accounts exist at plant time and
+   are handled directly.
 
 ### Score-change notifications (sounds + toasts)
 
@@ -298,8 +315,9 @@ theme:
   logo: ./assets/logo.png                 # embedded in report.html as base64 (size-capped)
   wallpaper: ./assets/wallpaper.png       # file path, resolved relative to the scenario file
   readme: ./assets/README.md              # authored as Markdown; rendered to a themed
-                                          # README.html on every user's Desktop
-                                          # (.html passes through unrendered)
+                                          # README.html in every user's
+                                          # Documents/huitzilopochtli/ (off the Desktop;
+                                          # .html passes through unrendered)
   motd: "Authorized use only."            # -> /etc/motd (+ /etc/issue if `issue` absent)
   desktop_shortcuts: [{name: "Wiki", exec: "xdg-open https://..."}]
 

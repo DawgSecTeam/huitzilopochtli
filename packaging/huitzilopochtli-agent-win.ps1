@@ -4,8 +4,8 @@
 # Registers the HuitzilopochtliAgent scheduled task as SYSTEM (RunLevel
 # HIGHEST) with two triggers -- at startup and repeating every 5 minutes,
 # the honor-mode re-grade cadence that pairs with the POSIX systemd timer --
-# pointing at huitz-agent-task.ps1 (run agent + mirror report to Public
-# Desktop). Then runs that task script once so a report exists immediately
+# pointing at huitz-agent-task.ps1 (run agent + mirror report to the Public
+# Documents dir). Then runs that task script once so a report exists immediately
 # after install instead of up to 5 minutes later.
 #
 # Register-ScheduledTask repetition quirks vary across Windows builds, so the

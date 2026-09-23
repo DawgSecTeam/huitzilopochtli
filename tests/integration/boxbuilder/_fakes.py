@@ -171,6 +171,17 @@ def install_fake_vulndb_cli(tmp_path, monkeypatch, *, initial=None):
                     c.setdefault("attachments", []).append(att)
                     _save(s); print(json.dumps(att)); sys.exit(0)
             print("no such config", file=sys.stderr); sys.exit(1)
+        elif cmd == "update":
+            # `update <ref> --file -`: full-replace of the fields the stdin doc
+            # carries (id/attachments preserved), mirroring vulndb-cli's PUT.
+            ref = clean[1]
+            fi = clean.index("--file")
+            defn = json.load(sys.stdin) if clean[fi + 1] == "-" else {}
+            for c in s["configurations"]:
+                if str(c.get("id")) == ref or c.get("name") == ref:
+                    c.update(defn)
+                    _save(s); print(json.dumps(c)); sys.exit(0)
+            print("no such config", file=sys.stderr); sys.exit(1)
         elif cmd == "get":
             ref = clean[1]
             for c in s["configurations"]:

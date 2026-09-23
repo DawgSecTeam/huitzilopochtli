@@ -32,7 +32,7 @@ def fake_vulndb(monkeypatch):
     row/filename so callers can assert on the resulting `vars` without any network."""
     calls = []
 
-    def _ensure_configuration(url, definition, timeout=30):
+    def _ensure_configuration(url, definition, timeout=30, sync=False):
         calls.append(("ensure_configuration", definition["name"]))
         return {"id": 1, "name": definition["name"], "attachments": []}
 
@@ -61,7 +61,7 @@ def test_manifest_only_fields_excluded_but_report_shortcut_still_added(tmp_path,
     assert result == [{
         "name": "theme-shortcuts",
         "vars": {"SHORTCUT_NAME": "Scoring Report",
-                 "SHORTCUT_EXEC": "sh -c 'xdg-open $HOME/Desktop/report.html'"},
+                 "SHORTCUT_EXEC": "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/report.html'"},
     }]
     assert ("ensure_configuration", "theme-shortcuts") in fake_vulndb
 
@@ -208,7 +208,7 @@ def test_multiple_shortcuts_plus_auto_report_shortcut(tmp_path, fake_vulndb):
         {"name": "theme-shortcuts", "vars": {"SHORTCUT_NAME": "Wiki", "SHORTCUT_EXEC": "xdg-open https://x"}},
         {"name": "theme-shortcuts",
          "vars": {"SHORTCUT_NAME": "Scoring Report",
-                  "SHORTCUT_EXEC": "sh -c 'xdg-open $HOME/Desktop/report.html'"}},
+                  "SHORTCUT_EXEC": "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/report.html'"}},
     ]
     # ensure_configuration called once for theme-shortcuts regardless of shortcut count.
     assert fake_vulndb.count(("ensure_configuration", "theme-shortcuts")) == 1
@@ -235,3 +235,52 @@ def test_full_theme_produces_all_four_entries_in_order(tmp_path, fake_vulndb):
     names = [e["name"] for e in result]
     assert names == ["theme-wallpaper", "theme-motd", "theme-readme",
                       "theme-shortcuts", "theme-shortcuts"]
+
+
+# --- the bundled seed scripts themselves -----------------------------------------
+# Their contents are what actually runs on a box, so the declutter + launcher-trust
+# behavior is pinned at the seed level too (a catalog row never auto-updates unless
+# ensure_configuration(sync=True) sees the repo seed's new script).
+
+def test_theme_readme_seed_targets_documents_mirror():
+    import json
+    seed = json.load(open("boxbuilder/vulndb_theme_configs/theme-readme.json",
+                          encoding="utf-8"))
+    # Off the Desktop, under $HOME (snap-confined browsers can't see /opt).
+    assert "Documents/huitzilopochtli" in seed["script"]
+    assert "XDG_DOCUMENTS_DIR" in seed["script"]
+    # The Desktop is no longer a destination (no desktop-dir resolution, no
+    # $desktop target -- path-like mentions only; prose comments are fine).
+    assert "Desktop/" not in seed["script"]
+    assert "$desktop" not in seed["script"]
+    assert "nakon_desktop_dir" not in seed["script"]
+
+
+def test_theme_readme_win_seed_targets_public_documents():
+    import json
+    seed = json.load(open("boxbuilder/vulndb_theme_configs/theme-readme-win.json",
+                          encoding="utf-8"))
+    assert "Documents\\huitzilopochtli" in seed["script"]
+    # The Desktop is no longer a destination (no 'Desktop' Join-Path target;
+    # prose mentions in comments are fine).
+    assert "'Desktop'" not in seed["script"]
+
+
+def test_theme_shortcuts_seed_trusts_as_the_desktop_user():
+    """gio's metadata::trusted flag is stored per-user; the seed must set it as the
+    desktop user (runuser/su + dbus-launch), never as root -- a root-set flag leaves
+    every player staring at the "Untrusted application launcher" dialog."""
+    import json
+    seed = json.load(open("boxbuilder/vulndb_theme_configs/theme-shortcuts.json",
+                          encoding="utf-8"))
+    script = seed["script"]
+    assert "runuser -u" in script and "dbus-launch" in script
+    assert "metadata::trusted" in script
+    assert "chmod 755" in script
+    # Join backslash-continued lines, then require every gio invocation to run
+    # under the per-user helper (runuser / su -s), never bare as root.
+    joined = script.replace("\\\n", " ")
+    gio_lines = [ln.strip() for ln in joined.splitlines() if "gio set" in ln]
+    assert gio_lines, "seed lost its trust call entirely"
+    for ln in gio_lines:
+        assert "runuser" in ln or "su -s" in ln, f"root-run gio call: {ln}"

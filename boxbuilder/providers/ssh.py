@@ -279,8 +279,9 @@ class SshHandle(BoxHandle):
         if kind == "windows":
             return self._install_init_windows()
         # The `huitz` console (agent/cli.py): a world-readable copy of the
-        # agent zipapp on PATH. The CLI verbs read the Desktop-mirrored
-        # report.json snapshot (sync-report.sh), so any account can run
+        # agent zipapp on PATH. The CLI verbs read the report.json mirror
+        # (sync-report.sh keeps it in every user's Documents/huitzilopochtli
+        # dir), so any account can run
         # score/watch/forensics; `sudo huitz grade` re-grades as root. A
         # copy, not a symlink: the install dir is sealed 0700, which would
         # block non-root traversal through a symlink. Best-effort -- the

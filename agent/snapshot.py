@@ -145,8 +145,9 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
 def write(report_path: str, snapshot: dict) -> bool:
     """Write the snapshot next to the HTML report (atomic, world-readable).
 
-    0644 on purpose: the file is Desktop-mirrored for every user and, in
-    either mode, carries nothing the synced HTML wouldn't. Returns False
+    0644 on purpose: the file is mirrored into every user's Documents/
+    huitzilopochtli dir (packaging/sync-report.sh) and, in either mode,
+    carries nothing the synced HTML wouldn't. Returns False
     (after a WARNING) instead of raising — cosmetics must never stall a
     grade (§9.1).
     """

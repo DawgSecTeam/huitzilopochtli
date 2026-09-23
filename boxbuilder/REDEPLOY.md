@@ -79,10 +79,15 @@ template ships without the stale answer key lying around in plaintext.
 - `xfce4-desktop.xml` (sysadmin): `screen0` ×1, `monitorVirtual-1` present,
   `workspace0..3`, wallpaper `<sha>-…-wallpaper.png`
 - `/usr/local/share/huitzilopochtli-theme/*.png` ~13K
-- `report.html`: `Total: 0`, `0 of 20`, Forensics card; `~/Desktop/report.html` synced
-- Desktops contain exactly: `Forensics-Questions.txt`, 2 `nakon-theme-*.desktop`,
-  `README.html`, `report.html` (+ planted `vault-code.txt` on sysadmin)
-- Handbook `Exec=sh -c 'xdg-open $HOME/Desktop/README.html'` resolves
+- `report.html`: `Total: 0`, `0 of 20`, Forensics card;
+  `~/Documents/huitzilopochtli/report.html` synced (legacy `~/Desktop/report.*`
+  copies deleted by sync-report.sh)
+- Desktops contain exactly: `Forensics-Questions.txt`, 2 `nakon-theme-*.desktop`
+  (declutter target: forensics file + handbook + Scoring Report launchers only)
+  (+ planted `vault-code.txt` on sysadmin -- challenge content, stays)
+- Handbook `Exec=sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'`
+  resolves, and double-clicking a launcher shows NO "Untrusted application
+  launcher" dialog (theme-shortcuts sets `metadata::trusted` as the desktop user)
 - `huitzilopochtli-agent.timer` active; journal shows `Started → Deactivated
   successfully` every minute with no Traceback since deploy
 - `DISPLAY=:0 xwd -root` ~4.0M; `/etc/machine-id` unique (template stays empty)
@@ -449,6 +454,12 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    `HKCU\Software\Microsoft\ServerManager` set over an SSH session did
    NOT survive sealing (ssh HKCU writes are unreliable for this) -- set
    it in `C:\Users\Default\NTUSER.DAT` (reg load/unload) next seal.
+   CLOSED 2026-09-23: boxbuilder's install step now runs
+   `packaging/huitz-hardening-win.ps1` on every Windows target, which sets
+   both the Reliability keys and `DoNotOpenAtLogon=1` in the Default user
+   hive (reg load/unload), plus Edge `HideFirstRunExperience=1` (no more
+   first-run wizard) and the gotcha-26 python `/faus` repair + Start-menu
+   cleanup. Still seal with a clean `shutdown /s /d p:4:1`.
 26. **The python MSI self-repair dialog is a scoring-killer trap.** The
    python.org install's Start-menu shortcuts are advertised MSI entry
    points; on these clones opening the Start menu can fire MSI

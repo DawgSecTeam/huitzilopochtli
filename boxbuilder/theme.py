@@ -83,19 +83,30 @@ def _motd_vars(theme: dict) -> dict:
     return v
 
 
+# Where the user-readable mirrors (report.html/report.json, README.html) live,
+# off the Desktop but still readable by a strictly snap-confined browser (the
+# snap `home` interface covers plain $HOME paths like ~/Documents, never /opt,
+# and hides dot-directories). sync-report.sh / the win task script maintain the
+# report copies; theme-readme plants the handbook there.
+MIRROR_DIR_POSIX = "Documents/huitzilopochtli"
+MIRROR_DIR_WINDOWS = r"%PUBLIC%\Documents\huitzilopochtli"
+
+
 def _shortcut_pairs(theme: dict, windows: bool = False) -> list:
     """Author's desktop_shortcuts list plus the auto-appended "Scoring Report" launcher
     (unless opted out) -- one (name, exec) pair per eventual `theme-shortcuts` entry.
 
-    POSIX: The Scoring Report opens $HOME/Desktop/report.html, not _REPORT_PATH
-    (/opt/...) directly: packaging/sync-report.sh mirrors the real report there
-    specifically because a snap-confined browser (e.g. Ubuntu's default Firefox)
-    can't see /opt at all, and would show "File not found" for it. sh -c wrapped
-    so $HOME actually expands -- a bare `~`/`$HOME` in a .desktop Exec= line isn't
-    guaranteed to be shell-expanded by whatever launches it.
+    POSIX: The Scoring Report opens the ~/Documents/huitzilopochtli/report.html
+    mirror, not _REPORT_PATH (/opt/...) directly: a snap-confined browser (e.g.
+    Ubuntu's default Firefox) can't see /opt at all and would show "File not
+    found" for it. The mirror lives off the Desktop (which stays at exactly the
+    forensics answers file + shortcuts) but still under $HOME so the snap can
+    read it. sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
+    .desktop Exec= line isn't guaranteed to be shell-expanded by whatever
+    launches it.
 
     Windows: shortcuts are .lnk files (theme-shortcuts-win) whose exec is the
-    TARGET path, so the report launcher points at the Public Desktop copy the
+    TARGET path, so the report launcher points at the Public Documents copy the
     scheduled-task wrapper maintains (always readable by the team account)."""
     shortcuts = list(theme.get("desktop_shortcuts") or [])
     for idx, sc in enumerate(shortcuts):
@@ -108,12 +119,12 @@ def _shortcut_pairs(theme: dict, windows: bool = False) -> list:
         if windows:
             shortcuts.append({
                 "name": "Scoring Report",
-                "exec": r"%PUBLIC%\Desktop\report.html",
+                "exec": MIRROR_DIR_WINDOWS + r"\report.html",
             })
         else:
             shortcuts.append({
                 "name": "Scoring Report",
-                "exec": "sh -c 'xdg-open $HOME/Desktop/report.html'",
+                "exec": f"sh -c 'xdg-open $HOME/{MIRROR_DIR_POSIX}/report.html'",
             })
     return [(sc["name"], sc["exec"]) for sc in shortcuts]
 
@@ -162,7 +173,8 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
 
     if wallpaper_abs:
         seed = "theme-wallpaper-win" if windows else "theme-wallpaper"
-        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed))
+        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed),
+                                             sync=True)
         filename = vulndb.ensure_attachment(url, config, wallpaper_abs)
         entries.append({"name": seed, "vars": {"WALLPAPER_FILENAME": filename}})
 
@@ -171,12 +183,14 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
         # concept has no useful equivalent); theme text lives in the README.
         motd_vars = _motd_vars(theme)
         if motd_vars:
-            vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-motd"))
+            vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-motd"),
+                                        sync=True)
             entries.append({"name": "theme-motd", "vars": motd_vars})
 
     if readme_abs:
         seed = "theme-readme-win" if windows else "theme-readme"
-        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed))
+        config = vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed),
+                                             sync=True)
         readme_vars = {}
         upload_path = _readme_upload_path(readme_abs, theme, spec.base_dir)
         try:
@@ -191,7 +205,7 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
     shortcut_pairs = _shortcut_pairs(theme, windows=windows)
     if shortcut_pairs:
         seed = "theme-shortcuts-win" if windows else "theme-shortcuts"
-        vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed))
+        vulndb.ensure_configuration(url, vulndb.load_seed_definition(seed), sync=True)
         for name, exec_cmd in shortcut_pairs:
             entries.append({
                 "name": seed,

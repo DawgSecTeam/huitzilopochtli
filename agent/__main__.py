@@ -330,11 +330,12 @@ def _theme_title(manifest) -> str:
 
 
 def _sync_desktop_copies(config) -> None:
-    """Mirror report.html + report.json to each user's Desktop, now.
+    """Mirror report.html + report.json to each user's Documents/huitzilopochtli
+    dir (and drop the legacy Desktop copies), now.
 
     packaging/sync-report.sh's job too — but the unit's ExecStartPost fires
     when the Type=simple agent process is FORKED, not when it exits, so it
-    races the grade and lands exactly one grade stale on the Desktop (the
+    races the grade and lands exactly one grade stale in the mirror (the
     countdown the huitz CLI renders from that copy is therefore pinned at
     zero). Syncing here is ordered after the write, so both the timer's
     grades and `huitz grade` publish their own result. Best-effort: a
