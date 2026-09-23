@@ -17,7 +17,8 @@
 # 2026-09-21 as a FULL clone of the 158 seal (which was itself built from
 # the "debian13-lite-fix" template, vmid 951) -- full clone deliberately
 # severs the linked-clone chain so no superseded template disk backs this
-# one. 112 is the sole template and the pool-served one, validated end to
+# one. 112 is the pool-served template (see the 2nd-entry lineage below for
+# the 2026-09-23 cli2 seal), validated end to
 # end (Total 0 baseline, Total 190 full marks incl. forensics, answers
 # blanked and baseline re-verified before sealing), and re-verified 2026-09-21
 # with a fresh-clone deploy test of 112 itself: boots planted at Total 0,
@@ -38,6 +39,21 @@
 # agent's default resolves to the FIRST uid>=1000 account -- the 951 base
 # ships a stray sysadmin at uid 1000, which hijacked it). Login-time hooks
 # verified silent. net0 ships on untrustedbr,firewall=1.
+# Template lineage (2nd entry): `static-pine-radio-cli2-template` (Proxmox
+# vmid 132), sealed 2026-09-23 -- a FULL CLONE of the 112 seal with the
+# latest main agent bundle re-installed on top (compile --rebuild-bundle at
+# e244f7b+: readme reflow/pager, motd quick-start banner, did-you-mean;
+# canonical artifacts/authoring.key, so manifests stay signature-stable).
+# Build loop: full-clone 112 -> rebridge vmbr0/firewall=0 -> compile+install
+# (no plant needed; 112 already carries the 16 plants) -> verify -> wipe
+# machine-id -> shutdown -> rebridge untrustedbr/firewall=1 -> template.
+# Validated live on the build clone: Total 0 baseline (0 of 16, forensics
+# blank), cron-stop penalty -10 -> restored 0, forensics Q1 +10 -> cleared 0,
+# all 16 artifact families present, journal traceback-free, new CLI UX
+# confirmed on-box (did-you-mean, readme typeset, quick-start motd); fresh
+# clone of the seal boots planted at 0 with a regenerated machine-id. 112
+# REMAINS the pool-served canonical (SR883) until a deliberate cutover; 132
+# exists so the latest CLI can be tried and future pools can serve it.
 # TEMPLATE PREP (before any nakon plant): create stationlead (sudo, bash,
 # ~/Desktop -- the huitz CLI's snapshot + forensics files land there).
 # Nothing else: cron ships with Debian; the `at` package arrives via the
