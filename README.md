@@ -22,7 +22,7 @@ pytest                    # runs the full unit + integration suite
 ```
 
 > **boxbuilder** (the practice-box workflow) needs two submodules — `git submodule update
-> --init --recursive` — which vendor **nakon** (`vendor/nakon`, currently v0.1.6) and **vulndb-cli**
+> --init --recursive` — which vendor **nakon** (`vendor/nakon`, currently v0.1.7) and **vulndb-cli**
 > (`vendor/vulndb-cli`, currently v0.1.1), the tools it shells out to for planting vulns and theming. The core
 > scoring engine + agent don't need them. Submodule init alone isn't enough to run boxbuilder, though:
 > `vendor/nakon/.env` (vulndb DB creds + `VULNDB_UI_URL`) is gitignored and not carried by the submodule, so
