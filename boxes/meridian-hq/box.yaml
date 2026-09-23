@@ -5,7 +5,8 @@
 # then seeded with AD misconfigs + attacker persistence (see nakon.json).
 # boxbuilder/REDEPLOY.md "Windows round" is the source of truth for the
 # clone -> prep -> plant/install -> verify -> seal loop (run_ps-only remote
-# PowerShell; guest-exec is broken on this lineage; -ErrorAction Ignore in
+# PowerShell; guest-exec WORKS since the qemu-ga 110.0.2 upgrade -- verified
+# 2026-09-23, see REDEPLOY.md Windows-round gotcha 2; -ErrorAction Ignore in
 # all -win seeds; schtask HuitzilopochtliAgent at 5-min cadence = the honor
 # re-grade timer, coupled to agent _honor_interval_s on win32).
 #

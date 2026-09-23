@@ -217,19 +217,24 @@ params. Sealed 2026-09-13 as vmid 1111 `pinecrest-hospital-template`
    `exitstatus` ("OK") from the task endpoint -- there is no `running` bool.
    Also, `POST .../qemu/<vmid>/start` 404s on this PVE build; the route is
    `POST .../qemu/<vmid>/status/start`. A 32G full clone takes ~35 min.
-2. **qemu-ga on Windows: what works and what's broken.** `set-user-password`
-   and `network-get-interfaces` work over the API and are the reliable
-   bootstrap (set `sysadmin`'s password with the former; get the DHCP IP with
-   the latter). **`guest-exec` is broken on this lineage**: every spawn
-   returns "Failed to execute child process (Invalid argument)" -- bare
-   `cmd`, absolute paths, forward slashes, after clean reboots, always. The
-   Linux habit of bootstrapping via `guest_exec` (see the 108-round gotcha)
-   does NOT transfer; don't burn an hour rediscovering this. If a Windows
-   clone ever needs headless exec again, the fix is host-side (`qm guest
-   exec` was proven on this very template per nakon's PROGRESS.md, so suspect
-   the API path + old virtio-win agent; upgrading qemu-ga in the template
-   would be the real fix). Note the agent process itself can die mid-session
-   -- after a failed exec storm it stopped answering until a full VM reboot.
+2. **qemu-ga on Windows: RESOLVED (2026-09-23) -- exec works.** Through the
+   2026-09-12/21 rounds `guest-exec` was broken on this lineage ("Failed to
+   execute child process (Invalid argument)" on every spawn, reboots
+   included); this gotcha predicted "upgrading qemu-ga in the template would
+   be the real fix", and that upgrade has since happened: every Windows
+   image on the node now carries **qemu-ga 110.0.2**, and guest-exec was
+   verified working on a fresh full clone of `challenge-meridian-hq` (155),
+   on the days-old running claim box, and on a fresh clone of base 903 --
+   including a 5-in-a-row burst. Assume exec WORKS now; bootstrap order is
+   `wait-agent` -> `exec` (any command), with `set-user-password` +
+   `wait-ip` still the fallback pair. If exec ever regresses to "Invalid
+   argument", the fix is the current standalone agent MSI
+   (`fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-qemu-ga/`,
+   e.g. qemu-ga-win-110.2.3: `msiexec /i qemu-ga-x86_64.msi /qn /norestart`
+   over SSH, reboot, then `pmx exec <vmid> -- cmd /c echo ok` as the
+   acceptance test) -- and re-verify before trusting old docs. Note the
+   agent process itself can die mid-session -- after a failed exec storm it
+   stopped answering until a full VM reboot.
 3. **PVE VNC console over the API is nearly unusable for automation; plan
    around it.** `vncproxy` + `vncwebsocket` works (auth: the per-session
    `password` from vncproxy answers the VNC challenge -- DES with each key
