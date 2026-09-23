@@ -340,6 +340,11 @@ def _matcher_errors(matcher, ref: str) -> list:
     """
     if not isinstance(matcher, dict):
         return []  # shape error already reported by the caller
+    # NOTE: booleans are legitimate matcher values here (permission checks
+    # produce boolean `exists` evidence and match `equals: false`), and the
+    # rubric carries no check-type context to know better. The YAML 1.1
+    # unquoted-`no`-becomes-bool trap is caught authoring-side instead, where
+    # the check type is known (authoring/validate.py).
     tag = matcher.get("tag")
     if tag is not None:
         if tag not in MATCHERS:
