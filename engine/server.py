@@ -194,6 +194,7 @@ class Handler(BaseHTTPRequestHandler):
     store: Store = None
     server_secret: bytes = b""
     admin_token: str = ""
+    next_checkin_s: int = 60
 
     timeout = 30
 
@@ -329,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             response = handle_checkin(
                 self.store, bundle, sig, rubric, self.server_secret, event_pool,
+                next_checkin_s=self.next_checkin_s,
             )
         except CheckinError as e:
             self._send_json(
@@ -484,6 +486,15 @@ def main() -> None:
     port = int(os.environ.get("HUITZILOPOCHTLI_PORT", "8080"))
     bind_host = os.environ.get("HUITZILOPOCHTLI_BIND", "127.0.0.1")
     max_conns = int(os.environ.get("HUITZILOPOCHTLI_MAX_CONNS", "64"))
+
+    # Engine-authoritative check-in cadence (the agent sleeps this long
+    # between cycles). Deliberately independent of rubric SLA intervals --
+    # see the note in checkin.handle_checkin.
+    try:
+        Handler.next_checkin_s = max(1, int(
+            os.environ.get("HUITZILOPOCHTLI_CHECKIN_INTERVAL_S", "60")))
+    except ValueError:
+        Handler.next_checkin_s = 60
 
     tls_cert = os.environ.get("HUITZILOPOCHTLI_TLS_CERT")
     tls_key = os.environ.get("HUITZILOPOCHTLI_TLS_KEY")
