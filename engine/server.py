@@ -100,9 +100,57 @@ def _validate_adversary_pool(adversary: dict) -> None:
         seen_ids.add(event_id)
 
 
+def _require_str(d: dict, key: str) -> str:
+    v = d.get(key)
+    if not isinstance(v, str) or not v:
+        raise ValueError(f"{key} must be a non-empty string")
+    return v
+
+
+def _require_int(d: dict, key: str) -> int:
+    v = d.get(key)
+    # bool is an int subclass; a True/False seq would corrupt the seq guard.
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"{key} must be an integer")
+    return v
+
+
+def _require_finite(d: dict, key: str, default) -> float:
+    v = d.get(key, default)
+    # json.loads accepts NaN/Infinity; storing one would poison the audit
+    # bundle_json and the signed-canonical round trip.
+    if isinstance(v, bool) or not isinstance(v, (int, float)) \
+            or not math.isfinite(v):
+        raise ValueError(f"{key} must be a finite number")
+    return v
+
+
 def _bundle_from_dict(d: dict) -> Bundle:
+    # Wire-layer type validation: a wrong JSON type must map to a clean
+    # 400 "malformed bundle", not fall out of the handler as a 500 -- or
+    # worse, be accepted (a float seq used to advance last_seq to 2.5).
+    _require_str(d, "box_id")
+    _require_int(d, "seq")
+    _require_str(d, "boot_id")
+    _require_str(d, "agent_version")
+    _require_str(d, "scenario_name")
+    _require_int(d, "scenario_version")
+    _require_finite(d, "created_wall_claim", 0.0)
+    if not isinstance(d.get("evidence"), list):
+        raise ValueError("evidence must be a list")
     evidence = []
     for ev in d.get("evidence", []):
+        if not isinstance(ev, dict):
+            raise ValueError("each evidence item must be an object")
+        _require_str(ev, "check_id")
+        _require_str(ev, "check_type")
+        _require_str(ev, "host_id")
+        if not isinstance(ev.get("raw", {}), dict):
+            raise ValueError("evidence.raw must be an object")
+        if not isinstance(ev.get("reason", ""), str):
+            raise ValueError("evidence.reason must be a string")
+        _require_finite(ev, "collected_monotonic", 0.0)
+        _require_finite(ev, "collected_wall_claim", 0.0)
         evidence.append(
             Evidence(
                 check_id=ev["check_id"],
