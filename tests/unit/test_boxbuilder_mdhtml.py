@@ -17,6 +17,20 @@ def test_headings_paragraphs_and_inline_markup():
     assert "<p>Body text.</p>" in html
 
 
+
+
+def test_single_asterisk_emphasis_renders_italic():
+    """The READMEs use *emphasis* throughout (meridian, opochtli); it must not
+    leak as literal asterisks. Bold is consumed first so ** never pairs with *."""
+    html = mdhtml.markdown_to_html("Fix the misconfigurations *in place*:\n")
+    assert "<em>in place</em>" in html
+    html = mdhtml.markdown_to_html("**Disable** the account, *do not* delete it\n")
+    assert "<strong>Disable</strong>" in html and "<em>do not</em>" in html
+    # a lone asterisk with no partner stays literal
+    html = mdhtml.markdown_to_html("lone * star\n")
+    assert "lone * star" in html and "<em>" not in html
+
+
 def test_lists_and_fenced_code():
     html = mdhtml.markdown_to_html(
         "- one\n- two\n\n1. first\n2. second\n\n```text\nsudo -l\na < b\n```\n"

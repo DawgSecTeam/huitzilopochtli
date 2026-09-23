@@ -33,6 +33,11 @@ try {
     # 4 = import nothing at first launch (no bookmarks/settings wizard).
     New-ItemProperty -Path $edge -Name 'AutoImportAtFirstRun' `
         -PropertyType DWord -Value 4 -Force | Out-Null
+    # Software rendering: GPU-composited text smears into gray ghost-streaks on
+    # virtual displays under lossy remote encoders (Guacamole/RDP) -- exactly
+    # what a player sees with the handbook open over the workshop link.
+    New-ItemProperty -Path $edge -Name 'HardwareAccelerationModeEnabled' `
+        -PropertyType DWord -Value 0 -Force | Out-Null
     Info 'Edge first-run experience disabled (machine policy)'
 } catch {
     Info "WARNING: could not set Edge policies: $($_.Exception.Message)"
