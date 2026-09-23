@@ -682,6 +682,11 @@ def _run_ranked(config, manifest, ctx) -> None:
             with open(config.report_path, "w", encoding="utf-8") as f:
                 f.write(html)
             agent.snapshot.write(config.report_path, snap)
+            # Publish the user-readable mirror (Documents/huitzilopochtli):
+            # the unit's ExecStartPost fires before the first check-in even
+            # exists, and the install dir is 0700 root -- without this, the
+            # huitz console can never see a grade in ranked mode.
+            _sync_desktop_copies(config)
         except Exception as e:  # noqa: BLE001 — report rendering must never
             # stall the check-in loop (§9.1)
             print(f"WARNING: failed to render/write report: {e}", file=sys.stderr)
