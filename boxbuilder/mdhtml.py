@@ -10,8 +10,8 @@ stays pure-consumer and never renders anything.
 `markdown_to_html` intentionally supports only the small Markdown subset the
 READMEs actually use: #/##/### headings, paragraphs, `-`/`*` bullets, `1.`
 ordered lists, fenced ``` code blocks, `---` rules, and inline `**bold**`,
-`` `code` ``, `[text](url)`. Everything is HTML-escaped *before* markup is
-applied, so author text can never inject raw HTML.
+`*italic*`, `` `code` ``, `[text](url)`. Everything is HTML-escaped *before*
+markup is applied, so author text can never inject raw HTML.
 """
 import html
 import re
@@ -23,6 +23,7 @@ _HR_RE = re.compile(r"^-{3,}$|^\*{3,}$")
 _UL_RE = re.compile(r"^[-*]\s+(.*)$")
 _OL_RE = re.compile(r"^\d+[.)]\s+(.*)$")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_EM_RE = re.compile(r"\*([^*\n]+?)\*")
 _CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 
@@ -42,6 +43,10 @@ def _inline(text: str) -> str:
 
     esc = _CODE_RE.sub(_stash, esc)
     esc = _BOLD_RE.sub(r"<strong>\1</strong>", esc)
+    # Italic after bold: the ** pass has consumed every double-asterisk run,
+    # so a surviving single-* pair is emphasis. No-line-crossing keeps stray
+    # bullet/list asterisks (already stripped at the line level) irrelevant.
+    esc = _EM_RE.sub(r"<em>\1</em>", esc)
     esc = _LINK_RE.sub(r'<a href="\2">\1</a>', esc)
     return re.sub("\x00(\\d+)\x00", _unstash, esc)
 

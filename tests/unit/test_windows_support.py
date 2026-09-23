@@ -456,6 +456,8 @@ def test_windows_hardening_script_kills_the_known_popups():
     # Edge onboarding
     assert "Policies\\Microsoft\\Edge" in script
     assert "HideFirstRunExperience" in script and "AutoImportAtFirstRun" in script
+    # software rendering: GPU text compositing smears under remote encoders
+    assert "HardwareAccelerationModeEnabled" in script
     # Shutdown Event Tracker (REDEPLOY.md gotcha 25)
     assert "ShutdownReasonOn" in script and "ShutdownReasonUI" in script
     # Server Manager in C:\Users\Default\NTUSER.DAT via reg load/unload
