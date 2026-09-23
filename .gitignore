@@ -16,3 +16,7 @@ artifacts/
 
 # local ZCode CLI session state (plans/scratch), never source
 .zcode/
+
+# Forensics binary parked in the repo root during the opochtli round —
+# never commit (20 MB C2 implant sample).
+/DISASTROUS_PHARMACIST
