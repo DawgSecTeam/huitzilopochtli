@@ -60,14 +60,19 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         computed_at=score_data.get("computed_at"),
     )
 
-    directives = [
-        Directive(
-            event_id=d["event_id"],
-            action=d["action"],
-            params=d.get("params", {}),
-        )
-        for d in data.get("directives", [])
-    ]
+    def _directives(key):
+        return [
+            Directive(
+                event_id=d["event_id"],
+                action=d["action"],
+                params=d.get("params", {}),
+            )
+            for d in data.get(key) or []
+        ]
+
+    directives = _directives("directives")
+    # Absent from engines that predate at-least-once delivery.
+    issued_directives = _directives("issued_directives")
 
     return CheckinResponse(
         server_time=data["server_time"],
@@ -75,6 +80,7 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         directives=directives,
         next_checkin_s=data["next_checkin_s"],
         last_seq=data["last_seq"],
+        issued_directives=issued_directives,
     )
 
 
@@ -210,6 +216,19 @@ class TransportClient:
             last_seq=last_seq,
         )
 
+    @staticmethod
+    def _with_directives(response, extra: list):
+        """Prepend `extra` directives to response.directives (duplicates are
+        fine: the caller skips event_ids it already ran). None stays None:
+        with no usable response there is nothing to attach them to, and the
+        engine re-sends them via issued_directives on the next check-in."""
+        if response is not None and extra:
+            seen = {d.event_id for d in response.directives}
+            response.directives = (
+                [d for d in extra if d.event_id not in seen] + response.directives
+            )
+        return response
+
     # -- public API -----------------------------------------------------
 
     def checkin(self, bundle: Bundle) -> CheckinResponse:
@@ -231,16 +250,22 @@ class TransportClient:
         queued = self._read_queue()
         remaining = list(queued)
         last_response = None  # most recent successful response from any send
+        # Directives from flushed queued bundles' responses. The first
+        # check-in after a fire time gets the directive, and that may be a
+        # queued bundle whose response is superseded below -- carry them
+        # into whatever response we return so none is dropped.
+        flushed_directives = []
 
         while remaining:
             line = remaining[0]
             try:
                 last_response = self._send_canonical(line.encode("utf-8"))
+                flushed_directives.extend(last_response.directives)
             except _NetworkFailure:
                 new_canonical = canonicalize(dataclasses.asdict(bundle))
                 self._write_queue(remaining)
                 self._append_queue(new_canonical.decode("utf-8"))
-                return None
+                return self._with_directives(last_response, flushed_directives)
             except _ResponseParseFailure as e:
                 # Engine accepted this queued bundle (HTTP 200) but the body
                 # didn't parse; retrying it would only earn a 409 replay.
@@ -259,13 +284,14 @@ class TransportClient:
 
         canonical_bytes = canonicalize(dataclasses.asdict(bundle))
         try:
-            return self._send_canonical(canonical_bytes)
+            return self._with_directives(
+                self._send_canonical(canonical_bytes), flushed_directives)
         except _NetworkFailure:
             # Queue the new bundle for next cycle, then return the flushed
             # queued bundle's response — it is the most recent authoritative
             # engine response (score, directives).
             self._append_queue(canonical_bytes.decode("utf-8"))
-            return last_response
+            return self._with_directives(last_response, flushed_directives)
         except _ResponseParseFailure as e:
             # Engine accepted the current bundle (HTTP 200) but the response
             # body didn't parse. Do NOT queue it: the next cycle would replay

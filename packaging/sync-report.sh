@@ -36,17 +36,27 @@ SRC=/opt/.huitzilopochtli/report.html
 [ -f "$SRC" ] || SRC=""
 SRC_JSON=/opt/.huitzilopochtli/report.json
 
+# Mirrors are written AS the user, never as root: the mirror dir is user-
+# controlled, and a root cp/chown would follow a planted symlink (e.g.
+# report.json -> /etc/passwd) and hand the target to that user. As the user,
+# a symlink can only reach what they could already write. runuser is
+# util-linux; without it, skip mirroring rather than fall back to root writes.
+put_as() {  # stdin -> $2, written as user $1
+    runuser -u "$1" -- sh -c 'umask 022; mkdir -p "${1%/*}" && cat > "$1"' sh "$2"
+}
+if ! command -v runuser >/dev/null 2>&1; then
+    echo "sync-report: runuser not found; skipping report mirrors" >&2
+    exit 0
+fi
+
 awk -F: '($3>=1000 && $3<60000 && $7 !~ /(nologin|false)$/) {print $1":"$6}' /etc/passwd |
 while IFS=: read -r nakon_u nakon_h; do
     [ -d "$nakon_h" ] || continue
     if [ -n "$SRC" ]; then
         mirror="$nakon_h/Documents/huitzilopochtli"
-        mkdir -p "$mirror"
-        cp "$SRC" "$mirror/report.html"
-        chown -R "$nakon_u":"$nakon_u" "$mirror" 2>/dev/null || true
+        put_as "$nakon_u" "$mirror/report.html" < "$SRC" || true
         if [ -f "$SRC_JSON" ]; then
-            cp "$SRC_JSON" "$mirror/report.json"
-            chown "$nakon_u":"$nakon_u" "$mirror/report.json" 2>/dev/null || true
+            put_as "$nakon_u" "$mirror/report.json" < "$SRC_JSON" || true
         fi
     fi
     # Legacy Desktop mirrors from pre-Documents builds: superseded by the

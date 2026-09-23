@@ -1,8 +1,9 @@
 """POST /enroll handler logic. See architecture.md §9.6, §14.1."""
 import base64
+import time
 
 from common import canon
-from common.crypto import signing
+from engine import verify_gate
 from engine.store import Store
 
 
@@ -55,11 +56,24 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
     except Exception:
         raise EnrollError(400, "malformed body: public_key is not valid base64")
 
+    # Cheap token checks first: signature verification costs seconds of
+    # pure-Python CPU, so an unauthenticated caller with no valid token must
+    # never reach it. enroll_box_atomic below re-checks under the lock.
+    token = store.get_token(body["enrollment_token"])
+    if token is None:
+        raise EnrollError(400, "unknown token")
+    if token["consumed_at"] is not None:
+        raise EnrollError(409, "token already consumed")
+    if token["expires_at"] < time.time():
+        raise EnrollError(410, "token expired")
+
     canonical_bytes = canon.canonicalize(body)
     try:
-        signature_ok = signing.verify(public_key, canonical_bytes, sig)
+        signature_ok = verify_gate.verify(public_key, canonical_bytes, sig)
     except Exception:
         signature_ok = False
+    if signature_ok is None:
+        raise EnrollError(503, "engine busy verifying signatures; retry")
     if not signature_ok:
         raise EnrollError(403, "bad signature")
 

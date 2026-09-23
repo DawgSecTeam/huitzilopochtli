@@ -85,6 +85,32 @@ class BoxHandle(ABC):
         """Release any connection. Default no-op."""
 
 
+_STAGE_PREFIX = "/tmp/huitzilopochtli-stage."
+
+
+def stage_path(handle, name: str) -> str:
+    """A private remote path on `handle`'s box for staging a file before
+    `sudo install`.
+
+    Root-installed files (init units, the motd script) are uploaded as the
+    SSH user and then installed by root. A fixed name like
+    /tmp/huitzilopochtli-motd.sh lets any local account pre-create it
+    world-writable and swap its contents between upload and install; a
+    per-handle `mktemp -d` dir (0700, SSH-user-owned) closes that race.
+    """
+    stage_dir = getattr(handle, "_stage_dir", None)
+    if stage_dir is None:
+        res = handle.run(f"mktemp -d {_STAGE_PREFIX}XXXXXX", sudo=False)
+        stage_dir = res.stdout.strip()
+        if not res.ok or not stage_dir.startswith(_STAGE_PREFIX):
+            raise RuntimeError(
+                f"could not create a private staging dir on {handle.addr}: "
+                f"{(res.stderr or res.stdout).strip()}"
+            )
+        handle._stage_dir = stage_dir
+    return f"{stage_dir}/{name}"
+
+
 class BoxProvider(ABC):
     """Creates a BoxHandle for a target environment."""
 

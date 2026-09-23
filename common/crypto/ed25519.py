@@ -19,10 +19,6 @@ NOTE: like the reference implementation this code is NOT constant-time; it
 signs with long-term box keys (§7 pins it anyway for portability). Risk
 scales with who can run timed code on the box — accepted per §7.
 
-NOTE: like the reference implementation this code is NOT constant-time; it
-signs with long-term box keys (§7 pins it anyway for portability). Risk
-scales with who can run timed code on the box — accepted per §7.
-
 Do not modify the arithmetic below; it is pinned to the reference above.
 
 Public surface (used only by signing.py — nothing else should import this
@@ -33,7 +29,6 @@ module directly):
     def verify(public_key: bytes, msg: bytes, sig: bytes) -> bool: ...
 """
 
-import functools
 import functools
 import hashlib
 import os
