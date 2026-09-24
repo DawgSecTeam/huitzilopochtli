@@ -20,6 +20,8 @@ blank or missing Answer line reads as unanswered (empty string). Scoring of
 the extracted string lives in common/matchers.py (`answer_equals`), not here.
 """
 import re
+import subprocess
+import sys
 
 ANSWER_PLACEHOLDER_RE = re.compile(r"^_+$")
 QUESTION_RE = re.compile(r"^Q(\d+):")
@@ -125,3 +127,35 @@ def render_template(questions: list) -> str:
         lines.append(blank_line())
         lines.append("")
     return "\n".join(lines)
+
+
+# Runs in a child process that has already dropped to the file owner's uid/gid
+# (subprocess user=/group=), so a symlink planted in the owner's directory
+# can only redirect the write to somewhere that user could write anyway.
+_WRITE_AS_OWNER = (
+    "import os,sys,tempfile\n"
+    "p=sys.argv[1]\n"
+    "fd,t=tempfile.mkstemp(dir=os.path.dirname(p) or '.',prefix='.huitz-')\n"
+    "try:\n"
+    "    with os.fdopen(fd,'w',encoding='utf-8') as f: f.write(sys.stdin.read())\n"
+    "    os.chmod(t,int(sys.argv[2],8)); os.replace(t,p)\n"
+    "except BaseException:\n"
+    "    os.unlink(t); raise\n"
+)
+
+
+def write_as_owner(path: str, content: str, uid: int, gid: int,
+                   mode: int = 0o666) -> None:
+    """Atomically replace `path` with `content`, writing as uid:gid (POSIX).
+
+    For root writing into a directory a desktop user controls (their
+    Desktop/answers file): writing as root would follow any symlink the user
+    planted there onto root-owned files. Raises CalledProcessError or
+    OSError on failure.
+    """
+    subprocess.run(
+        [sys.executable, "-c", _WRITE_AS_OWNER, path, oct(mode)],
+        input=content, text=True, user=uid, group=gid, extra_groups=[],
+        check=True, timeout=15,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )

@@ -505,6 +505,15 @@ def _entry_ordinal(entry: dict, index: int) -> int:
     return int(entry.get("ordinal") or 0) or (index + 1)
 
 
+def _dir_owner(path: str):
+    """(uid, gid) of path's directory if not root-owned, else None."""
+    try:
+        st = os.stat(os.path.dirname(os.path.abspath(path)))
+    except OSError:
+        return None
+    return None if st.st_uid == 0 else (st.st_uid, st.st_gid)
+
+
 def _write_answers_file(path: str, content: str) -> None:
     """Replace the answers file, preserving mode + ownership (root editing a
     user's file must not seize it)."""
@@ -513,6 +522,15 @@ def _write_answers_file(path: str, content: str) -> None:
         mode, uid, gid = st.st_mode & 0o7777, st.st_uid, st.st_gid
     except OSError:
         mode = uid = gid = None
+    if os.name != "nt" and os.geteuid() == 0:
+        # `sudo huitz forensics` on a user's file: write as its owner so a
+        # symlink planted at the temp path can't redirect a root write.
+        owner = (uid, gid) if uid not in (None, 0) else _dir_owner(path)
+        if owner is not None:
+            agent.answers.write_as_owner(
+                path, content, owner[0], owner[1],
+                mode if mode is not None else 0o666)
+            return
     tmp = path + ".huitz-tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)

@@ -43,6 +43,9 @@ class FakeHandle:
             # plausible uid:gid by default.
             if "id -u" in cmd and "id -g" in cmd:
                 out, rc = "1000\n1000", 0
+            # BoxHandle.stage_path's private staging dir.
+            elif cmd.startswith("mktemp -d /tmp/huitzilopochtli-stage."):
+                out, rc = "/tmp/huitzilopochtli-stage.abc123\n", 0
         from boxbuilder.providers.base import RunResult
         return RunResult(exit_status=rc, stdout=out, stderr="")
 

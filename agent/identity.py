@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from common.crypto import signing
 from common.canon import canonicalize
 
+_TIMEOUT_S = 10  # matches agent/transport.py
+
 
 @dataclass
 class Identity:
@@ -105,7 +107,7 @@ def enroll(engine_url: str, enrollment_token: str, identity: Identity,
     ctx = ssl.create_default_context()
 
     try:
-        with urllib.request.urlopen(request, context=ctx) as resp:
+        with urllib.request.urlopen(request, context=ctx, timeout=_TIMEOUT_S) as resp:
             status = resp.getcode()
             response_bytes = resp.read()
     except urllib.error.HTTPError as e:

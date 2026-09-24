@@ -15,8 +15,24 @@ representative (checks, store). ~40s.
 
 Real subprocesses (`python3 -m agent`, `python3 -m engine.server`), real
 sockets over `127.0.0.1`, real sqlite files, real signing/verification. No
-external VM or network boundary. ~90s — dominated by
-`test_ranked_loopback.py`, see the note below.
+external VM or network boundary. ~4 minutes — dominated by the ranked
+suites; every check-in round-trip pays a client-side sign + server-side
+verify, see the Ed25519 note below.
+
+Ranked suites (2026-09-23 round; matrix + round reports in
+`RANKED_TESTING.md`):
+- `test_ranked_loopback.py` — enroll on first boot, restart-without-re-enroll,
+  SIGKILL-mid-checkin seq recovery, SLA accrual, offline queue-and-flush.
+- `test_ranked_protocol_errors.py` — the whole wire surface: enrollment error
+  paths, check-in check order, replay + `last_seq` echo, answer-key
+  redaction on raw bodies, hostile/mistyped payloads, admin surface, GET
+  routing.
+- `test_ranked_resilience.py` — engine-restart persistence + box resume,
+  verify-gate 503 backpressure under a 4-box volley, token-enroll race.
+- `test_ranked_adversary.py` — directive delivery → sandboxed execution →
+  at-most-once across resends/restarts; SLA DOWN + accrual freeze.
+- `test_zipapp.py::test_zipapp_ranked_smoke` — the built `.pyz` ranked
+  against a local engine with a signed manifest.
 
 Run both tiers together (the default):
 
@@ -101,11 +117,17 @@ systemd-registration step. Getting that would need a `semanage fcontext`
 rule added to the shared Fedora template, a real change to shared
 infrastructure this test suite doesn't make on its own.
 
-### `test_ranked_two_machines.py` — BLOCKED on two infrastructure issues
+### `test_ranked_two_machines.py` — unblockable now; needs BIND + a fresh look
 
 The test code is believed correct (built and iterated against real
-failures until each bug was fixed -- see below) but cannot currently pass,
-for reasons outside this repo:
+failures until each bug was fixed -- see below). Of the three original
+blockers, #1 died with the 9106 template rebuild, #2 is avoided by using
+Ubuntu for both roles, and #3 (dev-host reachability) was **resolved
+2026-09-23**: the RST boundary is per-bridge (untrustedbr blocks, vmbr0 is
+open — see item 3 below). To actually run it today: add
+`HUITZILOPOCHTLI_BIND=0.0.0.0` to the engine env (post-default-loopback),
+point `TEST_TEMPLATE_VMID_UBUNTU` at a live Ubuntu template (106; 9106 is
+gone), and re-run. Original write-up:
 
 1. **Two clones of the same template collide onto the identical DHCP
    IP.** Confirmed empirically (`ip_a == ip_b` every time, with distinct
@@ -154,21 +176,18 @@ from Ubuntu now get distinct IPs). The test now uses Ubuntu for both roles
 and gets past enrollment. It's still not fully green, though, for a
 *third*, previously-undiscovered reason:
 
-3. **From this dev environment, arbitrary VM ports on the Proxmox host's
-   LAN (`10.0.0.0/24`) are not reachable at all** -- confirmed by testing
-   against several already-running, unrelated production VMs (not just
-   test clones): every port except the Proxmox API's own (`:8006`) gets an
-   immediate TCP RST within ~35ms. Only the Proxmox API and the QEMU
-   guest-agent channel (file-write/file-read/exec) are reachable from here;
-   a raw HTTP client on this machine cannot reach a cloned VM's exposed
-   port directly. This is exactly the network boundary
-   `test_ranked_two_machines.py`'s engine/checkin polling needs (it must
-   `GET /health` and `POST /checkin` from the test process, not just push
-   files via the guest agent), so the test is blocked on network
-   reachability from this specific dev environment rather than on anything
-   in the repo. `test_local_honor_distribution.py` and
-   `test_all_check_types_live.py` are unaffected because they only ever use
-   the guest-agent channel, never a raw connection to a VM's IP.
+3. **~~From this dev environment, arbitrary VM ports on the Proxmox host's
+   LAN (`10.0.0.0/24`) are not reachable at all~~ (RESOLVED 2026-09-23 — the
+   boundary is per-bridge, not host-wide)**: the original RST finding was
+   real but its scope was misread. Production/workshop VMs sit on
+   **untrustedbr** (firewalled workshop bridge) and do RST everything from
+   here; build clones **rebridged to `vmbr0`** (the standard build-loop step:
+   `pmx rebridge <vmid> --bridge vmbr0 --firewall 0 --yes`) are fully
+   reachable from the dev host on arbitrary ports. Verified 2026-09-23 with
+   curl to a cloned engine VM's `:8080` and ssh to a cloned agent VM's `:22`
+   (see RANKED_TESTING.md). The ranked round's real-VM E2E ran exactly this
+   way. If a two-VM ranked run fails to connect, check which bridge the clone
+   is on before believing a reachability claim: `pmx status <vmid>`.
 
 ### Bugs found and fixed in this test tier itself, along the way
 

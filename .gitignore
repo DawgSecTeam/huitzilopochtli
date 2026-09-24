@@ -16,3 +16,4 @@ artifacts/
 
 # local ZCode CLI session state (plans/scratch), never source
 .zcode/
+

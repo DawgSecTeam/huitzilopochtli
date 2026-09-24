@@ -84,7 +84,7 @@ def test_install_honor_places_files_and_enables_init(tmp_path, fake_provider_fac
     # The first-login motd banner is installed -- reported via result["motd"]
     # (it lives in /etc/update-motd.d, deliberately outside the install dir).
     assert result["motd"] == "/etc/update-motd.d/90-huitzilopochtli"
-    assert any("install -m 755 /tmp/huitzilopochtli-motd.sh" in c
+    assert any("install -m 755 /tmp/huitzilopochtli-stage.abc123/huitzilopochtli-motd.sh" in c
                for c in handle.runs)
     # mkdir happened.
     assert any(f"mkdir -p {INSTALL_DIR}" in c for c in handle.runs)

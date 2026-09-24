@@ -12,6 +12,7 @@ from typing import Optional
 
 from boxbuilder import keys, nakon
 from boxbuilder.artifacts import INSTALL_DIR  # single source of the install path
+from boxbuilder.providers.base import stage_path
 from boxbuilder.spec import BoxSpec
 from boxbuilder.theme import resolve_theme_configurations
 
@@ -427,7 +428,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             with open(motd_stage, "w", encoding="utf-8") as f:
                 f.write(artifacts_mod.motd_script(
                     title, spec.theme.get("organization"), mode))
-            motd_tmp = "/tmp/huitzilopochtli-motd.sh"
+            motd_tmp = stage_path(handle, "huitzilopochtli-motd.sh")
             handle.put(motd_stage, motd_tmp)
             res = handle.run(
                 f"install -m 755 {motd_tmp} {artifacts_mod.MOTD_PATH}")
