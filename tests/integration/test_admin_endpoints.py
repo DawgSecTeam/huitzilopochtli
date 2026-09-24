@@ -413,6 +413,8 @@ def test_checkin_with_malformed_stored_rubric_returns_clean_500(engine, tmp_path
     assert resp.status_code == 500, resp.text
     body = resp.json()
     assert "malformed rubric" in body["error"]
+    # The parse error quotes rubric content; it must stay engine-side (§2.4).
+    assert "not-a-real-category" not in resp.text
 
 
 # --- 2. admin auth: wrong/missing token is rejected with 403 ----------------

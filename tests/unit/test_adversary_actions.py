@@ -72,6 +72,36 @@ def test_drop_inert_artifact_writes_inert_nonexecutable_file(tmp_path, monkeypat
     assert stat.S_IMODE(mode) == 0o644
 
 
+def test_resolve_artifact_path_accepts_nested_path(tmp_path):
+    base = tmp_path / "sandbox"
+    got = actions._resolve_artifact_path(str(base), "sub/marker.txt")
+    assert got == os.path.join(os.path.realpath(base), "sub", "marker.txt")
+
+
+def test_resolve_artifact_path_rejects_dotdot_escape(tmp_path):
+    base = tmp_path / "sandbox"
+    assert actions._resolve_artifact_path(str(base), "../outside.txt") is None
+
+
+def test_resolve_artifact_path_rejects_linked_base(tmp_path):
+    # A pre-planted link (junction, on Windows) in place of the base would
+    # otherwise redirect the privileged write anywhere.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    base = tmp_path / "sandbox"
+    base.symlink_to(elsewhere, target_is_directory=True)
+    assert actions._resolve_artifact_path(str(base), "marker.txt") is None
+
+
+def test_resolve_artifact_path_rejects_link_inside_base(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    base = tmp_path / "sandbox"
+    base.mkdir()
+    (base / "sub").symlink_to(elsewhere, target_is_directory=True)
+    assert actions._resolve_artifact_path(str(base), "sub/marker.txt") is None
+
+
 def test_drop_inert_artifact_missing_path_is_noop(tmp_path):
     # No "path" key at all -> should not raise, and should not write anything.
     ctx = FakeCtx()

@@ -6,6 +6,7 @@ session or pop a toast on the build machine.
 """
 import json
 import os
+import stat
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_announce_gain_plays_sound_and_toast(monkeypatch, sessions):
     notify.announce(10, 85, title="Observatory")
 
     play = rec.wavs()[0]
-    assert play[-1] == "/tmp/huitz-gain.wav"
+    assert play[-1].startswith("/tmp/huitz-gain-")
     # play chain drops into the user's live session (sudo -u + session env)
     assert play[:4] == ["sudo", "-u", "sysadmin", "env"]
     assert "XDG_RUNTIME_DIR=/run/user/12345" in play
@@ -143,7 +144,7 @@ def test_announce_penalty_uses_alarm_and_critical_urgency(monkeypatch, sessions)
     monkeypatch.setattr(notify, "_run", rec)
     notify.announce(-5, 80, title="Observatory")
 
-    assert rec.wavs()[0][-1] == "/tmp/huitz-penalty.wav"
+    assert rec.wavs()[0][-1].startswith("/tmp/huitz-penalty-")
     toast = rec.toast()
     ns = toast.index("notify-send")
     assert toast[toast.index("-u", ns) + 1] == "critical"
@@ -155,13 +156,20 @@ def test_announce_extracts_the_embedded_sounds(monkeypatch, sessions):
     """The temp wav must byte-match the vendored asset and be world-readable,
     so the desktop user's player can open a root-written file."""
     import agent.sounds
-    rec = _Recorder()
+    captured = []
+
+    def rec(cmd, timeout):
+        # Inspect while "playing": the file is removed once playback ends.
+        if cmd[-1].endswith(".wav") and not captured:
+            with open(cmd[-1], "rb") as f:
+                captured.append((f.read(), os.stat(cmd[-1]).st_mode))
+        return True
+
     monkeypatch.setattr(notify, "_run", rec)
     notify.announce(1, 2, title="T")
-    path = rec.wavs()[0][-1]
-    with open(path, "rb") as f:
-        assert f.read() == agent.sounds.wave_bytes("gain")
-    assert os.stat(path).st_mode & 0o444 == 0o444
+    data, mode = captured[0]
+    assert data == agent.sounds.wave_bytes("gain")
+    assert mode & 0o444 == 0o444
 
 
 def test_announce_dbus_send_fallback_when_notify_send_missing(
@@ -255,3 +263,40 @@ def test_paplay_failure_falls_through_to_aplay_chain(monkeypatch):
     assert [player(c) for c in seen] == ["paplay", "aplay", "aplay"]
     assert seen[0][0] == "sudo" and seen[1][0] == "sudo"
     assert seen[2][0] == "aplay"  # root playback: no sudo prefix
+
+
+def test_sound_file_is_unpredictable_readable_and_removed(monkeypatch):
+    """Root writes the WAV into world-writable /tmp: the name must be
+    random (a fixed name lets a local user pre-plant a symlink and redirect
+    root's write + chmod), readable by the desktop user while it plays, and
+    gone afterwards."""
+    seen = []
+
+    def fake_run(cmd, timeout):
+        path = cmd[-1]
+        st = os.lstat(path)
+        seen.append((path, stat.S_ISREG(st.st_mode), stat.S_IMODE(st.st_mode),
+                     os.path.getsize(path)))
+        return True
+
+    monkeypatch.setattr(notify, "_run", fake_run)
+    notify._play_sound("gain", "sysadmin", 12345)
+    notify._play_sound("gain", "sysadmin", 12345)
+
+    (p1, reg, mode, size), (p2, *_rest) = seen
+    assert p1 != p2 and p1.startswith("/tmp/huitz-gain-")
+    assert reg and mode == 0o644 and size > 0
+    assert not os.path.exists(p1) and not os.path.exists(p2)
+
+
+def test_sound_file_removed_even_if_player_raises(monkeypatch):
+    seen = []
+
+    def boom(cmd, timeout):
+        seen.append(cmd[-1])
+        raise RuntimeError("player exploded")
+
+    monkeypatch.setattr(notify, "_run", boom)
+    with pytest.raises(RuntimeError):
+        notify._play_sound("penalty", None, None)
+    assert seen and not os.path.exists(seen[0])

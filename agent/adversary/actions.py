@@ -17,7 +17,10 @@ ACTIONS: dict[str, Callable] = {}
 #: Directory confining ``drop_inert_artifact`` — resolved paths never escape it.
 #: POSIX uses a root-owned dir, not /tmp: in a world-writable parent a local
 #: user could pre-create the base (or symlinks inside it) and redirect the
-#: root write onto any file. SYSTEM's temp dir on Windows is already private.
+#: root write onto any file. On Windows, SYSTEM's temp dir is private only
+#: on newer builds (C:\Windows\SystemTemp); on older ones it is
+#: C:\Windows\Temp, where users can create subdirs, so _resolve_artifact_path
+#: refuses a linked base and compares real paths.
 _DEFAULT_ARTIFACT_DIR = (
     os.path.join(tempfile.gettempdir(), "huitzilopochtli-adversary")
     if os.name == "nt" else "/var/lib/huitzilopochtli/adversary"
@@ -34,12 +37,30 @@ def _artifact_base() -> str:
     return os.environ.get("HUITZILOPOCHTLI_ARTIFACT_DIR", _DEFAULT_ARTIFACT_DIR)
 
 
+def _is_link_or_junction(path: str) -> bool:
+    if os.path.islink(path):
+        return True
+    attrs = getattr(os.lstat(path), "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
 def _resolve_artifact_path(base: str, requested: str):
-    """Resolve ``requested`` inside ``base``; return None if it would escape."""
-    base_abs = os.path.abspath(base)
-    rel = requested.replace("\\", "/").lstrip("/")
-    candidate = os.path.abspath(os.path.join(base_abs, rel))
-    if candidate != base_abs and not candidate.startswith(base_abs + os.sep):
+    """Resolve ``requested`` inside ``base``; return None if it would escape.
+
+    Creates ``base`` if missing and refuses it if it is a symlink/junction,
+    then compares *real* paths, so a link planted anywhere under the base
+    cannot redirect the write outside it.
+    """
+    try:
+        os.makedirs(base, exist_ok=True)
+        if _is_link_or_junction(base):
+            return None
+        base_real = os.path.realpath(base)
+        rel = requested.replace("\\", "/").lstrip("/")
+        candidate = os.path.realpath(os.path.join(base_real, rel))
+    except (OSError, ValueError):
+        return None
+    if not candidate.startswith(base_real + os.sep):
         return None
     return candidate
 

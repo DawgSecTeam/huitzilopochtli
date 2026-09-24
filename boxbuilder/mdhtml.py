@@ -11,7 +11,8 @@ stays pure-consumer and never renders anything.
 READMEs actually use: #/##/### headings, paragraphs, `-`/`*` bullets, `1.`
 ordered lists, fenced ``` code blocks, `---` rules, and inline `**bold**`,
 `*italic*`, `` `code` ``, `[text](url)`. Everything is HTML-escaped *before*
-markup is applied, so author text can never inject raw HTML.
+markup is applied, so author text can never inject raw HTML, and link hrefs
+are limited to http(s)/mailto/relative URLs (no `javascript:`/`data:`).
 """
 import html
 import re
@@ -26,6 +27,25 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _EM_RE = re.compile(r"\*([^*\n]+?)\*")
 _CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
+_SAFE_SCHEMES = {"http", "https", "mailto"}
+
+
+def _safe_href(url: str) -> bool:
+    """Allow http(s)/mailto and scheme-less (relative, #fragment) links only:
+    escaping stops attribute breakout but not a `javascript:`/`data:` href.
+    Browsers drop control chars when parsing a scheme, so any control char
+    makes the link unsafe rather than scheme-less."""
+    raw = html.unescape(url)
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+        return False
+    m = _SCHEME_RE.match(raw)
+    return m is None or m.group(1).lower() in _SAFE_SCHEMES
+
+
+def _link(m):
+    text, url = m.group(1), m.group(2)
+    return f'<a href="{url}">{text}</a>' if _safe_href(url) else text
 
 
 def _inline(text: str) -> str:
@@ -47,7 +67,7 @@ def _inline(text: str) -> str:
     # so a surviving single-* pair is emphasis. No-line-crossing keeps stray
     # bullet/list asterisks (already stripped at the line level) irrelevant.
     esc = _EM_RE.sub(r"<em>\1</em>", esc)
-    esc = _LINK_RE.sub(r'<a href="\2">\1</a>', esc)
+    esc = _LINK_RE.sub(_link, esc)
     return re.sub("\x00(\\d+)\x00", _unstash, esc)
 
 
