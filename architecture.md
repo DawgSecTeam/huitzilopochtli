@@ -491,7 +491,7 @@ Ranked/live only (offline is untimed, so no adversary offline). **Refinement ove
 
 ### 12.1 Engine-side scheduler (`engine/adversary_oracle.py`)
 
-- Per box, derive a deterministic RNG from `(server_secret, box_id)` — reproducible for audit, unguessable to the operator.
+- Per box, derive a deterministic RNG per event from `(server_secret, box_id, event_id)` — reproducible for audit, unguessable to the operator, and stable when a re-upload adds, drops or reorders other events.
 - From the scenario's event pool, pick a concrete fire time for each event within its `window_s`, anchored to `T0`.
 - On each check-in, if `received_at >= event.fire_time` and the event has not been issued, include it as a **directive** in the response and log it in `adversary_log`.
 - **Delivery is at-least-once.** Every response also re-sends all directives already issued to the box (`issued_directives`, §14.2), so a response lost after the engine commits can't lose one. The agent records each `event_id` it has run in `<identity_path>.directives` and skips repeats, so each event runs at most once per `box_id`. A re-sent directive can run late (after an outage) rather than at its fire time. Agents that ignore `issued_directives` fall back to at-most-once.
@@ -594,7 +594,7 @@ Every bundle and manifest carries `schema_version`, `agent_version`, and `scenar
 
 **SLA accrual:** each check-in updates the per-check hysteresis state on the engine; while `UP`, capped drip accrues against engine-observed elapsed time; gaps and `DOWN` earn nothing.
 
-**Adversary event lifecycle:** engine derives per-box schedule from `(server_secret, box_id)` → when a fire time is reached at check-in, engine returns a directive and begins docking from that moment → box executes the local action via the closed vocabulary → student remediates → subsequent self-reports show restoration → engine resumes credit.
+**Adversary event lifecycle:** engine derives per-box schedule from `(server_secret, box_id, event_id)` → when a fire time is reached at check-in, engine returns a directive and begins docking from that moment → box executes the local action via the closed vocabulary → student remediates → subsequent self-reports show restoration → engine resumes credit.
 
 **Offline queue flush:** box offline for several intervals → bundles queued with preserved seq → on reconnect flushed in order → engine dedups, scores each, but SLA cap prevents the backlog from being cashed as continuous uptime.
 
