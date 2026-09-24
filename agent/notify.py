@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 import agent.sounds
 
@@ -159,25 +160,49 @@ def _as_user(user: str, uid: int, argv: list) -> list:
 
 
 def _extract_sound(kind: str) -> str | None:
-    """Write the embedded WAV to a world-readable temp path for the desktop
-    user's player. tmp+rename so concurrent runs never see a partial file."""
-    path = f"/tmp/huitz-{kind}.wav"
-    tmp = path + ".tmp"
+    """Write the embedded WAV to a fresh world-readable temp file for the
+    desktop user's player; the caller deletes it after playback.
+
+    We run as root and /tmp is world-writable, so the name must not be
+    predictable: a fixed path lets a local user pre-plant a symlink (or
+    their own file) there and redirect root's write + chmod onto any file.
+    mkstemp picks a random name and creates it O_EXCL|O_NOFOLLOW."""
     try:
-        with open(tmp, "wb") as f:
-            f.write(agent.sounds.wave_bytes(kind))
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-        return path
+        fd, path = tempfile.mkstemp(prefix=f"huitz-{kind}-", suffix=".wav",
+                                    dir="/tmp")
     except OSError as e:
         print(f"WARNING: could not extract {kind} sound: {e}", file=sys.stderr)
         return None
+    try:
+        # mkstemp creates 0600; the player runs as the desktop user.
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "wb") as f:
+            f.write(agent.sounds.wave_bytes(kind))
+        return path
+    except OSError as e:
+        print(f"WARNING: could not extract {kind} sound: {e}", file=sys.stderr)
+        _unlink_quietly(path)
+        return None
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _play_sound(kind: str, user: str | None, uid: int | None) -> None:
     path = _extract_sound(kind)
     if path is None:
         return
+    try:
+        _play_file(path, user, uid)
+    finally:
+        _unlink_quietly(path)
+
+
+def _play_file(path: str, user: str | None, uid: int | None) -> None:
     if user is not None:
         # PulseAudio first (session volume/routing), then bare ALSA as the
         # user, then bare ALSA as root -- aplay exists on every Xubuntu

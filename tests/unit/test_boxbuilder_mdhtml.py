@@ -81,3 +81,17 @@ def test_render_readme_page_defaults_and_bad_accent():
     assert "<h1>README</h1>" in page
     assert ":root { --accent:" not in page
     assert "<p>body</p>" in page
+
+
+def test_link_hrefs_limited_to_safe_schemes():
+    """Escaping stops attribute breakout, not a script-scheme href: those
+    links render as plain text; http(s)/mailto/relative still link."""
+    for bad in ("javascript:alert(1)", "JavaScript:alert(1)",
+                "data:text/html,x", "vbscript:x", "\x01javascript:x"):
+        html = mdhtml.markdown_to_html(f"[click]({bad})\n")
+        assert "<a " not in html, bad
+        assert "click" in html
+    for ok in ("https://example.com", "http://x/y", "mailto:a@b.c",
+               "report.html", "#objective", "/docs/a:b"):
+        html = mdhtml.markdown_to_html(f"[go]({ok})\n")
+        assert "<a href=" in html, ok

@@ -363,11 +363,15 @@ class Handler(BaseHTTPRequestHandler):
             rubric = _rubric_from_dict(json.loads(scenario_row["rubric_json"]))
             event_pool = json.loads(scenario_row["adversary_json"]).get("events", [])
         except (ValueError, KeyError, TypeError) as e:
+            # The parse error can quote rubric keys/values (§2.4): log it
+            # engine-side, send the box only the fact of failure.
+            print(f"ERROR: stored scenario {bundle.scenario_name!r} has a "
+                  f"malformed rubric: {e!r}", file=sys.stderr)
             self._send_json(
                 500,
                 {
                     "error": f"stored scenario {bundle.scenario_name!r} has a "
-                    f"malformed rubric: {e}",
+                    f"malformed rubric",
                     "last_seq": None,
                 },
             )
