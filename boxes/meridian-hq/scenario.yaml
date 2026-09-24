@@ -37,7 +37,7 @@
 
 scenario:
   name: "Meridian Logistics"
-  version: 1
+  version: 2
   mode: honor
   hosts: ["localhost"]
 

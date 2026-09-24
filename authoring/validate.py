@@ -261,4 +261,13 @@ def _validate_theme(theme, source_path: str) -> list:
     if "include_report_shortcut" in theme and not isinstance(theme["include_report_shortcut"], bool):
         errors.append(f"{source_path}: theme.include_report_shortcut must be a boolean")
 
+    allow = theme.get("readme_lint_allow")
+    if allow is not None:
+        if not isinstance(allow, list) or not all(isinstance(a, str) for a in allow):
+            errors.append(
+                f"{source_path}: theme.readme_lint_allow must be a list of strings "
+                "(forensics answer values the spoiler lint may ignore — lenient "
+                "aliases that collide with the story vocabulary)"
+            )
+
     return errors
