@@ -328,6 +328,17 @@ class SshHandle(BoxHandle):
                 )
                 if not res.ok:
                     raise RuntimeError(f"failed to enable systemd timer: {res.stderr.strip()}")
+            else:
+                # A ranked install over an honor-sealed template (every
+                # static-pine clone) inherits the honor re-grade timer, which
+                # keeps restarting a deliberately stopped ranked agent. Remove
+                # it; absent-timer errors are expected and ignored.
+                self.run(
+                    "systemctl disable --now huitzilopochtli-agent.timer "
+                    ">/dev/null 2>&1; "
+                    "rm -f /etc/systemd/system/huitzilopochtli-agent.timer && "
+                    "systemctl daemon-reload"
+                )
         elif kind == "openrc":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.openrc")
             tmp = stage_path(self, "huitzilopochtli-agent")
