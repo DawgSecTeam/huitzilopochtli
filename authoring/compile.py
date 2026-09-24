@@ -122,6 +122,12 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
 
     sla = None
     if sla_raw is not None:
+        unknown = sorted(set(sla_raw) - set(SlaParams.__dataclass_fields__))
+        if unknown:
+            raise ValueError(
+                f"check {check.get('id')!r}: expect.sla has unknown key(s): "
+                f"{', '.join(unknown)}"
+            )
         sla = SlaParams(
             interval_s=sla_raw["interval_s"],
             points_per_interval=sla_raw["points_per_interval"],

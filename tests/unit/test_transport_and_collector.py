@@ -62,6 +62,39 @@ def test_checkin_permanent_rejection_of_new_bundle_raises(tmp_path, capsys):
     assert not (tmp_path / "q").exists()
 
 
+def test_permanent_rejection_of_queued_bundle_still_sends_current(tmp_path, capsys):
+    """A stale queued bundle that the engine permanently rejects (e.g. a 409
+    replay after a crash) is dropped -- but the flush must carry on to the
+    later queue entries and the current bundle. Raising out of the flush lost
+    the current cycle's evidence even though its seq was already persisted
+    (round-3 S5 finding)."""
+    from agent.transport import PermanentRejection
+
+    client = TransportClient("http://engine.example", FakeIdentity(),
+                             queue_path=str(tmp_path / "q"))
+    client._write_queue(['{"stale":1}', '{"queued_ok":2}'])
+    sent = []
+    sentinel = type("Resp", (), {"directives": []})()
+
+    def send(canonical_bytes):
+        sent.append(canonical_bytes)
+        if canonical_bytes == b'{"stale":1}':
+            raise PermanentRejection("checkin failed: permanent HTTP 409: replay",
+                                     status=409, last_seq=6)
+        return sentinel
+
+    with patch.object(client, "_send_canonical", side_effect=send):
+        with patch.object(client, "_with_directives",
+                          side_effect=lambda resp, _d: resp):
+            result = client.checkin(_bundle())
+
+    assert result is sentinel
+    assert len(sent) == 3  # stale (rejected), queued_ok, then the current bundle
+    assert b'"seq":7' in sent[-1]
+    assert client._read_queue() == []
+    assert "dropping queued bundle" in capsys.readouterr().err
+
+
 def test_checkin_transient_failure_of_new_bundle_queues_it(tmp_path):
     """A _NetworkFailure on the new bundle still queues it for later retry
     (existing behavior, must be preserved)."""

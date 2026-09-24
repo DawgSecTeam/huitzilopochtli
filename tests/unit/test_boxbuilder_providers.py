@@ -127,3 +127,41 @@ def test_ssh_run_shuts_down_stdin_write_side():
     assert res2.ok
     assert stdin2._writes == []  # no password on the non-sudo path
     assert ch2.shutdown_write_calls == 1
+
+
+class _RecordingSshHandle:
+    """Just enough of SshHandle for install_init: records commands."""
+
+    def __init__(self):
+        from boxbuilder.providers.base import RunResult
+        self._ok = RunResult(0, "/tmp/huitzilopochtli-stage.abc\n", "")
+        self.cmds = []
+        self.addr = "10.0.0.1"
+
+    def run(self, cmd, **_kw):
+        self.cmds.append(cmd)
+        return self._ok
+
+    def put(self, local, remote, mode=None):
+        pass
+
+
+def _install_init_cmds(mode):
+    from boxbuilder.providers.ssh import SshHandle
+    handle = _RecordingSshHandle()
+    SshHandle.install_init(handle, "systemd", mode=mode)
+    return "\n".join(handle.cmds)
+
+
+def test_honor_install_enables_the_regrade_timer():
+    cmds = _install_init_cmds("honor")
+    assert "enable --now huitzilopochtli-agent.timer" in cmds
+
+
+def test_ranked_install_removes_an_inherited_honor_timer():
+    # Round-3 (S2): all four ranked guests, cloned from an honor-sealed
+    # template, still ran the honor re-grade timer after a ranked install.
+    cmds = _install_init_cmds("ranked")
+    assert "enable --now huitzilopochtli-agent.timer" not in cmds
+    assert "disable --now huitzilopochtli-agent.timer" in cmds
+    assert "rm -f /etc/systemd/system/huitzilopochtli-agent.timer" in cmds

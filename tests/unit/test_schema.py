@@ -271,6 +271,41 @@ def test_rubric_entry_sla_dict_is_fine():
     assert validate_rubric(rubric) == []
 
 
+@pytest.mark.parametrize("key", ["hysteresis_fail_n", "hysteresis_ok_n",
+                                 "max_intervals_per_checkin"])
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "2"])
+def test_rubric_entry_sla_optional_counters_must_be_positive_ints(key, bad):
+    # hysteresis_fail_n=0 pinned an always-UP box DOWN (round-3 S5 finding).
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["sla"] = {"interval_s": 60, "points_per_interval": 1, key: bad}
+    rubric["entries"] = [entry]
+    assert any(f"sla.{key} must be a positive integer" in e
+               for e in validate_rubric(rubric))
+
+
+def test_rubric_entry_sla_unknown_key_rejected():
+    # The engine rebuilds SlaParams(**sla) per check-in; a typo'd key used to
+    # pass upload and then 500 every check-in for the scenario.
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["sla"] = {"interval_s": 60, "points_per_interval": 1,
+                    "hysteresis_fal_n": 2}
+    rubric["entries"] = [entry]
+    assert any("unknown key(s): hysteresis_fal_n" in e
+               for e in validate_rubric(rubric))
+
+
+def test_rubric_entry_sla_all_known_keys_fine():
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["sla"] = {"interval_s": 60, "points_per_interval": 1,
+                    "hysteresis_fail_n": 1, "hysteresis_ok_n": 3,
+                    "max_intervals_per_checkin": 2}
+    rubric["entries"] = [entry]
+    assert validate_rubric(rubric) == []
+
+
 # --- Manifest.theme (additive field) -----------------------------------------------
 
 def test_manifest_theme_absent_is_fine():
