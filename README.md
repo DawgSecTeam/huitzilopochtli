@@ -40,7 +40,7 @@ The agent zipapp is also the box's **terminal console** — `huitz score`,
 `huitz watch`, `huitz forensics`, `huitz grade` render the grade natively in
 the terminal (see [`CLI.md`](CLI.md)).
 
-For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and the report output, see [`TESTING_GUIDE.md`](TESTING_GUIDE.md) in this repo.
+For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and the report output, see [`TESTING_GUIDE.md`](TESTING_GUIDE.md) in this repo. For the ranked-mode test matrix, round reports (what was tested on real VMs, bugs found and fixed), and the next-round backlog, see [`RANKED_TESTING.md`](RANKED_TESTING.md).
 
 ## Repo layout
 
