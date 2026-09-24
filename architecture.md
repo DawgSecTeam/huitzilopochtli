@@ -488,6 +488,7 @@ Ranked/live only (offline is untimed, so no adversary offline). **Refinement ove
 - Per box, derive a deterministic RNG from `(server_secret, box_id)` — reproducible for audit, unguessable to the operator.
 - From the scenario's event pool, pick a concrete fire time for each event within its `window_s`, anchored to `T0`.
 - On each check-in, if `received_at >= event.fire_time` and the event has not been issued, include it as a **directive** in the response and log it in `adversary_log`.
+- **Delivery is at-least-once.** Every response also re-sends all directives already issued to the box (`issued_directives`, §14.2), so a response lost after the engine commits can't lose one. The agent records each `event_id` it has run in `<identity_path>.directives` and skips repeats, so each event runs at most once per `box_id`. A re-sent directive can run late (after an outage) rather than at its fire time. Agents that ignore `issued_directives` fall back to at-most-once.
 - The engine **caused** the outage, so it knows the outage floor: it docks SLA/applies the relevant penalty from `fire_time` onward until the box's subsequent self-reports show restoration. (Honest-ceiling caveat from §3 still applies: a root operator can falsely report instant restoration; the engine can only guarantee the outage did not end *before* it was caused.)
 
 ### 12.2 Box-side executor (`agent/adversary/`)
@@ -559,10 +560,13 @@ Response `200`:
   "server_time": 1730000000.0,
   "score": { "total": 42, "results": [ ... ], "sla_status": [ ... ] },
   "directives": [ { "action": "kill_service", "params": { "service": "auditd" }, "event_id": "e2" } ],
+  "issued_directives": [ { "action": "kill_service", "params": { "service": "auditd" }, "event_id": "e2" } ],
   "next_checkin_s": 60,
   "last_seq": 17
 }
 ```
+
+`directives` holds only what this check-in newly issued. `issued_directives` re-sends every directive ever issued to the box (§12.1 delivery).
 
 ### 14.3 Versioning
 
