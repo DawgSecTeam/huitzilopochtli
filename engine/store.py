@@ -1,4 +1,5 @@
 """SQLite-backed storage. See architecture.md §11.2."""
+import contextlib
 import json
 import sqlite3
 import threading
@@ -46,13 +47,38 @@ class Store:
     def __init__(self, db_path: str):
         """Open (creating if absent) the sqlite3 file at db_path and ensure
         the schema exists."""
-        self._lock = threading.Lock()
+        # Reentrant so Store methods can run inside atomic() on the same thread.
+        self._lock = threading.RLock()
+        self._txn_depth = 0
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+
+    def _commit(self) -> None:
+        """Commit unless an enclosing atomic() block owns the transaction."""
+        if self._txn_depth == 0:
+            self._conn.commit()
+
+    @contextlib.contextmanager
+    def atomic(self):
+        """Run several Store calls as one transaction: all commit together on
+        success, all roll back on any exception. Holds the store lock for the
+        duration, so other threads' Store calls wait."""
+        with self._lock:
+            self._txn_depth += 1
+            try:
+                yield
+                if self._txn_depth == 1:
+                    self._conn.commit()
+            except BaseException:
+                if self._txn_depth == 1:
+                    self._conn.rollback()
+                raise
+            finally:
+                self._txn_depth -= 1
 
     # --- enrollment.py -----------------------------------------------------
 
@@ -82,7 +108,7 @@ class Store:
                 "UPDATE enrollment_tokens SET consumed_at = ? WHERE token = ?",
                 (time.time(), token),
             )
-            self._conn.commit()
+            self._commit()
 
     def create_box(self, box_id: str, public_key: str, scenario_name: str,
                     scenario_version: int = 0) -> None:
@@ -96,7 +122,7 @@ class Store:
                 "VALUES (?, ?, ?, ?, ?, 0, NULL, NULL)",
                 (box_id, public_key, scenario_name, scenario_version, now),
             )
-            self._conn.commit()
+            self._commit()
 
     def enroll_box_atomic(self, token: str, box_id: str, public_key: str,
                             scenario_name: str, scenario_version: int = 0) -> str:
@@ -136,7 +162,7 @@ class Store:
                 "UPDATE enrollment_tokens SET consumed_at = ? WHERE token = ?",
                 (now, token),
             )
-            self._conn.commit()
+            self._commit()
             return "ok"
 
     def create_token(self, token: str, scenario_name: str, expires_at: float) -> None:
@@ -147,7 +173,7 @@ class Store:
                 "consumed_at) VALUES (?, ?, ?, NULL)",
                 (token, scenario_name, expires_at),
             )
-            self._conn.commit()
+            self._commit()
 
     # --- checkin.py ----------------------------------------------------------
 
@@ -178,7 +204,7 @@ class Store:
                 "UPDATE boxes SET t0 = ? WHERE box_id = ? AND t0 IS NULL",
                 (t0, box_id),
             )
-            self._conn.commit()
+            self._commit()
 
     def update_box_seq(self, box_id: str, seq: int, boot_id: str) -> bool:
         """Advance last_seq only if seq is strictly greater. Atomic via guard."""
@@ -188,7 +214,7 @@ class Store:
                 "WHERE box_id = ? AND last_seq < ?",
                 (seq, boot_id, box_id, seq),
             )
-            self._conn.commit()
+            self._commit()
             return cur.rowcount == 1
 
     def save_checkin(self, box_id: str, seq: int, received_at: float,
@@ -200,7 +226,7 @@ class Store:
                 "VALUES (?, ?, ?, ?)",
                 (box_id, seq, received_at, bundle_json),
             )
-            self._conn.commit()
+            self._commit()
 
     def upsert_score(self, box_id: str, scenario_name: str, total: int) -> None:
         import time
@@ -216,7 +242,7 @@ class Store:
                 "updated_at = excluded.updated_at",
                 (box_id, scenario_name, total, now),
             )
-            self._conn.commit()
+            self._commit()
 
     # --- sla.py --------------------------------------------------------------
 
@@ -263,7 +289,7 @@ class Store:
                     rec.accrued_points,
                 ),
             )
-            self._conn.commit()
+            self._commit()
 
     def update_sla_atomic(
         self, box_id: str, check_id: str, apply_fn
@@ -307,7 +333,7 @@ class Store:
                     new_rec.accrued_points,
                 ),
             )
-            self._conn.commit()
+            self._commit()
             return new_rec
 
     # --- adversary_oracle.py ---------------------------------------------------
@@ -319,6 +345,22 @@ class Store:
             )
             return {row["event_id"] for row in cur.fetchall()}
 
+    def get_issued_directives(self, box_id: str) -> list:
+        """Every directive issued to box_id, oldest first, as
+        [{"event_id", "action", "params"}]."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT event_id, action, params_json FROM adversary_log "
+                "WHERE box_id = ? ORDER BY issued_at, rowid",
+                (box_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"event_id": r["event_id"], "action": r["action"],
+             "params": json.loads(r["params_json"])}
+            for r in rows
+        ]
+
     def log_adversary_event(self, box_id: str, event_id: str, action: str,
                              issued_at: float, params: dict) -> bool:
         """Record directive fire; True if this call won the race."""
@@ -328,7 +370,7 @@ class Store:
                 "issued_at, params_json) VALUES (?, ?, ?, ?, ?)",
                 (box_id, event_id, action, issued_at, json.dumps(params)),
             )
-            self._conn.commit()
+            self._commit()
             return cur.rowcount == 1
 
     # --- leaderboard.py --------------------------------------------------------
@@ -370,7 +412,7 @@ class Store:
                 "uploaded_at = excluded.uploaded_at",
                 (scenario_name, rubric_json, adversary_json, time.time()),
             )
-            self._conn.commit()
+            self._commit()
 
     def get_scenario(self, scenario_name: str) -> Optional[dict]:
         """Returns {"rubric_json": str, "adversary_json": str,
@@ -407,4 +449,4 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
-            self._conn.commit()
+            self._commit()

@@ -281,30 +281,40 @@ messages instead of crashing `compile`/collector/evaluator later:
 
 ---
 
-## Deferred (Tier 3 — NOT in this change, flagged for the user)
+## Deferred (Tier 3) — dispositioned by the 2026-09-23 ranked-mode round
 
-These are real but touch ranked-mode protocol / signed-manifest / architecture.md
-invariants and live-deployed behavior; left untouched per the chosen scope. Two are
-data-integrity issues worth prioritizing next:
+This ledger was written before the ranked test round on `feature/ranked-mode`
+(see RANKED_TESTING.md for the full round report). Current state:
 
-- **engine#6** `engine/checkin.py:143-200` — seq is consumed before scoring and there is
-  no enclosing transaction; a crash mid-checkin can lose a check-in permanently or leave
-  SLA rows partially advanced. (Data integrity.)
-- **agent#8** `agent/transport.py:235-255` — a permanent rejection of an old *queued*
-  bundle silently discards the freshly collected one and desyncs `last_seq`. (Data loss.)
-- **engine#4** scenario_version reconciliation + `409 scenario_version_mismatch` (v1 box
-  silently scored against a v2 rubric — contradicts §14.3).
-- **engine#5** `next_checkin_s` returns the SLA accrual granularity, not the poll cadence
-  (`sla.interval_s: 1` makes boxes spin).
-- **engine#8** the §12.1 "engine-caused outage floor" for adversary directives is
-  unimplemented (adversary penalties never applied to any score).
-- **agent#7** enrollment has no timeout and no `URLError`/`OSError` handling (first ranked
-  boot can hang forever or die).
-- **agent#11** `engine_url` is not required to be `https`; directives from an
-  unauthenticated `http://` response are executed.
-- **packaging#18** `test_zipapp.py` cannot detect a third-party import in `agent/`
-  (subprocess inherits `site-packages`) — run the `.pyz` with `-I` + empty `PYTHONPATH`,
-  or walk archive imports with `ast`. (Could fold into I if cheap.)
+- **engine#6 (FIXED)** — check-in steps 4-9 now run inside `store.atomic()`
+  (RLock + txn depth); a mid-transaction failure rolls back seq + audit + SLA +
+  adversary log together, so the agent's retry is scored, not 409-rejected.
+- **engine#4 (FIXED)** — `handle_checkin` returns `409` on scenario_version
+  mismatch and enrollment binds the version the box presents.
+- **engine#5 (FIXED)** — `next_checkin_s` is the engine's poll cadence
+  (`HUITZILOPOCHTLI_CHECKIN_INTERVAL_S`, default 60), decoupled from SLA
+  intervals; SLA accrual is elapsed-based + capped so it works at any cadence.
+  The old min-SLA-interval derivation made 1s rubrics spin and froze score
+  updates for 3600s rubrics (both reproduced live during the round).
+- **agent#7 (FIXED)** — `enroll()` has a 10s timeout and `_run_ranked` retries
+  enrollment in-process (exiting just burned systemd restarts re-signing).
+- **agent#8 (MITIGATED)** — at-least-once directive delivery
+  (`issued_directives` + agent-side per-`event_id` record) closes the
+  directive-loss hole; a permanent rejection still drops that cycle's fresh
+  bundle, but the next cycle re-checks in with a fresh seq.
+- **agent#11 (PARTIAL)** — the agent now warns loudly on plain-HTTP
+  engine_url over a non-loopback network. Full TLS (with a self-signed-CA /
+  pinning story) remains backlog.
+- **engine#8 (OPEN)** — adversary penalty docking per §12.1/§11.4 is still
+  unimplemented; directives are issued (at-least-once) but the engine-side
+  outage floor/penalty is not applied to scores. Next-round candidate.
+- **#49 (WONTFIX-AS-DEAD)** — `get_token` is live (enrollment pre-checks);
+  `consume_token`/`create_box`/`save_sla_state`/`get_sla_state` are retained as
+  actively-used test fixtures (review-hardening suite). `enrollment.py`'s
+  docstring now describes `enroll_box_atomic` (#51).
+- **#50 (FIXED)** — the loopback restart + SIGKILL crash-recovery sections are
+  live again, plus four new over-the-wire suites (see RANKED_TESTING.md).
+- **packaging#18 (OPEN)** — zipapp third-party-import detection unchanged.
 
 ---
 

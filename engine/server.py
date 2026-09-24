@@ -16,9 +16,12 @@ import base64
 import dataclasses
 import hmac
 import json
+import math
 import os
 import secrets
 import ssl
+import sys
+import threading
 import time
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,9 +100,57 @@ def _validate_adversary_pool(adversary: dict) -> None:
         seen_ids.add(event_id)
 
 
+def _require_str(d: dict, key: str) -> str:
+    v = d.get(key)
+    if not isinstance(v, str) or not v:
+        raise ValueError(f"{key} must be a non-empty string")
+    return v
+
+
+def _require_int(d: dict, key: str) -> int:
+    v = d.get(key)
+    # bool is an int subclass; a True/False seq would corrupt the seq guard.
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"{key} must be an integer")
+    return v
+
+
+def _require_finite(d: dict, key: str, default) -> float:
+    v = d.get(key, default)
+    # json.loads accepts NaN/Infinity; storing one would poison the audit
+    # bundle_json and the signed-canonical round trip.
+    if isinstance(v, bool) or not isinstance(v, (int, float)) \
+            or not math.isfinite(v):
+        raise ValueError(f"{key} must be a finite number")
+    return v
+
+
 def _bundle_from_dict(d: dict) -> Bundle:
+    # Wire-layer type validation: a wrong JSON type must map to a clean
+    # 400 "malformed bundle", not fall out of the handler as a 500 -- or
+    # worse, be accepted (a float seq used to advance last_seq to 2.5).
+    _require_str(d, "box_id")
+    _require_int(d, "seq")
+    _require_str(d, "boot_id")
+    _require_str(d, "agent_version")
+    _require_str(d, "scenario_name")
+    _require_int(d, "scenario_version")
+    _require_finite(d, "created_wall_claim", 0.0)
+    if not isinstance(d.get("evidence"), list):
+        raise ValueError("evidence must be a list")
     evidence = []
     for ev in d.get("evidence", []):
+        if not isinstance(ev, dict):
+            raise ValueError("each evidence item must be an object")
+        _require_str(ev, "check_id")
+        _require_str(ev, "check_type")
+        _require_str(ev, "host_id")
+        if not isinstance(ev.get("raw", {}), dict):
+            raise ValueError("evidence.raw must be an object")
+        if not isinstance(ev.get("reason", ""), str):
+            raise ValueError("evidence.reason must be a string")
+        _require_finite(ev, "collected_monotonic", 0.0)
+        _require_finite(ev, "collected_wall_claim", 0.0)
         evidence.append(
             Evidence(
                 check_id=ev["check_id"],
@@ -143,6 +194,7 @@ class Handler(BaseHTTPRequestHandler):
     store: Store = None
     server_secret: bytes = b""
     admin_token: str = ""
+    next_checkin_s: int = 60
 
     timeout = 30
 
@@ -177,12 +229,24 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return b""
 
+    def _box_header_mismatches(self, box_id: str) -> bool:
+        """The X-HUITZILOPOCHTLI-Box header is advisory routing metadata the
+        agents send alongside every enroll/check-in; the signature covers the
+        body, so the body is authoritative. But a header that names a
+        DIFFERENT box is never legitimate -- reject it before doing any
+        expensive verification work."""
+        provided = self.headers.get("X-HUITZILOPOCHTLI-Box")
+        return provided is not None and provided != box_id
+
     def _admin_authorized(self) -> "tuple[bool, int, str]":
         """Returns (ok, status_code_if_not_ok, message_if_not_ok)."""
         if not self.admin_token:
             return False, 503, "admin endpoints disabled (HUITZILOPOCHTLI_ADMIN_TOKEN not set)"
         provided = self.headers.get("X-HUITZILOPOCHTLI-Admin-Token", "")
-        if not hmac.compare_digest(self.admin_token, provided):
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII str,
+        # and header values arrive latin-1-decoded.
+        if not hmac.compare_digest(self.admin_token.encode("utf-8"),
+                                   provided.encode("latin-1", "replace")):
             return False, 403, "bad admin token"
         return True, 0, ""
 
@@ -227,6 +291,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "malformed JSON body"})
             return
         sig = self._sig_header()
+        if self._box_header_mismatches(body.get("box_id")):
+            self._send_json(400, {"error": "X-HUITZILOPOCHTLI-Box does not match body box_id"})
+            return
         try:
             result = enrollment.handle_enroll(self.store, body, sig)
         except EnrollError as e:
@@ -240,11 +307,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send_json(400, {"error": "malformed JSON body", "last_seq": None})
             return
-        sig = self._sig_header()
         try:
             bundle = _bundle_from_dict(body)
         except Exception:
             self._send_json(400, {"error": "malformed bundle", "last_seq": None})
+            return
+        sig = self._sig_header()
+        if self._box_header_mismatches(bundle.box_id):
+            self._send_json(
+                400, {"error": "X-HUITZILOPOCHTLI-Box does not match body box_id",
+                      "last_seq": None},
+            )
             return
 
         scenario_row = self.store.get_scenario(bundle.scenario_name)
@@ -275,6 +348,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             response = handle_checkin(
                 self.store, bundle, sig, rubric, self.server_secret, event_pool,
+                next_checkin_s=self.next_checkin_s,
             )
         except CheckinError as e:
             self._send_json(
@@ -283,9 +357,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         except Exception as e:  # noqa: BLE001 — fail closed with a mapped 500
             # rather than dropping the connection (the agent would treat that
-            # as a transient failure and retry forever).
+            # as a transient failure and retry forever). The exception text
+            # stays engine-side: it can carry rubric content (§2.4).
+            print(f"ERROR: check-in for box {bundle.box_id!r} failed: {e!r}",
+                  file=sys.stderr)
             self._send_json(
-                500, {"error": f"internal error during check-in: {e}", "last_seq": None}
+                500, {"error": "internal error during check-in", "last_seq": None}
             )
             return
         self._send_json(200, response)
@@ -299,8 +376,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             scenario_name = body["scenario_name"]
             ttl_s = body.get("ttl_s", 3600)
-            if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)):
-                raise ValueError("ttl_s must be a number")
+            # json.loads accepts NaN/Infinity: Infinity would mint a token
+            # that never expires, NaN would break the NOT NULL insert.
+            if (isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float))
+                    or not math.isfinite(ttl_s) or ttl_s <= 0):
+                raise ValueError("ttl_s must be a positive finite number")
             expires_at = time.time() + ttl_s
         except Exception:
             self._send_json(400, {"error": "malformed body; expected {scenario_name, ttl_s?: number}"})
@@ -341,6 +421,51 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "scenario_name": scenario_name})
 
 
+class _EngineHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a connection cap and per-thread TLS.
+
+    Wrapping the listening socket would run each TLS handshake inside the
+    single accept loop with no timeout, so one idle client could freeze the
+    engine. Here the handshake runs in the worker thread under
+    Handler.timeout, and connections beyond max_conns are closed at once.
+    """
+
+    def __init__(self, addr, handler, ssl_ctx=None, max_conns=64):
+        self._ssl_ctx = ssl_ctx
+        self._slots = threading.BoundedSemaphore(max_conns)
+        super().__init__(addr, handler)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def finish_request(self, request, client_address):
+        request.settimeout(self.RequestHandlerClass.timeout)
+        if self._ssl_ctx is None:
+            super().finish_request(request, client_address)
+            return
+        try:
+            tls = self._ssl_ctx.wrap_socket(request, server_side=True)
+        except (ssl.SSLError, OSError):
+            return
+        try:
+            self.RequestHandlerClass(tls, client_address, self)
+        finally:
+            tls.close()
+
+
 def _resolve_server_secret(store: Store) -> bytes:
     """Resolve server secret from env, store, or generate and persist."""
     secret_env = os.environ.get("HUITZILOPOCHTLI_SERVER_SECRET")
@@ -378,21 +503,33 @@ def main() -> None:
 
     port = int(os.environ.get("HUITZILOPOCHTLI_PORT", "8080"))
     bind_host = os.environ.get("HUITZILOPOCHTLI_BIND", "127.0.0.1")
-    httpd = ThreadingHTTPServer((bind_host, port), Handler)
+    max_conns = int(os.environ.get("HUITZILOPOCHTLI_MAX_CONNS", "64"))
+
+    # Engine-authoritative check-in cadence (the agent sleeps this long
+    # between cycles). Deliberately independent of rubric SLA intervals --
+    # see the note in checkin.handle_checkin.
+    try:
+        Handler.next_checkin_s = max(1, int(
+            os.environ.get("HUITZILOPOCHTLI_CHECKIN_INTERVAL_S", "60")))
+    except ValueError:
+        Handler.next_checkin_s = 60
 
     tls_cert = os.environ.get("HUITZILOPOCHTLI_TLS_CERT")
     tls_key = os.environ.get("HUITZILOPOCHTLI_TLS_KEY")
     scheme = "http"
+    context = None
     if tls_cert and tls_key:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(tls_cert, tls_key)
-        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         scheme = "https"
     else:
         print(
             "WARNING: running without TLS; set HUITZILOPOCHTLI_TLS_CERT/HUITZILOPOCHTLI_TLS_KEY "
             "to enable it"
         )
+
+    httpd = _EngineHTTPServer((bind_host, port), Handler, ssl_ctx=context,
+                              max_conns=max_conns)
 
     print(f"huitzilopochtli engine listening on {scheme}://{bind_host}:{port} (db={db_path})")
     try:

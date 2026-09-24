@@ -22,7 +22,7 @@ pytest                    # runs the full unit + integration suite
 ```
 
 > **boxbuilder** (the practice-box workflow) needs two submodules — `git submodule update
-> --init --recursive` — which vendor **nakon** (`vendor/nakon`, currently v0.1.6) and **vulndb-cli**
+> --init --recursive` — which vendor **nakon** (`vendor/nakon`, currently v0.1.7) and **vulndb-cli**
 > (`vendor/vulndb-cli`, currently v0.1.1), the tools it shells out to for planting vulns and theming. The core
 > scoring engine + agent don't need them. Submodule init alone isn't enough to run boxbuilder, though:
 > `vendor/nakon/.env` (vulndb DB creds + `VULNDB_UI_URL`) is gitignored and not carried by the submodule, so
@@ -40,7 +40,7 @@ The agent zipapp is also the box's **terminal console** — `huitz score`,
 `huitz watch`, `huitz forensics`, `huitz grade` render the grade natively in
 the terminal (see [`CLI.md`](CLI.md)).
 
-For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and the report output, see [`TESTING_GUIDE.md`](TESTING_GUIDE.md) in this repo.
+For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and the report output, see [`TESTING_GUIDE.md`](TESTING_GUIDE.md) in this repo. For the ranked-mode test matrix, round reports (what was tested on real VMs, bugs found and fixed), and the next-round backlog, see [`RANKED_TESTING.md`](RANKED_TESTING.md).
 
 ## Repo layout
 

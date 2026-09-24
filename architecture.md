@@ -394,14 +394,14 @@ class Bundle:
 **Ranked mode only.**
 1. On first boot, generate an Ed25519 keypair. The **private key never leaves the box**; store it in a local identity file (mode `0600`).
 2. Read a one-time **enrollment token** provisioned into the box (single-use, short-TTL, engine-generated; low value if leaked because it only authorizes a pubkey binding).
-3. `POST <engine_url>/enroll {enrollment_token, box_id, public_key, agent_version}` over TLS.
+3. `POST <engine_url>/enroll {enrollment_token, box_id, public_key, agent_version, scenario_name, scenario_version}` over TLS.
 4. The engine binds `token -> box_id -> public_key`, marks the token consumed, and returns confirmation. Subsequent check-ins are authenticated by the box signature against this public key.
 
 `box_id` is generated at provisioning (UUID) and stored alongside the key.
 
 ### 9.7 Local config
 
-A small on-box file (JSON) read at startup: `{ mode, manifest_path, rubric_path (honor only), identity_path (ranked only), report_path, checkin_interval_s (ranked only) }`. No secrets beyond the identity file (which is separate and `0600`).
+A small on-box file (JSON) read at startup: `{ mode, manifest_path, rubric_path (honor only), identity_path (ranked only), report_path, checkin_interval_s (ranked only), authoring_public_key_path, enrollment_token (ranked, consumed once on first boot), allow_unsigned_manifest (test fixture escape hatch — fails closed without it when no verification key is configured), notifications }`. No secrets beyond the identity file (which is separate and `0600`); the enrollment token is a one-time bootstrap credential, useless after enrollment.
 
 ### 9.8 Local reporter
 
@@ -440,22 +440,28 @@ Always-on, portable (a plain HTTP service behind TLS; no orchestration assumed).
 
 ### 11.1 Endpoints
 
-- `POST /enroll` — §9.6.
+- `POST /enroll` — §9.6/§14.1.
 - `POST /checkin` — the core loop (§14.2).
-- `GET /leaderboard?scenario=...` — aggregated scores (§11.4).
+- `GET /leaderboard?scenario=...` — aggregated scores (§11.4); `400` without the param, `200 []` for an unknown scenario.
 - `GET /health` — liveness.
+- `POST /admin/scenarios` — upload (or replace) a scenario's engine-side record: `{rubric, adversary}` (the compiled `engine_record.json`). Validates the rubric and the adversary pool; `400` on invalid input.
+- `POST /admin/tokens` — mint a one-time enrollment token bound to a scenario: `{scenario_name, ttl_s?}` (ttl must be a positive finite number).
+
+Admin endpoints are gated by the `X-HUITZILOPOCHTLI-Admin-Token` header compared against `HUITZILOPOCHTLI_ADMIN_TOKEN`: `403` on mismatch, and the whole admin surface returns `503 disabled` when the env var is unset. The engine is configured purely by environment: `HUITZILOPOCHTLI_DB_PATH`, `_PORT` (8080), `_BIND` (default `127.0.0.1` — set `0.0.0.0` for real boxes), `_ADMIN_TOKEN`, `_TLS_CERT`/`_TLS_KEY` (plain HTTP with a loud warning otherwise), `_MAX_CONNS` (connection cap; beyond it connections are closed immediately), `_CHECKIN_INTERVAL_S` (the poll cadence handed to boxes as `next_checkin_s`, default 60), `_MAX_VERIFY` (signature-verify concurrency; saturation answers `503 engine busy` so agents retry), and `_ENGINE_RECORD_PATH` (optional single-scenario bootstrap instead of the admin upload). Request bodies are capped at 1 MiB; oversized or non-JSON bodies get a clean `400`.
 
 Implementation may use stdlib `http.server` or a thin WSGI server; no heavyweight framework is required. Concurrency via a thread pool. Keep handlers small; push logic into `checkin.py`, `enrollment.py`, `sla.py`.
 
 ### 11.2 Storage (`engine/store.py`)
 
 Stdlib `sqlite3` (default, zero-dependency, portable). Optional Postgres backend behind the same interface if scale demands it later (*Open*, not required for v1). Tables:
-- `boxes(box_id PK, public_key, scenario_name, enrolled_at, last_seq, last_boot_id, t0)`
+- `boxes(box_id PK, public_key, scenario_name, scenario_version, enrolled_at, last_seq, last_boot_id, t0)`
 - `enrollment_tokens(token PK, scenario_name, expires_at, consumed_at)`
-- `checkins(box_id, seq, received_at, bundle_json)` — audit log.
+- `checkins(box_id, seq, received_at, bundle_json)` — audit log; `UNIQUE(box_id, seq)`.
 - `sla_state(box_id, check_id, state, consec_ok, consec_fail, last_credited_at, accrued_points)`
-- `scores(box_id, scenario_name, total, updated_at)`
-- `adversary_log(box_id, event_id, action, issued_at, params_json)`
+- `scores(box_id PK, scenario_name, total, updated_at)` — one scenario per box (multi-scenario boxes would need a composite key).
+- `adversary_log(box_id, event_id, action, issued_at, params_json)` — `UNIQUE(box_id, event_id)` gives at-most-once issuance.
+- `scenarios(scenario_name PK, rubric_json, adversary_json, uploaded_at)` — engine-held rubrics + adversary pools, uploaded via `/admin/scenarios`.
+- `engine_meta(key PK, value)` — persisted server secret and other engine state.
 
 ### 11.3 SLA ledger & hysteresis (`engine/sla.py`)
 
@@ -488,6 +494,7 @@ Ranked/live only (offline is untimed, so no adversary offline). **Refinement ove
 - Per box, derive a deterministic RNG from `(server_secret, box_id)` — reproducible for audit, unguessable to the operator.
 - From the scenario's event pool, pick a concrete fire time for each event within its `window_s`, anchored to `T0`.
 - On each check-in, if `received_at >= event.fire_time` and the event has not been issued, include it as a **directive** in the response and log it in `adversary_log`.
+- **Delivery is at-least-once.** Every response also re-sends all directives already issued to the box (`issued_directives`, §14.2), so a response lost after the engine commits can't lose one. The agent records each `event_id` it has run in `<identity_path>.directives` and skips repeats, so each event runs at most once per `box_id`. A re-sent directive can run late (after an outage) rather than at its fire time. Agents that ignore `issued_directives` fall back to at-most-once.
 - The engine **caused** the outage, so it knows the outage floor: it docks SLA/applies the relevant penalty from `fire_time` onward until the box's subsequent self-reports show restoration. (Honest-ceiling caveat from §3 still applies: a root operator can falsely report instant restoration; the engine can only guarantee the outage did not end *before* it was caused.)
 
 ### 12.2 Box-side executor (`agent/adversary/`)
@@ -530,28 +537,32 @@ Request `POST /enroll`:
 ```json
 { "enrollment_token": "<one-time>", "box_id": "<uuid>",
   "public_key": "<base64>", "agent_version": "1.0.0",
-  "scenario_name": "HUITZILOPOCHTLI Linux Fundamentals" }
+  "scenario_name": "HUITZILOPOCHTLI Linux Fundamentals",
+  "scenario_version": 1 }
 ```
 Response `200`:
 ```json
 { "ok": true, "box_id": "<uuid>", "checkin_interval_s": 60 }
 ```
-Errors: `409` token already consumed; `410` token expired; `400` malformed. This request is signed by the box key; the engine verifies the signature matches the `public_key` in the body (proof of private-key possession).
+Errors: `409` token already consumed (or box_id already enrolled); `410` token expired; `400` malformed (missing/wrong-typed fields — `scenario_version` is required and bound at enrollment). This request is signed by the box key; the engine verifies the signature matches the `public_key` in the body (proof of private-key possession). Cheap token-state checks (unknown `400` / consumed `409` / expired `410`) run **before** the seconds-costing signature verification, so an unauthenticated caller can never burn verify capacity. A token enrolls exactly one box: token validation + consume + box creation are one atomic step under the store lock (`Store.enroll_box_atomic`), so a race on one token yields exactly one winner.
 
 ### 14.2 Check-in
 
-Request `POST /checkin` (body = canonical `Bundle`, §9.4). Headers carry `box_id` + signature.
+Request `POST /checkin` (body = canonical `Bundle`, §9.4). Headers carry `box_id` + signature. A `X-HUITZILOPOCHTLI-Box` header naming a box other than the body's `box_id` is rejected `400` before any verification work (the body is authoritative — the signature covers it).
 
 Engine handler order (fail closed at each step):
 1. Look up `box_id` → public key. Unknown box → `403`.
-2. Verify signature over the canonical body. Bad signature → `403`.
-3. Reject `seq <= last_seq` (replay/dedup) → `409` with `last_seq` so the agent can resync.
-4. Stamp `received_at = engine_now()`. If this is the first check-in, set `T0`.
-5. Persist the check-in (audit log).
-6. Evaluate point-in-time evidence against the engine-held rubric (`common.evaluate`).
-7. Update SLA ledger (§11.3).
-8. Run adversary scheduler; collect any due directives (§12.1).
-9. Update `scores.total`; return the response.
+2. Cheap protocol gates: `schema_version` mismatch and agent **major**-version mismatch → `400` (before signature work — they leak no enrollment info).
+3. Verify signature over the canonical body. Bad signature → `403`. (Signature verification is pure-Python and holds the GIL for ~seconds; a bounded verify gate answers `503 engine busy; retry` when saturated — agents retry, nothing is lost.)
+4. `scenario_name` mismatch → `400`; `scenario_version` mismatch → `409` (re-provision). Both run after signature verification so they leak nothing to unauthenticated callers.
+5. Reject `seq <= last_seq` (replay/dedup) → `409` with `last_seq` so the agent can resync.
+6. Steps T0-stamp through score-update run as **one transaction** (`Store.atomic`): a failure part-way rolls back the seq advance, audit row, SLA ledger and adversary log together, so the agent's retry of the same bundle is scored rather than 409-rejected as a replay.
+   - Stamp `received_at = engine_now()`. If this is the first check-in, set `T0`.
+   - Persist the check-in (audit log).
+   - Evaluate point-in-time evidence against the engine-held rubric (`common.evaluate`).
+   - Update SLA ledger (§11.3).
+   - Run adversary scheduler; collect any due directives (§12.1).
+   - Update `scores.total`; return the response.
 
 Response `200`:
 ```json
@@ -559,10 +570,15 @@ Response `200`:
   "server_time": 1730000000.0,
   "score": { "total": 42, "results": [ ... ], "sla_status": [ ... ] },
   "directives": [ { "action": "kill_service", "params": { "service": "auditd" }, "event_id": "e2" } ],
+  "issued_directives": [ { "action": "kill_service", "params": { "service": "auditd" }, "event_id": "e2" } ],
   "next_checkin_s": 60,
   "last_seq": 17
 }
 ```
+
+`directives` holds only what this check-in newly issued. `issued_directives` re-sends every directive ever issued to the box (§12.1 delivery).
+
+`next_checkin_s` is the **engine's poll cadence** — how often the box should collect and report (env `HUITZILOPOCHTLI_CHECKIN_INTERVAL_S`, default 60). It is deliberately *not* derived from rubric SLA intervals: SLA accrual is elapsed-based and capped per check-in (`max_intervals_per_checkin`), so it is correct at any cadence, while a cadence derived from `min(interval_s)` made fast rubrics spin boxes and slow rubrics freeze scoreboard updates. Error mapping: `400` client/verification errors (with `last_seq: null`), `403` unknown box or bad signature, `409` replay/stale seq or scenario_version mismatch (with the authoritative `last_seq`), `500` internal failures (body is generic — exception text can carry rubric content, §2.4).
 
 ### 14.3 Versioning
 

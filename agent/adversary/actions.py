@@ -6,6 +6,7 @@ primitive in this module. Do not add a generic "run command" primitive.
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,13 @@ from typing import Callable
 ACTIONS: dict[str, Callable] = {}
 
 #: Directory confining ``drop_inert_artifact`` — resolved paths never escape it.
-_DEFAULT_ARTIFACT_DIR = os.path.join(tempfile.gettempdir(), "huitzilopochtli-adversary")
+#: POSIX uses a root-owned dir, not /tmp: in a world-writable parent a local
+#: user could pre-create the base (or symlinks inside it) and redirect the
+#: root write onto any file. SYSTEM's temp dir on Windows is already private.
+_DEFAULT_ARTIFACT_DIR = (
+    os.path.join(tempfile.gettempdir(), "huitzilopochtli-adversary")
+    if os.name == "nt" else "/var/lib/huitzilopochtli/adversary"
+)
 
 #: What a service/unit name may look like. The first character cannot be
 #: ``-``, so a params value is never parsed as an option by systemctl /
@@ -35,6 +42,41 @@ def _resolve_artifact_path(base: str, requested: str):
     if candidate != base_abs and not candidate.startswith(base_abs + os.sep):
         return None
     return candidate
+
+
+def _open_confined_posix(base: str, requested: str):
+    """Open ``requested`` for writing inside ``base`` without following any
+    symlink; return an fd, or None if the path or the base is unsafe.
+
+    The base must be a real directory owned by us and not group/other-
+    writable; each path component is opened relative to its parent with
+    O_NOFOLLOW, so a symlink anywhere in the chain fails (ELOOP/ENOTDIR)
+    instead of being traversed.
+    """
+    parts = [p for p in requested.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    st = os.lstat(base)
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid()
+            or st.st_mode & 0o022):
+        return None
+    dfd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for comp in parts[:-1]:
+            try:
+                os.mkdir(comp, 0o700, dir_fd=dfd)
+            except FileExistsError:
+                pass
+            nfd = os.open(comp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                          dir_fd=dfd)
+            os.close(dfd)
+            dfd = nfd
+        return os.open(parts[-1],
+                       os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                       0o644, dir_fd=dfd)
+    finally:
+        os.close(dfd)
 
 
 def register(name: str):
@@ -109,6 +151,26 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
     if not requested:
         return
     base = _artifact_base()
+    content = "HUITZILOPOCHTLI adversary marker - inert, non-executable\n"
+    if os.name != "nt":
+        try:
+            fd = _open_confined_posix(base, requested)
+        except OSError:
+            fd = None  # e.g. ELOOP: a symlink in the chain; refuse
+        if fd is None:
+            print(
+                f"WARNING: refusing drop_inert_artifact path outside sandbox "
+                f"(or through a symlink): {requested!r}",
+                file=sys.stderr,
+            )
+            return
+        try:
+            os.fchmod(fd, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception:
+            pass
+        return
     target = _resolve_artifact_path(base, requested)
     if target is None:
         print(
@@ -117,7 +179,6 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
             file=sys.stderr,
         )
         return
-    content = "HUITZILOPOCHTLI adversary marker - inert, non-executable\n"
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "w", encoding="utf-8") as f:

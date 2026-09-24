@@ -590,3 +590,73 @@ def test_load_config_honor_with_rubric_path_loads(tmp_path):
     import agent.config
     config = agent.config.load_config(_write_agent_config(tmp_path))
     assert config.mode.value == "honor"
+
+
+# --- plain-HTTP engine_url warning ------------------------------------------
+
+def test_plain_http_warning_fires_for_non_loopback_only(capsys):
+    import types
+    from agent.__main__ import _warn_if_plain_http
+
+    def m(url):
+        return types.SimpleNamespace(engine_url=url)
+
+    _warn_if_plain_http(m("http://10.0.0.5:8080"))
+    err = capsys.readouterr().err
+    assert "plain HTTP" in err and "10.0.0.5:8080" in err
+
+    _warn_if_plain_http(m("http://127.0.0.1:8080"))
+    _warn_if_plain_http(m("http://localhost:8080"))
+    _warn_if_plain_http(m("https://ranked.example.com"))
+    _warn_if_plain_http(m(None))
+    assert capsys.readouterr().err == ""
+
+
+def test_file_regex_boolean_expect_is_an_authoring_error(tmp_path):
+    """The YAML 1.1 trap: unquoted `equals: no` compiles to `equals: false`,
+    which never matches string evidence like "no" (PermitRootLogin no) and
+    silently scores 0. file_regex evidence is always a string, so a boolean
+    there is always this trap; permission checks (boolean `exists` evidence)
+    are exempt."""
+    import yaml as yaml_mod
+
+    import authoring.validate as av
+
+    def validate(check_body):
+        text = (
+            "scenario:\n  name: t\n  version: 1\n  mode: honor\n"
+            "  hosts: [localhost]\nchecks:\n  - id: c1\n" + check_body
+        )
+        return av.validate_scenario_yaml(yaml_mod.safe_load(text), "t.yaml")
+
+    bad = (
+        "    type: file_regex\n"
+        "    category: vuln\n"
+        "    host_id: localhost\n"
+        "    display: d\n"
+        "    max_points: 10\n"
+        "    collect: {path: /x, extract: 'PermitRootLogin (\\w+)'}\n"
+        "    expect:\n"
+        "      equals: no\n"
+        "      points: 10\n"
+    )
+    errs = validate(bad)
+    assert any("boolean" in e and "expect.equals" in e for e in errs), errs
+
+    quoted = bad.replace("equals: no", "equals: 'no'")
+    assert validate(quoted) == []
+
+    perm = (
+        "    type: permission\n"
+        "    category: vuln\n"
+        "    host_id: localhost\n"
+        "    display: d\n"
+        "    max_points: 10\n"
+        "    collect: {path: /x}\n"
+        "    expect:\n"
+        "      equals: false\n"
+        "      field: exists\n"
+        "      points: 10\n"
+    )
+    # Intentional boolean matcher on boolean evidence: valid.
+    assert validate(perm) == []

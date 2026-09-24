@@ -150,15 +150,25 @@ def wait_for_agent(proxmox, vmid: int, timeout_s: float = 120) -> None:
     raise TimeoutError(f"guest agent on vmid={vmid} did not respond within {timeout_s}s")
 
 
-def _with_retry(fn, attempts: int = 3, delay_s: float = 3):
+def _retry_transport(fn, attempts: int = 3, delay_s: float = 3):
     """The Proxmox API connection in this environment occasionally hits a
-    transient read timeout unrelated to the guest/VM state -- retry a
-    couple times before giving up."""
+    transient read timeout unrelated to the guest/VM state -- retry a couple
+    times before giving up.
+
+    Transport-level failures ONLY. Guest-agent errors arrive as HTTP error
+    statuses (proxmoxer ResourceException) and are usually DETERMINISTIC --
+    exec on a broken agent fails identically every attempt -- so blind
+    retries just multiply failed spawns. That multiplication was the
+    2026-09-12 "exec storm" after which the Windows qga process wedged until
+    a full VM reboot; never retry an answer the API actually gave us."""
+    import requests
+
     last_exc = None
     for _ in range(attempts):
         try:
             return fn()
-        except Exception as exc:  # noqa: BLE001 -- deliberately broad, network flakiness
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as exc:
             last_exc = exc
             time.sleep(delay_s)
     raise last_exc
@@ -181,7 +191,7 @@ def guest_file_write(proxmox, vmid: int, path: str, content: bytes) -> None:
 
     def _write_chunk(dest_path: str, chunk: bytes) -> None:
         encoded = base64.b64encode(chunk).decode("ascii")
-        _with_retry(lambda: proxmox.nodes(n).qemu(vmid).agent("file-write").post(
+        _retry_transport(lambda: proxmox.nodes(n).qemu(vmid).agent("file-write").post(
             file=dest_path, content=encoded, encode=0
         ))
 
@@ -211,7 +221,7 @@ def guest_file_read(proxmox, vmid: int, path: str) -> bytes:
     corrupting data.
     """
     n = node()
-    result = _with_retry(lambda: proxmox.nodes(n).qemu(vmid).agent("file-read").get(file=path))
+    result = _retry_transport(lambda: proxmox.nodes(n).qemu(vmid).agent("file-read").get(file=path))
     return result["content"].encode("utf-8", errors="surrogateescape")
 
 
@@ -244,12 +254,15 @@ def guest_exec(proxmox, vmid: int, command: list, timeout_s: float = 60) -> dict
     for completion, and return {"exitcode": int, "out-data": str,
     "err-data": str}. Raises TimeoutError if it doesn't finish in time."""
     n = node()
-    result = _with_retry(lambda: proxmox.nodes(n).qemu(vmid).agent("exec").post(command=command))
+    # _retry_transport, NOT a blind retry: a failing agent fails every
+    # attempt identically, and retrying exec triples the failed-spawn load
+    # that historically wedged qga (see _retry_transport docstring).
+    result = _retry_transport(lambda: proxmox.nodes(n).qemu(vmid).agent("exec").post(command=command))
     pid = result["pid"]
 
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        status = _with_retry(
+        status = _retry_transport(
             lambda: proxmox.nodes(n).qemu(vmid).agent("exec-status").get(pid=pid)
         )
         if status.get("exited"):
