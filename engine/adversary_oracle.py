@@ -6,18 +6,24 @@ from common.schema import Directive
 from engine.store import Store
 
 
+def _event_rng(server_secret: bytes, box_id: str, event_id: str) -> random.Random:
+    seed_material = (server_secret + b"\x00" + box_id.encode() + b"\x00"
+                     + event_id.encode())
+    return random.Random(
+        int.from_bytes(hashlib.sha256(seed_material).digest(), "big"))
+
+
 def due_directives(store: Store, box_id: str, server_secret: bytes,
                     event_pool: list, t0: float, received_at: float) -> list:
-    """Derive a deterministic RNG from (server_secret, box_id); for each event
-    in event_pool pick (once, reproducibly) a concrete fire_time within its
-    window_s, anchored to t0. For any event whose fire_time <= received_at and
+    """Derive a deterministic RNG per (server_secret, box_id, event_id); for
+    each event in event_pool pick (reproducibly) a concrete fire_time within
+    its window_s, anchored to t0. Keying on event_id (not pool position) keeps
+    an event's fire time stable when a re-upload adds, drops or reorders other
+    events. For any event whose fire_time <= received_at and
     whose event_id is not already in store.get_issued_event_ids(box_id):
     log it via store.log_adversary_event and include it in the returned
     list[Directive]. Already-issued events are never re-issued.
     """
-    seed_material = server_secret + box_id.encode()
-    seed = int.from_bytes(hashlib.sha256(seed_material).digest(), "big")
-    rng = random.Random(seed)
     # CAUTION: fire times are *derived*, not stored. Rotating
     # HUITZILOPOCHTLI_SERVER_SECRET silently re-schedules every box's events
     # while adversary_log (already-issued ids) persists, so some events may
@@ -43,7 +49,8 @@ def due_directives(store: Store, box_id: str, server_secret: bytes,
         if not isinstance(action, str) or not action:
             continue
 
-        offset = rng.uniform(window_s[0], window_s[1])
+        offset = _event_rng(server_secret, box_id, event_id).uniform(
+            window_s[0], window_s[1])
         fire_time = t0 + offset
 
         if event_id in issued:
