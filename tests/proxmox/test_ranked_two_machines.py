@@ -63,11 +63,10 @@ def _wait_for_http(url: str, timeout_s: float = 180) -> None:
 
 
 def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
-    # Both roles clone the Ubuntu template. Previously this collided onto a
-    # shared DHCP-assigned IP (stale /etc/machine-id baked into the template
-    # image); that template has since been rebuilt with cloud-init producing
-    # a fresh machine-id per clone, confirmed empirically here to yield
-    # distinct IPs. Fedora was ruled out for the agent role separately: its
+    # Both roles clone the Ubuntu template, whose image carries a stale
+    # /etc/machine-id: every clone presents the same DHCP client id and the
+    # two collide onto one IP (the rebuilt 9106 that fixed this is gone), so
+    # each clone regenerates its machine-id and reboots before use. Fedora was ruled out for the agent role separately: its
     # guest-agent runs SELinux-confined (virt_qemu_ga_t) and denies outbound
     # connect() for anything it spawns, which breaks agent.identity.enroll()'s
     # plain urllib POST.
@@ -76,6 +75,8 @@ def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
     try:
         ph.wait_for_agent(proxmox, engine_vmid, timeout_s=180)
         ph.wait_for_agent(proxmox, agent_vmid, timeout_s=180)
+        ph.regen_machine_id(proxmox, engine_vmid)
+        ph.regen_machine_id(proxmox, agent_vmid)
         engine_ip = ph.wait_for_ip(proxmox, engine_vmid, timeout_s=60)
 
         # --- stand up the engine on its own VM ---
@@ -92,8 +93,9 @@ def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
         start_cmd = (
             f"cd {ENGINE_DIR} && "
             f"PYTHONPATH={ENGINE_DIR} HUITZILOPOCHTLI_PORT={ENGINE_PORT} "
-            f"HUITZILOPOCHTLI_ADMIN_TOKEN={ADMIN_TOKEN} "
-            f"nohup python3 -m engine.server > /tmp/engine.log 2>&1 & echo started"
+            f"HUITZILOPOCHTLI_ADMIN_TOKEN={ADMIN_TOKEN} HUITZILOPOCHTLI_BIND=0.0.0.0 "
+            f"setsid nohup python3 -m engine.server > /tmp/engine.log 2>&1 "
+            f"< /dev/null & echo started"
         )
         start_result = ph.guest_exec(proxmox, engine_vmid, ["/bin/sh", "-c", start_cmd])
         assert start_result["exitcode"] == 0, start_result
@@ -186,8 +188,8 @@ checks:
 
         agent_start_cmd = (
             f"cd {AGENT_DIR} && "
-            f"nohup python3 {AGENT_DIR}/agent.pyz {AGENT_DIR}/agent_config.json "
-            f"> /tmp/agent.log 2>&1 & echo started"
+            f"setsid nohup python3 {AGENT_DIR}/agent.pyz {AGENT_DIR}/agent_config.json "
+            f"> /tmp/agent.log 2>&1 < /dev/null & echo started"
         )
         agent_start = ph.guest_exec(proxmox, agent_vmid, ["/bin/sh", "-c", agent_start_cmd])
         assert agent_start["exitcode"] == 0, agent_start
