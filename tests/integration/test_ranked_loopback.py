@@ -70,11 +70,12 @@ def _closed_port() -> int:
 
 
 
-def _http_json(url: str, body: dict = None, headers: dict = None, method: str = "GET"):
+def _http_json(url: str, body: dict = None, headers: dict = None, method: str = "GET",
+               timeout: float = 5):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read().decode("utf-8"))

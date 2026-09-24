@@ -298,7 +298,7 @@ def test_concurrent_enroll_single_token_exactly_one_winner(tmp_path):
                     "Content-Type": "application/json",
                     "X-HUITZILOPOCHTLI-Sig": _sigs[box_id],
                 },
-                method="POST",
+                method="POST", timeout=30,
             )
 
         threads = [threading.Thread(target=racer, args=(i,)) for i in range(n)]
@@ -324,7 +324,7 @@ def test_concurrent_enroll_single_token_exactly_one_winner(tmp_path):
                         "Content-Type": "application/json",
                         "X-HUITZILOPOCHTLI-Sig": _sigs[box_id],
                     },
-                    method="POST",
+                    method="POST", timeout=30,
                 )
                 status, body = outcomes[box_id]
 
