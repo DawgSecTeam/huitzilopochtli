@@ -90,11 +90,13 @@ keep the previous template until the new one is confirmed in the field.
   `boxbuilder/` (the practice-box factory).
 - **Tests:** `pytest` runs unit + integration (Proxmox tier is deselected by
   default; opt in with `pytest -m proxmox` — its `.env` value is sourced
-  from `workshop-vm-distribution`, not this repo). The ranked-loopback tier takes
-  ~90s — that's the vendored Ed25519 (~seconds per sign/verify), not a hang.
+  from `workshop-vm-distribution`, not this repo). The ranked suites take
+  ~3min — that's the vendored Ed25519 (~seconds per sign/verify), not a hang.
   boxbuilder tests: `tests/unit/test_boxbuilder_*.py` and
   `tests/integration/boxbuilder/`. Hands-on walkthrough: `TESTING_GUIDE.md`;
-  tier details: `tests/README.md`; install layout: `packaging/README.md`.
+  ranked-mode test matrix + round reports (what's covered, known defects,
+  next-round backlog): `RANKED_TESTING.md`; tier details: `tests/README.md`;
+  install layout: `packaging/README.md`.
 - **`artifacts/` is gitignored and holds secrets** (authoring key, rubric) —
   never commit it, never copy it onto shared media.
 - **nakon discipline:** `catalog list/show/check --json` are read-only and
