@@ -118,3 +118,17 @@ def test_theme_include_report_shortcut_must_be_bool():
 
     parsed["theme"] = {"include_report_shortcut": False}
     assert validate_scenario_yaml(parsed, "x.yaml") == []
+
+
+def test_compile_rejects_unknown_sla_key():
+    # A typo'd sla key (hysteresis_fal_n) used to be silently dropped at
+    # compile time, leaving the author's intended hysteresis unapplied.
+    import pytest
+    from authoring.compile import _build_rubric_entry
+
+    check = {"id": "web_sla", "category": "vuln",
+             "expect": {"equals": 200, "field": "status", "points": 0,
+                        "sla": {"interval_s": 60, "points_per_interval": 1,
+                                "hysteresis_fal_n": 3}}}
+    with pytest.raises(ValueError, match="unknown key.*hysteresis_fal_n"):
+        _build_rubric_entry(check)

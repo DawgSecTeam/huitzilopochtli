@@ -430,12 +430,21 @@ def validate_rubric(obj: dict) -> list:
                     errors.append(
                         f"{ref}.sla.points_per_interval must be a positive integer"
                     )
-                if "max_intervals_per_checkin" in sla:
-                    mipc = sla.get("max_intervals_per_checkin")
-                    if (isinstance(mipc, bool) or not isinstance(mipc, int)
-                            or mipc <= 0):
-                        errors.append(
-                            f"{ref}.sla.max_intervals_per_checkin must be a positive integer"
-                        )
+                # Optional counters: 0 would make hysteresis trip on every
+                # observation (an UP box pinned DOWN, accrual frozen).
+                for key in ("hysteresis_fail_n", "hysteresis_ok_n",
+                            "max_intervals_per_checkin"):
+                    if key in sla:
+                        val = sla.get(key)
+                        if (isinstance(val, bool) or not isinstance(val, int)
+                                or val <= 0):
+                            errors.append(
+                                f"{ref}.sla.{key} must be a positive integer"
+                            )
+                # The engine rebuilds SlaParams(**sla) on every check-in: an
+                # unknown key would 500 every box in the scenario.
+                unknown = sorted(set(sla) - set(SlaParams.__dataclass_fields__))
+                if unknown:
+                    errors.append(f"{ref}.sla has unknown key(s): {', '.join(unknown)}")
 
     return errors
