@@ -49,6 +49,11 @@ huitz scenario (which checks verify the hardening). boxbuilder does **not** know
 the vuln→check mapping — you must ensure each planted vuln has a check that
 awards points for the opposite (hardened) state.
 
+The handbook (`theme.readme`) is the assignment, not the answer key — write it
+to the bar in `HANDBOOK_GUIDE.md`. Compile runs a spoiler lint
+(`authoring/readme_lint.py`): forensics answers in the handbook block the
+compile, lesser leaks surface as `readme_warnings`.
+
 ```bash
 # Browse + validate vulns (read-only, agent-safe):
 nakon catalog list --json

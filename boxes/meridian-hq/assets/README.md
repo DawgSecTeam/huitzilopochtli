@@ -43,7 +43,7 @@ this box. Open it in Notepad, type your answers over the `____` blanks, and
 automatically from that file. Each question wants one short, specific answer
 (an account name, a GPO name, a value) — not yes/no. Investigate *before*
 you clean up: some answers live on artifacts the hardening tasks will remove
-(an encrypted password inside SYSVOL, a task name, a Run-key value name).
+(a planted password, a task name, a Run-key value name).
 
 ## Viewing score report
 
@@ -62,32 +62,28 @@ what is still open.
   accounts that shouldn't exist or shouldn't be there, the domain **Guest**
   account, and `net accounts` for the domain password policy (minimum
   length, lockout threshold — on a DC this *is* the domain policy).
-- **Kerberos hygiene** — account properties in ADUC: "Do not require
-  Kerberos preauthentication" (AS-REP roasting) and "Use Kerberos DES
-  encryption types" (downgrade). `setspn -L <account>` shows who carries a
-  service principal name — roastable. Rotation beats everything: change the
-  password, keep the account.
-- **Computers** — the Computers OU in ADUC: stale enabled machines, and the
-  **Delegation** tab ("Trust this computer for delegation") on anything
-  that shouldn't be trusted.
-- **Domain controller** — `reg query` of
-  `HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters` (LDAP signing),
-  `Set-SmbServerConfiguration -EnableSMB1Protocol $false`, the **Print
-  Spooler** service (a DC has no business printing), `auditpol /get
-  /subcategory:"Logon"`, and the domain root's ACL
-  (`Get-Acl "AD:DC=meridian,DC=local"`) for replication rights that
+- **Kerberos hygiene** — account properties in ADUC: more than one account
+  is carrying an option it shouldn't have, and the accounts that matter
+  most are the ones carrying service principal names (`setspn -L
+  <account>`). Rotation beats everything: change the password, keep the
+  account.
+- **Computers** — the Computers OU in ADUC: stale enabled machines, and
+  trust settings on anything that shouldn't be trusted.
+- **Domain controller** — the DC's own configuration: SMB and LDAP signing
+  settings (`reg query` digs them up), services a domain controller has no
+  business running, `auditpol` for logon auditing, and the domain root's
+  ACL (`Get-Acl "AD:DC=meridian,DC=local"`) for replication rights that
   shouldn't exist.
 - **Group Policy** — `gpmc.msc` / `Get-GPO -All` sorted by creation time:
-  GPOs nobody recognizes, and anything under SYSVOL
-  (`C:\Windows\SYSVOL\domain\Policies`) carrying a `cpassword` — the
-  MS14-025 password-in-GPP finding. The Default Domain Policy owns the
-  password policy you fix above.
-- **Firewall** — `Get-NetFirewallProfile` (all three must be on) and
-  `wf.msc` inbound rules with no product and no owner behind them.
+  GPOs nobody recognizes, and anything planted under SYSVOL
+  (`C:\Windows\SYSVOL\domain\Policies`). The Default Domain Policy owns
+  the password policy you fix above.
+- **Firewall** — `Get-NetFirewallProfile` and `wf.msc` inbound rules with
+  no product and no owner behind them.
 - **Persistence** — Task Scheduler, the Run key
-  (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`), services whose
-  BinaryPathName is a PowerShell script, and the scripts they point at in
-  `C:\ProgramData\Subsystems`. Payloads are files: remove them, not just
+  (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`), and services —
+  check what binary a service actually runs before trusting it, and the
+  files those binaries point at. Payloads are files: remove them, not just
   their launchers.
 
 If you're stuck or unsure how to continue, you can ask for help or hints in

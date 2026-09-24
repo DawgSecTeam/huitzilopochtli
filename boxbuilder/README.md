@@ -343,6 +343,15 @@ one content-addressed attachment per distinct file — uploaded once, reused by 
 scenario that references identical bytes, using nakon's own existing MinIO-backed
 attachment fetcher unmodified.
 
+The `readme:` handbook is the assignment, not the answer key — author it to the bar in
+[`HANDBOOK_GUIDE.md`](../HANDBOOK_GUIDE.md) (supported Markdown subset, information
+budget, the pinecrest hint ceiling). Compile enforces the mechanical half via
+`authoring/readme_lint.py`: a forensics answer verbatim in the handbook fails the
+compile, and lesser leaks (walkthrough copy-paste, mutation commands, planted paths)
+are reported as `readme_warnings` in the compile result and
+`[boxbuilder] WARNING: …` log lines. `theme.readme_lint_allow` lists answer values the
+lint may ignore (lenient aliases colliding with story vocabulary).
+
 This means a **themed** `compile` needs vulndb-ui reachable (`--vulndb-url` or
 `$VULNDB_UI_URL`, default `http://127.0.0.1:3000` — same env var and default
 `vulndb-cli` uses) *in addition to* the usual nakon/vulndb reachability `nakon build`

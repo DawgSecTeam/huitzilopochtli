@@ -43,6 +43,9 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
 
     outputs = compile_scenario(spec.scenario_path, artifacts_dir, priv_key)
     log(f"[boxbuilder] compiled {spec.mode} scenario -> {outputs['manifest']}")
+    readme_warnings = outputs.get("readme_warnings") or []
+    for warning in readme_warnings:
+        log(f"[boxbuilder] WARNING: {warning}")
 
     build_zipapp = _load_build_zipapp()
     agent_pyz = os.path.join(artifacts_dir, "agent.pyz")
@@ -83,6 +86,7 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
         "rubric": outputs.get("rubric"),
         "engine_record": outputs["engine_record"],
         "authoring_public_key": outputs["authoring_public_key"],
+        "readme_warnings": readme_warnings,
         "agent_pyz": agent_pyz,
         "bundle": bundle,
         "bundle_path": bundle["path"],

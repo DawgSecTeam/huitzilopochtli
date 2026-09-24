@@ -26,35 +26,32 @@ Your job: **harden this box before the next ship docks.**
 
 ## Critical services (keep these alive)
 
-- The **Cargo Manifest Lookup** web app must stay reachable on **port 80** —
-  the dock clerks hit it all day. Whatever firewall you build has to let web
-  traffic IN.
-- The web app pulls manifest rows from the harbor's shared **MariaDB at
-  192.168.100.10:3306** (it is not on this box) — that outbound path has to
-  stay alive too.
+- The **Cargo Manifest Lookup** web app must stay reachable — the dock
+  clerks hit it all day. Whatever firewall you build has to let its traffic
+  IN.
+- The web app pulls manifest rows from the harbor's shared **MariaDB** (it
+  is not on this box) — that outbound path has to stay alive too.
 - **SSH** must stay running and reachable. Your terminal IS your SSH session;
   a firewall that locks you out ends your shift. Rule zero of default-deny:
   allow your management path *before* you drop the default.
 
 ## The audit findings (what the Harbor Office is asking for)
 
-1. Allow inbound traffic to the web app: TCP port **80** on INPUT.
-2. Allow outbound traffic to MySQL: TCP port **3306** on OUTPUT.
-3. Set up **default deny**: INPUT, FORWARD **and** OUTPUT policies to DROP —
-   then make sure loopback, established/related, and the two services above
-   still work. Over-blocking is a finding, not a fix.
-4. Something answering on **port 9090** is an admin web console nobody asked
-   for. Remove it — package or socket, your call — and confirm the port went
-   quiet.
-5. A service that **calls home** (beacon) is running on this box under a name
+1. Set up a **default deny** firewall — and make sure the critical services
+   above still work through it. Discover what each service actually needs
+   *before* you drop the default; over-blocking is a finding, not a fix.
+2. Something answering on a port nobody asked for is an **admin web
+   console**. Find it and remove it — package or socket, your call — and
+   confirm it went quiet.
+3. A service that **calls home** (beacon) is running on this box under a name
    that sounds almost legitimate. Find it, stop it, and disable its launcher.
-6. Delete the beacon's binary from disk so it cannot be restarted by hand.
-7. A **bind shell** is waiting for a connection. Kill it — and make sure it
+4. Delete the beacon's binary from disk so it cannot be restarted by hand.
+5. A **bind shell** is waiting for a connection. Kill it — and make sure it
    cannot simply come back after the next reboot.
 
 Hints, if you want them: `ss -tlnp` shows every *listener* — but the thing in
-finding 5 never listens on anything. For that one: `ps aux`,
-`systemctl list-units --type=service`, and a suspicious eye on `/opt`.
+finding 3 never listens on anything. For that one: `ps aux` and
+`systemctl list-units --type=service`.
 
 ## Forensics
 

@@ -46,7 +46,7 @@
 
 scenario:
   name: "Opochtli Landing Port Authority"
-  version: 2
+  version: 3
   mode: honor
   hosts: ["localhost"]
 

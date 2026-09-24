@@ -723,6 +723,10 @@ theme:
   organization: "Static Pine Community Radio — Board of Directors"
   accent: "#1F6E43"
   readme: assets/README.md
+  # The graded fq-key-comment answer is `nightcast@88.3`; the lenient alias
+  # "nightcast" collides with the story name the handbook cannot avoid. The
+  # full answer never appears in the handbook.
+  readme_lint_allow: ["nightcast"]
   motd: |
     Welcome to Static Pine Community Radio, 88.3 FM -- transmitter host.
     Authorized operators only. Run `huitz score` for your standing and

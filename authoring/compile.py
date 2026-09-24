@@ -7,6 +7,7 @@ from typing import Optional
 
 import yaml
 
+from authoring.readme_lint import lint_readme
 from authoring.sign_scenario import sign_manifest
 from authoring.validate import validate_scenario_yaml
 from common.crypto.signing import public_key_from_private
@@ -32,7 +33,7 @@ _MAX_LOGO_BYTES = 150 * 1024  # Keep signed manifest small (logo is data: URI).
 _MAX_README_BYTES = 64 * 1024  # Handbook text for `huitz readme` (plain UTF-8).
 
 
-def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional[dict]:
+def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> tuple:
     """Build the small cosmetic theme subset that ships in the Manifest.
 
     `readme` (the player-facing handbook) is embedded as TEXT: it is what
@@ -41,9 +42,12 @@ def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional
     desktop-asset side of the theme (wallpaper, shortcuts, the rendered
     README.html) still flows through the vulndb theme attachments at plant
     time and is untouched by this.
+
+    Returns (manifest_theme, readme_text); readme_text is what the spoiler
+    lint (authoring/readme_lint.py) runs against.
     """
     if not theme_raw:
-        return None
+        return None, None
 
     manifest_theme = {
         "title": theme_raw.get("title"),
@@ -80,7 +84,7 @@ def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> Optional
             )
         manifest_theme["readme_text"] = text
 
-    return manifest_theme
+    return manifest_theme, text
 
 
 def _build_check_spec(check: dict) -> CheckSpec:
@@ -208,7 +212,15 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
             )
         )
 
-    manifest_theme = _build_manifest_theme(parsed.get("theme"), yaml_path)
+    manifest_theme, readme_text = _build_manifest_theme(parsed.get("theme"), yaml_path)
+
+    # Spoiler lint (HANDBOOK_GUIDE.md): a forensics answer in the handbook
+    # blocks the compile; lesser leaks surface as warnings on the outputs.
+    readme_errors, readme_warnings = [], []
+    if readme_text:
+        readme_errors, readme_warnings = lint_readme(parsed, readme_text)
+        if readme_errors:
+            raise ValueError("\n".join(readme_errors))
 
     manifest = Manifest(
         schema_version=SCHEMA_VERSION,
@@ -272,5 +284,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
     with open(public_key_path, "w") as f:
         f.write(base64.b64encode(public_key).decode("ascii"))
     outputs["authoring_public_key"] = public_key_path
+
+    outputs["readme_warnings"] = readme_warnings
 
     return outputs
