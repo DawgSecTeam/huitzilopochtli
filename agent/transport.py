@@ -243,9 +243,9 @@ class TransportClient:
         On _ResponseParseFailure (engine accepted the bundle but the response
         body was unusable): nothing is queued (a replay would 409 forever) and
         None is returned; the bundle counts as accepted.
-        Raises PermanentRejection when the engine rejects a bundle with a
-        non-retryable 4xx; the rejected bundle is dropped, earlier queued
-        bundles are preserved.
+        A queued bundle the engine permanently rejects (non-retryable 4xx) is
+        dropped and the flush continues. Raises PermanentRejection only when
+        the current `bundle` is rejected; it is dropped, not queued.
         """
         queued = self._read_queue()
         remaining = list(queued)
@@ -275,8 +275,15 @@ class TransportClient:
                     file=sys.stderr,
                 )
             except PermanentRejection as e:
-                self._write_queue(remaining[1:])
-                raise
+                # A stale queued bundle (e.g. a replay after a crash) is dead,
+                # but later entries and the current bundle are not: drop it
+                # and keep flushing. Raising here lost the current cycle's
+                # evidence even though its seq was already persisted.
+                print(
+                    f"WARNING: dropping queued bundle the engine permanently "
+                    f"rejected: {e}",
+                    file=sys.stderr,
+                )
             remaining.pop(0)
 
         if remaining != queued:

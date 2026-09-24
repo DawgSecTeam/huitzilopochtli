@@ -67,7 +67,9 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
                     next_checkin_s: int = 60) -> CheckinResponse:
     """Fail-closed handler order (§14.2):
       1. Look up box_id -> public key. Unknown box -> 403.
-      2. Verify signature over the canonical body. Bad signature -> 403.
+      2. Reject an incompatible schema_version / agent major version -> 400,
+         then verify the signature over the canonical body -> 403, then
+         check scenario_name (400) and scenario_version (409 with last_seq).
       3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
       4. Stamp received_at = engine_now(). First check-in for this box sets T0.
       5. Persist the check-in (audit log) via store.save_checkin.
@@ -111,7 +113,9 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         raise CheckinError(400, "scenario_name does not match the box's enrolled scenario")
 
     if box.scenario_version != bundle.scenario_version:
-        raise CheckinError(409, "scenario_version does not match the box's enrolled version")
+        # §14.2: every 409 carries the authoritative last_seq.
+        raise CheckinError(409, "scenario_version does not match the box's enrolled version",
+                           last_seq=box.last_seq)
 
     # 3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
     if bundle.seq <= box.last_seq:

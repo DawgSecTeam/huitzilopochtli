@@ -107,11 +107,18 @@ def _require_str(d: dict, key: str) -> str:
     return v
 
 
+#: SQLite INTEGER is signed 64-bit: a larger seq OverflowError'd at bind
+#: time (a 500) instead of being rejected as malformed.
+_MAX_WIRE_INT = 2 ** 63 - 1
+
+
 def _require_int(d: dict, key: str) -> int:
     v = d.get(key)
     # bool is an int subclass; a True/False seq would corrupt the seq guard.
     if isinstance(v, bool) or not isinstance(v, int):
         raise ValueError(f"{key} must be an integer")
+    if not 0 <= v <= _MAX_WIRE_INT:
+        raise ValueError(f"{key} out of range")
     return v
 
 
@@ -123,6 +130,24 @@ def _require_finite(d: dict, key: str, default) -> float:
             or not math.isfinite(v):
         raise ValueError(f"{key} must be a finite number")
     return v
+
+
+#: Deepest JSON nesting accepted in evidence.raw. Real collectors emit a
+#: handful of levels; canonicalization recurses, so a hostile ~1000-deep blob
+#: would otherwise RecursionError into a 500 before the signature is checked.
+_MAX_RAW_DEPTH = 64
+
+
+def _nesting_exceeds(value, limit: int) -> bool:
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, (dict, list)):
+            if depth > limit:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            stack.extend((c, depth + 1) for c in children)
+    return False
 
 
 def _bundle_from_dict(d: dict) -> Bundle:
@@ -147,6 +172,9 @@ def _bundle_from_dict(d: dict) -> Bundle:
         _require_str(ev, "host_id")
         if not isinstance(ev.get("raw", {}), dict):
             raise ValueError("evidence.raw must be an object")
+        if _nesting_exceeds(ev.get("raw", {}), _MAX_RAW_DEPTH):
+            raise ValueError(
+                f"evidence.raw nests deeper than {_MAX_RAW_DEPTH} levels")
         if not isinstance(ev.get("reason", ""), str):
             raise ValueError("evidence.reason must be a string")
         _require_finite(ev, "collected_monotonic", 0.0)

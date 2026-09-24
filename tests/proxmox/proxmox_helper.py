@@ -150,6 +150,22 @@ def wait_for_agent(proxmox, vmid: int, timeout_s: float = 120) -> None:
     raise TimeoutError(f"guest agent on vmid={vmid} did not respond within {timeout_s}s")
 
 
+def regen_machine_id(proxmox, vmid: int, timeout_s: float = 180) -> None:
+    """Give a clone its own /etc/machine-id, then reboot so DHCP leases a
+    distinct IP. Templates sealed without wiping machine-id (base-ubuntu24.04,
+    vmid 106) hand every clone the same DHCP client id, so two clones -- or a
+    clone and any other live clone of that template -- collide on one IP."""
+    guest_exec(proxmox, vmid, ["/bin/sh", "-c",
+                               "rm -f /etc/machine-id /var/lib/dbus/machine-id"
+                               " && systemd-machine-id-setup"])
+    try:
+        proxmox.nodes(node()).qemu(vmid).status.reboot.post()
+    except Exception:
+        pass
+    time.sleep(10)
+    wait_for_agent(proxmox, vmid, timeout_s=timeout_s)
+
+
 def _retry_transport(fn, attempts: int = 3, delay_s: float = 3):
     """The Proxmox API connection in this environment occasionally hits a
     transient read timeout unrelated to the guest/VM state -- retry a couple

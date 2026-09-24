@@ -1,0 +1,826 @@
+# ROUND-3 TEST FIXTURE (RANKED_TESTING.md round 3): scenario.ranked.yaml plus
+# a live SLA check and a 3-event adversary pool, to exercise §11.3 and §12 on
+# a real box. Not a shipped box. kill_service targets atd, so one directive
+# drives both the atd penalty and the SLA DOWN transition.
+# Static Pine Community Radio: a persistence-hunting box for the "how
+# services get persistence" workshop (init.d, cron, at, systemd timers, and
+# all the other ways an intruder comes back). HEADLESS DEBIAN 13 running the
+# huitz terminal console -- the terminal IS the interface, same shape as the
+# opochtli-landing v2 box. The story: someone wired the little community
+# station to secretly rebroadcast a pirate show ("the Nightcast") and every
+# crude fix so far pulled ONE plug; the station keeps coming back because it
+# is persistent in six different ways at once. Students get the box AFTER the
+# presentation, so the mechanics (crontab -l, atq, systemctl list-timers,
+# update-rc.d, /etc/rc.local, profile.d, ld.so.preload ...) are the material
+# under test, not the story.
+#
+# Scoring ledger (tests/unit/test_boxbuilder_static_pine_radio.py asserts
+# it). Sixteen artifacts, compressed weighting because there are so many:
+#   EASY     5 pts x 8 checks  =  40   cron_sync_removed, root_crontab_clean,
+#                                      profile_d_gone, stationlead_bashrc_clean,
+#                                      system_bashrc_clean, motd_script_gone,
+#                                      rogue_account_removed, authorized_keys_clean
+#   MODERATE 10 pts x 5 checks =  50   nightcast_service_removed,
+#                                      at_queue_emptied, initd_boot_script_gone,
+#                                      rc_local_clean, ld_preload_removed
+#   HARD     20 pts x 3 checks =  60   timer_neutralized,
+#                                      tapeops_crontab_cleared,
+#                                      tapeops_unit_linger_gone
+#   vuln checks total            = 150
+#   penalties (cron/atd health)  = -20 floor (only subtract)
+#   forensics (4 x 10)           =  40
+#   GRAND TOTAL                  = 190
+#
+# Forensics questions test the discovery skills themselves: each answer is
+# sitting in an artifact the students must open anyway (at -c, the key
+# comment, a payload's log path, the timer's OnUnitActiveSec).
+#
+# Design rules this file obeys (checked in the unit test where practical):
+#   - Every planted artifact has exactly one paired check; planted names and
+#     paths are byte-identical to boxes/static-pine-radio/nakon.json vars
+#     (nothing cross-checks them at build time).
+#   - Any artifact where DELETING the file is legitimate hardening is graded
+#     by a command_json compound (pass if file absent OR marker gone) --
+#     never by file_regex on a deletable path (missing file = ERROR evidence
+#     = fail-closed = unpassable check).
+#   - is-enabled is matched on the exact "^enabled$" output (it exits 0 for
+#     "static" units too); disabled, masked, not-found all count as hardened.
+#   - Every command_json script is read-only, guards every command so it
+#     ALWAYS emits exactly one JSON scalar, and exits 0.
+#
+# The tapeops account (transmitter automation) is story-legitimate: the
+# README tells students to KEEP it. It exists to carry the hidden tapeops
+# crontab, user unit, and linger flag -- removing tapeops itself is neither
+# required nor scored.
+
+scenario:
+  name: "Static Pine Community Radio R3"
+  version: 1
+  mode: ranked
+  engine_url: "http://10.0.0.116:8080"
+  hosts: ["localhost"]
+
+checks:
+  # --- cron family ----------------------------------------------------------
+  - id: cron_sync_removed
+    type: command_json
+    category: vuln
+    display: "EASY: The /etc/cron.d job and its /opt payload are both gone"
+    max_points: 5
+    collect:
+      script: |
+        if [ ! -e /etc/cron.d/nightcast-sync ] && [ ! -e /opt/nightcast/nightcast-sync ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Sweep the system cron directories.** Anything under /etc/cron.d
+      runs as root on its stated schedule, whatever any user's crontab says:
+
+      ```
+      ls -l /etc/cron.d/
+      cat /etc/cron.d/nightcast-sync
+      ```
+
+      The line names the schedule, the run-as user, and the payload:
+      `*/15 * * * *  root  /opt/nightcast/nightcast-sync`. Every 15 minutes,
+      as root.
+
+      **2. Read the payload before you trust the name.** It is a two-line
+      script that logs a "carrier check-in" -- on a clean transmitter nobody
+      checks in anywhere.
+
+      **3. Remove both halves.** Deleting only the cron file leaves the
+      payload behind (and vice versa); the check requires BOTH gone:
+
+      ```
+      rm -f /etc/cron.d/nightcast-sync /opt/nightcast/nightcast-sync
+      ```
+
+      (After any cron edit, confirm cron noticed: `systemctl status cron`
+      should be happy -- and leave cron itself running; it is scored below.)
+
+  - id: root_crontab_clean
+    type: command_json
+    category: vuln
+    display: "EASY: Root's own crontab has no scheduled jobs"
+    max_points: 5
+    collect:
+      script: |
+        if crontab -l 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. /etc/cron.d is not the only cron.** Root can hold a personal
+      crontab in the spool, which `ls /etc/cron.d/` will never show:
+
+      ```
+      crontab -l          # as root, lists root's own table
+      ls -l /var/spool/cron/crontabs/
+      ```
+
+      Ours holds one `@reboot` line launching `/opt/nightcast/boot-check` --
+      persistence that wakes up on every single boot.
+
+      **2. Clear it.** Either remove the whole table or edit the line out:
+
+      ```
+      crontab -r          # removes root's crontab entirely
+      ```
+
+      **3. Confirm.** `crontab -l` now prints nothing (or only comments) --
+      that is exactly what the check grades.
+
+  - id: tapeops_crontab_cleared
+    type: command_json
+    category: vuln
+    display: "HARD: The hidden user crontab (not root's) is cleared"
+    max_points: 20
+    collect:
+      script: |
+        if crontab -u tapeops -l 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Enumerate users, then ask each one.** A crontab can belong to ANY
+      user, and `crontab -l` as root only shows root's. The spool directory
+      lists everyone who has one:
+
+      ```
+      ls -l /var/spool/cron/crontabs/
+      crontab -u tapeops -l
+      ```
+
+      `tapeops` -- the transmitter-automation account, which looks perfectly
+      legitimate -- has a hidden `*/30` job running
+      `/home/tapeops/.local/bin/tape-scan --quiet`. Hiding persistence under
+      a plausible service account is the trick here.
+
+      **2. Clear it (the account itself stays -- it is legitimate):**
+
+      ```
+      crontab -u tapeops -r
+      ```
+
+      **3. Confirm.** `crontab -u tapeops -l` errors or prints nothing but
+      comments. Note `tapeops` itself must REMAIN on the box: only its
+      crontab is scored.
+
+  # --- login-time persistence: profile.d, bashrc, motd -----------------------
+  - id: profile_d_gone
+    type: permission
+    category: vuln
+    display: "EASY: The /etc/profile.d greeting script is deleted"
+    max_points: 5
+    collect:
+      path: /etc/profile.d/nightcast-greeting.sh
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Notice what greets you.** /etc/profile.d scripts run in EVERY
+      user's login shell -- which is why something taunted you the moment
+      you connected. List them and read the stranger:
+
+      ```
+      ls -l /etc/profile.d/
+      cat /etc/profile.d/nightcast-greeting.sh
+      ```
+
+      **2. Delete it.** It is not a package-owned file (nothing owns it, so
+      an upgrade will never restore it -- check with
+      `dpkg -S /etc/profile.d/nightcast-greeting.sh`):
+
+      ```
+      rm /etc/profile.d/nightcast-greeting.sh
+      ```
+
+      **3. Confirm.** Log in again (new SSH session): no greeting, and
+      `ls /etc/profile.d/` no longer shows it.
+
+  - id: stationlead_bashrc_clean
+    type: command_json
+    category: vuln
+    display: "EASY: Your own ~/.bashrc no longer carries the beacon line"
+    max_points: 5
+    collect:
+      script: |
+        f=/home/stationlead/.bashrc
+        if [ ! -f "$f" ]; then echo true; exit 0; fi
+        grep -Fiq nightcast "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read your own shell setup.** Attackers love dotfiles: they run in
+      your shell, so they inherit your trust.
+
+      ```
+      tail -5 ~/.bashrc
+      ```
+
+      The last line prints a "carrier hums beneath your prompt" taunt --
+      planted, not part of the Debian skeleton.
+
+      **2. Cut the line** (keep the rest of the file intact):
+
+      ```
+      nano ~/.bashrc     # delete the nightcast line
+      ```
+
+      Deleting the whole ~/.bashrc also passes the check, but it throws away
+      your own sane defaults -- surgical beats scorched-earth.
+
+      **3. Confirm.** `grep -i nightcast ~/.bashrc` prints nothing, and a
+      fresh shell (`bash`) is quiet.
+
+  - id: system_bashrc_clean
+    type: command_json
+    category: vuln
+    display: "EASY: The system-wide /etc/bash.bashrc no longer carries the beacon line"
+    max_points: 5
+    collect:
+      script: |
+        f=/etc/bash.bashrc
+        if [ ! -f "$f" ]; then echo true; exit 0; fi
+        grep -Fiq nightcast "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. The user file has a system-wide sibling.** /etc/bash.bashrc is
+      sourced by bash for interactive shells on Debian -- one line here
+      reaches every account at once. The same "nightcast" beacon sits at
+      the bottom of it.
+
+      **2. Remove the appended line, keep the file:**
+
+      ```
+      nano /etc/bash.bashrc
+      ```
+
+      (Restoring the stock file with `apt-get install --reinstall bash`
+      would also work but is overkill.)
+
+      **3. Confirm.** `grep -i nightcast /etc/bash.bashrc` prints nothing.
+      BOTH dotfile findings (yours and the system one) teach the same sweep:
+      after a break-in, diff every rc file against the distro default.
+
+  - id: motd_script_gone
+    type: permission
+    category: vuln
+    display: "EASY: The planted /etc/update-motd.d script is deleted"
+    max_points: 5
+    collect:
+      path: /etc/update-motd.d/99nightcast
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. The login banner is executable.** On Debian the dynamic message
+      of the day is GENERATED at each login by running everything in
+      /etc/update-motd.d in order. Ours prints
+      ".-.-. 88.3 FM -- the Nightcast never sleeps .-.-." -- you have been
+      reading attacker output every time you logged in.
+
+      ```
+      ls -l /etc/update-motd.d/
+      ```
+
+      **2. Delete it** (numbered prefix 99 = runs last; harmless to remove):
+
+      ```
+      rm /etc/update-motd.d/99nightcast
+      ```
+
+      **3. Confirm.** `ls /etc/update-motd.d/` shows only the stock 10-uname
+      style entries, and your next login banner is clean.
+
+  # --- accounts and keys ------------------------------------------------------
+  - id: rogue_account_removed
+    type: user_group
+    category: vuln
+    display: "EASY: The backdoor account 'wireman' is removed"
+    max_points: 5
+    collect: {}
+    expect:
+      user_absent: true
+      username: wireman
+      points: 5
+    solution: |
+      **1. Audit the roster.** `wireman` is not on any Static Pine staffing
+      list, has a full login shell, a weak password, AND sudo group
+      membership -- a complete backdoor account:
+
+      ```
+      awk -F: '$7 !~ /(nologin|false)/ {print $1, $6, $7}' /etc/passwd
+      id wireman
+      sudo grep wireman /etc/sudoers /etc/group
+      ```
+
+      **2. Remove it completely** -- the account, and any process it owns:
+
+      ```
+      sudo userdel -r wireman
+      ```
+
+      (`-r` also deletes the home directory. If userdel complains about a
+      running process, `pkill -u wireman` first -- that is safe because
+      wireman is NOT root.)
+
+      **3. Confirm.** `id wireman` errors with "no such user".
+
+  - id: authorized_keys_clean
+    type: command_json
+    category: vuln
+    display: "EASY: The attacker's SSH key is gone from authorized_keys"
+    max_points: 5
+    collect:
+      script: |
+        f=/home/stationlead/.ssh/authorized_keys
+        if [ ! -f "$f" ]; then echo true; exit 0; fi
+        grep -Fq 'nightcast@88.3' "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Keys outlive passwords.** A public key in authorized_keys gives
+      passwordless SSH to whoever holds the private half -- changing your
+      password does NOTHING to evict them:
+
+      ```
+      cat ~/.ssh/authorized_keys
+      ```
+
+      The planted line ends with the comment `nightcast@88.3`; every key
+      line carries its owner's comment, so read them all.
+
+      **2. Remove the attacker's line** (keep any key you actually use, if
+      you have one):
+
+      ```
+      nano ~/.ssh/authorized_keys     # or: echo -n > to empty it
+      ```
+
+      **3. Confirm.** `grep nightcast ~/.ssh/authorized_keys` prints
+      nothing (the check also accepts the file being gone entirely).
+
+  # --- systemd system-level ----------------------------------------------------
+  - id: nightcast_service_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The nightcast.service launcher is disabled and its payload deleted"
+    max_points: 10
+    collect:
+      script: |
+        if systemctl is-enabled nightcast.service 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        if [ -e /opt/nightcast/carrier-daemon ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Find it by unit review** -- this one holds no port and hides in
+      plain sight:
+
+      ```
+      systemctl list-units --type=service | grep -i night
+      systemctl cat nightcast.service
+      ```
+
+      "Nightcast carrier" runs /opt/nightcast/carrier-daemon with
+      `Restart=always`: kill the process and systemd resurrects it, delete
+      the file while enabled and the unit fails on next boot.
+
+      **2. Disable AND stop in one shot:**
+
+      ```
+      systemctl disable --now nightcast.service
+      ```
+
+      **3. Delete the payload** so nothing can re-enable it later:
+
+      ```
+      rm /opt/nightcast/carrier-daemon
+      ```
+
+      **4. Confirm both graded conditions:** `systemctl is-enabled
+      nightcast.service` no longer says `enabled` (disabled, masked,
+      not-found all count) and `/opt/nightcast/carrier-daemon` is gone.
+
+  - id: timer_neutralized
+    type: command_json
+    category: vuln
+    display: "HARD: The systemd TIMER (and its payload) is disabled, removed, and gone from disk"
+    max_points: 20
+    collect:
+      script: |
+        if systemctl is-enabled nightcast-rebroadcast.timer 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        if [ -e /etc/systemd/system/nightcast-rebroadcast.timer ]; then echo false; exit 0; fi
+        if [ -e /opt/nightcast/rebroadcast ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Timers are the cron of systemd -- review them like it:**
+
+      ```
+      systemctl list-timers --all
+      systemctl cat nightcast-rebroadcast.timer
+      ```
+
+      `nightcast-rebroadcast.timer` fires its companion
+      `nightcast-rebroadcast.service` shortly after boot and every 30
+      minutes after that. The service is a one-shot that logs a "back on
+      air" line -- but the PATTERN is exactly how malware schedules itself
+      without touching cron.
+
+      **2. Disable AND stop the timer:**
+
+      ```
+      systemctl disable --now nightcast-rebroadcast.timer
+      ```
+
+      **3. Remove the unit files and the payload.** Disabling only leaves
+      the files on disk -- one `systemctl enable` from coming back:
+
+      ```
+      systemctl daemon-reload
+      rm /etc/systemd/system/nightcast-rebroadcast.timer
+      rm /etc/systemd/system/nightcast-rebroadcast.service
+      rm /opt/nightcast/rebroadcast
+      ```
+
+      **4. Confirm all three graded conditions:** is-enabled no longer says
+      `enabled`, the .timer file is gone, and /opt/nightcast/rebroadcast is
+      gone. `systemctl list-timers` shows nothing nightcast-shaped.
+
+  # --- at ----------------------------------------------------------------------
+  - id: at_queue_emptied
+    type: command_json
+    category: vuln
+    display: "MODERATE: The queued at(1) job is removed -- the Nightcast has no future appointment"
+    max_points: 10
+    collect:
+      script: |
+        if atq 2>/dev/null | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. at is cron's one-shot cousin, and nobody checks it.** Jobs sit in
+      a spool until their time arrives, then run once:
+
+      ```
+      atq
+      ```
+
+      One job, queued for ~2 days out. Read what it will run BEFORE deleting
+      it (`at -c` prints the job; the number comes from atq):
+
+      ```
+      at -c <jobid> | tail -5
+      ```
+
+      It runs /opt/nightcast/late-shift -- the Nightcast scheduled its own
+      comeback, and if nobody looked, it would have executed.
+
+      **2. Remove the job:**
+
+      ```
+      atrm <jobid>
+      ```
+
+      **3. Confirm.** `atq` prints nothing -- an empty queue is the graded
+      state. (Leave the `atd` DAEMON alone: it is scored as a penalty below,
+      same as cron.)
+
+  # --- init.d ------------------------------------------------------------------
+  - id: initd_boot_script_gone
+    type: command_json
+    category: vuln
+    display: "MODERATE: The legacy SysV init script is deleted and its boot links are gone"
+    max_points: 10
+    collect:
+      script: |
+        if [ -e /etc/init.d/nightcast-agent ]; then echo false; exit 0; fi
+        if ls /etc/rc*.d/S*nightcast-agent >/dev/null 2>&1; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Old boot order survives under systemd.** SysV init scripts in
+      /etc/init.d still run on Debian via symlinks in /etc/rc0.d through
+      /etc/rc6.d -- and they are a favorite hiding place because everyone
+      assumes "systemd handles that now":
+
+      ```
+      ls -l /etc/init.d/ | grep -v '^total'
+      ls /etc/rc2.d/
+      ```
+
+      `nightcast-agent` has proper LSB headers and S-links in every runlevel
+      -- at boot it launches /opt/nightcast/boot-amplifier in the
+      background, forever.
+
+      **2. Deregister, then delete:**
+
+      ```
+      update-rc.d nightcast-agent remove
+      rm /etc/init.d/nightcast-agent
+      rm -f /opt/nightcast/boot-amplifier
+      ```
+
+      (`update-rc.d -f nightcast-agent remove` if it refuses while links
+      exist; the `-f` forces.)
+
+      **3. Confirm both graded conditions:** /etc/init.d/nightcast-agent is
+      gone AND `ls /etc/rc*.d/ | grep nightcast-agent` shows nothing
+      (dangling S-links count as still-present, so do the update-rc.d
+      remove, not just rm).
+
+  # --- rc.local ----------------------------------------------------------------
+  - id: rc_local_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: /etc/rc.local no longer launches the Nightcast at boot"
+    max_points: 10
+    collect:
+      script: |
+        f=/etc/rc.local
+        if [ ! -f "$f" ]; then echo true; exit 0; fi
+        grep -Fq '/opt/nightcast/sign-on' "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. The oldest trick in the book, enabled by a condition.** On
+      systemd Debian, rc-local.service is static and inert -- UNTIL an
+      executable /etc/rc.local exists, at which point it runs it at every
+      boot. Creating that file is itself the persistence move:
+
+      ```
+      cat /etc/rc.local
+      systemctl status rc-local
+      ```
+
+      Ours calls /opt/nightcast/sign-on at boot.
+
+      **2. Remove the attacker's line.** The file was CREATED by the
+      attacker, so deleting the whole file is legitimate hardening -- or
+      strip the line and drop the executable bit:
+
+      ```
+      rm /etc/rc.local
+      # or: nano /etc/rc.local   (remove the /opt/nightcast line)
+      #     chmod -x /etc/rc.local
+      ```
+
+      **3. Confirm.** `grep -r nightcast /etc/rc.local` prints nothing (the
+      check passes if the file is gone OR no longer mentions sign-on). Also
+      remove the payload: `rm /opt/nightcast/sign-on`.
+
+  # --- ld.so.preload -------------------------------------------------------------
+  - id: ld_preload_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The ld.so.preload implant is gone from the loader config and from disk"
+    max_points: 10
+    collect:
+      script: |
+        p=/etc/ld.so.preload
+        l=/usr/local/lib/libnightcast.so
+        if [ -e "$l" ]; then echo false; exit 0; fi
+        if [ -e "$p" ] && grep -Ev '^[[:space:]]*(#|$)' "$p" | grep -q .; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. The loader itself is compromised.** /etc/ld.so.preload lists
+      shared objects that the dynamic loader maps into EVERY
+      dynamically-linked process -- including every command you run. It is
+      a rootkit's front door:
+
+      ```
+      cat /etc/ld.so.preload
+      file /usr/local/lib/libnightcast.so
+      ```
+
+      (You can see the hook yourself: `ldd /bin/ls` lists the preloaded
+      object as if it were a normal dependency.)
+
+      **2. Remove both halves** -- the config entry AND the object:
+
+      ```
+      rm /etc/ld.so.preload
+      rm /usr/local/lib/libnightcast.so
+      ```
+
+      **3. Confirm.** `cat /etc/ld.so.preload` errors (or shows only
+      comments) and `ldd /bin/ls` no longer lists libnightcast.so. The
+      check grades exactly that: no active preload entries, and the .so
+      gone from disk.
+
+  # --- tapeops: user-level systemd ------------------------------------------------
+  - id: tapeops_unit_linger_gone
+    type: command_json
+    category: vuln
+    display: "HARD: The tapeops user-level systemd unit is deleted AND linger is turned off"
+    max_points: 20
+    collect:
+      script: |
+        if [ -e /home/tapeops/.config/systemd/user/tape-scan.service ]; then echo false; exit 0; fi
+        if [ -e /var/lib/systemd/linger/tapeops ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. systemd runs for USERS too.** Every account gets a private user
+      manager (`systemctl --user`), and `loginctl enable-linger` makes it
+      start AT BOOT with no login -- a service there is boot-persistent
+      while being almost invisible:
+
+      ```
+      ls /var/lib/systemd/linger/
+      ls -R /home/tapeops/.config/systemd/
+      systemctl --user -M tapeops@ list-units 2>/dev/null
+      ```
+
+      `tapeops` has linger enabled and a user unit `tape-scan.service`
+      running the tape-scan payload as tapeops. Remember: tapeops the
+      ACCOUNT is legitimate and stays; its hidden user-level unit and
+      linger flag are the findings.
+
+      **2. Remove the unit and turn linger off:**
+
+      ```
+      rm /home/tapeops/.config/systemd/user/tape-scan.service
+      loginctl disable-linger tapeops
+      ```
+
+      **3. Confirm both graded conditions:** the unit file under
+      ~/.config/systemd/user/ is gone, and
+      `ls /var/lib/systemd/linger/` no longer lists tapeops.
+
+  # --- penalties ------------------------------------------------------------------
+  - id: cron_service_healthy
+    type: service_state
+    category: penalty
+    display: "PENALTY: The cron daemon is not running (you broke the station's schedule instead of evicting the Nightcast)"
+    max_points: 10
+    collect:
+      service: cron
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if `cron` is not ACTIVE, 10 points come off.
+      Disabling or stopping the cron daemon does evict the Nightcast -- and
+      also the station's own automation, its log rotation, and every
+      legitimate job on the box. Evict the attacker's JOBS, keep the
+      DAEMON: `systemctl status cron` should read `active (running)` at all
+      times. If you stopped it, `systemctl start cron` (and
+      `systemctl unmask cron` first, if you masked it) puts it back.
+
+  - id: atd_service_healthy
+    type: service_state
+    category: penalty
+    display: "PENALTY: The atd daemon is not running (emptying the queue is the fix; killing the daemon is not)"
+    max_points: 10
+    collect:
+      service: atd
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if `atd` is not ACTIVE, 10 points come off.
+      The scored fix for the at finding is `atrm` on the malicious job --
+      NOT `systemctl disable --now atd`, and certainly not purging the at
+      package. atd exists because the station schedules its own transmitter
+      chores with it. `systemctl status atd` should read `active (running)`;
+      if you stopped it, `systemctl start atd` (unmask first if needed).
+
+
+  # --- round-3: SLA on atd (the adversary's kill_service target) -------------
+  - id: atd_sla
+    type: service_state
+    category: vuln
+    display: "SLA: the atd daemon stays up"
+    max_points: 10
+    collect:
+      service: atd
+    expect:
+      equals: true
+      field: active
+      points: 0
+      sla:
+        interval_s: 60
+        points_per_interval: 1
+        max_intervals_per_checkin: 3
+
+adversary:
+  events:
+    - id: r3-drop-marker
+      action: drop_inert_artifact
+      params: {path: "r3-marker.txt"}
+      window_s: [600, 900]
+    - id: r3-kill-atd
+      action: kill_service
+      params: {service: "atd"}
+      window_s: [900, 1200]
+    - id: r3-flush-fw
+      action: flush_firewall
+      params: {}
+      window_s: [1200, 1500]
+
+theme:
+  title: "Static Pine Community Radio"
+  organization: "Static Pine Community Radio — Board of Directors"
+  accent: "#1F6E43"
+  readme: assets/README.md
+  # The graded fq-key-comment answer is `nightcast@88.3`; the lenient alias
+  # "nightcast" collides with the story name the handbook cannot avoid. The
+  # full answer never appears in the handbook.
+  readme_lint_allow: ["nightcast"]
+  motd: |
+    Welcome to Static Pine Community Radio, 88.3 FM -- transmitter host.
+    Authorized operators only. Run `huitz score` for your standing and
+    `huitz readme` for the handbook from the Board.
+  issue: |
+    Static Pine Community Radio transmitter host (88.3 FM).
+    Unauthorized access will be reported to the Board.
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt (created in the player's ~/Desktop; edit with
+# `huitz forensics`); the agent re-grades the file each pass. Correct answer
+# = full points; wrong or blank = nothing, no penalty. Each answer is
+# evidence the students open while hunting the sixteen artifacts.
+forensics:
+  - id: fq-key-comment
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "Someone planted an SSH public key for passwordless access on this box. Type the comment tag at the END of that key line (it names the attacker)."
+    answer: "nightcast@88.3"
+    answers: ["nightcast 88.3", "nightcast"]
+    points: 10
+    solution: |
+      `cat ~/.ssh/authorized_keys` and read every line to the end. Key lines
+      end with a free-text comment naming the key's owner -- the planted one
+      signs itself `nightcast@88.3`. Hardening (removing the key) and
+      forensics (reading it) use the same command; read BEFORE you delete.
+  - id: fq-log-file
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "Most of the Nightcast's payloads report to the same log file. Type its full path."
+    answer: "/var/log/nightcast.log"
+    answers: ["var/log/nightcast.log"]
+    points: 10
+    solution: |
+      Open any payload -- the cron one (`cat /opt/nightcast/nightcast-sync`),
+      the systemd carrier daemon, the rebroadcast payload -- and the same
+      append shows up in every one: `>> /var/log/nightcast.log`. Shared
+      infrastructure is a correlation gift: one log file, one timeline of
+      everything the intruder's persistence did.
+  - id: fq-timer-cadence
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "The nightcast-rebroadcast TIMER re-fires its payload on a fixed cadence. How often does it fire (the OnUnitActiveSec value)?"
+    answer: "30min"
+    answers: ["30 min", "30 minutes", "every 30 min", "every 30 minutes"]
+    points: 10
+    solution: |
+      `systemctl cat nightcast-rebroadcast.timer` and read the [Timer]
+      section: OnBootSec=3min (first fire) and OnUnitActiveSec=30min (the
+      re-fire cadence the question asks for). `systemctl list-timers` shows
+      the same story live as "next trigger". Read the unit BEFORE deleting
+      it -- the answer leaves with the file.
+  - id: fq-at-payload
+    path: /home/stationlead/Desktop/Forensics-Questions.txt
+    question: "A one-shot at(1) job sits in the queue, waiting to run its payload at a chosen moment. Type the full path of the payload it will run."
+    answer: "/opt/nightcast/late-shift"
+    answers: ["opt/nightcast/late-shift"]
+    points: 10
+    solution: |
+      `atq` lists the queued job id, then `at -c <id>` prints the job -- the
+      last lines are the command it will run: /opt/nightcast/late-shift.
+      `at -c` BEFORE `atrm`: evicting the job destroys the evidence.

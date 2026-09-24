@@ -18,20 +18,16 @@ from engine.store import Store
 
 def _expected_fire_time(server_secret: bytes, box_id: str, event_pool: list,
                          t0: float, index: int) -> float:
-    """Replicates the internal RNG derivation in adversary_oracle.due_directives
-    so tests can compute, ahead of time, the exact fire_time a given event in
-    the pool will be assigned -- without needing to binary search for it.
-    """
-    seed_material = server_secret + box_id.encode()
-    seed = int.from_bytes(hashlib.sha256(seed_material).digest(), "big")
-    rng = random.Random(seed)
-    fire_time = None
-    for i, event in enumerate(event_pool):
-        window_s = event["window_s"]
-        offset = rng.uniform(window_s[0], window_s[1])
-        if i == index:
-            fire_time = t0 + offset
-    return fire_time
+    """Replicates the internal per-event RNG derivation in
+    adversary_oracle.due_directives so tests can compute, ahead of time, the
+    exact fire_time a given event in the pool will be assigned."""
+    event = event_pool[index]
+    event_id = str(event.get("id", f"e{index}"))
+    seed_material = (server_secret + b"\x00" + box_id.encode() + b"\x00"
+                     + event_id.encode())
+    rng = random.Random(int.from_bytes(hashlib.sha256(seed_material).digest(), "big"))
+    window_s = event["window_s"]
+    return t0 + rng.uniform(window_s[0], window_s[1])
 
 
 @pytest.fixture
@@ -178,3 +174,24 @@ def test_event_ids_are_stable_and_distinct_across_pool(make_store):
                                        received_at=T0 + 2000)
     assert directives_again == []
     assert store.get_issued_event_ids(box_id) == {"e0", "e1", "e2"}
+
+
+def test_fire_time_is_stable_when_other_events_are_added_or_reordered(make_store):
+    """An event's fire time depends on its own id only: inserting another
+    event ahead of it in a re-uploaded pool must not reschedule it (it used to,
+    because one RNG stream was consumed in pool order -- round-3 S5 finding)."""
+    existing = {"id": "e-existing", "action": "drop_inert_artifact",
+                "window_s": (100, 900), "params": {}}
+    newcomer = {"id": "e-new", "action": "drop_inert_artifact",
+                "window_s": (100, 900), "params": {}}
+    alone = _expected_fire_time(SECRET, "box-a", [existing], T0, 0)
+    after_insert = _expected_fire_time(SECRET, "box-a", [newcomer, existing], T0, 1)
+    assert alone == after_insert
+
+    # And the real oracle agrees: just before `alone`, nothing for e-existing;
+    # at `alone`, it fires -- with the newcomer listed first.
+    store = make_store()
+    pool = [dict(newcomer, window_s=(10_000, 10_001)), existing]
+    assert due_directives(store, "box-a", SECRET, pool, T0, alone - 0.01) == []
+    fired = due_directives(store, "box-a", SECRET, pool, T0, alone)
+    assert [d.event_id for d in fired] == ["e-existing"]

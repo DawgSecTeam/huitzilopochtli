@@ -348,6 +348,8 @@ def test_checkin_scenario_version_mismatch_409(engine, scenario, enrolled_box,
     status, parsed, _ = _signed_checkin(engine, priv, body)
     assert status == 409
     assert "scenario_version" in parsed["error"]
+    # §14.2: every 409 carries the authoritative last_seq (round-3 S5).
+    assert isinstance(parsed["last_seq"], int), parsed
 
 
 # --------------------------------------------------------------------------
@@ -441,6 +443,23 @@ def test_checkin_float_seq_is_rejected_cleanly(engine, scenario, enrolled_box,
     assert "malformed bundle" in parsed["error"]
 
 
+@pytest.mark.parametrize("field,value", [("seq", 2 ** 63),
+                                          ("seq", -1),
+                                          ("scenario_version", 2 ** 63)])
+def test_checkin_out_of_range_ints_are_400_not_500(engine, scenario,
+                                                   enrolled_box, seqs,
+                                                   field, value):
+    # PROBE (round-3, seen live from the cheater box): a seq >= 2**63 passed
+    # the int check and then OverflowError'd binding into SQLite -> 500.
+    name, version = scenario
+    priv, box_id = enrolled_box
+    body = _bundle_dict(box_id, next(seqs), name, version, {"matched": "no"})
+    body[field] = value
+    status, parsed, _ = _signed_checkin(engine, priv, body)
+    assert status == 400, (status, parsed)
+    assert "malformed bundle" in parsed["error"]
+
+
 def test_checkin_nan_wall_claim_is_rejected(engine, scenario, enrolled_box,
                                             seqs):
     # PROBE: json.loads accepts NaN and json.dumps emits it, so a NaN in a
@@ -451,6 +470,34 @@ def test_checkin_nan_wall_claim_is_rejected(engine, scenario, enrolled_box,
     body = _bundle_dict(box_id, next(seqs), name, version, {"matched": "no"})
     body["created_wall_claim"] = float("nan")
     status, parsed, _ = _signed_checkin(engine, priv, body)
+    assert status == 400, (status, parsed)
+
+
+def _deep(depth):
+    return "[" * depth + "]" * depth
+
+
+def test_checkin_deeply_nested_raw_is_400_not_500(engine, scenario,
+                                                  enrolled_box, seqs):
+    # PROBE (round-3 S5): canonicalize() recurses, so ~3000 levels of raw
+    # used to RecursionError into a 500 -- before the signature was checked,
+    # i.e. reachable unauthenticated. Rejected at the wire layer now.
+    name, version = scenario
+    _priv, box_id = enrolled_box
+    body = _bundle_dict(box_id, next(seqs), name, version, {"matched": "no"})
+    raw_json = json.dumps(body).replace(
+        '{"matched": "no"}', '{"x": ' + _deep(3000) + '}')
+    status, parsed, _ = _post(engine, "/checkin", raw_json.encode(),
+                              headers={"X-HUITZILOPOCHTLI-Sig": "AAAA"})
+    assert status == 400, (status, parsed)
+    assert "malformed bundle" in parsed["error"]
+
+
+def test_enroll_deeply_nested_body_is_400_not_500(engine):
+    raw_json = ('{"enrollment_token": "t", "box_id": "b", "public_key": "k", '
+                '"extra": ' + _deep(3000) + '}')
+    status, parsed, _ = _post(engine, "/enroll", raw_json.encode(),
+                              headers={"X-HUITZILOPOCHTLI-Sig": "AAAA"})
     assert status == 400, (status, parsed)
 
 
