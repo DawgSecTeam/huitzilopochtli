@@ -1,0 +1,87 @@
+# ROUND-3 TEST FIXTURE: see scenario.ranked-r3.yaml.
+# Static Pine Community Radio: persistence-hunting box (huitz terminal
+# console -- NO desktop, NO VNC): players connect over SSH (Guacamole ssh
+# link from the portal) and use `huitz score`, `huitz readme`, `huitz watch`,
+# `huitz forensics`. Built for the "persistence & startup services" workshop
+# (init.d, cron, at, systemd timers, and every other way a service comes
+# back): SIXTEEN planted persistence artifacts, one scored finding each,
+# compressed weighting (8 EASY x5 + 5 MODERATE x10 + 3 HARD x20 = 150) and
+# two penalties (-10 each) because nuking cron/atd instead of evicting the
+# attacker's jobs must cost points, plus a 4-question forensics block
+# (4 x 10 = 40; 190 grand total). The box's only legitimate furniture is the
+# stationlead account (template prep) and the tapeops automation account
+# (planted, story-legitimate, KEEP -- only its hidden crontab/user-unit/
+# linger are scored). Unlike opochtli-landing there is no apache/DB stack
+# and no shared-DB dependency: this box is fully self-contained.
+#
+# Template lineage: challenge-static-pine-radio (Proxmox vmid 112), sealed
+# 2026-09-21 as a FULL clone of the 158 seal (which was itself built from
+# the "debian13-lite-fix" template, vmid 951) -- full clone deliberately
+# severs the linked-clone chain so no superseded template disk backs this
+# one. 112 is the pool-served template (see the 2nd-entry lineage below for
+# the 2026-09-23 cli2 seal), validated end to
+# end (Total 0 baseline, Total 190 full marks incl. forensics, answers
+# blanked and baseline re-verified before sealing), and re-verified 2026-09-21
+# with a fresh-clone deploy test of 112 itself: boots planted at Total 0,
+# all 16 artifacts present, forensics file blank on the player's Desktop,
+# login stderr-clean, machine-id unique. Superseded seals 146/149/156/158
+# are destroyed EXCEPT vmid 146 (renamed challenge-pine-radio in the
+# template-rename sweep): an ORPHANED thin volume on the hdd pool still has
+# origin=base-146-disk-0 (leaked by a destroyed linked clone; no qemu config
+# references it), so every destroy/detach 500s with "still in use by linked
+# clones". Host fix: lvs --all -o lv_name,origin <hdd_vg> | grep base-146,
+# lvremove the orphan(s) (not base-146 itself), then destroy 146 normally.
+# Validated end-to-end: Total 0 at baseline (all 16 artifacts present,
+# forensics file blank on the player's Desktop), a live penalty probe (cron
+# stopped -> Total -10), the scripted harden to Total 150 (16 of 16), and
+# the 4 forensics answers earning 40 (total 40 with 0 vulns fixed; grand
+# total 190 attainable). Forensics answers file is pinned to
+# /home/stationlead/Desktop/Forensics-Questions.txt in the scenario (the
+# agent's default resolves to the FIRST uid>=1000 account -- the 951 base
+# ships a stray sysadmin at uid 1000, which hijacked it). Login-time hooks
+# verified silent. net0 ships on untrustedbr,firewall=1.
+# Template lineage (2nd entry): `static-pine-radio-cli2-template` (Proxmox
+# vmid 132), sealed 2026-09-23 -- a FULL CLONE of the 112 seal with the
+# latest main agent bundle re-installed on top (compile --rebuild-bundle at
+# e244f7b+: readme reflow/pager, motd quick-start banner, did-you-mean;
+# canonical artifacts/authoring.key, so manifests stay signature-stable).
+# Build loop: full-clone 112 -> rebridge vmbr0/firewall=0 -> compile+install
+# (no plant needed; 112 already carries the 16 plants) -> verify -> wipe
+# machine-id -> shutdown -> rebridge untrustedbr/firewall=1 -> template.
+# Validated live on the build clone: Total 0 baseline (0 of 16, forensics
+# blank), cron-stop penalty -10 -> restored 0, forensics Q1 +10 -> cleared 0,
+# all 16 artifact families present, journal traceback-free, new CLI UX
+# confirmed on-box (did-you-mean, readme typeset, quick-start motd); fresh
+# clone of the seal boots planted at 0 with a regenerated machine-id. 112
+# REMAINS the pool-served canonical (SR883) until a deliberate cutover; 132
+# exists so the latest CLI can be tried and future pools can serve it.
+# TEMPLATE PREP (before any nakon plant): create stationlead (sudo, bash,
+# ~/Desktop -- the huitz CLI's snapshot + forensics files land there).
+# Nothing else: cron ships with Debian; the `at` package arrives via the
+# at-job-persistence seed's depends_on at PLANT time; no web stack.
+# Snapshot AFTER all prep, then plant/install/verify/rollback -- a
+# pre-deploy snapshot does NOT cover prep steps.
+#
+# Attacker material planted by this config (all via GENERIC var-driven
+# "-persistence" seeds in boxbuilder/vulndb_vuln_configs/): see nakon.json's
+# _comment for the full coupling list. Two plants need build-loop attention:
+#   - initd-persistence is enable-only (update-rc.d defaults, no start): the
+#     agent's checks only grade file/links, so nothing must be started
+#     manually; it comes alive at clone boot like the student boxes' boots.
+#   - systemd-timer-persistence enables --now the timer: it may fire once
+#     during the build loop (OnBootSec elapsed); harmless (logs a line).
+# provider.host below is whatever IP this specific build clone happens to
+# get from DHCP -- it WILL go stale. Point it at your clone's current IP and
+# connect as `stationlead` (sudo password: stationlead). The template's net0
+# is untrustedbr (workshop 192.168.100.0/24); for a build round, stop the
+# clone and rebridge to vmbr0 (net0=model=virtio,bridge=vmbr0,firewall=0) so
+# the dev host can reach it, then rebridge back before re-sealing.
+scenario: scenario.ranked-r3.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 10.0.0.157
+  port: 22
+  user: stationlead
+  password: stationlead
+# authoring_key: ./authoring.key

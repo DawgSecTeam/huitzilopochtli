@@ -1,5 +1,99 @@
 # Ranked-mode testing round — 2026-09-23
 
+## Round 3 — adversarial, SLA/adversary-live and chaos round (same day)
+
+Five Sonnet 5 subagents, each on its own stage, reporting findings only; every
+finding was reproduced by hand before being fixed, and every fix carries a
+regression test that fails without it. Engine on a `base-ubuntu24.04` clone
+(cadence 30s), four full clones of 112, each `compile` → `plant` → `install
+--admin-token`, all enrolled at Total 0. G3/G4 ran the new fixture
+`boxes/static-pine-radio/scenario.ranked-r3.yaml`: the ranked box plus an
+`atd_sla` SLA check and a 3-event adversary pool (`drop_inert_artifact`,
+`kill_service atd`, `flush_firewall`), the first time any live directive
+beyond `drop_inert_artifact` ran on a real box.
+
+| Stage | Who | Result |
+|---|---|---|
+| Baseline suite / two-VM tier | me | 799 passed; `test_ranked_two_machines.py` **unblocked and green** (see test fixes) |
+| Honest play (G1) | S1 | predicted 80 → final 80. Every step, including a cron penalty (-10, restored), a wrong forensics answer (no change) and a regression (-5, redone), landed within ≤2 cadences; leaderboard, `scores` table and `huitz score` never disagreed |
+| Cheater with root (G2) | S2 | 21 attacks. Forged evidence signed with the box key reaches a full score, **as §3/§2 invariant 6 accept**. Identity/key binding, token single-use, replay/rewind, scenario-version gate, Box header, admin auth (`compare_digest`), leaderboard SQLi and manifest-only `engine_url` all held. No answer key anywhere on the box or in any response |
+| SLA + adversary live (G3) | S3 | PASS on all 6. Each directive fired once inside its window (one late only because the engine was down); no re-execution across agent restart or reboot; SLA DOWN/UP obeyed hysteresis 2/2, no back-pay; penalty landed and lifted in the same bundle; only egress was the engine socket (`ss -tnp`); +2h box clock step moved nothing (receipt clock only) |
+| Chaos (G4) | S4 + me | Engine SIGKILL, 410s nft partition, agent `kill -9`, box reboot, 3 more kills at arbitrary moments: every box `last_seq == COUNT(checkins)`, contiguous, no dupes; queue flushed 11 bundles in order; T0 and the adversary schedule survived restarts (secret persisted in `engine_meta`). Rubric re-upload moved the point-in-time score 40 → 42 → 40 on the next check-in, SLA untouched |
+| Wire/doc audit (local) | S5 | 10 findings, below |
+
+**Fixed (each with a regression test):**
+1. *Agent dropped the current bundle when a stale queued one was permanently
+   rejected* (`agent/transport.py`): the flush re-raised, losing the current
+   cycle's evidence after its seq was already persisted. The flush now drops
+   the dead entry and carries on.
+2. *Admin rubric upload accepted SLA blocks that 500 every check-in*
+   (`common/schema.py`): an unknown key (`hysteresis_fal_n`) passed validation,
+   then crashed `SlaParams(**sla)` on every check-in for the scenario; and
+   `hysteresis_*_n: 0` pinned an always-UP box DOWN. Unknown keys and
+   non-positive counters are now rejected, and `compile` rejects unknown `sla`
+   keys, which it used to drop silently.
+3. *Adversary fire times depended on pool position* (`engine/adversary_oracle.py`):
+   one RNG stream consumed in list order meant adding or reordering an event
+   in a re-upload rescheduled every other unfired event. The seed is now
+   per-event `(server_secret, box_id, event_id)` (architecture §12 updated).
+   Unfired events on a live engine re-roll once at upgrade.
+4. *Out-of-range ints 500'd* (`engine/server.py`): seq ≥ 2⁶³ (found live from
+   the cheater box) OverflowError'd at the SQLite bind; negative seq was
+   accepted into the seq guard. Wire ints are now bounded to 0..2⁶³−1 → 400.
+5. *Unauthenticated 500 via deep nesting* (`engine/server.py`): ~3000-deep
+   `raw` RecursionError'd in `canonicalize()` before the signature check.
+   `raw` deeper than 64 is now a 400.
+6. *Version-mismatch 409 lacked `last_seq`* (`engine/checkin.py`), contrary
+   to §14.2's "every 409 carries it"; also corrected a stale step-order
+   docstring.
+7. *Ranked installs kept the honor re-grade timer* (`boxbuilder/providers/ssh.py`):
+   every static-pine clone is honor-sealed, so its timer survived a ranked
+   install and kept restarting a stopped ranked agent. Ranked installs now
+   disable and remove it (verified live on G2).
+
+Fixes 4, 5 and 7 were re-verified live: the redeployed engine returns 400
+for the cheater's seq=2⁶³ and a 900-deep `raw`, and the reinstalled G2 has no
+timer while its seq kept advancing. Fixes 1–3 and 6 are covered by their
+regression tests only.
+
+**Test-harness fixes:** `test_ranked_two_machines.py` now binds the engine to
+`0.0.0.0`, detaches with `setsid … < /dev/null`, and regenerates each clone's
+machine-id (`proxmox_helper.regen_machine_id`). Template 106 still carries a
+stale machine-id, so its two clones and any other live 106 clone collided on
+10.0.0.116; the test comment claiming the template was fixed referred to the
+long-gone 9106. `test_concurrent_enroll_single_token_exactly_one_winner`'s
+client timeout was raised from 30s to 120s: five Ed25519 verifies under one
+GIL exceed 30s on a loaded host, which flaked the baseline.
+
+**Known issues surfaced, not fixed (need a decision):**
+- **§14.3 rubric versioning is not implemented.** `scenarios` is keyed by name
+  only and the uploaded record's `scenario_version` is never compared with the
+  box's. Verified live: uploading a v2 record re-scored the enrolled v1 boxes
+  against it with no error. The doc says the engine scores against the rubric
+  version matching the manifest. Either store per-version rubrics, reject
+  mismatched check-ins, or amend the doc.
+- **Idle connections hold `MAX_CONNS` slots for 30s** (`Handler.timeout`,
+  hardcoded, not env-tunable). Bounded under the friendly-leaderboard threat
+  model; make it configurable if ranked ever faces hostile networks.
+- **`Transfer-Encoding: chunked` reads as an empty body** → generic 400. Not
+  smuggle-able (HTTP/1.0, connection closed per response); the agent never
+  sends chunked bodies.
+- **A root player can burn their own seq space** (jump to 2⁶³−1, after which
+  every later seq is a 400). Self-inflicted only, and it can't touch other boxes.
+- engine#8 (penalty docking from `fire_time`) is still unimplemented and was
+  observed live: the atd penalty and SLA DOWN bit ~45s after the kill,
+  gated by hysteresis, not from `fire_time`.
+
+**Process notes:** Sonnet agents ran out of their session limit near the end;
+I finished S4's steps 5–8 by hand. The auto-mode classifier denied S4's
+`rm`/`sed -i` remediations on its disposable VM, so it scored through the
+forensics answers file instead. The sandbox classifier doesn't know which
+hosts are disposable, which matters for future player-style rounds. S4's
+"only 3 bundles queued during the partition" was a false positive: 11 were
+queued and flushed (seqs 38–48).
+
+---
+
 ## Round 2 — 4-guest ranked competition (same day)
 
 Second round on `feature/ranked-mode`: a live 4-team competition plus the
