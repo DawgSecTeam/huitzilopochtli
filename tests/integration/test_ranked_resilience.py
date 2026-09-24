@@ -298,14 +298,17 @@ def test_concurrent_enroll_single_token_exactly_one_winner(tmp_path):
                     "Content-Type": "application/json",
                     "X-HUITZILOPOCHTLI-Sig": _sigs[box_id],
                 },
-                method="POST", timeout=30,
+                # Generous: the engine verifies the volley's Ed25519 sigs under
+                # one GIL (vendored, ~seconds each), so on a loaded host the
+                # last racer can legitimately wait well past 30s.
+                method="POST", timeout=120,
             )
 
         threads = [threading.Thread(target=racer, args=(i,)) for i in range(n)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=120)
+            t.join(timeout=300)
         assert len(outcomes) == n
 
         # The volley can also saturate the verify gate (default 4 slots, n=5
