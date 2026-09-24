@@ -1,5 +1,52 @@
 # Ranked-mode testing round — 2026-09-23
 
+## Round 2 — 4-guest ranked competition (same day)
+
+Second round on `feature/ranked-mode`: a live 4-team competition plus the
+honor-regression proof, driven by one subagent per guest box.
+
+**Honor regression proof** (this round's ranked changes share the zipapp,
+authoring validator, sync-report and boxbuilder staging with honor boxes):
+- Compile matrix: all 7 honor boxes compile green under the new
+  boolean-trap validation — the shipped `permission` checks using
+  `equals: false` on boolean `exists` evidence remain correctly exempt.
+- Full suite: 798 passed / 1 skipped / 5 deselected.
+- Live honor E2E: `pytest -m proxmox
+  tests/proxmox/test_local_honor_distribution.py` passed (2/2) — honor
+  `.pyz` on real Ubuntu + Fedora clones via guest-exec, `Total: 10` asserted.
+  (`.env`'s stale `TEST_TEMPLATE_VMID_UBUNTU=9106` updated to 106.)
+
+**Competition**: static-pine-radio ranked variant; engine VM (cadence 30s) +
+4 guest full-clones of 112, each `boxbuilder plant` (re-anchors the at-job →
+clean 0 baseline despite the known at-fuse defect) + `install --admin-token`
+(one token per guest, 4 distinct box_ids, all enrolled at Total 0). Four
+general-purpose subagents then played their teams over SSH in parallel:
+
+| team | strategy | predicted | final | rank |
+|---|---|---|---|---|
+| A | forensics 4/4 + all 16 evictions | 190 | **190** | 1 |
+| B | the 8 EASY evictions only | 40 | **40** | 3 |
+| C | 3 MODERATEs, then stopped cron | 20 | **20** | 4 |
+| D | forensics only | 40 | **40** | 2 |
+
+Every team landed exactly on target. Engine-side assertions: the B/D tie at
+40 broke deterministically by first-confirmation (D before B); each box's
+`last_seq == checkins` row count (30/30, 30/30, 29/29, 29/29) — zero lost or
+replayed check-ins under 4-way concurrent load; Team C's cron penalty applied
+engine-side exactly once (−10); zero tracebacks/errors in the engine log.
+Teams confirmed their on-box `huitz score` matched the engine throughout.
+
+Notable: Team D found the planted authorized_keys key on **stationlead**
+itself, not on tapeops as a casual reading might assume — the forensics
+answer discovery flow works as designed. Provisioning gotchas hit: spec
+copies in /tmp resolve relative paths against /tmp (keep generated specs
+next to the box dir or use absolute paths), and `boxbuilder plant` defaults
+to `./artifacts` unless `--out` is passed.
+
+---
+
+# Round 1
+
 Round report for the first extensive test of ranked mode (branch
 `feature/ranked-mode`). Honor mode was considered stable going in; ranked mode
 had ~3 loopback integration tests with its restart/crash-recovery sections
