@@ -71,6 +71,7 @@ def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> tuple:
         manifest_theme["logo_b64"] = base64.b64encode(data).decode("ascii")
 
     readme = theme_raw.get("readme")
+    text = None  # a theme may brand without a handbook; None just skips the lint
     if readme:
         readme_path = readme if os.path.isabs(readme) else os.path.join(os.path.dirname(yaml_path), readme)
         if not os.path.isfile(readme_path):

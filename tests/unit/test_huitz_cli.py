@@ -705,6 +705,36 @@ def test_compile_embeds_readme_text_in_manifest(tmp_path):
     assert snap_manifest["theme"]["readme_text"] == HANDBOOK
 
 
+def test_compile_theme_without_readme_succeeds(tmp_path):
+    # validate.py treats theme.readme as optional, so a title/accent-only
+    # theme must compile (no UnboundLocalError) and simply skip the lint.
+    import yaml as yaml_mod
+    from authoring.compile import compile_scenario
+    from common.crypto.signing import keypair
+
+    scenario = {
+        "scenario": {"name": "t", "version": 1, "mode": "honor",
+                     "hosts": ["localhost"]},
+        "theme": {"title": "T", "accent": "#0a7ea4"},
+        "checks": [{
+            "id": "c1", "type": "file_regex", "category": "vuln",
+            "display": "D", "max_points": 5,
+            "collect": {"path": str(tmp_path / "f.txt"), "extract": "x=(\\w+)"},
+            "expect": {"equals": "y", "points": 5},
+        }],
+    }
+    yaml_path = tmp_path / "scenario.yaml"
+    yaml_path.write_text(yaml_mod.safe_dump(scenario), encoding="utf-8")
+    (tmp_path / "f.txt").write_text("x=y", encoding="utf-8")
+
+    priv, _pub = keypair()
+    out = compile_scenario(str(yaml_path), str(tmp_path / "out"), priv)
+    manifest = json.loads((tmp_path / "out" / "manifest.signed.json").read_text())
+    assert manifest["theme"]["title"] == "T"
+    assert "readme_text" not in manifest["theme"]
+    assert out["readme_warnings"] == []
+
+
 def test_snapshot_carries_readme(tmp_path):
     m = _manifest(theme={"title": "X", "readme_text": HANDBOOK})
     snap = snapshot.build_snapshot(_score(), m, mode="honor",
