@@ -1,0 +1,10 @@
+{
+  "name": "rhosts-trust",
+  "description": "Practice-box misconfiguration: plants a legacy r-services trust file (.rhosts or /etc/hosts.equiv), by default containing '+ +' (trust everyone with no password). Vars: TARGET (optional, default /root/.rhosts); CONTENT (optional, default '+ +'); OWNER (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\ntarget=\"${TARGET:-/root/.rhosts}\"\ncontent=\"${CONTENT:-+ +}\"\ninstall -d -m 0755 \"$(dirname -- \"$target\")\"\nprintf '%s\\n' \"$content\" > \"$target\"\nchmod 0644 \"$target\"\nif [ -n \"${OWNER-}\" ]; then chown \"$OWNER\" \"$target\" 2>/dev/null || true; fi\n",
+  "depends_on": []
+}

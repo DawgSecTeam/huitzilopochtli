@@ -1,0 +1,10 @@
+{
+  "name": "apache-insecure",
+  "description": "Practice-box misconfiguration: hardening targets on an already-installed Apache. Runs workers as a non-standard user (daemon, not www-data) via envvars; apache refuses to run as root outright, so this uses daemon to keep the service startable while still a finding, adds a filesystem-exposing 'Alias /vault /' block with directory listing to the always-present apache2.conf (so hardening is an EDIT, not a delete), and sets a verbose banner (ServerTokens Full / ServerSignature On). Vars: ALIAS_NAME (optional, default vault).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nexport DEBIAN_FRONTEND=noninteractive\ncommand -v apache2ctl >/dev/null 2>&1 || { apt-get update -y >/dev/null 2>&1 || true; apt-get install -y apache2 >/dev/null 2>&1 || true; }\nalias_name=\"${ALIAS_NAME:-vault}\"\nsed -i 's/^export APACHE_RUN_USER=.*/export APACHE_RUN_USER=daemon/' /etc/apache2/envvars\nsed -i 's/^export APACHE_RUN_GROUP=.*/export APACHE_RUN_GROUP=daemon/' /etc/apache2/envvars\nif ! grep -q \"^Alias /$alias_name /\" /etc/apache2/apache2.conf; then\n  {\n    printf '\\nAlias /%s /\\n' \"$alias_name\"\n    printf '<Directory />\\n'\n    printf '    Options Indexes FollowSymLinks\\n'\n    printf '    Require all granted\\n'\n    printf '</Directory>\\n'\n  } >> /etc/apache2/apache2.conf\nfi\nsc=/etc/apache2/conf-available/security.conf\nif [ -e \"$sc\" ]; then\n  sed -i 's/^\\s*ServerTokens.*/ServerTokens Full/I' \"$sc\" 2>/dev/null || true\n  sed -i 's/^\\s*ServerSignature.*/ServerSignature On/I' \"$sc\" 2>/dev/null || true\n  grep -qi '^ServerTokens' \"$sc\" || printf 'ServerTokens Full\\n' >> \"$sc\"\n  grep -qi '^ServerSignature' \"$sc\" || printf 'ServerSignature On\\n' >> \"$sc\"\nfi\nsystemctl restart apache2 >/dev/null 2>&1 || true\n",
+  "depends_on": []
+}

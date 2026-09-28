@@ -1,0 +1,10 @@
+{
+  "name": "web-exposed-file",
+  "description": "Practice-box misconfiguration: drops files that leak information into a web root -- a .git directory, a database backup, and a phpinfo page. Paired check wants all three gone. Vars: WEBROOT (optional, default /var/www/relay).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nroot=\"${WEBROOT:-/var/www/relay}\"\ninstall -d -m 0755 \"$root\" \"$root/.git\"\nprintf '[core]\\n\\trepositoryformatversion = 0\\n' > \"$root/.git/config\"\nprintf 'ref: refs/heads/main\\n' > \"$root/.git/HEAD\"\nprintf -- '-- relay telemetry DB backup (training)\\nCREATE TABLE ops (id INT);\\n' > \"$root/db-backup.sql\"\nprintf '<?php phpinfo(); ?>\\n' > \"$root/phpinfo.php\"\n",
+  "depends_on": []
+}

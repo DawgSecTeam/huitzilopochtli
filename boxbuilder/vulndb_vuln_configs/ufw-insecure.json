@@ -1,0 +1,10 @@
+{
+  "name": "ufw-insecure",
+  "description": "Practice-box misconfiguration: ensures ufw is installed, leaves it DISABLED with a default-allow-incoming policy, and records a rogue backdoor allow rule (port 31337 by default). Paired checks want ufw active+deny and the rogue rule gone. Vars: ROGUE_PORT (optional, default 31337).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nexport DEBIAN_FRONTEND=noninteractive\nport=\"${ROGUE_PORT:-31337}\"\ncommand -v ufw >/dev/null 2>&1 || { apt-get update -y >/dev/null 2>&1 || true; apt-get install -y ufw >/dev/null 2>&1 || true; }\nufw --force disable >/dev/null 2>&1 || true\nufw default allow incoming >/dev/null 2>&1 || true\nufw allow \"$port\"/tcp >/dev/null 2>&1 || true\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "sysctl-insecure",
+  "description": "Practice-box misconfiguration: installs an /etc/sysctl.d drop-in with insecure kernel/network values (ip_forward=1, randomize_va_space=0, rp_filter=0, accept_redirects=1) and applies them. Paired checks read the live sysctl values. No vars.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nf=/etc/sysctl.d/99-relay-insecure.conf\ncat > \"$f\" <<'EOF'\nnet.ipv4.ip_forward = 1\nkernel.randomize_va_space = 0\nnet.ipv4.conf.all.rp_filter = 0\nnet.ipv4.conf.all.accept_redirects = 1\nEOF\nsysctl --system >/dev/null 2>&1 || true\n",
+  "depends_on": []
+}

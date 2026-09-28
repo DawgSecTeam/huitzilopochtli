@@ -1,0 +1,10 @@
+{
+  "name": "samba-guest-share",
+  "description": "Practice-box misconfiguration: installs Samba (if needed) and adds a guest-writable (unauthenticated) share. Paired check wants no 'guest ok = yes' share. Vars: SHARE_NAME (optional, default relay-public); SHARE_PATH (optional, default /srv/relay-public).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nexport DEBIAN_FRONTEND=noninteractive\n[ -e /etc/samba/smb.conf ] || { apt-get update -y >/dev/null 2>&1 || true; apt-get install -y samba >/dev/null 2>&1 || true; }\nshare=\"${SHARE_NAME:-relay-public}\"\npath=\"${SHARE_PATH:-/srv/relay-public}\"\ninstall -d -m 0777 \"$path\"\nf=/etc/samba/smb.conf\nif ! grep -q \"^\\[$share\\]\" \"$f\" 2>/dev/null; then\n  {\n    printf '\\n[%s]\\n' \"$share\"\n    printf '   path = %s\\n' \"$path\"\n    printf '   browseable = yes\\n'\n    printf '   read only = no\\n'\n    printf '   guest ok = yes\\n'\n  } >> \"$f\"\nfi\nsystemctl restart smbd >/dev/null 2>&1 || true\n",
+  "depends_on": []
+}

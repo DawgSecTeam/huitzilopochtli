@@ -1,0 +1,10 @@
+{
+  "name": "mysql-anon-user",
+  "description": "Practice-box misconfiguration: creates an anonymous (blank-username) database account, as an unhardened MySQL/MariaDB ships. Paired check counts anonymous users. Best-effort (needs a running local server with socket root auth). No vars.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nmysql -e \"CREATE USER IF NOT EXISTS ''@'localhost'; FLUSH PRIVILEGES;\" 2>/dev/null || \\\nmysql -e \"INSERT IGNORE INTO mysql.user (Host,User) VALUES ('localhost',''); FLUSH PRIVILEGES;\" 2>/dev/null || true\n",
+  "depends_on": []
+}

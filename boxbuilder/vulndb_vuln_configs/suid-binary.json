@@ -1,0 +1,10 @@
+{
+  "name": "suid-binary",
+  "description": "Practice-box misconfiguration: plants a setuid-root binary (a copy of a shell by default) outside the system directories -- an instant root backdoor. Vars: DEST (required, absolute path); SRC (optional, default /bin/bash).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${DEST:?DEST is required}\"\nsrc=\"${SRC:-/bin/bash}\"\ninstall -d -m 0755 \"$(dirname -- \"$DEST\")\"\ncp -f \"$src\" \"$DEST\"\nchmod 4755 \"$DEST\"\n",
+  "depends_on": []
+}
