@@ -1,0 +1,10 @@
+{
+  "name": "dup-uid",
+  "description": "Practice-box misconfiguration: creates an account that SHARES another account's UID (useradd -o), so two names map to one identity. Vars: USERNAME (required); CLONE_OF (optional, an existing user whose UID to copy) OR UID_NUM (explicit numeric UID). One of CLONE_OF/UID_NUM is required.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${USERNAME:?USERNAME is required}\"\nif [ -n \"${CLONE_OF-}\" ]; then\n  uid=$(id -u \"$CLONE_OF\")\nelse\n  uid=\"${UID_NUM:?UID_NUM or CLONE_OF is required}\"\nfi\nif id \"$USERNAME\" >/dev/null 2>&1; then\n  usermod -o -u \"$uid\" \"$USERNAME\"\nelse\n  useradd -m -o -u \"$uid\" -s /bin/bash \"$USERNAME\"\nfi\n",
+  "depends_on": []
+}

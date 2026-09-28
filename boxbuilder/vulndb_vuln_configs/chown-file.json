@@ -1,0 +1,10 @@
+{
+  "name": "chown-file",
+  "description": "Practice-box misconfiguration: writes a file and gives it a non-root owner, so a system file under /etc ends up owned (and rewritable) by an ordinary account. Vars: FILE_PATH (required); OWNER (required); CONTENT (optional).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${FILE_PATH:?FILE_PATH is required}\"\n: \"${OWNER:?OWNER is required}\"\ninstall -d -m 0755 \"$(dirname -- \"$FILE_PATH\")\"\nprintf '%s\\n' \"${CONTENT-}\" > \"$FILE_PATH\"\nchown \"$OWNER\" \"$FILE_PATH\"\n",
+  "depends_on": []
+}

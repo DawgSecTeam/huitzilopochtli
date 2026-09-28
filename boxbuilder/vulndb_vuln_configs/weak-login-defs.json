@@ -1,0 +1,10 @@
+{
+  "name": "weak-login-defs",
+  "description": "Practice-box misconfiguration: weakens /etc/login.defs password policy. Vars: PASS_MAX_DAYS (optional, default 99999 -- effectively never expires); ENCRYPT_METHOD (optional, default MD5 -- weak hashing). Paired hardening checks read PASS_MAX_DAYS and ENCRYPT_METHOD back.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nf=/etc/login.defs\nmaxd=\"${PASS_MAX_DAYS:-99999}\"\nenc=\"${ENCRYPT_METHOD:-MD5}\"\nif grep -q '^PASS_MAX_DAYS' \"$f\"; then\n  sed -i \"s/^PASS_MAX_DAYS.*/PASS_MAX_DAYS\\t$maxd/\" \"$f\"\nelse\n  printf 'PASS_MAX_DAYS\\t%s\\n' \"$maxd\" >> \"$f\"\nfi\nif grep -q '^ENCRYPT_METHOD' \"$f\"; then\n  sed -i \"s/^ENCRYPT_METHOD.*/ENCRYPT_METHOD $enc/\" \"$f\"\nelse\n  printf 'ENCRYPT_METHOD %s\\n' \"$enc\" >> \"$f\"\nfi\n",
+  "depends_on": []
+}

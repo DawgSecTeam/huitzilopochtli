@@ -1,0 +1,10 @@
+{
+  "name": "file-capability",
+  "description": "Practice-box misconfiguration: plants a copy of an interpreter (python3 by default) with a dangerous file capability (cap_setuid+ep by default) -- a quieter privilege escalation than setuid. Needs setcap (libcap2-bin). Vars: DEST (required); SRC (optional, default python3); CAP (optional, default cap_setuid+ep).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${DEST:?DEST is required}\"\nsrc=\"${SRC:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}\"\ncap=\"${CAP:-cap_setuid+ep}\"\ncommand -v setcap >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get install -y libcap2-bin >/dev/null 2>&1 || true; }\ninstall -d -m 0755 \"$(dirname -- \"$DEST\")\"\ncp -f \"$src\" \"$DEST\"\nsetcap \"$cap\" \"$DEST\"\n",
+  "depends_on": []
+}

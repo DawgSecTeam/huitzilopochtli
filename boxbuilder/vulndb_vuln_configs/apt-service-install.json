@@ -1,0 +1,10 @@
+{
+  "name": "apt-service-install",
+  "description": "Practice-box helper: apt-get installs a package list and (optionally) enables+starts named units, to stand up an insecure/unwanted network service (telnet, rsh, tftp, cups, ...). Best-effort: needs the box to have package access at plant time. Vars: PACKAGES (required, space-separated); UNITS (optional, space-separated systemd units to enable --now). POST (optional): a shell command run after install/enable (e.g. update-inetd --enable telnet).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${PACKAGES:?PACKAGES is required}\"\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -y >/dev/null 2>&1 || true\n# shellcheck disable=SC2086\napt-get install -y $PACKAGES >/dev/null 2>&1 || true\nfor u in ${UNITS-}; do\n  systemctl enable --now \"$u\" >/dev/null 2>&1 || true\n  systemctl restart \"$u\" >/dev/null 2>&1 || true\ndone\n[ -n \"${POST-}\" ] && sh -c \"$POST\" || true\n",
+  "depends_on": []
+}

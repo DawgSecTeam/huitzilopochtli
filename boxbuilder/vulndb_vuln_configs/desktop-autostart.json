@@ -1,0 +1,10 @@
+{
+  "name": "desktop-autostart",
+  "description": "Practice-box persistence finding: writes a .desktop autostart launcher at a caller-chosen path (per-user ~/.config/autostart or system-wide /etc/xdg/autostart) that runs a payload at graphical login. Vars: DEST (required, full .desktop path); EXEC (required); NAME (optional); OWNER (optional, chown the file).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${DEST:?DEST is required}\"\n: \"${EXEC:?EXEC is required}\"\nname=\"${NAME:-Relay Helper}\"\ninstall -d -m 0755 \"$(dirname -- \"$DEST\")\"\ncat > \"$DEST\" <<EOF\n[Desktop Entry]\nType=Application\nName=$name\nExec=$EXEC\nX-GNOME-Autostart-enabled=true\nOnlyShowIn=XFCE;\nEOF\nchmod 0644 \"$DEST\"\nif [ -n \"${OWNER-}\" ]; then\n  chown \"$OWNER\":\"$OWNER\" \"$DEST\" 2>/dev/null || chown \"$OWNER\" \"$DEST\" 2>/dev/null || true\nfi\n",
+  "depends_on": []
+}

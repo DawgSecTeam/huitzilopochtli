@@ -1,0 +1,10 @@
+{
+  "name": "hosts-redirect-linux",
+  "description": "Practice-box misconfiguration: appends a line to /etc/hosts that redirects update/relay hostnames to an attacker IP (DNS poisoning without touching DNS). Idempotent. Vars: IP (required); HOSTS (required, space-separated hostnames).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${IP:?IP is required}\"\n: \"${HOSTS:?HOSTS is required}\"\nline=\"$IP   $HOSTS\"\ngrep -qF \"$line\" /etc/hosts || printf '%s\\n' \"$line\" >> /etc/hosts\n",
+  "depends_on": []
+}

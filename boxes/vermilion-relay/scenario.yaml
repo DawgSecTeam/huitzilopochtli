@@ -1,0 +1,2799 @@
+# Vermilion Deep-Space Relay: the pre-CDE capstone Linux hardening box.
+# The theme is flavor only; every task is solvable from ordinary Linux evidence.
+# Each selected nakon configuration plants the insecure state described by its
+# paired check. 80 scored hardening checks + 3 penalty guards + 8 forensics.
+#
+# Difficulty weighting (called out in each display: and in the README ledger):
+#   EASY = 2 pts, MODERATE = 4 pts, HARD = 8 pts. Forensics = 8 pts each.
+# The point total is pinned by tests/unit/test_boxbuilder_vermilion_relay.py.
+
+scenario:
+  name: "Vermilion Deep-Space Relay"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # ====================================================================
+  # A. Authentication and password policy
+  # ====================================================================
+  - id: no_uid0_user
+    type: file_regex
+    category: vuln
+    display: "EASY: No second UID-0 (root-equivalent) account in /etc/passwd"
+    max_points: 2
+    collect:
+      path: /etc/passwd
+      extract: '(?m)^(?!root:)([^:]+):[^:]*:0:'
+    expect:
+      equals: null
+      points: 2
+    solution: |
+      **1. Count the UID-0 accounts.** Any account with UID 0 is full root,
+      whatever its name:
+
+      ```
+      awk -F: '$3 == 0 {print $1}' /etc/passwd
+      root
+      nightwatch
+      ```
+
+      Two names is one too many. `nightwatch` has no business being
+      root-equivalent (it is also forensics Q1 -- note the name before you
+      delete the account).
+
+      **2. Remove it:**
+
+      ```
+      deluser --remove-home nightwatch      # or: userdel -r nightwatch
+      ```
+
+      **3. Confirm.** The awk line prints only `root`; the `nightwatch` tile
+      is gone from the greeter.
+
+  - id: shadow_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: /etc/shadow is not world-writable"
+    max_points: 4
+    collect:
+      path: /etc/shadow
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 4
+    solution: |
+      **1. Look at the mode:**
+
+      ```
+      stat -c '%a %n' /etc/shadow      # 666
+      ```
+
+      World-writable `/etc/shadow` means any local user can rewrite every
+      password hash on the box, including root's.
+
+      **2. Restore the distro default:**
+
+      ```
+      chmod 640 /etc/shadow
+      ```
+
+      **3. Confirm** `stat -c %a /etc/shadow` reads `640` or stricter.
+      (Re-check this after any account edits: useradd/chpasswd can loosen it
+      again.)
+
+  - id: passwd_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: /etc/passwd is not world-writable"
+    max_points: 4
+    collect:
+      path: /etc/passwd
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 4
+    solution: |
+      **1. Look at the mode:**
+
+      ```
+      stat -c '%a %n' /etc/passwd      # 666
+      ```
+
+      A world-writable `/etc/passwd` lets any user add a UID-0 account or
+      change login shells at will.
+
+      **2. Restore the default:**
+
+      ```
+      chmod 644 /etc/passwd
+      ```
+
+      **3. Confirm** `stat -c %a /etc/passwd` reads `644` or stricter.
+
+  - id: no_blank_password
+    type: command_json
+    category: vuln
+    display: "MODERATE: No account has a blank password in the shadow database"
+    max_points: 4
+    collect:
+      script: |
+        n=$(awk -F: '($2 == "") {c++} END{print c+0}' /etc/shadow 2>/dev/null)
+        [ -z "$n" ] && n=0
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. Find blank-password accounts.** An empty second field in
+      `/etc/shadow` means the account logs in with no password at all:
+
+      ```
+      sudo awk -F: '($2 == "") {print $1}' /etc/shadow
+      lyra
+      ```
+
+      **2. Fix it.** If the account is unauthorized, remove it
+      (`deluser --remove-home lyra`); if it is a real account, set or lock
+      the password (`passwd lyra` or `passwd -l lyra`).
+
+      **3. Confirm** the awk line prints nothing.
+
+  - id: no_pam_permit
+    type: file_regex
+    category: vuln
+    display: "HARD: No passwordless-login PAM rule (pam_permit.so) in common-auth"
+    max_points: 8
+    collect:
+      path: /etc/pam.d/common-auth
+      extract: '(?m)^([^#].*pam_permit\.so.*)$'
+    expect:
+      equals: null
+      points: 8
+    solution: |
+      **1. Read the auth stack.** A `pam_permit.so` line in the auth phase
+      makes PAM accept ANY password for affected logins:
+
+      ```
+      grep -n pam_permit /etc/pam.d/common-auth
+      auth  sufficient  pam_permit.so
+      ```
+
+      **2. Remove that line** (leave the rest of the stack intact). The
+      normal first auth line on Ubuntu is
+      `auth [success=1 default=ignore] pam_unix.so nullok_secure`.
+
+      **3. Confirm** `grep pam_permit /etc/pam.d/common-auth` returns
+      nothing, and you can still `sudo -k` then re-authenticate with the real
+      password.
+
+  - id: login_defs_max_days
+    type: command_json
+    category: vuln
+    display: "MODERATE: Password aging is enforced (PASS_MAX_DAYS <= 365 in login.defs)"
+    max_points: 4
+    collect:
+      script: |
+        v=$(awk '/^PASS_MAX_DAYS/{print $2}' /etc/login.defs | tail -n1)
+        [ -z "$v" ] && v=-1
+        if [ "$v" -ge 0 ] && [ "$v" -le 365 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the policy.** `login.defs` ships the default aging for new
+      accounts:
+
+      ```
+      grep '^PASS_MAX_DAYS' /etc/login.defs
+      PASS_MAX_DAYS   99999
+      ```
+
+      99999 days means passwords effectively never expire.
+
+      **2. Set a real maximum** (365 or less is accepted; 90 is a common
+      standard):
+
+      ```
+      sudo sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/' /etc/login.defs
+      ```
+
+      **3. Confirm** the value now reads 365 or less.
+
+  - id: login_defs_sha512
+    type: command_json
+    category: vuln
+    display: "EASY: Password hashing uses SHA512 (not MD5/DES) in login.defs"
+    max_points: 2
+    collect:
+      script: |
+        m=$(awk '/^ENCRYPT_METHOD/{print $2}' /etc/login.defs | tail -n1)
+        if [ "$m" = "SHA512" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read the hashing method:**
+
+      ```
+      grep '^ENCRYPT_METHOD' /etc/login.defs
+      ENCRYPT_METHOD MD5
+      ```
+
+      MD5 password hashes are trivially cracked compared to SHA512.
+
+      **2. Switch to SHA512:**
+
+      ```
+      sudo sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT_METHOD SHA512/' /etc/login.defs
+      ```
+
+      **3. Confirm** the value reads `SHA512`. (Existing hashes rehash on the
+      next password change.)
+
+  - id: no_duplicate_uid
+    type: command_json
+    category: vuln
+    display: "MODERATE: No two accounts share the same UID"
+    max_points: 4
+    collect:
+      script: |
+        d=$(awk -F: '{print $3}' /etc/passwd | sort | uniq -d | grep -vc '^0$')
+        echo "$d"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. Find shared UIDs.** Two accounts with the same non-zero UID are
+      the same identity to the kernel:
+
+      ```
+      awk -F: '{print $3}' /etc/passwd | sort | uniq -d
+      1009
+      awk -F: '$3==1009{print $1}' /etc/passwd
+      relaybot
+      relayops
+      ```
+
+      `relayops` was cloned onto `relaybot`'s UID so it inherits its files.
+
+      **2. Remove the impostor** (or give it its own UID with `usermod -u`):
+
+      ```
+      deluser --remove-home relayops
+      ```
+
+      **3. Confirm** `awk -F: '{print $3}' /etc/passwd | sort | uniq -d`
+      prints nothing.
+
+  # ====================================================================
+  # B. Unauthorized accounts and privilege
+  # ====================================================================
+  - id: no_vega
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'vega' account is removed (shows as a login tile on the greeter)"
+    max_points: 2
+    collect: {}
+    expect:
+      user_absent: true
+      username: vega
+      points: 2
+    solution: |
+      **1. Spot the tile.** Unauthorized accounts advertise themselves on the
+      login greeter; `ls /home` and `getent passwd vega` confirm it is a real
+      account with a login shell and a password.
+
+      **2. Note the extras first.** `id vega` shows it is in the `sudo` group
+      (that is also forensics Q3). Record it, then remove it.
+
+      **3. Remove it:**
+
+      ```
+      deluser --remove-home vega
+      ```
+
+      Confirm `getent passwd vega` prints nothing.
+
+  - id: no_orion
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'orion' account is removed (shows as a login tile on the greeter)"
+    max_points: 2
+    collect: {}
+    expect:
+      user_absent: true
+      username: orion
+      points: 2
+    solution: |
+      Same hunt as every unauthorized account: greeter tile, `ls /home`,
+      `getent passwd orion`. Nothing on the relay roster explains it. Note
+      that `id orion` shows it in the `shadow` group (a separate finding)
+      before you remove it:
+
+      ```
+      deluser --remove-home orion
+      ```
+
+      Confirm `getent passwd orion` prints nothing.
+
+  - id: no_lyra
+    type: user_group
+    category: vuln
+    display: "EASY: Unauthorized 'lyra' account is removed (shows as a login tile on the greeter)"
+    max_points: 2
+    collect: {}
+    expect:
+      user_absent: true
+      username: lyra
+      points: 2
+    solution: |
+      `lyra` is an unauthorized account, and its shadow entry has a blank
+      password (it logs in with no password at all). Confirm and remove:
+
+      ```
+      getent passwd lyra
+      deluser --remove-home lyra
+      ```
+
+      Removing it also clears the blank-password finding. Confirm
+      `getent passwd lyra` prints nothing.
+
+  - id: sudo_group_clean
+    type: user_group
+    category: vuln
+    display: "EASY: Only the authorized administrator is in the sudo group"
+    max_points: 2
+    collect: {}
+    expect:
+      group_members_subset_of: true
+      group: sudo
+      allowed: [relayadmin]
+      points: 2
+    solution: |
+      **1. Audit the group.**
+
+      ```
+      getent group sudo
+      sudo:x:27:relayadmin,vega
+      ```
+
+      The roster names `relayadmin` as the only administrator, so `vega` is
+      the extra (forensics Q3).
+
+      **2. Remove the extra from the group** (removing the account entirely
+      also works, and is the right call for `vega`):
+
+      ```
+      deluser vega sudo
+      ```
+
+      **3. Confirm** `getent group sudo` lists only `relayadmin`.
+
+  - id: shadow_group_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: No unauthorized account is in the shadow group (it can read every password hash)"
+    max_points: 4
+    collect:
+      script: |
+        extra=$(getent group shadow | awk -F: '{print $4}' | tr ',' '\n' | grep -vx '' | grep -vx 'relayadmin' | grep -c .)
+        echo "$extra"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. Read the group.** Membership in `shadow` grants read access to
+      `/etc/shadow`, so every password hash on the box:
+
+      ```
+      getent group shadow
+      shadow:x:42:orion
+      ```
+
+      `orion` is not an administrator and has no reason to read password
+      hashes.
+
+      **2. Remove it from the group:**
+
+      ```
+      deluser orion shadow
+      ```
+
+      (Deleting the `orion` account entirely, as its own finding requires,
+      also clears this.)
+
+      **3. Confirm** `getent group shadow` no longer lists `orion`.
+
+  - id: relaybot_no_shell
+    type: command_json
+    category: vuln
+    display: "EASY: The relaybot service account has no interactive shell"
+    max_points: 2
+    collect:
+      script: |
+        s=$(getent passwd relaybot | cut -d: -f7)
+        case "$s" in */nologin|*/false) echo true;; *) echo false;; esac
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check the shell.** Service accounts should never be able to log in
+      interactively:
+
+      ```
+      getent passwd relaybot
+      relaybot:x:...:/bin/bash
+      ```
+
+      **2. Take the shell away:**
+
+      ```
+      sudo usermod -s /usr/sbin/nologin relaybot
+      ```
+
+      **3. Confirm** field 7 now reads `/usr/sbin/nologin` (or `/bin/false`).
+
+  - id: uplinkd_no_shell
+    type: command_json
+    category: vuln
+    display: "EASY: The uplinkd service account has no interactive shell"
+    max_points: 2
+    collect:
+      script: |
+        s=$(getent passwd uplinkd | cut -d: -f7)
+        case "$s" in */nologin|*/false) echo true;; *) echo false;; esac
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      Same as the relaybot finding, for the `uplinkd` daemon account:
+
+      ```
+      getent passwd uplinkd            # shows /bin/bash
+      sudo usermod -s /usr/sbin/nologin uplinkd
+      ```
+
+      Confirm field 7 reads `/usr/sbin/nologin` or `/bin/false`.
+
+  - id: no_passwordless_sudo
+    type: command_json
+    category: vuln
+    display: "HARD: No unrestricted passwordless-sudo drop-in remains"
+    max_points: 8
+    collect:
+      script: |
+        if grep -rIlE 'NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Hunt the drop-ins.** Files under `/etc/sudoers.d/` are as powerful
+      as `/etc/sudoers` itself:
+
+      ```
+      sudo grep -rE 'NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d
+      /etc/sudoers.d/99-void:vega ALL=(ALL) NOPASSWD: ALL
+      ```
+
+      An unrestricted `NOPASSWD: ALL` line is instant, silent root for that
+      user.
+
+      **2. Remove the offending drop-in:**
+
+      ```
+      sudo rm -f /etc/sudoers.d/99-void
+      sudo visudo -c        # always validate sudoers after editing
+      ```
+
+      **3. Confirm** the grep returns nothing and `visudo -c` reports OK.
+
+  - id: no_sudoers_gtfobin
+    type: command_json
+    category: vuln
+    display: "HARD: No sudoers rule grants passwordless root via a shell-escape binary (vim/less/find/etc.)"
+    max_points: 8
+    collect:
+      script: |
+        if grep -rIhE 'NOPASSWD:.*(/vim|/vi|/less|/more|/find|/nmap|/awk|/env|/man)($|[[:space:],])' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Read every sudo rule, not just the obvious ones.** A rule can look
+      "restricted" while still handing over root, because editors and search
+      tools can spawn a shell:
+
+      ```
+      sudo grep -rE 'NOPASSWD' /etc/sudoers /etc/sudoers.d
+      /etc/sudoers.d/10-relay:relayadmin ALL=(ALL) NOPASSWD: /usr/bin/vim
+      ```
+
+      From `sudo vim` a user runs `:!bash` and is root, with no password.
+
+      **2. Remove the rule** (or replace it with a genuinely limited command
+      that cannot shell out):
+
+      ```
+      sudo rm -f /etc/sudoers.d/10-relay
+      sudo visudo -c
+      ```
+
+      **3. Confirm** no NOPASSWD rule points at vim/vi/less/more/find/awk/env
+      and `visudo -c` is OK.
+
+  - id: sudoers_requires_auth
+    type: command_json
+    category: vuln
+    display: "MODERATE: sudo still requires a password (no Defaults !authenticate)"
+    max_points: 4
+    collect:
+      script: |
+        if grep -rIhE '^[^#]*Defaults.*!authenticate' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Look for a global authentication bypass.** One line disables the
+      password prompt for all sudo, for everyone:
+
+      ```
+      sudo grep -rE 'Defaults.*!authenticate' /etc/sudoers /etc/sudoers.d
+      /etc/sudoers.d/00-relay-defaults:Defaults !authenticate
+      ```
+
+      **2. Remove that line** (edit the file with `visudo -f`, or delete the
+      drop-in if it holds nothing else):
+
+      ```
+      sudo rm -f /etc/sudoers.d/00-relay-defaults
+      sudo visudo -c
+      ```
+
+      **3. Confirm** the grep returns nothing and `sudo -k; sudo id` now
+      prompts for a password.
+
+  # ====================================================================
+  # C. SSH hardening
+  # ====================================================================
+  - id: ssh_root_login_disabled
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH root login is disabled (PermitRootLogin no)"
+    max_points: 4
+    collect:
+      script: |
+        v=$(sshd -T 2>/dev/null | awk '/^permitrootlogin/{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the effective setting** (this shows the value in force, not
+      just what a file says):
+
+      ```
+      sudo sshd -T | grep -i permitrootlogin
+      permitrootlogin yes
+      ```
+
+      Direct root login over SSH removes the accountability of `sudo` and
+      hands brute-forcers the highest-value target.
+
+      **2. Turn it off.** Edit `/etc/ssh/sshd_config` (or a drop-in under
+      `/etc/ssh/sshd_config.d/`) so it reads `PermitRootLogin no`, then:
+
+      ```
+      sudo systemctl restart ssh
+      ```
+
+      **3. Confirm** `sudo sshd -T | grep permitrootlogin` reads `no`. Keep
+      the ssh service running; a penalty applies if 127.0.0.1:22 goes silent.
+
+  - id: ssh_no_empty_passwords
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH refuses empty passwords (PermitEmptyPasswords no)"
+    max_points: 4
+    collect:
+      script: |
+        v=$(sshd -T 2>/dev/null | awk '/^permitemptypasswords/{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the setting:**
+
+      ```
+      sudo sshd -T | grep -i permitemptypasswords
+      permitemptypasswords yes
+      ```
+
+      With this on, any account that has a blank password can be logged into
+      remotely with no credential at all.
+
+      **2. Set it to no** in `sshd_config` (or a drop-in), then restart ssh:
+
+      ```
+      sudo systemctl restart ssh
+      ```
+
+      **3. Confirm** `sudo sshd -T | grep permitemptypasswords` reads `no`.
+
+  - id: ssh_forwarding_off
+    type: command_json
+    category: vuln
+    display: "EASY: SSH X11 and TCP forwarding are disabled"
+    max_points: 2
+    collect:
+      script: |
+        x=$(sshd -T 2>/dev/null | awk '/^x11forwarding/{print $2}')
+        t=$(sshd -T 2>/dev/null | awk '/^allowtcpforwarding/{print $2}')
+        if [ "$x" = "no" ] && [ "$t" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read both forwarding settings:**
+
+      ```
+      sudo sshd -T | grep -iE 'x11forwarding|allowtcpforwarding'
+      x11forwarding yes
+      allowtcpforwarding yes
+      ```
+
+      Forwarding lets an authenticated session tunnel arbitrary traffic and
+      pivot deeper into the network; this relay has no need for it.
+
+      **2. Disable both** in `sshd_config` (or a drop-in):
+
+      ```
+      X11Forwarding no
+      AllowTcpForwarding no
+      ```
+
+      Then `sudo systemctl restart ssh`.
+
+      **3. Confirm** both read `no` under `sshd -T`.
+
+  - id: relayadmin_keys_clean
+    type: command_json
+    category: vuln
+    display: "EASY: No attacker key remains in relayadmin's authorized_keys"
+    max_points: 2
+    collect:
+      script: |
+        f=/home/relayadmin/.ssh/authorized_keys
+        if [ ! -e "$f" ] || ! grep -q 'voidkey@relay' "$f" 2>/dev/null; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read the authorized keys.** Any key here can log in as
+      `relayadmin` without a password:
+
+      ```
+      cat /home/relayadmin/.ssh/authorized_keys
+      ssh-ed25519 AAAA... voidkey@relay
+      ```
+
+      The `voidkey@relay` key is not one the operator recognizes.
+
+      **2. Remove that line** (leave any legitimate keys):
+
+      ```
+      sed -i '/voidkey@relay/d' /home/relayadmin/.ssh/authorized_keys
+      ```
+
+      **3. Confirm** `grep voidkey /home/relayadmin/.ssh/authorized_keys`
+      returns nothing.
+
+  - id: uplinkd_keys_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: No SSH key grants login to the uplinkd service account"
+    max_points: 4
+    collect:
+      script: |
+        f=/home/uplinkd/.ssh/authorized_keys
+        if [ ! -e "$f" ] || ! grep -q 'voidkey@relay' "$f" 2>/dev/null; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Question why a service account has any keys at all.** `uplinkd`
+      runs a daemon; it should never accept an interactive login:
+
+      ```
+      cat /home/uplinkd/.ssh/authorized_keys
+      ssh-ed25519 AAAA... voidkey@relay
+      ```
+
+      **2. Remove the attacker key** (or the whole file, since this account
+      should hold none):
+
+      ```
+      rm -f /home/uplinkd/.ssh/authorized_keys
+      ```
+
+      **3. Confirm** the file is gone or no longer names `voidkey@relay`.
+
+  - id: operator_key_private
+    type: permission
+    category: vuln
+    display: "EASY: The operator's SSH private key is not world-readable"
+    max_points: 2
+    collect:
+      path: /home/relayadmin/.ssh/id_ed25519
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0600"
+      points: 2
+    solution: |
+      **1. Check the mode.** A private key readable by anyone is a copyable
+      credential:
+
+      ```
+      stat -c '%a %n' /home/relayadmin/.ssh/id_ed25519      # 644
+      ```
+
+      **2. Lock it down** to owner-only:
+
+      ```
+      chmod 600 /home/relayadmin/.ssh/id_ed25519
+      ```
+
+      **3. Confirm** `stat -c %a` reads `600`. (SSH itself refuses a
+      group/world-readable private key, so this also keeps the client happy.)
+
+  # ====================================================================
+  # D. File permissions and sensitive data
+  # ====================================================================
+  - id: relay_keys_not_world_writable
+    type: permission
+    category: vuln
+    display: "EASY: The relay signing-keys file is not world-writable"
+    max_points: 2
+    collect:
+      path: /opt/vermilion/relay-keys.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 2
+    solution: |
+      **1. Check the mode** of the relay's most sensitive file:
+
+      ```
+      stat -c '%a %n' /opt/vermilion/relay-keys.txt      # 666
+      ```
+
+      World-writable means any account can rewrite the signing keys the relay
+      trusts.
+
+      **2. Tighten it** (terminal or file manager):
+
+      ```
+      chmod 644 /opt/vermilion/relay-keys.txt
+      ```
+
+      **3. Confirm** `stat -c %a` reads `644` or stricter. The file stays put;
+      this scores its permissions, not its absence.
+
+  - id: uplink_creds_not_world_readable
+    type: permission
+    category: vuln
+    display: "MODERATE: The uplink credentials file is not world-readable"
+    max_points: 4
+    collect:
+      path: /opt/vermilion/uplink-credentials.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 4
+    solution: |
+      **1. Check the mode.** These are live credentials for the uplink
+      channel:
+
+      ```
+      stat -c '%a %n' /opt/vermilion/uplink-credentials.txt      # 644
+      ```
+
+      Anyone on the box can read them.
+
+      **2. Restrict read access** to owner and group only:
+
+      ```
+      chmod 640 /opt/vermilion/uplink-credentials.txt
+      ```
+
+      **3. Confirm** `stat -c %a` reads `640` or stricter.
+
+  - id: cron_file_not_world_writable
+    type: permission
+    category: vuln
+    display: "MODERATE: The telemetry cron file in /etc/cron.d is not world-writable"
+    max_points: 4
+    collect:
+      path: /etc/cron.d/vermilion-telemetry
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 4
+    solution: |
+      **1. Look at the job file.** Files in `/etc/cron.d` run as the user they
+      name (here, root):
+
+      ```
+      stat -c '%a %n' /etc/cron.d/vermilion-telemetry      # 666
+      cat /etc/cron.d/vermilion-telemetry
+      ```
+
+      World-writable means any local user can edit a root cron job into
+      anything. This is a real telemetry job, so fix the permission; do not
+      delete the file.
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /etc/cron.d/vermilion-telemetry
+      ```
+
+      **3. Confirm** `stat -c %a` reads `644` or stricter.
+
+  - id: dish_code_not_world_writable
+    type: permission
+    category: vuln
+    display: "EASY: The dish access code left on the Desktop is not world-writable"
+    max_points: 2
+    collect:
+      path: /home/relayadmin/Desktop/dish-access-code.txt
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 2
+    solution: |
+      **1. Spot it in plain sight.** The dish access code sits on the Desktop
+      shipped 0666: every account can read it, and rewrite it.
+
+      **2. Tighten it:**
+
+      ```
+      chmod 644 /home/relayadmin/Desktop/dish-access-code.txt
+      ```
+
+      (GUI route: right-click the file, Properties, Permissions, take write
+      away from Group and Others.)
+
+      **3. Confirm** `stat -c %a` reads `644` or stricter.
+
+  - id: tmp_sticky_bit
+    type: command_json
+    category: vuln
+    display: "MODERATE: The world-writable shared relay directory keeps its sticky bit (users cannot delete each other's files)"
+    max_points: 4
+    collect:
+      script: |
+        d=/srv/relay-shared
+        if [ ! -d "$d" ]; then echo false; else
+          m=$(stat -c '%A' "$d"); case "$m" in *t|*T) echo true;; *) echo false;; esac
+        fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the sticky bit.** `/srv/relay-shared` is a world-writable
+      shared directory, but the sticky bit is what stops one user from
+      deleting or replacing another user's files there:
+
+      ```
+      stat -c '%A %n' /srv/relay-shared
+      drwxrwxrwx /srv/relay-shared
+      ```
+
+      No trailing `t` means the sticky bit was cleared.
+
+      **2. Restore it:**
+
+      ```
+      sudo chmod +t /srv/relay-shared
+      ```
+
+      **3. Confirm** `stat -c '%A' /srv/relay-shared` ends in `t` (drwxrwxrwt).
+
+  - id: no_suid_backdoor
+    type: command_json
+    category: vuln
+    display: "HARD: No setuid-root backdoor binary is planted outside the system directories"
+    max_points: 8
+    collect:
+      script: |
+        n=$(find /usr/local /opt /home /srv /tmp /var/tmp -xdev -type f -perm -4000 2>/dev/null | grep -c .)
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 8
+    solution: |
+      **1. Hunt setuid binaries in the wrong places.** A setuid-root file runs
+      as root no matter who launches it, so a copy of a shell with the bit set
+      is an instant root backdoor:
+
+      ```
+      find /usr/local /opt /home /srv /tmp -xdev -type f -perm -4000 2>/dev/null
+      /usr/local/bin/relay-diag
+      file /usr/local/bin/relay-diag        # it is a copy of /bin/bash
+      ```
+
+      Running `relay-diag -p` drops a root shell. Its path is forensics Q5.
+
+      **2. Remove it** (or strip the bit if it were a real tool, but this one
+      is a planted shell copy):
+
+      ```
+      sudo rm -f /usr/local/bin/relay-diag
+      ```
+
+      **3. Confirm** the `find` command prints nothing.
+
+  - id: no_setuid_capability
+    type: command_json
+    category: vuln
+    display: "HARD: No planted binary carries a cap_setuid file capability"
+    max_points: 8
+    collect:
+      script: |
+        n=$(getcap -r /opt /usr/local /home 2>/dev/null | grep -c cap_setuid)
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 8
+    solution: |
+      **1. Look for file capabilities, the quieter cousin of setuid.** A
+      binary with `cap_setuid` can change its UID to 0 without ever showing
+      the setuid bit:
+
+      ```
+      getcap -r /opt /usr/local /home 2>/dev/null
+      /opt/vermilion/pytools/python3 cap_setuid=ep
+      ```
+
+      That python can call `os.setuid(0)` and become root.
+
+      **2. Strip the capability** (or remove the planted copy):
+
+      ```
+      sudo setcap -r /opt/vermilion/pytools/python3
+      ```
+
+      **3. Confirm** `getcap -r /opt /usr/local /home` shows no `cap_setuid`.
+
+  - id: relay_conf_root_owned
+    type: command_json
+    category: vuln
+    display: "MODERATE: The relay config file is owned by root, not an operator account"
+    max_points: 4
+    collect:
+      script: |
+        o=$(stat -c '%U' /etc/vermilion/relay.conf 2>/dev/null)
+        if [ "$o" = "root" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check ownership.** A root-read config that a normal user owns can
+      be rewritten by that user, which is a privilege path if root ever acts
+      on it:
+
+      ```
+      stat -c '%U %n' /etc/vermilion/relay.conf
+      relaybot /etc/vermilion/relay.conf
+      ```
+
+      A file under `/etc` should be owned by root.
+
+      **2. Fix ownership:**
+
+      ```
+      sudo chown root:root /etc/vermilion/relay.conf
+      ```
+
+      **3. Confirm** `stat -c %U /etc/vermilion/relay.conf` reads `root`.
+
+  # ====================================================================
+  # E. Kernel and network hardening
+  # ====================================================================
+  - id: ip_forward_off
+    type: command_json
+    category: vuln
+    display: "MODERATE: IP forwarding is disabled (net.ipv4.ip_forward = 0)"
+    max_points: 4
+    collect:
+      script: |
+        v=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
+        if [ "$v" = "0" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the value.** A relay endpoint is not a router; IP forwarding
+      lets it pass traffic between networks, which an attacker can abuse to
+      pivot:
+
+      ```
+      sysctl net.ipv4.ip_forward
+      net.ipv4.ip_forward = 1
+      ```
+
+      **2. Turn it off, now and at boot.** Edit or add a line in
+      `/etc/sysctl.conf` (or a file in `/etc/sysctl.d/`) reading
+      `net.ipv4.ip_forward = 0`, then apply it:
+
+      ```
+      sudo sysctl -w net.ipv4.ip_forward=0
+      sudo sysctl --system
+      ```
+
+      **3. Confirm** `sysctl -n net.ipv4.ip_forward` reads `0`.
+
+  - id: aslr_on
+    type: command_json
+    category: vuln
+    display: "EASY: Address-space layout randomization is fully on (kernel.randomize_va_space = 2)"
+    max_points: 2
+    collect:
+      script: |
+        v=$(sysctl -n kernel.randomize_va_space 2>/dev/null)
+        if [ "$v" = "2" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read the value.** ASLR randomizes memory layout so exploits cannot
+      rely on fixed addresses; it was turned off here:
+
+      ```
+      sysctl kernel.randomize_va_space
+      kernel.randomize_va_space = 0
+      ```
+
+      **2. Restore full randomization:**
+
+      ```
+      sudo sysctl -w kernel.randomize_va_space=2
+      ```
+
+      Persist it in `/etc/sysctl.d/` and run `sudo sysctl --system`.
+
+      **3. Confirm** the value reads `2`.
+
+  - id: rp_filter_and_redirects
+    type: command_json
+    category: vuln
+    display: "MODERATE: Reverse-path filtering is on and ICMP redirects are not accepted"
+    max_points: 4
+    collect:
+      script: |
+        rp=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)
+        rd=$(sysctl -n net.ipv4.conf.all.accept_redirects 2>/dev/null)
+        if [ "$rp" = "1" ] && [ "$rd" = "0" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read both values.** Reverse-path filtering drops spoofed source
+      addresses; accepting ICMP redirects lets a local attacker reroute your
+      traffic:
+
+      ```
+      sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.all.accept_redirects
+      net.ipv4.conf.all.rp_filter = 0
+      net.ipv4.conf.all.accept_redirects = 1
+      ```
+
+      **2. Set the safe values:**
+
+      ```
+      sudo sysctl -w net.ipv4.conf.all.rp_filter=1
+      sudo sysctl -w net.ipv4.conf.all.accept_redirects=0
+      ```
+
+      Persist them in `/etc/sysctl.d/` and run `sudo sysctl --system`.
+
+      **3. Confirm** rp_filter reads `1` and accept_redirects reads `0`.
+
+  - id: ufw_default_deny
+    type: command_json
+    category: vuln
+    display: "MODERATE: The host firewall is active and defaults to deny for incoming traffic"
+    max_points: 4
+    collect:
+      script: |
+        s=$(ufw status verbose 2>/dev/null)
+        if echo "$s" | grep -qi 'Status: active' && echo "$s" | grep -qiE 'Default:.*deny \(incoming\)'; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the firewall.** The relay shipped with its firewall off:
+
+      ```
+      sudo ufw status verbose
+      Status: inactive
+      ```
+
+      **2. Allow what must stay reachable FIRST, then enable with a deny
+      default.** Do not lock yourself (or the web app) out:
+
+      ```
+      sudo ufw allow 22/tcp        # ssh management path (penalty if it dies)
+      sudo ufw allow 80/tcp        # relay telemetry web app
+      sudo ufw default deny incoming
+      sudo ufw default allow outgoing
+      sudo ufw enable
+      ```
+
+      **3. Confirm** `ufw status verbose` shows `Status: active` and
+      `Default: deny (incoming)`.
+
+  - id: hosts_no_redirect
+    type: command_json
+    category: vuln
+    display: "MODERATE: /etc/hosts does not redirect update or relay hostnames to another address"
+    max_points: 4
+    collect:
+      script: |
+        if grep -qiE '^[^#]*\b(security\.ubuntu\.com|archive\.ubuntu\.com|updates\.vermilion\.example)\b' /etc/hosts; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read /etc/hosts.** A planted mapping silently sends update or relay
+      traffic to an address the attacker controls:
+
+      ```
+      cat /etc/hosts
+      10.66.6.6   security.ubuntu.com updates.vermilion.example
+      ```
+
+      The IP it points to (10.66.6.6) is forensics Q8.
+
+      **2. Remove the planted line** (keep the normal
+      `127.0.0.1 localhost` and hostname lines):
+
+      ```
+      sudo sed -i '/10.66.6.6/d' /etc/hosts
+      ```
+
+      **3. Confirm** `grep -E 'ubuntu.com|vermilion.example' /etc/hosts`
+      returns nothing.
+
+  - id: no_rogue_ufw_allow
+    type: command_json
+    category: vuln
+    display: "EASY: No firewall rule opens the attacker's backdoor port (31337)"
+    max_points: 2
+    collect:
+      script: |
+        if ufw show added 2>/dev/null | grep -q '31337'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. List the rules the firewall was told to add**, not just the active
+      ones:
+
+      ```
+      sudo ufw show added
+      ufw allow 31337/tcp
+      ```
+
+      Nothing on the relay listens on 31337 legitimately; this rule exists to
+      keep a backdoor reachable.
+
+      **2. Delete the rule:**
+
+      ```
+      sudo ufw delete allow 31337/tcp
+      ```
+
+      **3. Confirm** `ufw show added` no longer mentions 31337.
+
+  # ====================================================================
+  # F. Insecure and unwanted services
+  # ====================================================================
+  - id: no_telnet_server
+    type: command_json
+    category: vuln
+    display: "MODERATE: No telnet server is listening (cleartext remote login)"
+    max_points: 4
+    collect:
+      script: |
+        if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ':23$'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Find the listener.** Telnet carries passwords in the clear and has
+      no place on a modern host:
+
+      ```
+      sudo ss -ltnp | grep ':23'
+      ```
+
+      **2. Remove it** (the clean fix) or stop and disable the service:
+
+      ```
+      sudo apt-get purge -y telnetd inetutils-telnetd 2>/dev/null
+      # or: sudo systemctl disable --now <the telnet unit>
+      ```
+
+      **3. Confirm** nothing listens on tcp/23. SSH is the supported remote
+      login path; keep it running.
+
+  - id: ftp_no_anonymous
+    type: command_json
+    category: vuln
+    display: "MODERATE: Anonymous FTP is disabled (or the FTP server is removed)"
+    max_points: 4
+    collect:
+      script: |
+        c=/etc/vsftpd.conf
+        if [ ! -e "$c" ]; then echo true; elif grep -qiE '^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES' "$c"; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the FTP config.** Anonymous FTP lets anyone pull (and often
+      push) files with no credentials:
+
+      ```
+      grep -i anonymous_enable /etc/vsftpd.conf
+      anonymous_enable=YES
+      ```
+
+      **2. Turn it off** (or remove vsftpd entirely if FTP is not needed):
+
+      ```
+      sudo sed -i 's/^anonymous_enable=.*/anonymous_enable=NO/' /etc/vsftpd.conf
+      sudo systemctl restart vsftpd
+      # or: sudo apt-get purge -y vsftpd
+      ```
+
+      **3. Confirm** `anonymous_enable` is `NO`, or the config is gone.
+
+  - id: no_rsh_server
+    type: command_json
+    category: vuln
+    display: "EASY: No rsh/rlogin server is listening (legacy trusted-host remote shell)"
+    max_points: 2
+    collect:
+      script: |
+        if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ':(512|513|514)$'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Find the listener.** The r-services (rsh, rlogin, rexec) trust
+      client-supplied identity and send everything in the clear:
+
+      ```
+      sudo ss -ltnp | grep -E ':(512|513|514)'
+      ```
+
+      **2. Remove the package:**
+
+      ```
+      sudo apt-get purge -y rsh-server rsh-redone-server 2>/dev/null
+      ```
+
+      **3. Confirm** nothing listens on tcp/512-514.
+
+  - id: no_tftp_server
+    type: command_json
+    category: vuln
+    display: "EASY: No TFTP server is listening (unauthenticated file transfer)"
+    max_points: 2
+    collect:
+      script: |
+        if ss -H -lun 2>/dev/null | awk '{print $4}' | grep -qE ':69$'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Find the listener.** TFTP has no authentication at all:
+
+      ```
+      sudo ss -lunp | grep ':69'
+      ```
+
+      **2. Remove or disable it:**
+
+      ```
+      sudo apt-get purge -y tftpd-hpa 2>/dev/null
+      # or: sudo systemctl disable --now tftpd-hpa
+      ```
+
+      **3. Confirm** nothing listens on udp/69.
+
+  - id: nfs_no_root_squash
+    type: command_json
+    category: vuln
+    display: "HARD: No NFS export uses no_root_squash (remote root can write as local root)"
+    max_points: 8
+    collect:
+      script: |
+        if [ -e /etc/exports ] && grep -qiE '^[^#]*no_root_squash' /etc/exports; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Read the exports.** `no_root_squash` means a client's root is
+      treated as the server's root, so anyone who can mount the share can
+      write files owned by root:
+
+      ```
+      cat /etc/exports
+      /srv/relay-share  *(rw,sync,no_root_squash)
+      ```
+
+      **2. Remove no_root_squash** (the default, root_squash, is safe), or
+      drop the export if the share is not needed:
+
+      ```
+      sudo sed -i 's/,no_root_squash//; s/no_root_squash,//; s/no_root_squash//' /etc/exports
+      sudo exportfs -ra
+      ```
+
+      **3. Confirm** `grep no_root_squash /etc/exports` returns nothing.
+
+  - id: no_samba_guest_share
+    type: command_json
+    category: vuln
+    display: "MODERATE: No Samba share allows guest (unauthenticated) access"
+    max_points: 4
+    collect:
+      script: |
+        c=/etc/samba/smb.conf
+        if [ ! -e "$c" ]; then echo true; elif grep -qiE '^[[:space:]]*guest ok[[:space:]]*=[[:space:]]*yes' "$c"; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the Samba config.** A `guest ok = yes` share lets anyone on
+      the network read (or write) it with no login:
+
+      ```
+      grep -niE 'guest ok' /etc/samba/smb.conf
+      ```
+
+      **2. Remove the guest share** or set `guest ok = no`, then reload:
+
+      ```
+      sudo sed -i 's/^\s*guest ok\s*=\s*yes/   guest ok = no/I' /etc/samba/smb.conf
+      sudo systemctl restart smbd 2>/dev/null
+      # or remove the offending [share] block entirely
+      ```
+
+      **3. Confirm** `testparm -s 2>/dev/null | grep -i 'guest ok'` shows no
+      `Yes`.
+
+  - id: cups_disabled
+    type: service_state
+    category: vuln
+    display: "EASY: The CUPS print service is disabled (a relay has no printers)"
+    max_points: 2
+    collect:
+      service: cups
+    expect:
+      equals: false
+      field: enabled
+      points: 2
+    solution: |
+      **1. Check the service.** Network printing is pure attack surface on an
+      uncrewed relay:
+
+      ```
+      systemctl is-enabled cups
+      enabled
+      ```
+
+      **2. Stop and disable it:**
+
+      ```
+      sudo systemctl disable --now cups cups-browsed 2>/dev/null
+      ```
+
+      **3. Confirm** `systemctl is-enabled cups` reads `disabled` (or masked).
+
+  # ====================================================================
+  # G. Apache and the relay telemetry web app
+  # ====================================================================
+  - id: apache_not_root_workers
+    type: file_regex
+    category: vuln
+    display: "EASY: Apache runs its workers as the standard www-data user (/etc/apache2/envvars)"
+    max_points: 2
+    collect:
+      path: /etc/apache2/envvars
+      extract: '(?m)^export APACHE_RUN_USER=(\S+)'
+    expect:
+      equals: "www-data"
+      points: 2
+    solution: |
+      **1. Watch the workers.** `ps aux | grep apache2`: with the plant in
+      place the worker processes run as `root`, so any Apache compromise is an
+      immediate root compromise.
+
+      ```
+      grep APACHE_RUN_USER /etc/apache2/envvars
+      export APACHE_RUN_USER=root
+      ```
+
+      **2. Restore the unprivileged account:**
+
+      ```
+      sudo sed -i 's/^export APACHE_RUN_USER=.*/export APACHE_RUN_USER=www-data/' /etc/apache2/envvars
+      sudo systemctl restart apache2
+      ```
+
+      **3. Confirm** the value reads `www-data` and the workers no longer run
+      as root.
+
+  - id: apache_no_traversal_alias
+    type: file_regex
+    category: vuln
+    display: "MODERATE: The filesystem-exposing Alias is removed from apache2.conf"
+    max_points: 4
+    collect:
+      path: /etc/apache2/apache2.conf
+      extract: '(?m)^\s*(Alias\s+/vault)\b'
+    expect:
+      equals: null
+      points: 4
+    solution: |
+      **1. Read the main config.** A planted alias maps a web path straight at
+      the filesystem root, exposing files far outside the web root:
+
+      ```
+      grep -n 'Alias' /etc/apache2/apache2.conf
+      Alias /vault /
+      ```
+
+      **2. Remove the Alias line** (and any matching `<Directory />` grant that
+      came with it), then restart:
+
+      ```
+      sudo sed -i '/Alias \/vault \//d' /etc/apache2/apache2.conf
+      sudo systemctl restart apache2
+      ```
+
+      **3. Confirm** `grep 'Alias /vault' /etc/apache2/apache2.conf` returns
+      nothing.
+
+  - id: apache_serversignature_off
+    type: command_json
+    category: vuln
+    display: "EASY: Apache does not advertise its version (ServerTokens Prod, ServerSignature Off)"
+    max_points: 2
+    collect:
+      script: |
+        t=$(apache2ctl -t -D DUMP_RUN_CFG 2>/dev/null; grep -rhiE '^\s*ServerTokens|^\s*ServerSignature' /etc/apache2 2>/dev/null)
+        tok=$(echo "$t" | grep -iE '^\s*ServerTokens' | tail -n1 | awk '{print tolower($2)}')
+        sig=$(echo "$t" | grep -iE '^\s*ServerSignature' | tail -n1 | awk '{print tolower($2)}')
+        if [ "$tok" = "prod" ] && [ "$sig" = "off" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read the security config.** Verbose banners hand an attacker the
+      exact server and OS version:
+
+      ```
+      grep -riE 'ServerTokens|ServerSignature' /etc/apache2
+      ServerTokens Full
+      ServerSignature On
+      ```
+
+      **2. Tighten both** (usually in `/etc/apache2/conf-available/security.conf`):
+
+      ```
+      ServerTokens Prod
+      ServerSignature Off
+      ```
+
+      Then `sudo systemctl restart apache2`.
+
+      **3. Confirm** the values read `Prod` and `Off`.
+
+  - id: apache_no_directory_listing
+    type: command_json
+    category: vuln
+    display: "MODERATE: Directory listing is off for the relay web root (Options -Indexes)"
+    max_points: 4
+    collect:
+      script: |
+        if grep -rhiE '^\s*Options[^#]*\bIndexes\b' /etc/apache2/sites-enabled /etc/apache2/apache2.conf 2>/dev/null | grep -qvE '\-Indexes'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Find the Indexes option.** With directory listing on, a visitor
+      who hits a folder with no index page gets a full file listing:
+
+      ```
+      grep -rniE 'Options.*Indexes' /etc/apache2/sites-enabled /etc/apache2/apache2.conf
+      Options Indexes FollowSymLinks
+      ```
+
+      **2. Turn listing off** by removing `Indexes` (or writing `-Indexes`):
+
+      ```
+      # change "Options Indexes FollowSymLinks" to "Options -Indexes +FollowSymLinks"
+      sudo systemctl restart apache2
+      ```
+
+      **3. Confirm** no enabled `Options` line still grants a bare `Indexes`.
+
+  - id: no_webroot_exposed_files
+    type: command_json
+    category: vuln
+    display: "MODERATE: No source-control dir or database backup is exposed in the web root"
+    max_points: 4
+    collect:
+      script: |
+        n=0
+        [ -e /var/www/relay/.git ] && n=$((n+1))
+        [ -e /var/www/relay/db-backup.sql ] && n=$((n+1))
+        ls /var/www/relay/phpinfo*.php >/dev/null 2>&1 && n=$((n+1))
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. Look at what the web root actually serves.** A `.git` directory
+      leaks source and history; a SQL dump leaks the database; a phpinfo page
+      leaks the full server configuration:
+
+      ```
+      ls -la /var/www/relay
+      .git/   db-backup.sql   phpinfo.php   index.php   config.php
+      ```
+
+      **2. Remove the exposed extras** (keep the real app files):
+
+      ```
+      sudo rm -rf /var/www/relay/.git /var/www/relay/db-backup.sql /var/www/relay/phpinfo*.php
+      ```
+
+      **3. Confirm** none of `.git`, `db-backup.sql`, or `phpinfo*.php` remain
+      under `/var/www/relay`.
+
+  - id: mysql_no_anonymous_user
+    type: command_json
+    category: vuln
+    display: "MODERATE: The database has no anonymous (blank-username) account"
+    max_points: 4
+    collect:
+      script: |
+        n=$(mysql -N -B -e "SELECT COUNT(*) FROM mysql.user WHERE User='';" 2>/dev/null)
+        [ -z "$n" ] && n=0
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. List the database accounts.** An anonymous account (empty User)
+      lets anyone who reaches the socket connect with no username:
+
+      ```
+      sudo mysql -e "SELECT User,Host FROM mysql.user;"
+      # a row with an empty User is the anonymous account
+      ```
+
+      **2. Remove it:**
+
+      ```
+      sudo mysql -e "DELETE FROM mysql.user WHERE User=''; FLUSH PRIVILEGES;"
+      ```
+
+      **3. Confirm** the count of empty-User rows is 0. (This is exactly what
+      `mysql_secure_installation` does for you.)
+
+  - id: web_config_not_world_readable
+    type: permission
+    category: vuln
+    display: "EASY: The web app's database-credentials config is not world-readable"
+    max_points: 2
+    collect:
+      path: /var/www/relay/config.php
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 2
+    solution: |
+      **1. Check the mode.** `config.php` holds the database username and
+      password; every local account can read it:
+
+      ```
+      stat -c '%a %n' /var/www/relay/config.php      # 644
+      ```
+
+      **2. Restrict it** to the owner and the web group:
+
+      ```
+      sudo chown root:www-data /var/www/relay/config.php
+      sudo chmod 640 /var/www/relay/config.php
+      ```
+
+      **3. Confirm** `stat -c %a` reads `640` or stricter and the site still
+      loads.
+
+  # ====================================================================
+  # H. Attacker services and beacons
+  # ====================================================================
+  - id: voidcaster_inactive
+    type: service_state
+    category: vuln
+    display: "EASY: The voidcaster malware service is not running"
+    max_points: 2
+    collect:
+      service: voidcaster.service
+    expect:
+      equals: false
+      field: active
+      points: 2
+    solution: |
+      **1. Spot the obvious one.** `systemctl --type=service --state=running`
+      lists a `voidcaster.service` that belongs to nothing on the relay:
+
+      ```
+      systemctl status voidcaster.service
+      systemctl cat voidcaster.service
+      ```
+
+      The unit runs a script that phones a "cast" home. Read it before you
+      trust the name.
+
+      **2. Stop it** (and disable it, scored separately):
+
+      ```
+      sudo systemctl stop voidcaster.service
+      ```
+
+      **3. Confirm** `systemctl is-active voidcaster.service` reads
+      `inactive`.
+
+  - id: voidcaster_disabled
+    type: service_state
+    category: vuln
+    display: "MODERATE: The voidcaster malware service is disabled so it cannot restart at boot"
+    max_points: 4
+    collect:
+      service: voidcaster.service
+    expect:
+      equals: false
+      field: enabled
+      points: 4
+    solution: |
+      **1. Stopping is not enough.** An enabled unit comes back on the next
+      boot:
+
+      ```
+      systemctl is-enabled voidcaster.service
+      enabled
+      ```
+
+      **2. Disable it, then remove the unit file and its payload:**
+
+      ```
+      sudo systemctl disable voidcaster.service
+      sudo rm -f /etc/systemd/system/voidcaster.service /opt/voidcaster/*
+      sudo systemctl daemon-reload
+      ```
+
+      **3. Confirm** `systemctl is-enabled voidcaster.service` reads
+      `disabled` or `not-found`.
+
+  - id: beacon_process_gone
+    type: process_state
+    category: vuln
+    display: "MODERATE: No telemetry-uplink C2 beacon process is running"
+    max_points: 4
+    collect:
+      pattern: '/opt/telemetry-uplink/uplink-relayd'
+    expect:
+      equals: false
+      field: running
+      points: 4
+    solution: |
+      **1. Find the process by review, not by port.** This beacon holds no
+      listening port, so `ss`/`netstat` never show it. It shows up in the
+      process and unit lists instead:
+
+      ```
+      ps aux | grep uplink-relayd
+      systemctl status telemetry-uplink.service
+      strings /opt/telemetry-uplink/uplink-relayd | grep -E '203\.|8443'
+      ```
+
+      The baked-in destination `203.0.113.66:8443` (from `strings` or a packet
+      capture) is forensics Q2. Note it before you clean.
+
+      **2. Stop it at the source.** Stopping and disabling its service (below)
+      takes the process down through its cgroup; a plain `kill` lets it
+      respawn:
+
+      ```
+      sudo systemctl stop telemetry-uplink.service
+      ```
+
+      **3. Confirm** `pgrep -af uplink-relayd` prints nothing.
+
+  - id: beacon_service_disabled
+    type: service_state
+    category: vuln
+    display: "MODERATE: The telemetry-uplink beacon service is disabled"
+    max_points: 4
+    collect:
+      service: telemetry-uplink.service
+    expect:
+      equals: false
+      field: enabled
+      points: 4
+    solution: |
+      **1. Read the unit** that keeps the beacon alive:
+
+      ```
+      systemctl cat telemetry-uplink.service
+      ```
+
+      It is `Restart=always` with the journal silenced, disguised as a
+      telemetry service.
+
+      **2. Disable it** (and remove the unit + binary):
+
+      ```
+      sudo systemctl disable --now telemetry-uplink.service
+      sudo rm -f /etc/systemd/system/telemetry-uplink.service
+      sudo systemctl daemon-reload
+      ```
+
+      **3. Confirm** `systemctl is-enabled telemetry-uplink.service` reads
+      `disabled` or `not-found`.
+
+  - id: beacon_binary_removed
+    type: permission
+    category: vuln
+    display: "EASY: The telemetry-uplink beacon binary is deleted from disk"
+    max_points: 2
+    collect:
+      path: /opt/telemetry-uplink/uplink-relayd
+    expect:
+      equals: false
+      field: exists
+      points: 2
+    solution: |
+      **1. Delete the payload, not just the unit.** A disabled service still
+      leaves the binary sitting on disk for the next foothold:
+
+      ```
+      ls -l /opt/telemetry-uplink/uplink-relayd
+      ```
+
+      **2. Remove it:**
+
+      ```
+      sudo rm -f /opt/telemetry-uplink/uplink-relayd
+      sudo rmdir /opt/telemetry-uplink 2>/dev/null
+      ```
+
+      **3. Confirm** the path no longer exists.
+
+  - id: dish_align_disabled
+    type: service_state
+    category: vuln
+    display: "HARD: The rogue dish-align service (named like real relay hardware) is disabled"
+    max_points: 8
+    collect:
+      service: dish-align.service
+    expect:
+      equals: false
+      field: enabled
+      points: 8
+    solution: |
+      **1. Do not trust the name; read the unit.** `dish-align.service` sounds
+      like antenna hardware, but the relay's real alignment daemon is
+      `dish-servo.service`. Compare them:
+
+      ```
+      systemctl cat dish-align.service
+      ```
+
+      Its ExecStart runs a script out of `/opt`, not the vendor path, and
+      opens a connection outward. Nothing on the hardware roster authorizes
+      it.
+
+      **2. Disable it and remove it:**
+
+      ```
+      sudo systemctl disable --now dish-align.service
+      sudo rm -f /etc/systemd/system/dish-align.service
+      sudo systemctl daemon-reload
+      ```
+
+      **3. Confirm** `systemctl is-enabled dish-align.service` reads
+      `disabled` or `not-found`, and the real `dish-servo.service` is
+      untouched.
+
+  - id: exfil_flag_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The hidden exfil flag is removed from the array-cooling unit (read it with systemctl cat)"
+    max_points: 4
+    collect:
+      script: |
+        if systemctl cat array-cooling.service 2>/dev/null | grep -qi 'exfil'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the whole unit.** `array-cooling.service` is a real relay
+      service, but one line was added to its ExecStart:
+
+      ```
+      systemctl cat array-cooling.service
+      ExecStart=/usr/local/sbin/array-cool --exfil-to 203.0.113.66:8443
+      ```
+
+      The service is legitimate; the `--exfil-to ...` argument is not.
+
+      **2. Fix the ExecStart, do not delete the unit.** Edit the drop-in or
+      unit file to remove just the exfil argument, then:
+
+      ```
+      sudo systemctl daemon-reload
+      sudo systemctl restart array-cooling.service
+      ```
+
+      **3. Confirm** `systemctl cat array-cooling.service` no longer contains
+      `exfil`, and the service is still active.
+
+  - id: bind_shell_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The backdoor bind shell is gone (process killed, port quiet, launcher disabled)"
+    max_points: 8
+    collect:
+      script: |
+        if pgrep -f '[n]cat .*[-]e /bin/bash' >/dev/null 2>&1; then echo false; exit 0; fi
+        if pgrep -x ncat >/dev/null 2>&1; then echo false; exit 0; fi
+        if ss -tlnH 'sport = :4444' 2>/dev/null | grep -q .; then echo false; exit 0; fi
+        if systemctl is-enabled system-update.service >/dev/null 2>&1; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Spot it by port review.** Unlike the beacon, this one advertises
+      itself:
+
+      ```
+      ss -tlnp | grep 4444
+      LISTEN 0 1 0.0.0.0:4444  users:(("ncat",pid=...))
+      ```
+
+      `systemctl status <pid>` names the unit: `system-update.service`
+      ("System Update Check"). Its ExecStart is
+      `ncat -l -k -p 4444 -e /bin/bash`, a bind shell handing every connector
+      a root shell. Port 4444 is forensics Q4.
+
+      **2. Kill AND disable.** Stopping the unit kills ncat through its
+      cgroup; disabling stops it returning at boot:
+
+      ```
+      sudo systemctl stop system-update.service
+      sudo systemctl disable system-update.service
+      sudo pkill -x ncat
+      ```
+
+      **3. Confirm** all four hold: no ncat process, nothing on 4444, and
+      `system-update.service` is not enabled.
+
+  - id: reverse_shell_timer_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The reverse-shell systemd timer is stopped, disabled, and gone from disk"
+    max_points: 8
+    collect:
+      script: |
+        if systemctl is-enabled starlight-sync.timer >/dev/null 2>&1; then echo false; exit 0; fi
+        if systemctl is-active starlight-sync.timer >/dev/null 2>&1; then echo false; exit 0; fi
+        if [ -e /etc/systemd/system/starlight-sync.timer ] || [ -e /etc/systemd/system/starlight-sync.service ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. List the timers.** A timer fires a payload on a schedule, so
+      killing the process alone does nothing:
+
+      ```
+      systemctl list-timers --all | grep starlight
+      systemctl cat starlight-sync.timer starlight-sync.service
+      ```
+
+      The paired `.service` opens a reverse shell each time the `.timer`
+      fires.
+
+      **2. Stop, disable, and delete both units:**
+
+      ```
+      sudo systemctl disable --now starlight-sync.timer
+      sudo rm -f /etc/systemd/system/starlight-sync.timer /etc/systemd/system/starlight-sync.service
+      sudo systemctl daemon-reload
+      ```
+
+      **3. Confirm** the timer is neither active nor enabled and neither unit
+      file remains.
+
+  # ====================================================================
+  # I. Persistence sweep (it keeps coming back)
+  # ====================================================================
+  - id: cron_d_persistence_gone
+    type: command_json
+    category: vuln
+    display: "EASY: The /etc/cron.d void-sync job and its /opt payload are both gone"
+    max_points: 2
+    collect:
+      script: |
+        if [ ! -e /etc/cron.d/void-sync ] && [ ! -e /opt/void/void-sync ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Sweep the system cron directories.** Anything under `/etc/cron.d`
+      runs as root on its schedule:
+
+      ```
+      ls -l /etc/cron.d/
+      cat /etc/cron.d/void-sync
+      */10 * * * *  root  /opt/void/void-sync
+      ```
+
+      **2. Remove both halves** (the check requires the cron file AND the
+      payload gone):
+
+      ```
+      sudo rm -f /etc/cron.d/void-sync /opt/void/void-sync
+      ```
+
+      Leave the cron daemon itself running (a penalty applies if you stop it).
+
+      **3. Confirm** neither path exists.
+
+  - id: root_crontab_clean
+    type: command_json
+    category: vuln
+    display: "EASY: Root's own crontab has no scheduled jobs"
+    max_points: 2
+    collect:
+      script: |
+        n=$(crontab -l -u root 2>/dev/null | grep -vE '^\s*(#|$)' | grep -c .)
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 2
+    solution: |
+      **1. Read root's personal crontab** (separate from `/etc/cron.d`):
+
+      ```
+      sudo crontab -l -u root
+      @reboot /opt/void/void-sync
+      ```
+
+      **2. Clear it** (this box's root crontab should be empty):
+
+      ```
+      sudo crontab -r -u root
+      ```
+
+      **3. Confirm** `sudo crontab -l -u root` reports no crontab / no jobs.
+
+  - id: hidden_user_crontab_clean
+    type: command_json
+    category: vuln
+    display: "HARD: The hidden crontab under the relaydash account is cleared"
+    max_points: 8
+    collect:
+      script: |
+        n=$(crontab -l -u relaydash 2>/dev/null | grep -vE '^\s*(#|$)' | grep -c .)
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 8
+    solution: |
+      **1. Do not stop at root.** Every user can hold a crontab; a decoy
+      account is an easy place to hide one:
+
+      ```
+      for u in $(cut -d: -f1 /etc/passwd); do echo "== $u =="; crontab -l -u "$u" 2>/dev/null; done
+      ```
+
+      The `relaydash` account has a job re-fetching the payload.
+
+      **2. Clear that user's crontab:**
+
+      ```
+      sudo crontab -r -u relaydash
+      ```
+
+      **3. Confirm** `sudo crontab -l -u relaydash` reports no jobs.
+
+  - id: profiled_script_gone
+    type: command_json
+    category: vuln
+    display: "EASY: The planted /etc/profile.d script is deleted"
+    max_points: 2
+    collect:
+      script: |
+        if [ ! -e /etc/profile.d/zz-void.sh ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check the login-shell hooks.** Every script in `/etc/profile.d`
+      runs for every interactive login shell:
+
+      ```
+      ls -l /etc/profile.d/
+      cat /etc/profile.d/zz-void.sh
+      ```
+
+      **2. Delete it:**
+
+      ```
+      sudo rm -f /etc/profile.d/zz-void.sh
+      ```
+
+      **3. Confirm** the file is gone.
+
+  - id: bashrc_beacon_gone
+    type: command_json
+    category: vuln
+    display: "EASY: The beacon line is gone from ~/.bashrc and /etc/bash.bashrc"
+    max_points: 2
+    collect:
+      script: |
+        if grep -q 'void-beacon' /home/relayadmin/.bashrc 2>/dev/null || grep -q 'void-beacon' /etc/bash.bashrc 2>/dev/null; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read both bashrc files.** A line in a shell startup file runs every
+      time a shell opens:
+
+      ```
+      grep -n void-beacon /home/relayadmin/.bashrc /etc/bash.bashrc
+      ```
+
+      **2. Remove the marked line from each file:**
+
+      ```
+      sed -i '/void-beacon/d' /home/relayadmin/.bashrc
+      sudo sed -i '/void-beacon/d' /etc/bash.bashrc
+      ```
+
+      **3. Confirm** `grep void-beacon` finds nothing in either file.
+
+  - id: motd_script_gone
+    type: command_json
+    category: vuln
+    display: "EASY: The planted /etc/update-motd.d script is deleted"
+    max_points: 2
+    collect:
+      script: |
+        if [ ! -e /etc/update-motd.d/99-void ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check the message-of-the-day hooks.** Scripts in
+      `/etc/update-motd.d` run as root when a session starts:
+
+      ```
+      ls -l /etc/update-motd.d/
+      cat /etc/update-motd.d/99-void
+      ```
+
+      **2. Delete the planted one** (keep the numbered stock scripts):
+
+      ```
+      sudo rm -f /etc/update-motd.d/99-void
+      ```
+
+      **3. Confirm** the file is gone.
+
+  - id: persistence_timer_gone
+    type: command_json
+    category: vuln
+    display: "HARD: The relay-resync systemd timer and its payload are disabled and removed"
+    max_points: 8
+    collect:
+      script: |
+        if systemctl is-enabled relay-resync.timer >/dev/null 2>&1; then echo false; exit 0; fi
+        if systemctl is-active relay-resync.timer >/dev/null 2>&1; then echo false; exit 0; fi
+        if [ -e /etc/systemd/system/relay-resync.timer ] || [ -e /etc/systemd/system/relay-resync.service ] || [ -e /opt/void/relay-resync ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. List all timers.** A timer is the systemd version of cron
+      persistence:
+
+      ```
+      systemctl list-timers --all | grep resync
+      systemctl cat relay-resync.timer relay-resync.service
+      ```
+
+      The `.timer` fires `relay-resync.service`, which re-plants the payload.
+      `relay-resync.timer` is forensics Q6.
+
+      **2. Disable and delete the timer, its service, and its payload:**
+
+      ```
+      sudo systemctl disable --now relay-resync.timer
+      sudo rm -f /etc/systemd/system/relay-resync.timer /etc/systemd/system/relay-resync.service /opt/void/relay-resync
+      sudo systemctl daemon-reload
+      ```
+
+      **3. Confirm** the timer is not active or enabled and none of the three
+      files remain.
+
+  - id: at_job_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The queued at(1) job is removed (no future appointment)"
+    max_points: 4
+    collect:
+      script: |
+        n=$(atq 2>/dev/null | grep -c .)
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. Read the at queue.** A one-shot `at` job can re-plant everything
+      long after you think the box is clean:
+
+      ```
+      atq
+      1  Wed ... a root
+      at -c 1        # show what job 1 will run
+      ```
+
+      **2. Remove the queued job(s):**
+
+      ```
+      atrm 1        # or: for j in $(atq | awk '{print $1}'); do atrm "$j"; done
+      ```
+
+      Leave the `atd` daemon running (a penalty applies if you stop it).
+
+      **3. Confirm** `atq` prints nothing.
+
+  - id: initd_persistence_gone
+    type: command_json
+    category: vuln
+    display: "MODERATE: The legacy SysV init script and its boot links are gone"
+    max_points: 4
+    collect:
+      script: |
+        if [ -e /etc/init.d/voidlink ] || ls /etc/rc*.d/*voidlink >/dev/null 2>&1; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the SysV init path.** systemd still honors `/etc/init.d`
+      scripts and their `rc?.d` symlinks:
+
+      ```
+      ls -l /etc/init.d/voidlink
+      ls -l /etc/rc*.d/ | grep voidlink
+      ```
+
+      **2. Remove the script and its boot links:**
+
+      ```
+      sudo update-rc.d -f voidlink remove
+      sudo rm -f /etc/init.d/voidlink
+      ```
+
+      **3. Confirm** the script is gone and no `rc?.d` symlink names it.
+
+  - id: rc_local_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: /etc/rc.local no longer launches the payload at boot"
+    max_points: 4
+    collect:
+      script: |
+        if [ -e /etc/rc.local ] && grep -qE '/opt/void|void-sync' /etc/rc.local; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read rc.local.** A payload line here runs as root at every boot:
+
+      ```
+      cat /etc/rc.local
+      /opt/void/void-sync &
+      ```
+
+      **2. Remove the payload line** (leave a valid script ending in `exit 0`,
+      or delete the file if it holds nothing else):
+
+      ```
+      sudo sed -i '/void/d' /etc/rc.local
+      ```
+
+      **3. Confirm** `grep void /etc/rc.local` finds nothing.
+
+  - id: ld_preload_gone
+    type: command_json
+    category: vuln
+    display: "MODERATE: The ld.so.preload implant is gone from the loader config and from disk"
+    max_points: 4
+    collect:
+      script: |
+        if { [ -e /etc/ld.so.preload ] && grep -q 'libvoidhook' /etc/ld.so.preload; } || [ -e /opt/void/libvoidhook.so ]; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Read the global preload file.** Every library listed in
+      `/etc/ld.so.preload` is injected into every dynamically linked program:
+
+      ```
+      cat /etc/ld.so.preload
+      /opt/void/libvoidhook.so
+      ```
+
+      That `.so` path is forensics Q7.
+
+      **2. Remove the entry and delete the library:**
+
+      ```
+      sudo sed -i '/libvoidhook/d' /etc/ld.so.preload
+      sudo rm -f /opt/void/libvoidhook.so
+      # if ld.so.preload is now empty, removing it is fine:
+      sudo rm -f /etc/ld.so.preload   # only if empty
+      ```
+
+      **3. Confirm** the loader config no longer names the library and the
+      `.so` is gone.
+
+  # ====================================================================
+  # J. Desktop and user-level persistence (Xubuntu)
+  # ====================================================================
+  - id: malicious_autostart_gone
+    type: command_json
+    category: vuln
+    display: "EASY: The malicious desktop autostart entry is removed (Settings > Session and Startup > Application Autostart)"
+    max_points: 2
+    collect:
+      script: |
+        if [ ! -e /home/relayadmin/.config/autostart/void-agent.desktop ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check what launches at login.** XFCE runs every `.desktop` file in
+      `~/.config/autostart` when the operator logs in:
+
+      ```
+      ls -l /home/relayadmin/.config/autostart/
+      cat /home/relayadmin/.config/autostart/void-agent.desktop
+      ```
+
+      The GUI route is Settings > Session and Startup > Application Autostart;
+      the rogue entry is the one that runs a script out of `/opt` or `/tmp`.
+
+      **2. Remove it:**
+
+      ```
+      rm -f /home/relayadmin/.config/autostart/void-agent.desktop
+      ```
+
+      **3. Confirm** the file is gone and the entry no longer appears in the
+      Autostart list.
+
+  - id: media_not_executable_script
+    type: permission
+    category: vuln
+    display: "EASY: The shared broadcast media file is not an executable script (browse to /var/media)"
+    max_points: 2
+    collect:
+      path: /var/media/relay-broadcast.mp4
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 2
+    solution: |
+      **1. Look closely at the "media" file.** It has the executable bit set,
+      which no real `.mp4` needs, and its first bytes are a shell script, not
+      video:
+
+      ```
+      stat -c '%a %n' /var/media/relay-broadcast.mp4      # 755
+      head -c 40 /var/media/relay-broadcast.mp4           # #!/bin/sh ...
+      ```
+
+      A double-clickable "video" that is really a script runs whatever it
+      likes as whoever opens it.
+
+      **2. Take the executable bit off** (the file itself stays):
+
+      ```
+      chmod 644 /var/media/relay-broadcast.mp4
+      ```
+
+      **3. Confirm** `stat -c %a` reads `644` or stricter.
+
+  - id: second_autostart_gone
+    type: command_json
+    category: vuln
+    display: "EASY: The system-wide malicious autostart entry is removed (/etc/xdg/autostart)"
+    max_points: 2
+    collect:
+      script: |
+        if [ ! -e /etc/xdg/autostart/void-sync.desktop ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check the system-wide autostart too.** `/etc/xdg/autostart` runs
+      for every user's desktop session, not just one account:
+
+      ```
+      ls -l /etc/xdg/autostart/ | grep -i void
+      cat /etc/xdg/autostart/void-sync.desktop
+      ```
+
+      **2. Remove the rogue entry** (leave the stock desktop-component ones):
+
+      ```
+      sudo rm -f /etc/xdg/autostart/void-sync.desktop
+      ```
+
+      **3. Confirm** the file is gone.
+
+  - id: relaydash_user_unit_gone
+    type: command_json
+    category: vuln
+    display: "HARD: The relaydash user-level systemd unit is deleted and linger is turned off"
+    max_points: 8
+    collect:
+      script: |
+        if [ -e /home/relaydash/.config/systemd/user/void-user.service ]; then echo false; exit 0; fi
+        if [ -e /var/lib/systemd/linger/relaydash ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. systemd runs for users too.** Each account has a private user
+      manager, and `loginctl enable-linger` makes it start at boot with no
+      login, so a service there is boot-persistent and almost invisible:
+
+      ```
+      ls -l /home/relaydash/.config/systemd/user/
+      ls -l /var/lib/systemd/linger/
+      ```
+
+      **2. Delete the user unit and turn off linger:**
+
+      ```
+      sudo rm -f /home/relaydash/.config/systemd/user/void-user.service
+      sudo loginctl disable-linger relaydash
+      ```
+
+      **3. Confirm** the unit file is gone and
+      `/var/lib/systemd/linger/relaydash` no longer exists.
+
+  - id: relaydash_keys_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: No attacker key remains in the relaydash account's authorized_keys"
+    max_points: 4
+    collect:
+      script: |
+        f=/home/relaydash/.ssh/authorized_keys
+        if [ ! -e "$f" ] || ! grep -q 'voidkey@relay' "$f" 2>/dev/null; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Sweep every account's authorized_keys, not just the admin's.** A
+      decoy account is a quiet place to keep a spare key:
+
+      ```
+      for h in /home/*; do echo "== $h =="; cat "$h/.ssh/authorized_keys" 2>/dev/null; done
+      ```
+
+      `relaydash` carries the same `voidkey@relay` key as the others.
+
+      **2. Remove the key** (or the whole file for this decoy account):
+
+      ```
+      sudo rm -f /home/relaydash/.ssh/authorized_keys
+      ```
+
+      **3. Confirm** the file is gone or no longer names `voidkey@relay`.
+
+  # ====================================================================
+  # K. Baseline hygiene
+  # ====================================================================
+  - id: relay_log_not_world_writable
+    type: permission
+    category: vuln
+    display: "EASY: The relay log file is not world-writable"
+    max_points: 2
+    collect:
+      path: /var/log/relay/relay.log
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 2
+    solution: |
+      **1. Check the mode.** A world-writable log lets any user forge or erase
+      the record of what happened on the box:
+
+      ```
+      stat -c '%a %n' /var/log/relay/relay.log      # 666
+      ```
+
+      **2. Tighten it:**
+
+      ```
+      sudo chmod 640 /var/log/relay/relay.log
+      ```
+
+      **3. Confirm** `stat -c %a` reads `640` or stricter.
+
+  - id: no_world_writable_path_dir
+    type: command_json
+    category: vuln
+    display: "MODERATE: No directory on the system PATH is world-writable (PATH hijack)"
+    max_points: 4
+    collect:
+      script: |
+        n=0
+        for d in /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin; do
+          [ -d "$d" ] || continue
+          perm=$(stat -L -c '%a' "$d")
+          case "$perm" in *[2367]) n=$((n+1));; esac
+        done
+        echo "$n"
+    expect:
+      equals: 0
+      field: data
+      points: 4
+    solution: |
+      **1. Check the permissions of the binary directories.** If a directory
+      on root's PATH is world-writable, any user can drop a trojan named after
+      a common command and wait for root to run it:
+
+      ```
+      for d in /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin; do stat -c '%a %n' "$d"; done
+      777 /usr/local/bin
+      ```
+
+      **2. Restore the standard mode:**
+
+      ```
+      sudo chmod 755 /usr/local/bin
+      ```
+
+      **3. Confirm** none of those directories are group- or world-writable
+      (mode should be 755).
+
+  - id: no_rhosts_trust
+    type: command_json
+    category: vuln
+    display: "EASY: No .rhosts or hosts.equiv trust files grant passwordless remote access"
+    max_points: 2
+    collect:
+      script: |
+        if [ -e /etc/hosts.equiv ] || ls /root/.rhosts /home/*/.rhosts 2>/dev/null | grep -q .; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Look for legacy trust files.** An `.rhosts` or `/etc/hosts.equiv`
+      file (especially one containing `+ +`) tells the r-services to trust
+      remote users with no password:
+
+      ```
+      ls -la /root/.rhosts /home/*/.rhosts /etc/hosts.equiv 2>/dev/null
+      cat /home/relaydash/.rhosts
+      + +
+      ```
+
+      **2. Delete them:**
+
+      ```
+      sudo rm -f /etc/hosts.equiv /root/.rhosts /home/*/.rhosts
+      ```
+
+      **3. Confirm** none of those files remain.
+
+  # ====================================================================
+  # Penalty guards (downside only -- surgical removal, not scorched earth)
+  # ====================================================================
+  - id: penalty_cron_healthy
+    type: service_state
+    category: penalty
+    display: "PENALTY: The cron daemon is not running (you broke the schedule instead of evicting the payload)"
+    max_points: 10
+    collect:
+      service: cron
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if `cron` is not active, 10 points come off.
+      Stopping the cron daemon does stop the attacker's cron jobs, and also
+      every legitimate job, log rotation, and the relay's own automation.
+      Evict the attacker's JOBS, keep the DAEMON: `systemctl status cron`
+      should read `active (running)`. If you stopped it,
+      `systemctl unmask cron 2>/dev/null; systemctl start cron`.
+
+  - id: penalty_atd_healthy
+    type: service_state
+    category: penalty
+    display: "PENALTY: The atd daemon is not running (emptying the queue is the fix, not killing the daemon)"
+    max_points: 10
+    collect:
+      service: atd
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts. The at(1) finding is fixed by removing the
+      queued job with `atrm`, not by stopping `atd`. Keep the daemon running:
+      `systemctl status atd` should read `active (running)`.
+
+  - id: penalty_ssh_reachable
+    type: db_query
+    category: penalty
+    display: "PENALTY: The SSH management path is unreachable (locked yourself out with the firewall?)"
+    max_points: 10
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: ok
+      points: -10
+    solution: |
+      This only ever subtracts: the moment 127.0.0.1:22 stops answering, 10
+      points come off. On this box that happens when the firewall task is done
+      backwards -- enabling `ufw` with a deny-incoming default before allowing
+      port 22. Do the firewall exceptions FIRST, the default LAST:
+      `ufw allow 22/tcp` before `ufw enable`. Check yourself with
+      `timeout 3 bash -c '</dev/tcp/127.0.0.1/22' && echo ssh-alive`.
+
+theme:
+  title: "Vermilion Deep-Space Relay"
+  organization: "Vermilion Relay Hardening Program"
+  accent: "#E34234"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  motd: |
+    Vermilion-7 Deep-Space Relay -- protected system.
+    Authorized operators only. Your shift: harden the relay before the next
+    uplink window. Open the Relay Hardening Handbook on the Desktop to begin.
+  issue: |
+    Vermilion-7 Deep-Space Relay
+    Disconnect if you are not an authorized operator.
+  desktop_shortcuts:
+    - name: "Relay Hardening Handbook"
+      exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt on the Desktop; the agent re-grades each pass. Each
+# question is a breadcrumb -- the investigation that answers it also surfaces a
+# scored hardening finding, so note the answer BEFORE you clean.
+forensics:
+  - id: fq-hidden-root
+    question: "One non-root account was given UID 0 (full root power). Type that account's username."
+    answer: "nightwatch"
+    points: 8
+    solution: |
+      List every UID-0 account; the hidden root is whichever name is not
+      `root`:
+
+      ```
+      awk -F: '$3 == 0 {print $1}' /etc/passwd
+      root
+      nightwatch
+      ```
+
+      Answer: `nightwatch`. Finding this is also how you clear the "no second
+      UID-0 account" check -- note the name before you delete the account.
+
+  - id: fq-beacon-destination
+    question: "The telemetry-uplink beacon calls home to an address off the relay. Type the destination as IP:port."
+    answer: "203.0.113.66:8443"
+    answers: ["203.0.113.66"]
+    points: 8
+    solution: |
+      The beacon holds no port, so find it by process and unit review, then
+      read the destination out of the binary:
+
+      ```
+      systemctl status telemetry-uplink.service
+      strings /opt/telemetry-uplink/uplink-relayd | grep 8443
+      203.0.113.66:8443
+      ```
+
+      Answer: `203.0.113.66:8443`. The same look tells you which process and
+      service to stop for the beacon findings.
+
+  - id: fq-sudo-account
+    question: "One unauthorized account was added to the sudo group. Type that account's username."
+    answer: "vega"
+    points: 8
+    solution: |
+      Group membership is one command:
+
+      ```
+      getent group sudo
+      sudo:x:27:relayadmin,vega
+      ```
+
+      The roster names `relayadmin` as the only administrator, so the answer
+      is `vega`. Note it before you remove the account or clean the group.
+
+  - id: fq-bind-shell-port
+    question: "A backdoor bind shell listens for incoming connections. On which TCP port?"
+    answer: "4444"
+    points: 8
+    solution: |
+      A bind shell advertises itself as a listener:
+
+      ```
+      ss -tlnp | grep ncat
+      LISTEN 0 1 0.0.0.0:4444 users:(("ncat",...))
+      ```
+
+      Answer: `4444`. Owning that listener (via `systemctl status <pid>`) is
+      how you find the `system-update.service` launcher to disable.
+
+  - id: fq-suid-backdoor
+    question: "An unauthorized setuid-root binary was planted outside the system directories. Type its full path."
+    answer: "/usr/local/bin/relay-diag"
+    points: 8
+    solution: |
+      Hunt setuid-root files in the places a backdoor hides:
+
+      ```
+      find /usr/local /opt /home /srv /tmp -xdev -type f -perm -4000 2>/dev/null
+      /usr/local/bin/relay-diag
+      ```
+
+      Answer: `/usr/local/bin/relay-diag` (a setuid copy of a shell). Removing
+      it clears the matching hardening check.
+
+  - id: fq-persistence-timer
+    question: "A systemd timer re-launches the implant on a schedule. Type the timer's unit filename."
+    answer: "relay-resync.timer"
+    answers: ["relay-resync"]
+    points: 8
+    solution: |
+      List the timers and read the suspicious one:
+
+      ```
+      systemctl list-timers --all | grep resync
+      relay-resync.timer -> relay-resync.service
+      ```
+
+      Answer: `relay-resync.timer`. Disabling and deleting it (with its
+      service and payload) is the paired hardening finding.
+
+  - id: fq-ldpreload-lib
+    question: "A shared object is injected into every program via /etc/ld.so.preload. Type the full path of that .so file."
+    answer: "/opt/void/libvoidhook.so"
+    points: 8
+    solution: |
+      Read the global preload file:
+
+      ```
+      cat /etc/ld.so.preload
+      /opt/void/libvoidhook.so
+      ```
+
+      Answer: `/opt/void/libvoidhook.so`. Removing the entry and the file
+      clears the ld.so.preload finding.
+
+  - id: fq-hosts-redirect
+    question: "An update/relay hostname was redirected in /etc/hosts. Type the IP address it was pointed at."
+    answer: "10.66.6.6"
+    points: 8
+    solution: |
+      Read /etc/hosts for a mapping that does not belong:
+
+      ```
+      cat /etc/hosts
+      10.66.6.6   security.ubuntu.com updates.vermilion.example
+      ```
+
+      Answer: `10.66.6.6`. Deleting that line clears the /etc/hosts finding.

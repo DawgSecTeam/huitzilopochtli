@@ -1,0 +1,10 @@
+{
+  "name": "nfs-no-root-squash",
+  "description": "Practice-box misconfiguration: installs the NFS server (if needed) and adds an export with no_root_squash (remote root writes as local root). Paired check wants no_root_squash gone. Vars: EXPORT_PATH (optional, default /srv/relay-share).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nexport DEBIAN_FRONTEND=noninteractive\ncommand -v exportfs >/dev/null 2>&1 || { apt-get update -y >/dev/null 2>&1 || true; apt-get install -y nfs-kernel-server >/dev/null 2>&1 || true; }\npath=\"${EXPORT_PATH:-/srv/relay-share}\"\ninstall -d -m 0755 \"$path\"\nline=\"$path  *(rw,sync,no_root_squash,no_subtree_check)\"\ngrep -qF \"$line\" /etc/exports 2>/dev/null || printf '%s\\n' \"$line\" >> /etc/exports\nexportfs -ra >/dev/null 2>&1 || true\nsystemctl restart nfs-kernel-server >/dev/null 2>&1 || true\n",
+  "depends_on": []
+}

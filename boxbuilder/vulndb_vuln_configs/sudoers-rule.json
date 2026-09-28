@@ -1,0 +1,10 @@
+{
+  "name": "sudoers-rule",
+  "description": "Practice-box misconfiguration: drops a raw sudoers rule into /etc/sudoers.d (validated with visudo -c so it never bricks sudo). Use for GTFObin-style NOPASSWD grants or a Defaults line. Vars: DROPIN_NAME (required, basename in /etc/sudoers.d); RULE (required, one sudoers line).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${DROPIN_NAME:?DROPIN_NAME is required}\"\n: \"${RULE:?RULE is required}\"\nf=\"/etc/sudoers.d/$DROPIN_NAME\"\nprintf '%s\\n' \"$RULE\" > \"$f\"\nchmod 0440 \"$f\"\nvisudo -cf \"$f\" >/dev/null\n",
+  "depends_on": []
+}

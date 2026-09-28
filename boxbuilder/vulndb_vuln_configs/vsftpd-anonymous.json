@@ -1,0 +1,10 @@
+{
+  "name": "vsftpd-anonymous",
+  "description": "Practice-box misconfiguration: installs vsftpd (if needed) and enables anonymous FTP (anonymous_enable=YES). Paired check wants anonymous disabled or the server removed. No vars.",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\nexport DEBIAN_FRONTEND=noninteractive\ncommand -v vsftpd >/dev/null 2>&1 || { apt-get update -y >/dev/null 2>&1 || true; apt-get install -y vsftpd >/dev/null 2>&1 || true; }\nf=/etc/vsftpd.conf\n[ -e \"$f\" ] || printf 'listen=YES\\nlocal_enable=YES\\n' > \"$f\"\nif grep -qi '^anonymous_enable' \"$f\"; then\n  sed -i 's/^anonymous_enable=.*/anonymous_enable=YES/I' \"$f\"\nelse\n  printf 'anonymous_enable=YES\\n' >> \"$f\"\nfi\nsystemctl enable --now vsftpd >/dev/null 2>&1 || true\nsystemctl restart vsftpd >/dev/null 2>&1 || true\n",
+  "depends_on": []
+}

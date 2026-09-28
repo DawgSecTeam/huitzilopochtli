@@ -1,0 +1,10 @@
+{
+  "name": "world-writable-dir",
+  "description": "Practice-box misconfiguration: loosens a directory's mode (e.g. a PATH bin dir to 0777, or clears the sticky bit from a world-writable dir). Vars: DIR (required); MODE (optional, default 0777).",
+  "platform": "linux",
+  "category": "misconfiguration",
+  "type": "command",
+  "run_as": "root",
+  "script": "#!/bin/sh\nset -eu\n: \"${DIR:?DIR is required}\"\nmode=\"${MODE:-0777}\"\n[ -d \"$DIR\" ] || install -d \"$DIR\"\nchmod \"$mode\" \"$DIR\"\n",
+  "depends_on": []
+}
