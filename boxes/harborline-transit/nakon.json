@@ -1,0 +1,237 @@
+{
+  "_comment": "Harborline Transit Authority: the pre-CDE capstone WINDOWS hardening box (single DC for harborline.local; os contains 'win' so nakon uses its powershell deploy path -- SSH transport, Windows OpenSSH, run.ps1 with per-step scripts; elevation comes from the SSH principal, which must be a domain admin here). It consolidates the whole Windows vulnerability universe from pinecrest-hospital (local-host hardening: accounts, password policy, registry, SMB/shares/ACLs/hosts, services, run-key/task/service persistence) and meridian-hq (AD: users, groups, delegation, AS-REP/DES, DCSync ACL, GPP, GPO persistence, LDAP signing, firewall) and adds new categories: Defender neutering + PowerShell logging off, WDigest cleartext + LSA PPL off + NTLM downgrade + anonymous enumeration (legacy credential/protocol exposure), IFEO debugger hijacks, Winlogon Userinit extension, WMI event-subscription persistence, a startup-folder item, AlwaysInstallElevated, and a PasswordNotRequired domain account. Every ad-*/gpp-*/gpo-*/ldap-*/firewall-allow/-win configuration is a GENERIC var-driven seed in boxbuilder/vulndb_vuln_configs/. ORDER MATTERS: weak-password-policy-win runs FIRST (weak domain policy + complexity off before weak account passwords are set); users are created before group-adds and before the DCSync ACL (its trustee must exist); insecure-file-acl-win runs BEFORE insecure-smb-share-win (the share target dir exists); hosts-redirect-win LAST (mirrors pinecrest). Name discipline: every USERNAME / GROUP / ACCOUNT / SPN / RUN_VALUE_NAME / TASK_NAME / SERVICE_NAME / PAYLOAD_PATH / RULE_NAME / GPO_NAME / SHARE_NAME / FILE_PATH / IP / PASSWORD here MUST match its paired check's collect params in scenario.yaml byte-identically -- nothing cross-validates. Password-vs-display-name trap: New-ADUser creates the account DISABLED when the password violates complexity against the display name/description tokens (meridian gotcha) -- every planted password below was chosen to clear that check. The two malicious services are real running services (SCM wrapper exe launching powershell.exe -File <payload>, sc failure auto-restart), scored by process_state on the payload filename fragment (fleetsync / regboost) plus service_state active/enabled -- rename a PAYLOAD_PATH and you must update the matching collect.pattern in scenario.yaml. Guest/audit/smb1/firewall/ldap-signing/spooler/uac/nla are scored; Guest is planted by guest-enabled-win (verify it flips the DOMAIN Guest on a DC -- hardening uses Set-ADUser Guest -Enabled $false); Spooler is scored but NOT planted (running+auto is the Server default -- that insecure default is the finding); LLMNR, audit Process Creation/User Account Management are likewise scored-but-not-planted default-state findings. The roasting rotation target svc_sched must exist AND stay enabled (hardening = rotate the password); rogue accounts score DISABLED-not-deleted.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "har-dc01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "weak-password-policy-win",
+          "vars": { "MINPWLEN": "4", "LOCKOUT_THRESHOLD": "0", "MAXPWAGE": "unlimited" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "bprieto", "PASSWORD": "Signal2026#Shift", "FULLNAME": "Bruno Prieto", "DESCRIPTION": "Field contractor - signaling upgrade" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "lhaight", "PASSWORD": "NightAudit2024!", "FULLNAME": "Lena Haight", "DESCRIPTION": "Night ops auditor (offboarded)", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_sched", "PASSWORD": "SchedSpring2026!", "FULLNAME": "Scheduling Integration", "DESCRIPTION": "Dispatch scheduling integration", "SPN": "HTTP/har-dc01.harborline.local", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_turnstile", "PASSWORD": "Ts9mLock#44", "FULLNAME": "Fare Gate Monitor", "DESCRIPTION": "Legacy fare-gate monitoring agent", "NO_PREAUTH": "1", "DES_ONLY": "1", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_repl", "PASSWORD": "RplBr1dge2026", "FULLNAME": "Replication Monitor", "DESCRIPTION": "Directory replication monitoring" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "svc_faxrelay", "PASSWORD": "FxQuit2023", "FULLNAME": "Fax Relay Interface", "DESCRIPTION": "Fax relay interface (decommissioned)" }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": { "USERNAME": "helpdesk$", "PASSWORD": "HdQueue2026$", "FULLNAME": "Helpdesk Tool Account", "DESCRIPTION": "Automated helpdesk tool", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-blank-password-win",
+          "vars": { "USERNAME": "qa_kiosk", "FULLNAME": "Fare Gate QA Kiosk", "DESCRIPTION": "Fare gate QA kiosk", "NEVER_EXPIRES": "1" }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": { "GROUP": "Domain Admins", "USERNAME": "bprieto" }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": { "GROUP": "Account Operators", "USERNAME": "lhaight" }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": { "GROUP": "Remote Desktop Users", "USERNAME": "lhaight" }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": { "GROUP": "DNSAdmins", "USERNAME": "bprieto" }
+        },
+        {
+          "name": "ad-delegation-win",
+          "vars": { "ACCOUNT": "FAREGW01", "ACCOUNT_TYPE": "computer", "MODE": "unconstrained" }
+        },
+        {
+          "name": "ad-computer-win",
+          "vars": { "COMPUTER_NAME": "WS-OLD2301", "DESCRIPTION": "Decommissioned fare-gate test rig (2023)" }
+        },
+        {
+          "name": "ad-acl-dcsync-win",
+          "vars": { "TRUSTEE": "svc_repl" }
+        },
+        {
+          "name": "gpp-cpassword-win",
+          "vars": { "GPO_NAME": "Deploy Fare Kiosk", "PASSWORD": "FareKiosk2026!", "LOCAL_USER": "kioskdeploy", "GROUP_NAME": "Administrators" }
+        },
+        {
+          "name": "gpo-persistence-win",
+          "vars": { "GPO_NAME": "TransitPulse", "RUN_VALUE_NAME": "EdgeUpdateOrchestrator", "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\gpopulse.ps1", "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }" }
+        },
+        "ldap-signing-off-win",
+        "smb1-enabled-win",
+        "audit-policy-off-win",
+        "guest-enabled-win",
+        "firewall-disabled-win",
+        {
+          "name": "firewall-allow-rule-win",
+          "vars": { "RULE_NAME": "TransitSync", "LOCAL_PORT": "9001", "PROTOCOL": "TCP", "DESCRIPTION": "Transit telemetry sync channel" }
+        },
+        {
+          "name": "firewall-allow-rule-win",
+          "vars": { "RULE_NAME": "FleetCommand", "LOCAL_PORT": "4444", "PROTOCOL": "TCP", "DESCRIPTION": "Fleet command channel" }
+        },
+        {
+          "name": "runkey-persistence-win",
+          "vars": {
+            "RUN_VALUE_NAME": "FleetPulseCore",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\fleetpulse.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "runkey-persistence-win",
+          "vars": {
+            "RUN_VALUE_NAME": "RelayStatusWidget",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\statuswidget.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "ChromeUpdateCore",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\chromeupdate.ps1",
+            "PAYLOAD_BODY": "Start-Sleep -Seconds 5"
+          }
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "OfficeTelemetryAgent",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\officetelemetry.ps1",
+            "PAYLOAD_BODY": "Start-Sleep -Seconds 5"
+          }
+        },
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "HarborlineFleetSync",
+            "DESCRIPTION": "Harborline nightly fleet telemetry indexer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\fleetsync.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "RegBoostSvc",
+            "DESCRIPTION": "System Optimizer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\regboost.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "autologin-win",
+          "vars": { "USERNAME": "kiosk-dispatch", "PASSWORD": "KioskDispatch1!" }
+        },
+        "uac-toggles-off-win",
+        "rdp-no-nla-win",
+        {
+          "name": "insecure-file-acl-win",
+          "vars": {
+            "FILE_PATH": "C:\\HarborlineData\\payroll-export.csv",
+            "FILE_CONTENT": "badge,paygrade,net_pay\nHT-40118,OP-3,4210.55\nHT-40227,OP-2,3866.10\nHT-40391,OP-4,5102.75\nHT-40510,SUP-1,6233.40\n"
+          }
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\HarborlineData\\scripts\\dispatch_creds.txt",
+            "FILE_CONTENT": "# dispatch gateway creds (KEEP PRIVATE)\nuser: sysadmin\npassword: NightDispatch2026!\n"
+          }
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\Windows\\Panther\\unattend.xml",
+            "FILE_CONTENT": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<unattend xmlns=\"urn:schemas-microsoft-com:unattend\">\n  <settings pass=\"oobeSystem\">\n    <component name=\"Microsoft-Windows-Shell-Setup\">\n      <UserAccounts>\n        <LocalAccounts>\n          <LocalAccount wcm:action=\"add\">\n            <Name>sysadmin</Name>\n            <Password><Value>NightDispatch2026!</Value><PlainText>true</PlainText></Password>\n          </LocalAccount>\n        </LocalAccounts>\n      </UserAccounts>\n    </component>\n  </settings>\n</unattend>\n"
+          }
+        },
+        {
+          "name": "insecure-smb-share-win",
+          "vars": { "SHARE_NAME": "TransitData", "SHARE_PATH": "C:\\HarborlineData", "DESCRIPTION": "Transit operations share" }
+        },
+        {
+          "name": "defender-off-win",
+          "vars": { "EXCLUSION_PATH": "C:\\ProgramData\\Subsystems" }
+        },
+        "ps-logging-off-win",
+        "wdigest-cleartext-win",
+        "lsa-ppl-off-win",
+        "ntlm-downgrade-win",
+        "anonymous-enumeration-win",
+        "always-install-elevated-win",
+        {
+          "name": "ifeo-backdoor-win",
+          "vars": {
+            "EXECUTABLE": "sethc.exe",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\stickywatch.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "ifeo-backdoor-win",
+          "vars": {
+            "EXECUTABLE": "utilman.exe",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\utilmanwatch.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "winlogon-shell-win",
+          "vars": {
+            "PAYLOAD_PS1": "C:\\ProgramData\\Subsystems\\winitupd.ps1",
+            "PAYLOAD_EXE": "C:\\ProgramData\\Subsystems\\winitupd.exe",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "wmi-subscription-persistence-win",
+          "vars": {
+            "FILTER_NAME": "HarborlineHealthFilter",
+            "CONSUMER_NAME": "HarborlineHealthConsumer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\wmihealth.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "startup-folder-item-win",
+          "vars": {
+            "ITEM_NAME": "dispatch-helper",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\dispatchhelper.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "hosts-redirect-win",
+          "vars": { "IP": "10.44.9.9", "HOSTNAME": "payroll.harborline.example" }
+        }
+      ]
+    }
+  ]
+}

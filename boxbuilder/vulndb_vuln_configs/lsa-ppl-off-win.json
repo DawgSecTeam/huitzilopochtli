@@ -1,0 +1,10 @@
+{
+  "name": "lsa-ppl-off-win",
+  "description": "Practice-box helper (Windows): turns OFF LSA Protection by setting HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\RunAsPPL to 0 -- with PPL off, LSASS is readable by any admin-level process and credential dumpers (mimikatz) work unimpeded. The hardened state is RunAsPPL=1. Vars: none. Pairs with a powershell_json check over the same value. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name RunAsPPL -Value 0 -Type DWord\nWrite-Output 'RunAsPPL=0 set'",
+  "depends_on": []
+}

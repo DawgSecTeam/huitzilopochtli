@@ -1,0 +1,10 @@
+{
+  "name": "always-install-elevated-win",
+  "description": "Practice-box helper (Windows): sets the AlwaysInstallElevated policy to 1 under BOTH HKLM and HKCU (SOFTWARE\\Policies\\Microsoft\\Windows\\Installer) -- any user may then install an .MSI that runs with SYSTEM rights (a classic local privilege-escalation finding). The hardened state is the value at anything but 1 on both hives. Vars: none. Pairs with a powershell_json check over the HKLM value. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$k = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer'\nif (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }\nSet-ItemProperty -Path $k -Name AlwaysInstallElevated -Value 1 -Type DWord\n$u = 'HKCU:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer'\nif (-not (Test-Path $u)) { New-Item -Path $u -Force | Out-Null }\nSet-ItemProperty -Path $u -Name AlwaysInstallElevated -Value 1 -Type DWord\nWrite-Output 'AlwaysInstallElevated=1 set'",
+  "depends_on": []
+}

@@ -1,0 +1,90 @@
+# Harborline Transit Authority: the pre-CDE capstone WINDOWS hardening box
+# -- the Windows twin of vermilion-relay. Single domain controller for
+# harborline.local (NetBIOS HARBORLINE), honor mode, 80
+# scored hardening checks (EASY 2 x33, MODERATE 4 x35, HARD 8 x12 = 302) +
+# 3 penalty guards (-10 each) + 8 forensics questions (8 x 8 = 64) = 366
+# points. It consolidates the whole Windows vulnerability universe from
+# pinecrest-hospital and meridian-hq and adds new categories (Defender
+# neutering, PowerShell logging off, WDigest cleartext, LSA PPL off, NTLM
+# downgrade, anonymous enumeration, IFEO debugger hijacks, Winlogon
+# Userinit extension, WMI event-subscription persistence, startup-folder
+# items, AlwaysInstallElevated, a PasswordNotRequired domain account).
+# Teams are NOT expected to clear it in one sitting; an answer key is
+# handed out afterward.
+#
+# LINEAGE: full clone of windows-server-fix (Proxmox template 953) -- the
+# same base both prior Windows boxes sealed from -- promoted to a domain
+# controller for harborline.local during template prep, following
+# boxbuilder/REDEPLOY.md "Windows round" + "AD round" (items 17-21):
+# local admin `sysadmin` (HarborBuild2026!) + OpenSSH Server + Python 3.12
+# at C:\Python312 + RDP/NLA on + RemoteDesktop firewall rules BEFORE
+# promotion; Install-ADDSForest -DomainName harborline.local
+# -DomainNetbiosName HARBORLINE -InstallDns (DSRM password
+# HarborDcRecovery2026! = also the domain Administrator password); a SYSTEM
+# startup task (HarborlineDomainPrep) re-creates the domain `sysadmin`
+# (HarborBuild2026!) + four staff users (rcastillo / tokafor / jwhitfield /
+# mrivera, HarborStaff2026!, OU=Harborline) after the local SAM vanishes on
+# promotion. Gotchas live in REDEPLOY.md: run_ps-only remote PowerShell,
+# -ErrorAction Ignore in all -win seeds, schtask HuitzilopochtliAgent at
+# 5-min cadence = the honor re-grade timer (coupled to agent
+# _honor_interval_s on win32), Edge HardwareAccelerationModeEnabled=0 is
+# baked in by huitz-hardening-win.ps1 at install time, DC boot window
+# (credential checks fake-pass for the first ~8 minutes -- the rotation
+# check gates on uptime), never live-clone a DC (seal = clean shutdown +
+# full clone), secedit-managed values revert bare reg writes (harden via
+# policy store).
+#
+# SNAPSHOT ONLY after all prep is done (the 121/135 lesson).
+#
+# provider.host below is whatever IP this specific clone gets from DHCP at
+# build time -- it WILL go stale once that clone is destroyed/
+# reprovisioned; point it at your own clone's current IP before running
+# `boxbuilder build` (DHCP is fine, and a lease can change mid-lifetime
+# too). If sshd stops resolving the bare name after promotion, connect as
+# sysadmin@harborline.local.
+# SEALED 2026-09-28: Proxmox vmid 133 "challenge-harborline-transit"
+# (2 cores / 6144 MB, vmbr0). Validated end-to-end on the build VM (125):
+# plant 55/55 steps rc=0, 0-state scores exactly 6 (only the three
+# don't-break-the-DC hygiene checks -- w32time/kdc/netlogon), hardened state
+# 366/366 (80/80 + 8/8 forensics), revert (re-plant + manual restores:
+# Spooler auto+running, PS2 feature re-enabled, LLMNR/InactivityTimeoutSecs
+# values deleted, Process Creation auditing off, User Account Mgmt
+# success-only, TransitData EncryptData off, LDAP signing back to 1 VIA THE
+# POLICY STORE, WS-OLD2301 re-enabled -- the ad-computer-win update path
+# never re-enables) back to exactly 6, stable across repeat passes. Cold
+# clone boot-verified: settled AD scores exactly 6 (early-boot grades can
+# false-pass the empty-group sweeps for the first ~10 min -- DC boot window,
+# self-heals on the next 5-min pass, meridian precedent), agent task firing,
+# theme artifacts in place, no dirty-shutdown events, forensics file
+# BUILTIN\Users:(M). Sealed with a clean shutdown /s /d p:4:1.
+#
+# BUILD-ROUND LESSONS (all fixed in-repo): the WMI subscription seed needed
+# -Namespace root\subscription on every Set-WmiInstance (the consumer class
+# is CommandLineEventConsumer, NO underscore prefix; the binding only
+# deletes via the classic Get-WmiObject .Delete()) + delete-then-create for
+# idempotency; ConsentPromptBehaviorAdmin/PromptOnSecureDesktop ship at
+# their hardened values so they must be PLANTED explicitly
+# (uac-toggles-off-win); the SMB1 optional feature is NOT installed on this
+# image (flag check only); DNSAdmins is empty by default (plant a member);
+# Defender's engine is a stub on this lineage (AMService absent, WinDefend
+# dead -- Get-MpComputerStatus reads False forever), so the third Defender
+# check became the PowerShell 2.0 legacy-engine removal instead (real
+# enabled-by-default finding); secedit re-assertion flips a bare reg write
+# of LDAPServerIntegrity (REDEPLOY gotcha 23) -- hardening and revert must
+# both go through the policy store; ValidateCredentials returns False for
+# CORRECT credentials while an account is LOCKED OUT (the hardened phase's
+# own wrong-password attempts can lock svc_sched) -- the rotation check
+# fails closed on LockedOut, and a revert loop must Unlock-ADAccount +
+# reset the planted password. Renaming a DC post-promotion: Rename-Computer
+# refuses, netdom makecurrent did not survive reboots -- the DC kept the
+# random install hostname; docs avoid naming the host.
+#
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 10.0.0.171
+  port: 22
+  user: sysadmin
+  password: HarborBuild2026!
+# authoring_key: ./authoring.key

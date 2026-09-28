@@ -1,0 +1,10 @@
+{
+  "name": "uac-toggles-off-win",
+  "description": "Practice-box helper (Windows): switches UAC all the way off -- EnableLUA=0 AND ConsentPromptBehaviorAdmin=0 (elevate without prompting) AND PromptOnSecureDesktop=0 (consent dialog on the ordinary desktop). The hardened state is EnableLUA=1, the prompt value gone-or-nonzero, and PromptOnSecureDesktop=1-or-gone. Note EnableLUA=0 alone is not the full finding: the two prompt values ship ON by default and must be planted explicitly for the UAC checks to have a zero state. Vars: none. Pairs with a registry_value check on EnableLUA and powershell_json checks on ConsentPromptBehaviorAdmin/PromptOnSecureDesktop. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$k = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'\nSet-ItemProperty -Path $k -Name EnableLUA -Value 0 -Type DWord\nSet-ItemProperty -Path $k -Name ConsentPromptBehaviorAdmin -Value 0 -Type DWord\nSet-ItemProperty -Path $k -Name PromptOnSecureDesktop -Value 0 -Type DWord\nWrite-Output 'UAC toggles off'",
+  "depends_on": []
+}

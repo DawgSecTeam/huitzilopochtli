@@ -1,0 +1,10 @@
+{
+  "name": "defender-off-win",
+  "description": "Practice-box helper (Windows): neuters Microsoft Defender -- sets the DisableAntiSpyware policy to 1, turns OFF real-time monitoring via Set-MpPreference, and optionally registers a folder exclusion. The hardened state is real-time protection back on, the policy cleared, and no attacker-folder exclusions left behind. Vars: EXCLUSION_PATH (optional -- registered as a Defender scan exclusion). Pairs with powershell_json checks over Get-MpComputerStatus (RealTimeProtection) and Get-MpPreference exclusions, plus a registry_value check on DisableAntiSpyware. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$sub = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender'\nif (-not (Test-Path $sub)) { New-Item -Path $sub -Force | Out-Null }\nSet-ItemProperty -Path $sub -Name DisableAntiSpyware -Value 1 -Type DWord\ntry { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Ignore } catch { }\nif ($EXCLUSION_PATH) {\n    try { Add-MpPreference -ExclusionPath $EXCLUSION_PATH -ErrorAction Ignore } catch { }\n}\nWrite-Output 'Defender neutered'",
+  "depends_on": []
+}

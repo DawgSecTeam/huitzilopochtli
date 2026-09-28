@@ -1,0 +1,10 @@
+{
+  "name": "ntlm-downgrade-win",
+  "description": "Practice-box helper (Windows): downgrades the NTLM stack by setting HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\LmCompatibilityLevel to 0 (send LM + NTLM responses) -- legacy challenge/response hashes become crackable at dictionary speeds. The hardened state is 5 (refuse LM and NTLM, NTLMv2 only). Secedit/policy-managed value: harden via Local Security Policy so a policy refresh does not revert a bare reg write. Vars: none. Pairs with a powershell_json check over the same value. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' -Name LmCompatibilityLevel -Value 0 -Type DWord\nWrite-Output 'LmCompatibilityLevel=0 set'",
+  "depends_on": []
+}

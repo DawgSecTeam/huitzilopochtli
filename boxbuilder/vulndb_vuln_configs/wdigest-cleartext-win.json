@@ -1,0 +1,10 @@
+{
+  "name": "wdigest-cleartext-win",
+  "description": "Practice-box helper (Windows): re-enables WDigest by setting HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest\\UseLogonCredential to 1 -- every subsequent logon then leaves a cleartext password in LSASS memory for any admin-level credential dumper. The hardened state is the value at anything but 1 (deleted or 0). Vars: none. Pairs with a powershell_json check over the same value. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest'\nif (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }\nSet-ItemProperty -Path $k -Name UseLogonCredential -Value 1 -Type DWord\nWrite-Output 'WDigest UseLogonCredential=1 set'",
+  "depends_on": []
+}

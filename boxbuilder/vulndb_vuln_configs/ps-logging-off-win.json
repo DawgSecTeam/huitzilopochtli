@@ -1,0 +1,10 @@
+{
+  "name": "ps-logging-off-win",
+  "description": "Practice-box helper (Windows): switches OFF PowerShell operational logging -- ScriptBlockLogging (and InvocationLogging) and Transcription policy values set to 0 (keys are created so the disabled state is explicit). The hardened state is both set back to 1: script blocks and transcripts are the primary evidence trail for PowerShell attacks. Vars: none. Pairs with registry_value checks on EnableScriptBlockLogging and EnableTranscripting. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$sb = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging'\nif (-not (Test-Path $sb)) { New-Item -Path $sb -Force | Out-Null }\nSet-ItemProperty -Path $sb -Name EnableScriptBlockLogging -Value 0 -Type DWord\nSet-ItemProperty -Path $sb -Name EnableScriptBlockInvocationLogging -Value 0 -Type DWord\n$tr = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\Transcription'\nif (-not (Test-Path $tr)) { New-Item -Path $tr -Force | Out-Null }\nSet-ItemProperty -Path $tr -Name EnableTranscripting -Value 0 -Type DWord\nWrite-Output 'PowerShell logging disabled'",
+  "depends_on": []
+}
