@@ -1,0 +1,10 @@
+{
+  "name": "anonymous-enumeration-win",
+  "description": "Practice-box helper (Windows): opens anonymous enumeration by setting HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa RestrictAnonymous AND RestrictAnonymousSAM to 0 -- unauthenticated sessions can list accounts and shares for later targeting. The hardened state is both values at 1. Secedit/policy-managed: harden via Local Security Policy (Network access) so a policy refresh does not revert a bare reg write. Vars: none. Pairs with a powershell_json check over both values. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa'\nSet-ItemProperty -Path $k -Name RestrictAnonymous -Value 0 -Type DWord\nSet-ItemProperty -Path $k -Name RestrictAnonymousSAM -Value 0 -Type DWord\nWrite-Output 'RestrictAnonymous(=SAM)=0 set'",
+  "depends_on": []
+}

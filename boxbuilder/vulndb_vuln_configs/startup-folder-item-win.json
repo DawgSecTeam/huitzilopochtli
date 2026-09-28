@@ -1,0 +1,10 @@
+{
+  "name": "startup-folder-item-win",
+  "description": "Practice-box helper (Windows): plants an All-Users startup-folder item -- a .bat in the common StartUp folder that launches a hidden PowerShell payload at every sign-in. The hardened state is the .bat (and the payload) removed. Vars: ITEM_NAME (required, the .bat base name); PAYLOAD_PATH (required); PAYLOAD_BODY (optional). Pairs with a permission check on the .bat path expecting exists=false. Idempotent (files overwritten).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $ITEM_NAME -or -not $PAYLOAD_PATH) { throw 'ITEM_NAME and PAYLOAD_PATH are required' }\n$dir = Split-Path $PAYLOAD_PATH -Parent\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\nif ($PAYLOAD_BODY) { Set-Content -Path $PAYLOAD_PATH -Value $PAYLOAD_BODY -Encoding ascii }\n$startup = Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs\\StartUp'\nNew-Item -ItemType Directory -Force -Path $startup | Out-Null\n$bat = Join-Path $startup ($ITEM_NAME + '.bat')\nSet-Content -Path $bat -Value \"@echo off`r`npowershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `\"$PAYLOAD_PATH`\"\" -Encoding ascii\nWrite-Output \"startup item planted: $bat\"",
+  "depends_on": []
+}
