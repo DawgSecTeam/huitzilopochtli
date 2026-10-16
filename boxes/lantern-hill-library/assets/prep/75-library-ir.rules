@@ -1,0 +1,25 @@
+# Lantern Hill Community Library -- IR watchlist (prep-baked).
+# Loaded by 06-auditd-journal.sh via `augenrules --load` BEFORE any nakon
+# plant runs, so the intrusion artifact writes themselves land in
+# /var/log/audit/audit.log. Players query with: ausearch -k <key> -i
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d/ -p wa -k scope
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
+-w /root/.ssh/ -p wa -k sshdir
+-w /home/librarian/.ssh/ -p wa -k sshdir
+-w /etc/cron.d/ -p wa -k sched
+-w /etc/crontab -p wa -k sched
+-w /var/spool/cron/ -p wa -k sched
+-w /etc/systemd/system/ -p wa -k units
+-w /etc/ld.so.preload -p wa -k rootkit
+-w /etc/hosts -p wa -k netmap
+-w /opt/ -p wa -k optdrop
+-w /var/backups/ -p wa -k staging
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime -k time-change
+# Account changes need no syscall rules: the watches on /etc/passwd,
+# /etc/shadow, /etc/group and /etc/sudoers.d above capture every write
+# (useradd/groupadd are binaries, not syscalls -- auditctl rejects them).
