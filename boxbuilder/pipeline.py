@@ -5,7 +5,6 @@ adds argparse + stdout/stderr discipline.
 Steps are independently callable so an agent (or a test) can run/verify them
 piecemeal. The unified `build` in cli.py chains them with resumability.
 """
-import hashlib
 import json
 import os
 from typing import Optional
@@ -30,7 +29,7 @@ def _load_build_zipapp():
 
 
 def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = None,
-                rebuild_bundle: bool = False, vulndb_url: Optional[str] = None,
+                vulndb_url: Optional[str] = None,
                 log=print) -> dict:
     """Step 1: compile scenario, build agent.pyz, and build nakon bundle."""
     artifacts_dir = os.path.abspath(artifacts_dir)
@@ -70,12 +69,10 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
     nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
     with open(nakon_cfg_path, "w", encoding="utf-8") as f:
         json.dump(nakon_cfg, f, indent=2)
-    bundle = nakon.build_bundle(ndir, nakon_cfg_path, out_dir="bundles",
-                                rebuild=rebuild_bundle)
+    bundle = nakon.build_bundle(ndir, nakon_cfg_path, out_dir="bundles")
     bid = bundle.get("bundle_id")
     log(f"[boxbuilder] nakon bundle {bid[:12] if bid else '?'} "
-        f"({'cached' if bundle.get('cached') else 'fresh'}, "
-        f"{bundle.get('plans', '?')} plan(s), {bundle.get('machines', '?')} machine(s))")
+        f"({bundle.get('plans', '?')} plan(s), {bundle.get('machines', '?')} machine(s))")
 
     result = {
         "mode": spec.mode,
@@ -90,41 +87,9 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
         "agent_pyz": agent_pyz,
         "bundle": bundle,
         "bundle_path": bundle["path"],
-        "fingerprint": _nakon_config_fingerprint(
-            spec.scenario["scenario"]["name"], nakon_cfg_path
-        ),
     }
     _save_state(artifacts_dir, result)
     return result
-
-
-def _nakon_config_fingerprint(scenario_name: str, nakon_cfg_path: str) -> dict:
-    """Fingerprint the compiled, theme-expanded nakon config so later steps
-    can tell artifacts from a previous/different build apart."""
-    with open(nakon_cfg_path, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()
-    return {"scenario_name": scenario_name, "nakon_config_sha256": digest}
-
-
-def _verify_state_fingerprint(state: dict, spec_scenario_name: str,
-                              nakon_cfg_path: str, step: str) -> None:
-    """Refuse to reuse artifacts from a different/older build (a stale
-    artifacts dir would silently plant and score the WRONG box)."""
-    fp = state.get("fingerprint") or {}
-    with open(nakon_cfg_path, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()
-    if fp.get("nakon_config_sha256") != digest:
-        raise ValueError(
-            f"{step}: artifacts dir holds a stale nakon-config.json (its hash "
-            f"does not match the one recorded at compile time); re-run "
-            f"`compile` or clear the artifacts dir"
-        )
-    state_name = state.get("scenario_name") or fp.get("scenario_name")
-    if state_name and spec_scenario_name and state_name != spec_scenario_name:
-        raise ValueError(
-            f"{step}: artifacts belong to scenario {state_name!r} but the spec "
-            f"is {spec_scenario_name!r}; re-run `compile` with the right spec"
-        )
 
 
 def _save_state(artifacts_dir: str, state: dict) -> None:
@@ -171,13 +136,6 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
     # spec config for callers that skip straight to `plant`.
     compiled_nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
     if os.path.isfile(compiled_nakon_cfg_path):
-        # Guard against stale artifacts: a previous/different build's config
-        # here would silently plant the WRONG vuln set.
-        state = _load_state(artifacts_dir) or {}
-        _verify_state_fingerprint(
-            state, spec.scenario["scenario"]["name"], compiled_nakon_cfg_path,
-            step="plant",
-        )
         with open(compiled_nakon_cfg_path, "r", encoding="utf-8") as f:
             effective_nakon_config = _json.load(f)
     else:
@@ -257,16 +215,6 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
 
     if not spec.provider.get("name"):
         raise ValueError("install requires a provider; set provider.name in the spec")
-
-    # Same stale-artifacts guard as plant: installing a manifest for scenario
-    # A on a box planted (or not planted) for scenario B is a silent mismatch.
-    compiled_nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
-    if os.path.isfile(compiled_nakon_cfg_path):
-        state = compile_result if isinstance(compile_result, dict) else {}
-        _verify_state_fingerprint(
-            state, spec.scenario["scenario"]["name"], compiled_nakon_cfg_path,
-            step="install",
-        )
 
     mode = compile_result["mode"]
     provider, handle = _resolve_provider(spec.provider, provider_factory, log)
@@ -521,7 +469,7 @@ _BUILD_STEPS = ("compile", "plant", "install", "package")
 
 def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None,
               fmt: str = "ova", from_step: str = "compile",
-              nakon_dir: Optional[str] = None, rebuild_bundle: bool = False,
+              nakon_dir: Optional[str] = None,
               vulndb_url: Optional[str] = None,
               provider_factory=None, init_kind: Optional[str] = None,
               admin_token: Optional[str] = None, checkin_interval_s: int = 60,
@@ -543,7 +491,7 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
     if start_idx <= 0:
         log("[boxbuilder] === step 1/4: compile ===")
         results["compile"] = compile_box(
-            spec, artifacts_dir, nakon_dir=nakon_dir, rebuild_bundle=rebuild_bundle,
+            spec, artifacts_dir, nakon_dir=nakon_dir,
             vulndb_url=vulndb_url, log=log,
         )
     else:

@@ -55,7 +55,7 @@ spec's dir — a `/tmp` spec copy breaks with "theme.wallpaper ... not found"):
 
 ```bash
 python3 -m boxbuilder compile --spec boxes/chocolate-factory/box.yaml \
-  --out /tmp/choc --rebuild-bundle --json        # --rebuild-bundle after any catalog change
+  --out /tmp/choc --json        # build is always fresh (no cache to force)
 # plant/install need provider.host = the clone's CURRENT DHCP IP; use a temp
 # spec with absolute scenario/nakon_config paths + host overridden (do NOT
 # commit the DHCP IP into the example spec):
@@ -125,7 +125,7 @@ keep the previous template as fallback until the new one is confirmed).
    stale `README.md` (HTML bytes, wrong name) and a broken Handbook shortcut.
    Fixed with `vulndb-cli update --yes --file
    boxbuilder/vulndb_theme_configs/theme-readme.json 119` (attachments
-   preserved), then `compile --rebuild-bundle` (scripts bake into the bundle
+   preserved), then `compile` (scripts bake into the bundle
    at build time) + re-`plant`. Same pattern as the earlier id-118 wallpaper fix.
 3. Stale `README.md` duplicates were deleted from both Desktops before sealing.
 

@@ -100,7 +100,7 @@ def install_fake_nakon(tmp_path, monkeypatch, *, build_json=None, deploy_json=No
     (pkg / "cli.py").write_text("# marker for resolve_nakon_dir\n")
     if build_json is None:
         build_json = {"bundle_id": "fake-bundle", "path": "bundles/fake-bundle",
-                      "cached": False, "plans": 1, "machines": 1}
+                      "plans": 1, "machines": 1}
     if deploy_json is None:
         deploy_json = {"bundle_id": "fake-bundle", "machines": [], "failures": 0,
                        "ok": True, "log_dir": None}

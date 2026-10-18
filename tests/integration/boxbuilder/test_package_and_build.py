@@ -141,7 +141,7 @@ def test_build_all_full_honor(tmp_path, monkeypatch, fake_provider_factory):
     nakon_dir = install_fake_nakon(
         tmp_path, monkeypatch,
         build_json={"bundle_id": "bid", "path": "bundles/bid",
-                    "cached": False, "plans": 1, "machines": 1},
+                    "plans": 1, "machines": 1},
         deploy_json={"bundle_id": "bid", "machines": [], "failures": 0, "ok": True, "log_dir": None},
     )
 
@@ -180,7 +180,7 @@ def test_build_all_resume_from_install(tmp_path, fake_provider_factory):
         "authoring_public_key": str(ad / "authoring_public_key.b64"),
         "rubric": str(ad / "rubric.json"),
         "engine_record": str(ad / "engine_record.json"),
-        "bundle": {"bundle_id": "bid", "path": str(ad / "bundle"), "cached": False,
+        "bundle": {"bundle_id": "bid", "path": str(ad / "bundle"),
                    "plans": 1, "machines": 1},
         "bundle_path": str(ad / "bundle"),
     }
@@ -218,7 +218,7 @@ def test_build_all_package_requires_image_out(tmp_path, monkeypatch, fake_provid
                    base_dir=str(tmp_path), scenario=scenario, nakon_config=nakon_config)
     nakon_dir = install_fake_nakon(
         tmp_path, monkeypatch,
-        build_json={"bundle_id": "b", "path": "bundles/b", "cached": False,
+        build_json={"bundle_id": "b", "path": "bundles/b",
                     "plans": 1, "machines": 1},
         deploy_json={"ok": True, "failures": 0, "machines": [], "log_dir": None, "bundle_id": "b"},
     )
