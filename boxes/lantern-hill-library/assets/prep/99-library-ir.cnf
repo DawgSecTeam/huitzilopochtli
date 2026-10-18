@@ -1,0 +1,8 @@
+# Lantern Hill Community Library -- database flight recorder (prep-baked).
+# The MariaDB general query log records every statement the server runs,
+# which is what makes the break-in's SQL visible alongside the app's
+# service journal. Preserving this is a scored check.
+[mysqld]
+general_log = ON
+general_log_file = /var/log/mysql/general.log
+log_output = FILE

@@ -1,0 +1,14 @@
+[Unit]
+Description=Lantern Hill library catalog app
+After=network.target mariadb.service
+
+[Service]
+User=catalogsvc
+Group=catalogsvc
+WorkingDirectory=/opt/library
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/library/app.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
