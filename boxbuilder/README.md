@@ -280,7 +280,7 @@ consistent with tezcatlipoca and nakon's documented CLI contract
 (`vendor/nakon/README.md`). It shells out:
 
 - `nakon build --json` (cwd = `$NAKON_DIR`, so nakon can read its `.env`/vulndb)
-  → parses `{bundle_id, path, cached, plans, machines}` from the final stdout line.
+  → parses `{bundle_id, path, plans, machines}` from the final stdout line.
 - `nakon deploy --json` → parses `{ok, failures, machines[].steps}`.
 
 Set `--nakon-dir` or `$NAKON_DIR` (default: the `vendor/nakon` submodule, falling back to a

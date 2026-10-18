@@ -70,7 +70,7 @@ def test_build_bundle_parses_summary(tmp_path, monkeypatch):
     ndir = _install_fake_nakon(
         tmp_path, monkeypatch,
         build_json={"bundle_id": "abc123", "path": "bundles/abc123",
-                    "cached": False, "plans": 1, "machines": 1},
+                    "plans": 1, "machines": 1},
     )
     cfg = tmp_path / "cfg.json"
     cfg.write_text("{}")
@@ -92,7 +92,7 @@ def test_build_bundle_handles_log_lines_before_json(tmp_path, monkeypatch):
     (pkg / "__main__.py").write_text(
         'import sys,json; '
         'print("stray log line"); '
-        'print(json.dumps({"bundle_id":"z","path":"b/z","cached":True,"plans":0,"machines":0}))'
+        'print(json.dumps({"bundle_id":"z","path":"b/z","plans":0,"machines":0}))'
     )
     monkeypatch.setenv("NAKON_DIR", str(tmp_path / "nakon"))
     cfg = tmp_path / "cfg.json"

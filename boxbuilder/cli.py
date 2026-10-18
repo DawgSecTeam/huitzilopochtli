@@ -148,7 +148,6 @@ def cmd_compile(args) -> int:
             spec,
             artifacts_dir=out,
             nakon_dir=args.nakon_dir,
-            rebuild_bundle=args.rebuild_bundle,
             vulndb_url=args.vulndb_url,
             log=_eprint,
         )
@@ -190,7 +189,7 @@ def cmd_build(args) -> int:
         result = build_all(
             spec, artifacts_dir=out, image_out=args.image_out, fmt=args.format,
             from_step=args.from_step, nakon_dir=args.nakon_dir,
-            rebuild_bundle=args.rebuild_bundle, vulndb_url=args.vulndb_url,
+            vulndb_url=args.vulndb_url,
             init_kind=args.init,
             admin_token=args.admin_token, checkin_interval_s=args.checkin_interval,
             enrollment_ttl_s=args.enrollment_ttl, log=_eprint,
@@ -274,8 +273,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile = sub.add_parser("compile", help="compile scenario + build agent.pyz + build nakon bundle")
     _add_spec_inputs(p_compile)
     p_compile.add_argument("--out", help="artifacts output dir (default: ./artifacts)")
-    p_compile.add_argument("--rebuild-bundle", action="store_true",
-                           help="force nakon to rebuild even if a matching bundle is cached")
     p_compile.set_defaults(func=cmd_compile)
 
     p_plant = sub.add_parser("plant", help="deploy vulns onto the box via nakon")
@@ -311,8 +308,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--out", help="artifacts output dir (default: ./artifacts)")
     p_build.add_argument("--from-step", choices=_STEPS, default="compile",
                          help="resume from this step (default: compile)")
-    p_build.add_argument("--rebuild-bundle", action="store_true",
-                         help="force nakon to rebuild even if a matching bundle is cached")
     p_build.add_argument("--init", choices=("systemd", "openrc", "none"),
                          help="init system (default: auto-detect)")
     p_build.add_argument("--admin-token", help="engine admin token "

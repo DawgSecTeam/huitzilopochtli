@@ -89,17 +89,15 @@ def build_bundle(
     nakon_dir: str,
     config_path: str,
     out_dir: str = "bundles",
-    rebuild: bool = False,
     timeout: int = 900,
 ) -> dict:
     """Run `nakon build --json`. Returns the parsed summary dict.
 
-    Shape: {"bundle_id", "path", "cached", "plans", "machines"}.
+    Shape: {"bundle_id", "path", "plans", "machines"} (bundles are
+    content-addressed; there is no cache, so every build is fresh).
     `path` is absolute (nakon writes it relative to cwd=nakon_dir; we resolve).
     """
     args = ["build", "--config", str(config_path), "--out", str(out_dir), "--json"]
-    if rebuild:
-        args.append("--rebuild")
     result = _run_nakon(args, nakon_dir, timeout)
 
     stdout = result.stdout.strip()
