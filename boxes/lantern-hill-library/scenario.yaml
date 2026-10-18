@@ -1,0 +1,1250 @@
+# Lantern Hill Community Library: an incident-response workshop box
+# (huitz terminal console -- NO desktop, NO VNC; players connect over SSH
+# and use `huitz score`, `huitz readme`, `huitz watch`, `huitz forensics`).
+# The story: the library's public catalog server was broken into days ago.
+# The intruder (signs itself "inkmoth") came in over SSH with a guessed
+# password, used the catalog app's unauthenticated admin hook to tamper
+# with holds and copy the patron list, then wired OS-level persistence
+# across cron, systemd, sudo, and the loader. Two things are still true on
+# this box: the data keeps re-breaking, and every move the intruder made
+# was recorded -- the login journal, the catalog app's service journal,
+# MariaDB's general query log, and auditd (rules loaded BEFORE the plants)
+# all tell the same story from four directions. That correlation IS the
+# material under test.
+#
+# Scoring ledger (tests/unit/test_boxbuilder_lantern_hill_library.py
+# asserts it). Twenty-five findings, difficulty-weighted:
+#   EASY     5 pts x 10 checks =  50   sshd_root_login_closed,
+#                                      sshd_password_auth_off,
+#                                      authorized_keys_clean,
+#                                      nightdesk_removed,
+#                                      rogue_module_removed,
+#                                      exfil_dump_removed,
+#                                      hosts_redirect_removed,
+#                                      firewall_rule_removed,
+#                                      tamper_cron_removed,
+#                                      motd_script_gone
+#   MODERATE 10 pts x 10 checks = 100  sshd_empty_passwords_off,
+#                                      timer_neutralized,
+#                                      rogue_service_removed,
+#                                      system_bashrc_clean,
+#                                      ld_preload_removed,
+#                                      tools_uninstalled,
+#                                      plugins_dir_perms_fixed,
+#                                      app_secrets_perms_fixed,
+#                                      auditd_rules_intact,
+#                                      db_general_log_on
+#   HARD     20 pts x 5 checks  = 100  backdoor_sshd_removed,
+#                                      beacon_neutralized,
+#                                      log_truncator_removed,
+#                                      timezone_restored,
+#                                      sudoers_rule_removed
+#   vuln checks total            = 250
+#   penalties (app + DB must stay up) = -20 floor (only subtract)
+#   forensics (13 x 10)          = 130
+#   GRAND TOTAL                  = 380
+#
+# Forensics questions walk the investigation in order: each names the
+# evidence CLASS or a narrative hook and asks for one short specific value,
+# never the artifact's name itself. Every answer sits in an artifact the
+# players must open anyway -- and several fixes (deleting the tamper cron,
+# the truncator, the exfil dump) destroy evidence the questions ask about:
+# READ BEFORE YOU DELETE.
+#
+# Design rules this file obeys (checked in the unit test where practical):
+#   - Every planted artifact has exactly one paired check; planted names
+#     and paths are byte-identical to boxes/lantern-hill-library/nakon.json
+#     vars (nothing cross-checks them at build time).
+#   - Any artifact where DELETING the file is legitimate hardening is
+#     graded by a command_json compound or permission exists:false -- never
+#     file_regex on a deletable path (missing file = ERROR = fail-closed).
+#   - Mode checks (plugins dir, .env) fail closed on a missing file by
+#     design: chmod is the fix, deletion breaks the app and costs the
+#     site-up penalty on top.
+#   - is-enabled is matched on the exact "^enabled$" output (disabled,
+#     masked, not-found all count as hardened).
+#   - Every command_json script is read-only, guards every command so it
+#     ALWAYS emits exactly one JSON scalar, and exits 0. Privileged probes
+#     (sshd -T, auditctl, mysql) emit the hardened value from an
+#     unprivileged context so the unit test can run them on a dev host;
+#     on the box the agent runs as root and grades for real.
+#   - The weak sshd config, the root password the brute force finds, the
+#     audit rules, the query log, and the whole attacker REPLAY are
+#     PREP-BAKED (assets/prep/), not planted here: the replay needs
+#     password root login live so the journal records real evidence, and
+#     the audit rules must load BEFORE the plants so the intrusion
+#     artifacts write their own audit trail.
+
+scenario:
+  name: "Lantern Hill Community Library"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # --- the way in: sshd (prep-baked root cause) -----------------------------
+  - id: sshd_root_login_closed
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer permits direct password login as the superuser account"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Grade the effective config, not the file.** sshd reads a main
+      config plus drop-ins, so ask the daemon itself:
+
+      ```
+      sshd -T | grep -i permitrootlogin
+      ```
+
+      It reports `permitrootlogin yes` -- set by the drop-in
+      /etc/ssh/sshd_config.d/99-catalog-remote.conf. The login journal
+      shows the guessing run attacking the superuser account directly
+      before it landed on the staff account; with direct login open, the
+      next run lands on the front door instead.
+
+      **2. Shut it.** Add a hardening drop-in so a package upgrade cannot
+      quietly undo you:
+
+      ```
+      printf 'PermitRootLogin no\n' > /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm.** `sshd -T | grep -i permitrootlogin` now reports
+      `no` -- that effective value is what the check grades.
+
+  - id: sshd_password_auth_off
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer accepts password authentication (keys only)"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Password auth is what made the guessing possible.** The same
+      journal shows hundreds of failed password attempts before the one
+      that worked. As long as passwords are accepted, every account is
+      one weak password from compromised:
+
+      ```
+      sshd -T | grep -i passwordauthentication
+      ```
+
+      **2. Turn it off** in the same hardening drop-in:
+
+      ```
+      printf 'PermitRootLogin no\nPasswordAuthentication no\n' \
+          > /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      (Keep your own session open until you have confirmed a second
+      session still works.)
+
+      **3. Confirm.** `sshd -T | grep -i passwordauthentication` reports
+      `no`.
+
+  - id: sshd_empty_passwords_off
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH no longer permits empty passwords"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="permitemptypasswords"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the whole weak drop-in**, not just one line of it:
+
+      ```
+      cat /etc/ssh/sshd_config.d/99-catalog-remote.conf
+      sshd -T | grep -i permitemptypasswords
+      ```
+
+      `PermitEmptyPasswords yes` means any account with a blank password
+      can be logged into with NO password at all -- the quiet cousin of
+      the brute force.
+
+      **2. Add the countermand** to the hardening drop-in (first match in
+      sshd wins, and drop-ins sort before this 99- file):
+
+      ```
+      printf 'PermitRootLogin no\nPasswordAuthentication no\nPermitEmptyPasswords no\n' \
+          > /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm.** `sshd -T | grep -i permitemptypasswords` reports
+      `no`.
+
+  # --- accounts and keys ------------------------------------------------------
+  - id: nightdesk_removed
+    type: user_group
+    category: vuln
+    display: "EASY: The backdoor account sharing the superuser's UID is removed"
+    max_points: 5
+    collect: {}
+    expect:
+      user_absent: true
+      username: nightdesk
+      points: 5
+    solution: |
+      **1. Audit the roster against the handbook's authorized list.** Then
+      look for the subtler trick -- a shared numeric identity:
+
+      ```
+      awk -F: '$3 == 0 {print $1, $3, $7}' /etc/passwd
+      id nightdesk
+      ```
+
+      Two lines with UID 0: the superuser, and `nightdesk` -- a complete
+      second front door that every "root-only" rule silently trusts.
+
+      **2. Remove it completely:**
+
+      ```
+      userdel -r nightdesk
+      ```
+
+      (`-r` takes its home directory with it. If userdel complains about a
+      running process, that process is running as UID 0 anyway -- check
+      `ps -u nightdesk` first.)
+
+      **3. Confirm.** `id nightdesk` errors with "no such user", and the
+      passwd file shows exactly ONE account with UID 0.
+
+  - id: authorized_keys_clean
+    type: command_json
+    category: vuln
+    display: "EASY: The attacker's SSH key is gone from authorized_keys"
+    max_points: 5
+    collect:
+      script: |
+        f=/home/librarian/.ssh/authorized_keys
+        if [ ! -f "$f" ]; then echo true; exit 0; fi
+        grep -Fq 'inkmoth@203.0.113.7' "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Keys outlive passwords.** A public key in authorized_keys gives
+      passwordless SSH to whoever holds the private half -- changing
+      every password on the box evicts nobody:
+
+      ```
+      cat /home/librarian/.ssh/authorized_keys
+      ```
+
+      The planted line ends with the comment `inkmoth@203.0.113.7`; every
+      key line carries its owner's comment, so read them all. The audit
+      trail saw this file written: `ausearch --input /var/log/audit/audit.log -k sshdir -i`.
+
+      **2. Remove the attacker's line** (keep any key the staff actually
+      uses):
+
+      ```
+      nano /home/librarian/.ssh/authorized_keys
+      ```
+
+      **3. Confirm.** `grep inkmoth /home/librarian/.ssh/authorized_keys`
+      prints nothing (the check also accepts the file being gone). Note
+      the forensics file asks for that key's comment tag -- read it before
+      you delete it.
+
+  # --- the catalog app: the compromised front door ----------------------------
+  - id: rogue_module_removed
+    type: permission
+    category: vuln
+    display: "EASY: The plugin file the attacker dropped into the catalog app is deleted"
+    max_points: 5
+    collect:
+      path: /opt/library/plugins/promo_portal.py
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. The app told on itself.** The catalog hot-loads every *.py in
+      its plugins directory within a minute of it appearing -- and says so
+      in its own journal:
+
+      ```
+      ls -l /opt/library/plugins/
+      journalctl -u library-app | grep -i plugin
+      ```
+
+      `promo_portal.py` is not the library's. The journal's hot-load line
+      plus the file's own first comment name who left it.
+
+      **2. Delete it:**
+
+      ```
+      rm /opt/library/plugins/promo_portal.py
+      ```
+
+      **3. Confirm.** `ls /opt/library/plugins/` shows only the vendor
+      README. (Restarting the app afterwards is good hygiene: the loaded
+      module stays in memory until then.)
+
+  - id: plugins_dir_perms_fixed
+    type: permission
+    category: vuln
+    display: "MODERATE: The app's plugins directory is no longer world-writable"
+    max_points: 10
+    collect:
+      path: /opt/library/plugins
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0755"
+      points: 10
+    solution: |
+      **1. Ask how the file got there.** The app runs as `catalogsvc`;
+      something let just anyone write into its plugin path:
+
+      ```
+      stat -c '%a %U:%G %n' /opt/library/plugins
+      ```
+
+      It ships 0755 (root:catalogsvc). It is now 0777: every account on
+      the box can plant code the app will execute within a minute. This
+      is the root cause of the dropped module.
+
+      **2. Put the mode back** (chmod -- do NOT delete the directory; the
+      app scans it and the check grades its mode):
+
+      ```
+      chmod 0755 /opt/library/plugins
+      chown root:catalogsvc /opt/library/plugins
+      ```
+
+      **3. Confirm.** `stat -c '%a' /opt/library/plugins` shows no
+      write bit for other, and the catalog still serves.
+
+  - id: app_secrets_perms_fixed
+    type: permission
+    category: vuln
+    display: "MODERATE: The app's credentials file /opt/library/.env is no longer world-writable"
+    max_points: 10
+    collect:
+      path: /opt/library/.env
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0640"
+      points: 10
+    solution: |
+      **1. The app keeps its database credentials in a config file** --
+      and that file has been loosened so every account can read AND write
+      it:
+
+      ```
+      stat -c '%a %U:%G %n' /opt/library/.env
+      cat /opt/library/.env
+      ```
+
+      Anyone who can write it can repoint the catalog at a database they
+      control; anyone who can read it owns the DB account inside.
+
+      **2. Tighten it** (it ships root:catalogsvc 0640 -- restore exactly
+      that; the service account still needs to read it):
+
+      ```
+      chown root:catalogsvc /opt/library/.env
+      chmod 0640 /opt/library/.env
+      ```
+
+      **3. Confirm.** `stat -c '%a' /opt/library/.env` shows 640 (or
+      tighter, as long as the catalog can still read it -- deleting the
+      file breaks the app and costs the site-up penalty).
+
+  - id: exfil_dump_removed
+    type: permission
+    category: vuln
+    display: "EASY: The attacker's staged copy of the catalog is deleted"
+    max_points: 5
+    collect:
+      path: /var/backups/catalog-export.sql
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Check the staging places.** /var/backups is where backups
+      belong -- which is exactly why a staged copy hides there in plain
+      sight:
+
+      ```
+      ls -la /var/backups/
+      head /var/backups/catalog-export.sql
+      ```
+
+      The file's own header comment names who made it and why. The
+      database's query log shows the export SELECT that preceded it.
+      Deleting it does not un-steal the data, but it closes the stash.
+
+      **2. Delete it:**
+
+      ```
+      rm /var/backups/catalog-export.sql
+      ```
+
+      **3. Confirm.** `ls /var/backups/` no longer lists it. (Forensics:
+      the question about the staged export wants the filename -- you just
+      read it.)
+
+  # --- data tampering: the scheduled jobs -------------------------------------
+  - id: tamper_cron_removed
+    type: command_json
+    category: vuln
+    display: "EASY: The /etc/cron.d job that keeps re-breaking the holds desk (and its payload) are both gone"
+    max_points: 5
+    collect:
+      script: |
+        if [ ! -e /etc/cron.d/catalog-maint ] && [ ! -e /opt/inkmoth/catalog-maint ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Follow the re-breaking.** You fix a patron's hold; hours later
+      it is CANCELLED again. Something on a schedule is undoing you:
+
+      ```
+      ls -l /etc/cron.d/
+      cat /etc/cron.d/catalog-maint
+      ```
+
+      The line runs /opt/inkmoth/catalog-maint as the superuser, hourly
+      at :17. Read the payload: it fires UPDATE statements at the holds
+      table -- which is why the database's query log keeps seeing them.
+
+      **2. Remove both halves** (either one alone still counts as planted):
+
+      ```
+      rm -f /etc/cron.d/catalog-maint /opt/inkmoth/catalog-maint
+      ```
+
+      **3. Confirm.** Both paths are gone. Leave the cron DAEMON alone --
+      the site and database must keep running, and cron runs the box's
+      own chores too. The query log stops showing the recurring tamper
+      UPDATEs: that silence is your proof.
+
+  - id: timer_neutralized
+    type: command_json
+    category: vuln
+    display: "MODERATE: The systemd timer (and its shelf-scrambling payload) is disabled, removed, and gone from disk"
+    max_points: 10
+    collect:
+      script: |
+        if systemctl is-enabled inkmoth-relabel.timer 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        if [ -e /etc/systemd/system/inkmoth-relabel.timer ]; then echo false; exit 0; fi
+        if [ -e /opt/inkmoth/relabel-catalog ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Cron is not the only scheduler.** systemd has its own:
+
+      ```
+      systemctl list-timers --all
+      systemctl cat inkmoth-relabel.timer
+      ```
+
+      `inkmoth-relabel.timer` fires its companion service shortly after
+      boot and then every 45 minutes: a one-shot that prepends X's to
+      shelf codes in the books table. "Catalog relabel maintenance" is
+      costume, not job description.
+
+      **2. Disable AND stop the timer:**
+
+      ```
+      systemctl disable --now inkmoth-relabel.timer
+      ```
+
+      **3. Remove the unit files and the payload.** Disabling only leaves
+      the files on disk -- one `systemctl enable` from coming back:
+
+      ```
+      systemctl daemon-reload
+      rm -f /etc/systemd/system/inkmoth-relabel.timer \
+            /etc/systemd/system/inkmoth-relabel.service \
+            /opt/inkmoth/relabel-catalog
+      ```
+
+      **4. Confirm all three graded conditions:** is-enabled no longer
+      says `enabled`, the .timer file is gone, and the payload is gone.
+      The forensics file asks for the timer's re-fire cadence -- read the
+      OnUnitActiveSec line BEFORE you delete the unit.
+
+  - id: rogue_service_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The disguised 'metrics' service is disabled and its payload deleted"
+    max_points: 10
+    collect:
+      script: |
+        if systemctl is-enabled metrics-probe.service 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        if [ -e /opt/inkmoth/metrics-probe ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Inventory the units no package owns:**
+
+      ```
+      systemctl list-units --type=service --all | grep -ivE 'ssh|apache|maria|cron|journal|system'
+      systemctl cat metrics-probe.service
+      ```
+
+      "System metrics probe" measures nothing: it runs a sleep loop from
+      /opt/inkmoth/metrics-probe with Restart=always. A resident process
+      doing nothing is not monitoring -- it is MOORED.
+
+      **2. Disable AND stop it:**
+
+      ```
+      systemctl disable --now metrics-probe.service
+      systemctl daemon-reload
+      ```
+
+      **3. Delete the payload** so nothing can re-enable it:
+
+      ```
+      rm -f /opt/inkmoth/metrics-probe
+      ```
+
+      **4. Confirm both graded conditions:** is-enabled no longer says
+      `enabled`, and the payload is gone from disk.
+
+  # --- stealth, staging, and the way back in ----------------------------------
+  - id: ld_preload_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The loader-level implant is gone from the loader config and from disk"
+    max_points: 10
+    collect:
+      script: |
+        p=/etc/ld.so.preload
+        l=/usr/local/lib/libinkmoth.so
+        if [ -e "$l" ]; then echo false; exit 0; fi
+        if [ -e "$p" ] && grep -Ev '^[[:space:]]*(#|$)' "$p" | grep -q .; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Check the loader itself.** /etc/ld.so.preload lists shared
+      objects the dynamic loader maps into EVERY dynamically-linked
+      process -- including every command you run. It is a rootkit's
+      front door:
+
+      ```
+      cat /etc/ld.so.preload
+      file /usr/local/lib/libinkmoth.so
+      ldd /bin/ls    # the implant shows up as if it were a normal dependency
+      ```
+
+      **2. Remove both halves** -- the config entry AND the object:
+
+      ```
+      rm -f /etc/ld.so.preload /usr/local/lib/libinkmoth.so
+      ```
+
+      **3. Confirm.** `cat /etc/ld.so.preload` errors (or shows only
+      comments) and `ldd /bin/ls` no longer lists libinkmoth.so. The
+      check grades exactly that: no active preload entries, and the .so
+      gone from disk.
+
+  - id: firewall_rule_removed
+    type: command_json
+    category: vuln
+    display: "EASY: The firewall rule welcoming the attacker's address back is gone (live ruleset AND the persisted file)"
+    max_points: 5
+    collect:
+      script: |
+        if iptables-save 2>/dev/null | grep -Fq '203.0.113.7'; then echo false; exit 0; fi
+        if [ -f /etc/iptables/rules.v4 ] && grep -Fq '203.0.113.7' /etc/iptables/rules.v4; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the ruleset looking for favors:**
+
+      ```
+      iptables-save | grep -n 203.0.113.7
+      cat /etc/iptables/rules.v4
+      ```
+
+      An INPUT ACCEPT for the attacker's address on the backdoor listener's
+      port -- a standing invitation, added to both the live ruleset and
+      the persisted file so it survives a reboot.
+
+      **2. Delete the rule from both places:**
+
+      ```
+      iptables -D INPUT -p tcp -s 203.0.113.7 --dport 2222 -j ACCEPT
+      nano /etc/iptables/rules.v4     # remove the -A INPUT ... line
+      ```
+
+      **3. Confirm.** Neither `iptables-save` nor rules.v4 mentions the
+      attacker's address any more -- the check grades both.
+
+  - id: hosts_redirect_removed
+    type: command_json
+    category: vuln
+    display: "EASY: The hosts file no longer redirects a trusted hostname to the attacker's address"
+    max_points: 5
+    collect:
+      script: |
+        f=/etc/hosts
+        [ -f "$f" ] || { echo true; exit 0; }
+        grep -Fq '203.0.113.7' "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Name resolution starts here.** Before DNS is ever asked,
+      /etc/hosts answers -- and one appended line maps a trusted update
+      hostname to the attacker's address (the same one from the login
+      journal). Any software on the box that trusts that hostname now
+      trusts THEM:
+
+      ```
+      cat /etc/hosts
+      ```
+
+      (The audit trail saw the write too: `ausearch --input /var/log/audit/audit.log -k netmap -i`.)
+
+      **2. Remove the attacker's line** -- the stock file does not mention
+      their address anywhere:
+
+      ```
+      nano /etc/hosts
+      ```
+
+      **3. Confirm.** `grep 203.0.113.7 /etc/hosts` prints nothing. The
+      forensics file asks WHICH hostname was bent -- read the line before
+      you delete it.
+
+  - id: backdoor_sshd_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The second sshd listener on port 2222 is disabled and no longer listening"
+    max_points: 20
+    collect:
+      script: |
+        if ss -tln 2>/dev/null | grep -q ':2222 '; then echo false; exit 0; fi
+        if systemctl is-enabled sshd-alt.service 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Count the listeners.** The main sshd is not the only thing
+      answering on this box:
+
+      ```
+      ss -tlnp | grep -E ':(22|2222)\b'
+      systemctl cat sshd-alt.service
+      ```
+
+      `sshd-alt.service` -- "emergency access" -- runs a SECOND sshd on
+      port 2222 with Restart=always, reading the SAME weak config. Every
+      password works twice; hardening port 22 alone fixes nothing here.
+
+      **2. Disable AND stop it:**
+
+      ```
+      systemctl disable --now sshd-alt.service
+      systemctl daemon-reload
+      ```
+
+      **3. Confirm both graded conditions:** port 2222 is no longer
+      listening (`ss -tln`) and the unit is no longer enabled (disabled,
+      masked, not-found all count). Remove the unit file too:
+      `rm /etc/systemd/system/sshd-alt.service`.
+
+  - id: beacon_neutralized
+    type: command_json
+    category: vuln
+    display: "HARD: The disguised 'cache maintenance' implant is disabled and its binary is gone"
+    max_points: 20
+    collect:
+      script: |
+        if [ -e /usr/local/libexec/.cache-refresh ]; then echo false; exit 0; fi
+        if systemctl is-enabled cache-refresh.service 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Port scans will NOT find this one.** It holds no port. Review
+      units and processes for the plausible-but-unowned:
+
+      ```
+      systemctl list-units --type=service | grep -i cache
+      systemctl cat cache-refresh.service
+      ls -l /usr/local/libexec/
+      ```
+
+      "Cache maintenance" runs a hidden binary that forges packets toward
+      its baked-in destination every 30 seconds, forever, output to
+      /dev/null. Read it with `strings /usr/local/libexec/.cache-refresh |
+      grep -E '203\.|BEA1'` to see where it phones.
+
+      **2. Disable AND stop, then delete the binary:**
+
+      ```
+      systemctl disable --now cache-refresh.service
+      systemctl daemon-reload
+      rm -f /usr/local/libexec/.cache-refresh
+      ```
+
+      **3. Confirm both graded conditions:** the binary is gone from disk
+      and the unit no longer reports `enabled`.
+
+  - id: tools_uninstalled
+    type: package
+    category: vuln
+    display: "MODERATE: The attacker's password-guessing toolkit is uninstalled"
+    max_points: 10
+    collect:
+      package: hydra
+    expect:
+      equals: false
+      field: installed
+      points: 10
+    solution: |
+      **1. The guessing run used a tool, and the tool stayed behind.**
+      Nothing on a library catalog server has a reason to ship it:
+
+      ```
+      dpkg -l | grep -E 'hydra|nmap|netcat'
+      which hydra
+      ```
+
+      **2. Remove the toolkit** (all of it -- the check grades hydra, the
+      rest came with it):
+
+      ```
+      apt-get remove --purge -y hydra nmap netcat-traditional
+      ```
+
+      **3. Confirm.** `which hydra` prints nothing; `dpkg -l` no longer
+      lists them.
+
+  # --- login-time hooks ---------------------------------------------------------
+  - id: system_bashrc_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: The system-wide /etc/bash.bashrc no longer carries the attacker's line"
+    max_points: 10
+    collect:
+      script: |
+        f=/etc/bash.bashrc
+        if [ ! -f "$f" ]; then echo true; exit 0; fi
+        grep -Fiq inkmoth "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Shells talk.** /etc/bash.bashrc is sourced by bash for EVERY
+      interactive shell on Debian -- one appended line reaches every
+      account at once. If login output has looked... chatty, look here:
+
+      ```
+      tail -5 /etc/bash.bashrc
+      ```
+
+      The last line prints an "after-hours" message signed by the
+      intruder.
+
+      **2. Cut the line** (keep the rest of the file intact):
+
+      ```
+      nano /etc/bash.bashrc
+      ```
+
+      **3. Confirm.** `grep -i inkmoth /etc/bash.bashrc` prints nothing,
+      and a fresh shell is quiet.
+
+  - id: motd_script_gone
+    type: permission
+    category: vuln
+    display: "EASY: The planted login-banner script is deleted"
+    max_points: 5
+    collect:
+      path: /etc/update-motd.d/99catalog-tip
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. The login banner is GENERATED.** Debian runs everything in
+      /etc/update-motd.d in order at each login -- you have been reading
+      attacker output every time you connected:
+
+      ```
+      ls -l /etc/update-motd.d/
+      cat /etc/update-motd.d/99catalog-tip
+      ```
+
+      The "tip from the night desk" is not a library message.
+
+      **2. Delete it** (99 = runs last; nothing stock depends on it):
+
+      ```
+      rm /etc/update-motd.d/99catalog-tip
+      ```
+
+      **3. Confirm.** `ls /etc/update-motd.d/` shows only the stock
+      entries, and your next login banner is clean.
+
+  # --- escalation ---------------------------------------------------------------
+  - id: sudoers_rule_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The NOPASSWD grant in /etc/sudoers.d is removed"
+    max_points: 20
+    collect:
+      script: |
+        if [ -e /etc/sudoers.d/nightdesk-recovery ]; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Audit the sudo drop-ins.** /etc/sudoers.d is where quiet
+      privileges live:
+
+      ```
+      ls -l /etc/sudoers.d/
+      cat /etc/sudoers.d/* 2>/dev/null
+      sudo -l -U nightdesk 2>/dev/null
+      ```
+
+      `nightdesk-recovery` grants the backdoor account passwordless use
+      of a pager that escapes to a shell -- full superuser on demand
+      without ever typing a password.
+
+      **2. Remove the drop-in:**
+
+      ```
+      rm /etc/sudoers.d/nightdesk-recovery
+      ```
+
+      (Do not edit /etc/sudoers itself; the drop-in is the whole finding.)
+
+      **3. Confirm.** The file is gone and `sudo -l -U nightdesk` no
+      longer lists any grant (the account itself should already be
+      removed -- that is its own check).
+
+  # --- anti-forensics -------------------------------------------------------------
+  - id: log_truncator_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The scheduled job that keeps emptying the text logs is removed"
+    max_points: 20
+    collect:
+      script: |
+        f=/etc/cron.d/log-cleanup
+        if [ ! -e "$f" ]; then echo true; exit 0; fi
+        grep -q '/var/log' "$f" && echo false || echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Notice what is missing.** The flat text logs are suspiciously
+      tiny and keep resetting -- someone is erasing history on a schedule:
+
+      ```
+      ls -l /var/log/auth.log /var/log/syslog
+      ls -l /etc/cron.d/
+      cat /etc/cron.d/log-cleanup
+      ```
+
+      Every minute it blanks the classic text logs. It failed anyway: the
+      binary journal, the audit trail, and wtmp/btmp kept everything (that
+      is WHY this box's story survived). But the eraser goes.
+
+      **2. Remove it:**
+
+      ```
+      rm /etc/cron.d/log-cleanup
+      ```
+
+      **3. Confirm.** The file is gone (or no longer references /var/log),
+      and the text logs start accumulating again. The forensics file asks
+      which logs it kept wiping -- read the job BEFORE deleting it.
+
+  - id: timezone_restored
+    type: command_json
+    category: vuln
+    display: "HARD: The system clock is no longer parked in the attacker's timezone (restore the library's zone)"
+    max_points: 20
+    collect:
+      script: |
+        tz=$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')
+        if [ -z "$tz" ]; then tz=$(cat /etc/timezone 2>/dev/null || true); fi
+        if [ -z "$tz" ] && command -v timedatectl >/dev/null 2>&1; then
+          tz=$(timedatectl show -p Timezone --value 2>/dev/null || true)
+        fi
+        if [ "$tz" = "Pacific/Kiritimati" ]; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Distrust the clock, then check it.** Every timestamp in every
+      log is only comparable if the timezone is honest:
+
+      ```
+      timedatectl
+      ls -l /etc/localtime
+      ausearch --input /var/log/audit/audit.log -k time-change -i
+      # (the audit trail saw the change)
+      ```
+
+      The zone was moved to the furthest-ahead timezone on Earth --
+      exactly the kind of "harmless" change that scrambles log
+      correlation and breaks TLS validation.
+
+      **2. Restore the library's zone:**
+
+      ```
+      timedatectl set-timezone America/New_York
+      ```
+
+      **3. Confirm.** `timedatectl` reports America/New_York. The check
+      grades that the attacker's zone is gone, so any honest zone passes
+      -- but the library's real one is America/New_York.
+
+  # --- protective: keep the flight recorders running -------------------------------
+  - id: auditd_rules_intact
+    type: command_json
+    category: vuln
+    display: "MODERATE: The audit daemon is still running with its watch rules loaded (do not blind the box)"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v auditctl >/dev/null 2>&1 || { echo true; exit 0; }
+        rules=$(auditctl -l 2>/dev/null | grep -c .)
+        if [ "$(systemctl is-active auditd 2>/dev/null)" = "active" ] && [ "$rules" -ge 3 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. This one is already true -- your job is to keep it true.** The
+      audit daemon and its watch rules are the box's flight recorder; a
+      "cleanup" that stops auditd or flushes its rules scores the same as
+      the attacker disabling it:
+
+      ```
+      systemctl status auditd
+      auditctl -l | head
+      ```
+
+      **2. If it is not active** (or the rules list is empty), restore it:
+
+      ```
+      systemctl start auditd
+      augenrules --load
+      ```
+
+      **3. Confirm.** `systemctl is-active auditd` says `active` AND
+      `auditctl -l` lists the watches. Evict the intruder; never evict
+      the evidence.
+
+  - id: db_general_log_on
+    type: command_json
+    category: vuln
+    display: "MODERATE: The database's query log is still ON (do not mute the other witness)"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v mysql >/dev/null 2>&1 || command -v mariadb >/dev/null 2>&1 || { echo true; exit 0; }
+        v=$(mysql -N -e 'SELECT @@global.general_log' 2>/dev/null || true)
+        if [ "$v" = "1" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. The query log is the database's testimony.** It is how you
+      know exactly which statements the intruder ran. Turning the log off
+      "to tidy up" erases the witness for any FUTURE incident:
+
+      ```
+      mysql -e 'SHOW VARIABLES LIKE "general_log%"'
+      tail /var/log/mysql/general.log
+      ```
+
+      **2. If it is off, switch it back on** (it is configured in
+      /etc/mysql/mariadb.conf.d/99-library-ir.cnf):
+
+      ```
+      mysql -e 'SET GLOBAL general_log = ON'
+      ```
+
+      **3. Confirm.** `SELECT @@global.general_log` returns 1. This check
+      starts true and stays true unless YOU break it.
+
+  # --- penalties -----------------------------------------------------------------
+  - id: catalog_app_healthy
+    type: service_state
+    category: penalty
+    display: "PENALTY: The catalog app (library-app) is not running (you broke the service instead of evicting the intruder)"
+    max_points: 10
+    collect:
+      service: library-app
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if the `library-app` service is not ACTIVE,
+      10 points come off. Stopping the app does evict the intruder's web
+      access -- and also every patron's catalog. Evict the ACCESS, keep
+      the SERVICE: `systemctl status library-app` should read
+      `active (running)`. If you stopped it, `systemctl start library-app`
+      puts it back.
+
+  - id: db_reachable
+    type: db_query
+    category: penalty
+    display: "PENALTY: The catalog database is unreachable (locked yourself out of the shelves?)"
+    max_points: 10
+    collect:
+      host: 127.0.0.1
+      port: 3306
+    expect:
+      equals: true
+      field: ok
+      points: -10
+    solution: |
+      This only ever subtracts: if nothing is listening on 127.0.0.1:3306,
+      10 points come off. Stopping or masking mariadb does not fix any
+      finding on this box -- the catalog (and its query log) lives in
+      that database. If you stopped it, `systemctl start mariadb`.
+
+theme:
+  title: "Lantern Hill Community Library"
+  organization: "Lantern Hill Community Library — Board of Trustees"
+  accent: "#2F5D62"
+  readme: assets/README.md
+  # Two graded answers collide with unavoidable story vocabulary, by
+  # static-pine precedent: "inkmoth" (the intruder signs everything) and
+  # "librarian" (Q1's answer is the account whose password fell -- which is
+  # also the player's own login, printed on page 1 as the creds-briefing
+  # rule requires). The full answers never appear in the handbook.
+  readme_lint_allow: ["inkmoth", "librarian"]
+  motd: |
+    Welcome to the Lantern Hill Community Library catalog server.
+    Authorized operators only. Run `huitz score` for your standing and
+    `huitz readme` for the handbook from the Board of Trustees.
+  issue: |
+    Lantern Hill Community Library catalog server.
+    Unauthorized access will be reported to the Board of Trustees.
+
+# Scored forensics questions (CyberPatriot-style): teams type answers into
+# Forensics-Questions.txt (pinned to librarian's Desktop; edit with
+# `huitz forensics`); the agent re-grades the file each pass. Correct =
+# full points; wrong or blank = nothing, never negative. The thirteen
+# questions walk the investigation chronologically: each names the
+# evidence CLASS and asks for one short specific value, never the answer
+# itself, and each answer sits in an artifact the hunt opens anyway.
+# READ BEFORE YOU DELETE: Q3, Q5, Q6, Q7, Q10 and Q12 ask about files
+# whose removal is itself scored.
+forensics:
+  - id: fq-compromised-account
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The login records survived in more places than the intruder could wipe. Which account's password fell to the password-guessing attack?"
+    answer: "librarian"
+    points: 10
+    solution: |
+      The guessing run is in the service journal: `journalctl -u ssh` (or
+      `journalctl _COMM=sshd`) lists each "Failed password" and then, at
+      the end, "Accepted password for librarian from 203.0.113.7" -- the
+      same story in `last`/`lastb`, which the flat-log wiping never
+      touched. Don't assume because you're logged in AS that account:
+      read the journal and confirm which password actually gave way.
+  - id: fq-source-ip
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The guessing came from one address, over and over, until it worked. Type the IP address the intruder connected from."
+    answer: "203.0.113.7"
+    answers: ["203.0.113.7"]
+    points: 10
+    solution: |
+      Read the same accepted-password line: the source address follows
+      "from". That one address then reappears in the app journal's
+      tampering requests, the firewall rule, and the hosts redirect --
+      one address, four witnesses. It is a documentation-range address,
+      which is how you know the exercise is staged.
+  - id: fq-key-comment
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "Someone planted an SSH public key for passwordless access. Type the comment tag at the END of that key line (it names the intruder)."
+    answer: "inkmoth@203.0.113.7"
+    answers: ["inkmoth"]
+    points: 10
+    solution: |
+      `cat /home/librarian/.ssh/authorized_keys` and read every line to
+      the end. Key lines end with a free-text comment naming the key's
+      owner -- the planted one signs itself inkmoth@203.0.113.7. Removing
+      the key and reading the tag are the same command; note the tag
+      first.
+  - id: fq-uid0-account
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The account list hides a second account that shares the superuser's numeric identity. Type its name."
+    answer: "nightdesk"
+    points: 10
+    solution: |
+      `awk -F: '$3 == 0 {print $1}' /etc/passwd` -- two accounts carry
+      UID 0, and only one of them is supposed to. The audit trail's
+      identity records (`ausearch --input /var/log/audit/audit.log -k identity -i`) watched the account
+      get created.
+  - id: fq-tamper-cron
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "One scheduled job keeps undoing your repairs to the holds desk. Type the filename of that job -- it lives in the system cron drop-in directory."
+    answer: "catalog-maint"
+    answers: ["/etc/cron.d/catalog-maint"]
+    points: 10
+    solution: |
+      `ls /etc/cron.d/` and read the file that is not stock: it runs
+      /opt/inkmoth/catalog-maint hourly, firing the UPDATE that flips
+      holds back to CANCELLED. The database's query log shows the same
+      statement repeating on that cadence. Note the filename before you
+      delete the job -- the question and the fix share one `ls`.
+  - id: fq-timer-cadence
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "A systemd timer re-fires a shelf-scrambling payload on a fixed cadence. How often does it re-fire? (Give the OnUnitActiveSec value.)"
+    answer: "45min"
+    answers: ["45 min", "45 minutes", "every 45 min", "every 45 minutes"]
+    points: 10
+    solution: |
+      `systemctl cat inkmoth-relabel.timer` and read the [Timer]
+      section: OnBootSec=5min (first fire) and OnUnitActiveSec=45min
+      (the re-fire cadence the question asks for). `systemctl
+      list-timers` shows the same story live as "next trigger". Read the
+      unit BEFORE deleting it -- the answer leaves with the file.
+  - id: fq-rogue-module
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The catalog app hot-loads plugin files from its plugins directory. One file there is not the library's. Type that file's name."
+    answer: "promo_portal.py"
+    answers: ["/opt/library/plugins/promo_portal.py"]
+    points: 10
+    solution: |
+      `ls -l /opt/library/plugins/` shows the vendor README and one
+      impostor. The app's journal announced it the minute it appeared
+      (`journalctl -u library-app | grep -i hot-load`). Name the file
+      before deleting it -- the filename is the answer.
+  - id: fq-admin-path
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The catalog app's own service journal logged every request it served -- the intruder's included. Type the URL path of the admin route the tampering requests hit."
+    answer: "/admin/holds/update"
+    answers: ["admin/holds/update"]
+    points: 10
+    solution: |
+      `journalctl -u library-app` prints one access line per request,
+      client IP first. The intruder's address appears three times in a
+      row, all against the same unauthenticated admin route, each
+      followed by an "admin:" line in the app's own log. The path in
+      those requests is the answer.
+  - id: fq-db-table
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The database's query log records the statements that cancelled holds. Which table did those statements change? Type the table name."
+    answer: "holds"
+    points: 10
+    solution: |
+      `tail -n 50 /var/log/mysql/general.log` and find the UPDATE
+      statements: `UPDATE holds SET status='CANCELLED' WHERE
+      status='READY'`. The table name is the first word after UPDATE.
+      The recurring entries on the same cadence are the cron job still
+      doing it -- until you evict it.
+  - id: fq-exfil-file
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "Before tampering, the intruder staged a copy of the catalog for the road. Type the filename of that staged export -- it sits in a directory meant for backups."
+    answer: "catalog-export.sql"
+    answers: ["/var/backups/catalog-export.sql"]
+    points: 10
+    solution: |
+      `ls -la /var/backups/` -- among the honest backups sits a
+      freshly-written SQL dump whose own header comment names its author.
+      The query log shows the SELECT that fed it. Name it before you
+      delete it.
+  - id: fq-hosts-redirect
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "The intruder bent this box's name resolution: one extra line in the hosts file sends a trusted update hostname to their own machine. Type that hostname."
+    answer: "updates.lanternhill-library.org"
+    points: 10
+    solution: |
+      `cat /etc/hosts` -- one appended line maps a hostname to the
+      attacker's address (the same one from the login journal). Any
+      software on the box that trusts that hostname now trusts THEM.
+      The hostname is the first thing on the planted line.
+  - id: fq-wiped-logs
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "A scheduled job empties the classic text logs over and over. Name ANY ONE of the log files it keeps wiping."
+    answer: "auth.log"
+    answers: ["syslog", "/var/log/auth.log", "/var/log/syslog"]
+    points: 10
+    solution: |
+      Read the eraser before deleting it: `cat /etc/cron.d/log-cleanup`
+      lists the files it blanks every minute -- any one of them answers
+      the question. Notice what it did NOT touch: the binary journal,
+      the audit trail, and wtmp/btmp all kept the full story, which is
+      the only reason this investigation is possible.
+  - id: fq-timezone
+    path: /home/librarian/Desktop/Forensics-Questions.txt
+    question: "Timestamps only line up if the clock does. The box's timezone was moved far, far ahead. What timezone is it set to NOW? (The tz database name, as timedatectl reports it.)"
+    answer: "Pacific/Kiritimati"
+    answers: ["kiritimati", "UTC+14", "Etc/GMT-14"]
+    points: 10
+    solution: |
+      `timedatectl` (or `ls -l /etc/localtime`) names the zone: the
+      furthest-ahead timezone on Earth, UTC+14. The audit trail saw the
+      change (`ausearch --input /var/log/audit/audit.log -k time-change -i`). Restoring the library's
+      real zone (America/New_York) is the paired hardening check.
