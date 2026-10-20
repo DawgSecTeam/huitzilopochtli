@@ -195,7 +195,7 @@ Exit: docs match code; `pytest` passes; no stale counts/claims.
 
 Automated:
 
-- `pytest` default tier: **997 passed, 1 skipped (root-only), 5 deselected**
+- `pytest` default tier: **1003 passed, 1 skipped (root-only), 5 deselected**
   in 252s.
 - `pytest tests/unit`: 892 passed, 1 skipped.
 - `pytest tests/integration -m "not proxmox"`: 105 passed.

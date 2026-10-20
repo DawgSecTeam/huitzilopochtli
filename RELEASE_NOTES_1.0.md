@@ -29,6 +29,8 @@ protocol, score ledger, and box factory safe to run as a 1.0 system.
 - The reference recursive modular exponentiation was replaced by the
   equivalent built-in `pow()`, making the test suite and check-ins several
   times faster.
+- Canonical signing payloads reject NaN/Infinity and keys that collide after
+  NFC normalization instead of silently merging them.
 
 ## Engine / protocol
 
