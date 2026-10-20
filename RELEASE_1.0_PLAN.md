@@ -216,9 +216,13 @@ Real infrastructure (Proxmox, fresh linked clones):
   (`Total: 100` baseline with no vulns planted), `huitz score` rendered the
   board and exited 0, `huitz forensics` displayed and edited the answers file,
   and `huitz grade` re-ran successfully.
-- Blocker: the dev host cannot open SSH to VM IPs (only the Proxmox API and
-  guest-agent channel are reachable here), so a real boxbuilder `install` over
-  the ssh provider could not be run from this host. The install path is covered
-  by the boxbuilder integration tests with a recording fake handle (file set,
-  cleanup, sealing, ranked token/config, init); run the real SSH install from a
-  host with SSH reachability before publishing the release.
+- **Real boxbuilder SSH install**: after regenerating the clone's machine-id
+  (template 106 hands every clone the same DHCP identity; the earlier timeout
+  was an IP collision, not a bridge issue), `boxbuilder install --init systemd`
+  placed the file set, sealed `/opt/.huitzilopochtli` 0700, installed the timer
+  and `huitz` shim, and the non-root player CLI read the mirrored report.
+- **Real honor→ranked reinstall** on that same box, against a live engine on a
+  second VM: the install removed `.score.dat`, installed the ranked config and
+  identity, disabled/removed the honor timer, enrolled, and produced
+  `total=10` on the engine leaderboard. The player CLI showed the ranked score.
+  Both test VMs were destroyed afterward.
