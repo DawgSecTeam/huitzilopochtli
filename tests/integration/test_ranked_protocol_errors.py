@@ -471,16 +471,14 @@ def test_checkin_out_of_range_ints_are_400_not_500(engine, scenario,
     assert "malformed bundle" in parsed["error"]
 
 
-def test_checkin_nan_wall_claim_is_rejected(engine, scenario, enrolled_box,
-                                            seqs):
-    # PROBE: json.loads accepts NaN and json.dumps emits it, so a NaN in a
-    # bundle field sails through canonicalize(). It must never be scored or
-    # stored: reject at the wire layer.
-    name, version = scenario
-    priv, box_id = enrolled_box
-    body = _bundle_dict(box_id, next(seqs), name, version, {"matched": "no"})
-    body["created_wall_claim"] = float("nan")
-    status, parsed, _ = _signed_checkin(engine, priv, body)
+def test_checkin_nan_wall_claim_is_rejected(engine):
+    # NaN/Infinity are accepted by Python's json.loads but are not JSON. The
+    # wire layer (and canonicalization) reject them before scoring/storage.
+    status, parsed, _ = _post(
+        engine, "/checkin",
+        b'{"box_id":"b","seq":1,"boot_id":"x","agent_version":"1.0.0",'
+        b'"scenario_name":"s","scenario_version":1,"evidence":[],'
+        b'"created_wall_claim":NaN}')
     assert status == 400, (status, parsed)
 
 

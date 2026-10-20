@@ -66,7 +66,11 @@ class CommandJsonCheck(Check):
             return self._error(spec, "script produced no output")
 
         try:
-            data = json.loads(out)
+            data = json.loads(
+                out,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"non-finite JSON constant {value}")),
+            )
         except ValueError:
             return self._error(spec, "script output was not a JSON document")
 

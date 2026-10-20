@@ -220,7 +220,14 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         if not raw:
             return {}
-        return json.loads(raw.decode("utf-8"))
+
+        def _reject_constant(value):
+            # Python's json accepts NaN/Infinity by default; neither is JSON,
+            # and canonicalization (used for signatures and audit storage)
+            # must be strict. Reject them at the wire boundary.
+            raise ValueError(f"non-finite JSON constant {value}")
+
+        return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
 
     def _sig_header(self) -> bytes:
         sig_b64 = self.headers.get("X-HUITZILOPOCHTLI-Sig", "")
