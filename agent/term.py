@@ -526,7 +526,12 @@ class KeyPoller:
         ready, _, _ = self._select.select([self._fd], [], [], timeout_s)
         if not ready:
             return ""
-        ch = os.read(self._fd, 1).decode("utf-8", "replace")
+        raw = os.read(self._fd, 1)
+        if raw == b"":
+            # EOF/hangup: select() keeps reporting readable, so returning a
+            # timeout would busy-spin the watch loop forever.
+            return "ctrl-c"
+        ch = raw.decode("utf-8", "replace")
         if ch == "\x03":
             return "ctrl-c"
         return ch

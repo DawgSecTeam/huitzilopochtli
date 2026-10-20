@@ -1,7 +1,11 @@
 """Check plugin base class + registry. See architecture.md §9.1."""
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from common.schema import CheckSpec, Evidence
+
+if TYPE_CHECKING:  # pragma: no cover
+    from agent.platform.base import PlatformContext
 
 
 class Check(ABC):

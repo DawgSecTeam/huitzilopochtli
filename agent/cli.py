@@ -119,7 +119,7 @@ def _split_flags(argv: list, bool_flags: set, val_flags: set) -> tuple:
                 opts[name] = value
             else:
                 raise UsageError(f"unknown option {name}")
-        elif arg.startswith("-") and len(arg) > 1:
+        elif arg.startswith("--"):
             raise UsageError(f"unknown option {arg}")
         else:
             positional.append(arg)

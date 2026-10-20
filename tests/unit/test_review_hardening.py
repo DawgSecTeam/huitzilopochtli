@@ -597,3 +597,30 @@ def test_agent_refuses_wrong_shape_directives_record(tmp_path, monkeypatch, payl
     response = _directive_response(issued=["e1"])
     agent_main._run_directives(response, str(tmp_path / "identity.json"), None)
     assert ran == [], "wrong-shape directive record re-ran historical actions"
+
+
+def test_engine_rate_limiter_caps_a_burst():
+    from engine.server import _RateLimiter
+    limiter = _RateLimiter(per_minute=60, burst=3)
+    assert [limiter.allow("1.2.3.4") for _ in range(4)] == [True, True, True, False]
+    assert limiter.allow("5.6.7.8") is True
+    assert _RateLimiter(0, 1).allow("x") is True
+
+
+def test_engine_charges_checkin_only_after_rubric_lookup_is_authorized():
+    # The pre-auth path no longer reads/parses a scenario: a bogus signature
+    # for a known box must fail without touching the scenarios table.
+    from engine.store import Store
+    from engine.checkin import CheckinError, handle_checkin
+    from common.schema import Bundle, SCHEMA_VERSION
+    from common.version import AGENT_VERSION
+    import base64
+
+    store = Store(":memory:")
+    store.create_box("box", base64.b64encode(b"k" * 32).decode(), "sc", 1)
+    bundle = Bundle(box_id="box", seq=1, boot_id="b", agent_version=AGENT_VERSION,
+                    scenario_name="sc", scenario_version=1, evidence=[],
+                    created_wall_claim=0.0, schema_version=SCHEMA_VERSION)
+    with pytest.raises(CheckinError) as e:
+        handle_checkin(store, bundle, b"bad-sig")
+    assert e.value.status_code == 403

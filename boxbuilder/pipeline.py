@@ -337,8 +337,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             # identity, enrollment marker or reports.
             clean = handle.run_ps(
                 f"Get-ChildItem -LiteralPath '{install_dir}' -Force | "
-                f"Remove-Item -Recurse -Force -ErrorAction Stop; "
-                f"exit $LASTEXITCODE"
+                f"Remove-Item -Recurse -Force -ErrorAction Stop; exit 0"
             )
             if not clean.ok:
                 raise RuntimeError(

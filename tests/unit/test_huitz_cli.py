@@ -1140,3 +1140,17 @@ def test_broken_pipe_is_a_clean_exit():
             pass
 
     assert cli.main(["help"], outstream=Broken()) == 141
+
+
+def test_answer_text_starting_with_minus_is_not_an_option():
+    import io
+    import agent.cli as cli
+    opts_pos, opts = cli._split_flags(["-5"], set(), set())
+    assert opts_pos == ["-5"]
+    assert opts == {}
+
+
+def test_unknown_long_option_is_a_usage_error():
+    import agent.cli as cli
+    with pytest.raises(cli.UsageError):
+        cli._split_flags(["--definitely-not-a-flag"], set(), set())
