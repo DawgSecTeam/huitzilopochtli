@@ -148,7 +148,6 @@ def scored_on(check: dict) -> str:
     """Where the points live: the file/service/probe the collector examines."""
     collect = check.get("collect") or {}
     expect = check.get("expect") or {}
-    ctype = check.get("type")
     if collect.get("path"):
         return _backtick(collect["path"])
     if collect.get("service"):
@@ -161,6 +160,8 @@ def scored_on(check: dict) -> str:
         return f"the {_backtick(expect['group'])} group"
     if collect.get("package"):
         return f"package {_backtick(collect['package'])}"
+    if collect.get("url"):
+        return f"HTTP probe {_backtick(collect['url'])}"
     if collect.get("host") and collect.get("port"):
         return f"{collect['host']}:{collect['port']} reachability"
     return "a live on-box probe"
@@ -308,9 +309,16 @@ def generate(scenario_path: str, out_path: Optional[str] = None,
         name = (scenario.get("scenario") or {}).get("name") or "scenario"
         out_path = os.path.join("artifacts", "answer-keys", f"{_slug(name)}.md")
     out_path = os.path.abspath(out_path)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(out_path), mode=0o700, exist_ok=True)
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(markdown_text + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.chmod(out_path, 0o600)
+    except OSError:
+        pass
 
     result = {
         "ok": True,
@@ -323,8 +331,15 @@ def generate(scenario_path: str, out_path: Optional[str] = None,
     if want_html:
         html_path = os.path.splitext(out_path)[0] + ".html"
         page = render_html(markdown_text, scenario, os.path.dirname(scenario_path))
-        with open(html_path, "w", encoding="utf-8") as f:
+        fd = os.open(html_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(page)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(html_path, 0o600)
+        except OSError:
+            pass
         result["html"] = html_path
 
     if gaps:

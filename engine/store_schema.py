@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS scores (
     box_id TEXT PRIMARY KEY,
     scenario_name TEXT NOT NULL,
     total INTEGER NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    first_scored_at REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS adversary_log (
@@ -50,7 +51,10 @@ CREATE TABLE IF NOT EXISTS adversary_log (
     event_id TEXT NOT NULL,
     action TEXT NOT NULL,
     issued_at REAL NOT NULL,
-    params_json TEXT NOT NULL
+    params_json TEXT NOT NULL,
+    fire_time REAL,
+    affects_check TEXT,
+    restored_at REAL
 );
 
     -- Ensure a directive fires at most once per (box, event).
@@ -58,10 +62,12 @@ CREATE TABLE IF NOT EXISTS adversary_log (
         ON adversary_log (box_id, event_id);
 
 CREATE TABLE IF NOT EXISTS scenarios (
-    scenario_name TEXT PRIMARY KEY,
+    scenario_name TEXT NOT NULL,
+    scenario_version INTEGER NOT NULL,
     rubric_json TEXT NOT NULL,
     adversary_json TEXT NOT NULL,
-    uploaded_at REAL NOT NULL
+    uploaded_at REAL NOT NULL,
+    PRIMARY KEY (scenario_name, scenario_version)
 );
 
 CREATE TABLE IF NOT EXISTS engine_meta (

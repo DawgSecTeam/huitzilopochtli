@@ -39,14 +39,20 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
         store.enroll_box_atomic(...) and return an EnrollResponse-shaped
         dict {"ok": True, "box_id": ..., "checkin_interval_s": ...}.
     """
-    # 1. Validate shape. (isinstance(x, int) accepts bool, so scenario_version
-    # needs an explicit bool guard like the rest of the codebase.)
+    # 1. Validate shape. A non-object JSON body must be a clean 400, not an
+    # AttributeError that closes the connection at the HTTP layer.
+    if not isinstance(body, dict):
+        raise EnrollError(400, "malformed body: expected a JSON object")
+    # (isinstance(x, int) accepts bool, so scenario_version needs an explicit
+    # bool guard like the rest of the codebase.)
     for key, expected_type in _REQUIRED_FIELDS.items():
         if key not in body:
             raise EnrollError(400, f"malformed body: missing {key}")
         if key == "scenario_version":
             if isinstance(body[key], bool) or not isinstance(body[key], int):
                 raise EnrollError(400, "malformed body: scenario_version has wrong type")
+            if not 0 <= body[key] <= 2 ** 63 - 1:
+                raise EnrollError(400, "malformed body: scenario_version out of range")
         elif not isinstance(body[key], expected_type):
             raise EnrollError(400, f"malformed body: {key} has wrong type")
     if not body["box_id"] or len(body["box_id"]) > 128:

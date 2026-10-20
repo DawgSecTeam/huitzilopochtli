@@ -10,6 +10,7 @@ dependency. TLS is used when engine_url is https://.
 
 This module is ranked-only; honor mode never imports it.
 """
+import ipaddress
 import json
 import os
 import ssl
@@ -33,10 +34,30 @@ def _split_url(engine_url: str):
     return parts.scheme, host, port
 
 
+def _is_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() in ("localhost", "localhost.")
+
+
 def _request(scheme: str, host: str, port: int, method: str, path: str,
              admin_token: str, body: Optional[dict] = None, timeout: int = 30) -> dict:
     """One HTTP request to the engine admin API. Returns parsed JSON response."""
     import http.client
+
+    if scheme == "http" and not _is_loopback(host or ""):
+        if os.environ.get("HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE") != "1":
+            raise EngineError(
+                f"refusing to send the admin token and scenario rubric over "
+                f"plain HTTP to non-loopback {host}:{port}; use https:// or "
+                f"set HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE=1 for an isolated lab"
+            )
+        print(
+            f"WARNING: HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE=1: sending the "
+            f"admin token and rubric over plain HTTP to {host}:{port}",
+            file=__import__("sys").stderr,
+        )
 
     payload = json.dumps(body).encode("utf-8") if body is not None else b""
     headers = {

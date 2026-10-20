@@ -42,15 +42,34 @@ $report = Join-Path $dir 'report.html'
 $mirror = Join-Path $env:PUBLIC 'Documents\huitzilopochtli'
 if (Test-Path $report) {
     New-Item -ItemType Directory -Force -Path $mirror | Out-Null
-    Copy-Item -Force $report (Join-Path $mirror 'report.html')
+    # The Public tree can be user-writable; never let a planted junction/
+    # symlink redirect this SYSTEM copy onto a protected file.
+    $mirrorItem = Get-Item -LiteralPath $mirror -Force
+    if ($mirrorItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "refusing to write report mirror through a reparse point: $mirror"
+    }
+    $dest = Join-Path $mirror 'report.html'
+    if (Test-Path -LiteralPath $dest) {
+        $destItem = Get-Item -LiteralPath $dest -Force
+        if ($destItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "refusing to overwrite a reparse-point report mirror: $dest"
+        }
+    }
+    Copy-Item -Force $report $dest
 }
 # report.json (agent/snapshot.py) is what the `huitz` CLI renders from
 # (py C:\ProgramData\huitzilopochtli\agent.pyz score). Mirror it alongside
 # the HTML so the CLI sees the same grade the report shortcut does.
 $snapshot = Join-Path $dir 'report.json'
 if (Test-Path $snapshot) {
-    New-Item -ItemType Directory -Force -Path $mirror | Out-Null
-    Copy-Item -Force $snapshot (Join-Path $mirror 'report.json')
+    $dest = Join-Path $mirror 'report.json'
+    if (Test-Path -LiteralPath $dest) {
+        $destItem = Get-Item -LiteralPath $dest -Force
+        if ($destItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "refusing to overwrite a reparse-point report mirror: $dest"
+        }
+    }
+    Copy-Item -Force $snapshot $dest
 }
 # Legacy Public Desktop copies from pre-Documents builds: superseded by the
 # Documents mirror (the shortcuts point there now). Only these two files are

@@ -31,6 +31,7 @@ import difflib
 import json
 import os
 import re
+import tempfile
 import shlex
 import shutil
 import subprocess
@@ -38,6 +39,8 @@ import sys
 import time
 
 import agent.answers
+import agent.report_page
+import agent.runlock
 import agent.snapshot
 import agent.term
 from agent.term import Symbols, Style
@@ -111,11 +114,13 @@ def _split_flags(argv: list, bool_flags: set, val_flags: set) -> tuple:
         elif arg.startswith("--") and "=" in arg:
             name, _, value = arg.partition("=")
             if name in bool_flags:
-                opts[name] = True
+                raise UsageError(f"{name} does not take a value")
             elif name in val_flags:
                 opts[name] = value
             else:
                 raise UsageError(f"unknown option {name}")
+        elif arg.startswith("-") and len(arg) > 1:
+            raise UsageError(f"unknown option {arg}")
         else:
             positional.append(arg)
         i += 1
@@ -131,7 +136,7 @@ def _color_override(opts: dict) -> str:
 
 def _make_style(opts: dict, stream, snapshot: dict | None = None) -> Style:
     accent = (snapshot or {}).get("accent")
-    if accent and not str(accent).startswith("#"):
+    if accent is not None and not agent.report_page.ACCENT_RE.match(str(accent)):
         accent = None
     return agent.term.Style.detect(stream, _color_override(opts), accent=accent)
 
@@ -148,10 +153,11 @@ def _report_json_from_config(config_path: str) -> str | None:
     parse is unnecessary — the known path is the same file)."""
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            report_path = json.load(f).get("report_path")
-        if report_path:
+            data = json.load(f)
+        report_path = data.get("report_path") if isinstance(data, dict) else None
+        if isinstance(report_path, str) and report_path:
             return agent.snapshot.snapshot_path_for(report_path)
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         pass
     return DEFAULT_REPORT_JSON["nt" if os.name == "nt" else "posix"]
 
@@ -208,9 +214,12 @@ def locate_snapshot(explicit: str | None = None) -> tuple:
     candidates = []
     env = os.environ.get(ENV_REPORT)
     if env:
-        candidates.append(env)
-    candidates.append(_report_json_from_config(_install_config_path()))
-    candidates.extend(_desktop_report_paths())
+        # HUITZ_REPORT is documented as authoritative: a stale value must be
+        # an error, not silently fall through to another user's mirror.
+        candidates = [env]
+    else:
+        candidates.append(_report_json_from_config(_install_config_path()))
+        candidates.extend(_desktop_report_paths())
 
     searched = []
     for candidate in candidates:
@@ -492,7 +501,7 @@ def _display_answer(content: str, ordinal: int) -> str | None:
     answer, _found = agent.answers.extract_answer(content, ordinal)
     if answer and agent.answers.ANSWER_PLACEHOLDER_RE.match(answer):
         return None
-    return answer
+    return agent.term.sanitize_text(answer) if answer else answer
 
 
 def _forensics_entries(snap: dict) -> list:
@@ -531,22 +540,29 @@ def _write_answers_file(path: str, content: str) -> None:
                 path, content, owner[0], owner[1],
                 mode if mode is not None else 0o666)
             return
-    tmp = path + ".huitz-tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    if mode is not None:
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".huitz-answers-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
         try:
-            os.chmod(tmp, mode)
-            if uid is not None and (uid != os.geteuid() if hasattr(os, "geteuid") else True):
+            os.chmod(tmp, mode if mode is not None else 0o666)
+        except OSError:
+            pass
+        if os.name != "nt" and uid is not None and uid != os.geteuid():
+            try:
                 os.chown(tmp, uid, gid)
-        except OSError:
-            pass
-    else:
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except BaseException:
         try:
-            os.chmod(tmp, 0o666)  # match agent/__main__'s template: team-editable
+            os.remove(tmp)
         except OSError:
             pass
-    os.replace(tmp, path)
+        raise
 
 
 def _ensure_answers_file(path: str, entries: list) -> None:
@@ -560,8 +576,13 @@ def _ensure_answers_file(path: str, entries: list) -> None:
 
 
 def _read_answers(path: str) -> str:
-    with open(path, "r", errors="replace") as f:
-        return f.read(agent.answers.CONTENT_LIMIT)
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+        content = f.read(agent.answers.CONTENT_LIMIT + 1)
+    if len(content) > agent.answers.CONTENT_LIMIT:
+        raise CliError(
+            f"answers file {path!r} exceeds {agent.answers.CONTENT_LIMIT} "
+            f"bytes; trim it before editing so nothing is truncated")
+    return content
 
 
 def _answer_status(entry: dict, current: str | None) -> tuple:
@@ -576,28 +597,44 @@ def _answer_status(entry: dict, current: str | None) -> tuple:
     return "blank", "muted"
 
 
+def _answers_path_for(entry: dict, override: str | None) -> str:
+    """Resolve the answers file for one question, honoring a per-question
+    ``path`` from the scenario instead of silently using a global default."""
+    if override:
+        return override
+    path = entry.get("answers_path")
+    return str(path) if path else _default_answers_path()
+
+
 def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
                      answers_override: str | None) -> str:
     entries = _forensics_entries(snap)
     if not entries:
         return sty.color("This scenario has no forensics questions.", "muted")
 
-    paths = {e.get("answers_path") for e in entries if e.get("answers_path")}
-    default_path = answers_override or (paths.pop() if len(paths) == 1 else None) \
-        or _default_answers_path()
+    paths = {_answers_path_for(e, answers_override) for e in entries}
+    multi_path = len(paths) > 1
 
     lines = ["  " + sty.bold(
         f"FORENSICS — {snap.get('forensics_earned', 0)} of {len(entries)}")]
-    lines.append("      " + sty.color(f"answers file: {default_path}", "muted"))
+    if multi_path:
+        lines.append("      " + sty.color(
+            "answers files: multiple (shown per question)", "muted"))
+    else:
+        lines.append("      " + sty.color(
+            f"answers file: {next(iter(paths))}", "muted"))
     lines.append("")
 
     current_by_ordinal = {}
-    try:
-        content = _read_answers(default_path)
-        for i in range(len(entries)):
-            current_by_ordinal[i] = _display_answer(content, _entry_ordinal(entries[i], i))
-    except OSError:
-        for i in range(len(entries)):
+    contents = {}
+    for i, entry in enumerate(entries):
+        path = _answers_path_for(entry, answers_override)
+        try:
+            if path not in contents:
+                contents[path] = _read_answers(path)
+            current_by_ordinal[i] = _display_answer(
+                contents[path], _entry_ordinal(entry, i))
+        except (OSError, CliError):
             current_by_ordinal[i] = None
 
     for i, e in enumerate(entries):
@@ -609,6 +646,9 @@ def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
         question = agent.term.ellipsize(str(e.get("question", "")),
                                         max(20, width - 24), sym)
         lines.append(f"  {mark} Q{ordinal}  {question}  {pts}")
+        if multi_path:
+            lines.append("         " + sty.color(
+                f"file: {_answers_path_for(e, answers_override)}", "muted"))
         current = current_by_ordinal.get(i)
         if current:
             shown = agent.term.ellipsize(f'"{current}"', max(20, width - 12), sym)
@@ -643,11 +683,12 @@ def set_forensics_answer(snap: dict, ordinal: int, text: str | None,
         raise CliError(f"no forensics question {ordinal} (have: {valid})")
     entry = entries[index]
 
-    paths = {e.get("answers_path") for e in entries if e.get("answers_path")}
-    path = answers_override or (paths.pop() if len(paths) == 1 else None) \
-        or _default_answers_path()
+    path = _answers_path_for(entry, answers_override)
 
-    _ensure_answers_file(path, entries)
+    _ensure_answers_file(
+        path,
+        [e for e in entries if _answers_path_for(e, answers_override) == path],
+    )
     content = _read_answers(path)
     current = _display_answer(content, ordinal)
 
@@ -685,7 +726,8 @@ def set_forensics_answer(snap: dict, ordinal: int, text: str | None,
 
     sym = Symbols(True)
     if text:
-        print(f"{sym.check} Q{ordinal} answered: \"{text}\"", file=outstream)
+        print(f"{sym.check} Q{ordinal} answered: \"{agent.term.sanitize_text(text)}\"",
+              file=outstream)
     else:
         print(f"Q{ordinal} cleared.", file=outstream)
     print("It scores on the next re-grade (about a minute), or: sudo huitz grade",
@@ -883,7 +925,7 @@ def _page(text: str, outstream) -> bool:
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE)
         proc.communicate(text.encode("utf-8", "replace"))
-        return True
+        return proc.returncode == 0
     except KeyboardInterrupt:
         raise
     except Exception:
@@ -1107,7 +1149,7 @@ def cmd_grade(argv: list, outstream) -> int:
     config_path = opts.get("--config") or _install_config_path()
     try:
         config = agent.config.load_config(config_path)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, TypeError, KeyError) as e:
         raise CliError(f"cannot load agent config {config_path!r}: {e}") from e
     if config.mode.value == "ranked":
         raise CliError(
@@ -1127,6 +1169,8 @@ def cmd_grade(argv: list, outstream) -> int:
 
     try:
         score, delta, snap = agent_main.honor_grade(config, manifest, ctx)
+    except agent.runlock.AlreadyRunning as e:
+        raise CliError(str(e)) from e
     except (OSError, ValueError) as e:
         # Unreadable/missing rubric (and friends) surface as an actionable
         # ValueError from agent_main.honor_grade; render it as a clean CLI
@@ -1166,7 +1210,7 @@ def cmd_forensics(argv: list, outstream, instream) -> int:
         return _EXIT_OK
 
     head = positional[0]
-    if not head.isdigit():
+    if not head.isdecimal():
         raise UsageError(
             f"forensics: expected a question number, got {head!r}\n"
             '  list questions:  huitz forensics\n'
@@ -1187,14 +1231,30 @@ def cmd_help(outstream) -> int:
 
 def main(argv: list | None = None, outstream=None, instream=None) -> int:
     agent.term.enable_windows_vt()
+    # A C/POSIX locale or legacy Windows codepage must degrade punctuation,
+    # not raise UnicodeEncodeError out of help/error paths. Only touch the
+    # real std streams; caller-provided streams are their owner's problem.
+    if outstream is None and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
     outstream = outstream or sys.stdout
     instream = instream or sys.stdin
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    if argv and argv[0] in ("-h", "--help"):
-        return cmd_help(outstream)
-    if not argv or argv[0] in ("help",):
-        return cmd_help(outstream)
+    try:
+        if argv and argv[0] in ("-h", "--help"):
+            return cmd_help(outstream)
+        if not argv or argv[0] in ("help",):
+            return cmd_help(outstream)
+    except BrokenPipeError:
+        return 141
 
     verb, rest = argv[0], argv[1:]
     try:
@@ -1217,5 +1277,13 @@ def main(argv: list | None = None, outstream=None, instream=None) -> int:
     except CliError as e:
         print(f"huitz: {e}", file=sys.stderr)
         return EXIT_ERROR
+    except BrokenPipeError:
+        # `huitz score | head`: the reader went away. Avoid the traceback and
+        # Python's shutdown "Exception ignored" noise.
+        try:
+            sys.stdout.close()
+        except OSError:
+            pass
+        return 141
     except KeyboardInterrupt:
         return 130

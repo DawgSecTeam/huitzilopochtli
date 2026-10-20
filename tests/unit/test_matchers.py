@@ -280,17 +280,18 @@ def test_group_members_subset_of_group_absent_from_raw_does_not_raise():
 
 # --- evaluate_matcher dispatch errors ---------------------------------------
 
-def test_evaluate_matcher_unrecognized_tag_raises_keyerror():
-    # No "tag" key and no key matching a registered matcher name -> the
-    # shorthand-inference fallback finds zero candidates and raises KeyError.
-    with pytest.raises(KeyError):
-        evaluate_matcher({"nonsense": "value"}, {})
+def test_evaluate_matcher_unrecognized_tag_is_unsatisfied_not_a_crash():
+    # Malformed matchers must be an unsatisfied observation, not an exception
+    # that aborts the whole check-in.
+    passed, reason = evaluate_matcher({"nonsense": "value"}, {})
+    assert passed is False
+    assert "resolvable tag" in reason
 
 
-def test_evaluate_matcher_explicit_unknown_tag_raises_keyerror():
-    # Explicit but unregistered "tag" -> direct dict lookup in MATCHERS raises.
-    with pytest.raises(KeyError):
-        evaluate_matcher({"tag": "does_not_exist"}, {})
+def test_evaluate_matcher_explicit_unknown_tag_is_unsatisfied_not_a_crash():
+    passed, reason = evaluate_matcher({"tag": "does_not_exist"}, {})
+    assert passed is False
+    assert "resolvable tag" in reason
 
 
 # --- None / wrong-type raw values must not raise (BUG-E2) -------------------
@@ -383,3 +384,47 @@ def test_regex_invalid_pattern_does_not_raise():
     )
     assert not passed
     assert "invalid regex" in reason
+
+
+# --- upload-time argument validation (1.0) ---------------------------------
+
+from common.matchers import validate_matcher
+
+
+@pytest.mark.parametrize("matcher", [
+    {"tag": "regex", "pattern": 123},
+    {"tag": "regex", "value": ["x"]},
+    {"tag": "equals", "field": ["matched"], "value": 1},
+    {"tag": "group_members_subset_of", "group": "sudo", "allowed": 5},
+    {"tag": "group_members_subset_of", "group": "sudo", "allowed": [["x"]]},
+    {"tag": "mode_at_most", "max_mode": [1]},
+    {"tag": "user_absent", "username": 3},
+    {"tag": "answer_equals", "accept": "yes"},
+    {"tag": "regex", "pattern": "("},
+])
+def test_validate_matcher_rejects_arguments_that_would_crash(matcher):
+    assert validate_matcher(matcher) != []
+
+
+@pytest.mark.parametrize("matcher", [
+    {"equals": "no"},
+    {"tag": "equals", "field": "exists", "value": False},
+    {"tag": "regex", "field": "body", "pattern": "hello.*"},
+    {"tag": "mode_at_most", "field": "mode", "max_mode": "0644"},
+    {"tag": "group_members_subset_of", "group": "sudo", "allowed": ["alice"]},
+    {"tag": "answer_equals", "value": "587"},
+    {"tag": "answer_equals", "accept": ["587", "submission"]},
+])
+def test_validate_matcher_accepts_valid_arguments(matcher):
+    assert validate_matcher(matcher) == []
+
+
+def test_malformed_matcher_never_raises_at_evaluation():
+    for matcher in (
+        {"tag": "regex", "pattern": 123},
+        {"tag": "equals", "field": ["matched"], "value": 1},
+        {"tag": "group_members_subset_of", "group": "sudo", "allowed": 5},
+    ):
+        passed, reason = evaluate_matcher(matcher, {"matched": "x"})
+        assert passed is False
+        assert reason

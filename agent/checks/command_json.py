@@ -48,8 +48,8 @@ class CommandJsonCheck(Check):
         try:
             proc = subprocess.run(
                 ["/bin/sh", "-c", script],
-                capture_output=True, text=True,
-                timeout=max(timeout, 5.0),
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=max(timeout, 5.0),
             )
         except subprocess.TimeoutExpired:
             return self._error(spec, f"script exceeded {timeout}s")

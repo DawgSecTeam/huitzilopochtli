@@ -265,7 +265,10 @@ def test_checkin_unknown_scenario_400(engine, enrolled_box, seqs):
                         {"matched": "no"})
     status, parsed, _ = _signed_checkin(engine, priv, body)
     assert status == 400
-    assert "unknown scenario" in parsed["error"]
+    # The box is enrolled in a different scenario; after signature verification
+    # the engine reports the enrollment mismatch rather than leaking whether
+    # the unauthenticated name exists.
+    assert "does not match" in parsed["error"]
 
 
 def test_checkin_malformed_bundle_400(engine, enrolled_box):
@@ -416,6 +419,14 @@ def test_checkin_json_array_body_400(engine, enrolled_box):
 def test_enroll_non_json_body_400(engine):
     status, parsed, _ = _post(engine, "/enroll", b"{{{not json")
     assert status == 400
+
+
+def test_enroll_json_array_is_a_clean_400_not_a_disconnect(engine):
+    # Regression: body.get() on a JSON array raised AttributeError inside the
+    # handler and closed the connection instead of returning a clean 400.
+    status, parsed, raw = _post(engine, "/enroll", b"[1, 2, 3]")
+    assert status == 400, (status, raw)
+    assert parsed is not None
 
 
 def test_checkin_string_seq_is_rejected_cleanly(engine, scenario, enrolled_box,
@@ -630,3 +641,27 @@ def test_admin_disabled_without_token_env(tmp_path_factory):
         assert "disabled" in body["error"]
     finally:
         eng.stop()
+
+
+def test_v2_upload_does_not_rescore_an_enrolled_v1_box(engine, scenario,
+                                                        enrolled_box, seqs):
+    """A v2 record must not silently replace the rubric a v1 box enrolled
+    against. The v1 check-in keeps scoring against v1."""
+    name, v1 = scenario
+    priv, box_id = enrolled_box
+
+    v2_rubric = lb._base_rubric(name, [{
+        "check_id": "backdoor-absent",
+        "category": "vuln",
+        "matcher": {"tag": "equals", "field": "matched", "value": "no"},
+        "points": 99,
+    }])
+    v2_rubric["scenario_version"] = 2
+    engine.upload_scenario(v2_rubric)
+
+    body = _bundle_dict(box_id, next(seqs), name, v1, {"matched": "no"})
+    status, parsed, _ = _signed_checkin(engine, priv, body)
+    assert status == 200, parsed
+    by_id = {r["check_id"]: r for r in parsed["score"]["results"]}
+    assert by_id["backdoor-absent"]["awarded_points"] == 10, (
+        "v1 box was rescored against the v2 rubric")

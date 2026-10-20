@@ -225,6 +225,17 @@ Also fixed en route: Box-header tripwire (sent by both agent calls, never read
 stale `enrollment.py` docstring, `_warn_if_plain_http` tolerant of manifests
 without `engine_url`.
 
+## 1.0 hardening status
+
+The release/1.0-hardening branch resolves the code-side items recorded below:
+SLA outage back-claiming, rubric versioning (records are now keyed by
+`(scenario_name, scenario_version)`), adversary fire-time persistence +
+`affects_check` outage flooring, small-order Ed25519 keys, DB permissions,
+auth-before-rubric-parse, rate limiting, queue dead-lettering, and the
+Windows/CLI/boxbuilder findings from the full review. The remaining notes in
+this section are kept for history; the shipped-box `at-job` fuse and the
+engine TLS/deployment story still need operational decisions.
+
 ## Known issues needing a decision (not fixed here)
 
 - **static-pine-radio at-job fuse (SHIPPED honor box affected)**: the plant is

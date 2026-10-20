@@ -21,6 +21,23 @@ import sys
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+def sanitize_text(text) -> str:
+    """Strip control characters from untrusted display text.
+
+    Terminal output is built from manifest titles, player-editable answers,
+    ranked evidence reasons and snapshot fields. A raw ESC can execute OSC/CSI
+    sequences (clipboard write, screen clear, title spoof) in the terminal;
+    C0/C1 controls are never legitimate here. Newlines and tabs survive so
+    multi-line content still lays out. Style-generated SGR is added later, at
+    the rendering boundary.
+    """
+    value = str(text)
+    return "".join(
+        ch for ch in value
+        if (ch in "\n\t" or (ord(ch) >= 0x20 and not 0x7F <= ord(ch) <= 0x9F))
+    )
+
+
 def visible_len(text: str) -> int:
     """Display width of possibly-styled text (SGR sequences count 0)."""
     return len(_ANSI_RE.sub("", text))
@@ -337,8 +354,8 @@ class Style:
                 param = _rgb_ansi(rgb, self.depth)
                 if param:
                     params.append(param)
-            elif spec:
-                params.append(str(spec))
+            # Unknown specs are dropped rather than interpolated raw: a
+            # forged snapshot accent must never inject an escape sequence.
         return params
 
     def color(self, text: str, *specs) -> str:

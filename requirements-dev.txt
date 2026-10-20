@@ -1,0 +1,10 @@
+# Development/test dependencies only. The shipped agent (`agent/` + `common/`)
+# remains stdlib-only; engine adds stdlib sqlite3.
+pytest>=8.0
+PyYAML>=6.0
+requests>=2.31
+python-dotenv>=1.0
+
+# Optional tiers:
+paramiko>=3.4          # boxbuilder ssh provider
+proxmoxer>=2.0         # tests/proxmox live-VM tier

@@ -77,10 +77,10 @@ keep the previous template until the new one is confirmed in the field.
 
 ## Working in this repo
 
-- **Python 3.10+** (built/tested on 3.14). No `pyproject.toml`/`requirements.txt`
-  — install what you need by hand: `pip install pyyaml paramiko proxmoxer`
-  (paramiko only for the ssh provider, proxmoxer only for the Proxmox test
-  tier — see the boundary bullet below).
+- **Python 3.10+** (built/tested on 3.14). No `pyproject.toml`; development
+  and test dependencies live in `requirements-dev.txt`
+  (`pip install -r requirements-dev.txt`). The shipped code stays stdlib-only
+  (see the boundary bullet below).
 - **Dependency boundaries (hard).** `agent/` + `common/` are stdlib-only
   (vendored Ed25519 is the sole exception); `engine/` adds only stdlib
   `sqlite3`. PyYAML lives in `authoring/` + `boxbuilder/` only

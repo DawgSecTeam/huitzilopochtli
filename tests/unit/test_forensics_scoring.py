@@ -123,7 +123,7 @@ checks:
     category: vuln
     display: d
     max_points: 5
-    collect: {{}}
+    collect: {{path: /etc/x, extract: "x=(\\\\w+)"}}
     expect:
       equals: y
       points: 5

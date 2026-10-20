@@ -12,7 +12,7 @@ def _base():
         "scenario": {"name": "x", "version": 1, "mode": "honor", "hosts": ["h"]},
         "checks": [{
             "id": "c1", "type": "file_regex", "category": "vuln", "display": "d",
-            "max_points": 5, "collect": {}, "expect": {"equals": "y", "points": 5},
+            "max_points": 5, "collect": {"path": "/etc/x", "extract": "x=(\\w+)"}, "expect": {"equals": "y", "points": 5},
         }],
     }
 
@@ -132,3 +132,117 @@ def test_compile_rejects_unknown_sla_key():
                                 "hysteresis_fal_n": 3}}}
     with pytest.raises(ValueError, match="unknown key.*hysteresis_fal_n"):
         _build_rubric_entry(check)
+
+
+# --- 1.0 authoring hardening -------------------------------------------------
+
+def _valid_check(**overrides):
+    check = {
+        "id": "c1", "type": "file_regex", "category": "vuln", "display": "d",
+        "max_points": 5, "collect": {"path": "/etc/x", "extract": "x=(\\w+)"},
+        "expect": {"equals": "y", "points": 5},
+    }
+    check.update(overrides)
+    return check
+
+
+def _scenario(check=None, **extra):
+    parsed = {
+        "scenario": {"name": "x", "version": 1, "mode": "honor", "hosts": ["h"]},
+        "checks": [check or _valid_check()],
+    }
+    parsed.update(extra)
+    return parsed
+
+
+def test_unknown_check_type_is_rejected():
+    parsed = _scenario(_valid_check(type="file_regexx"))
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("not a registered check type" in e for e in errors)
+
+
+def test_unknown_check_key_is_rejected():
+    parsed = _scenario(_valid_check(soluion="typo"))
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("unknown key" in e and "soluion" in e for e in errors)
+
+
+def test_unknown_top_level_key_is_rejected():
+    parsed = _scenario(adversrys={"events": []})
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("adversrys" in e for e in errors)
+
+
+def test_missing_expect_points_is_rejected():
+    check = _valid_check()
+    del check["expect"]["points"]
+    errors = validate_scenario_yaml(_scenario(check), "x.yaml")
+    assert any("expect.points is required" in e for e in errors)
+
+
+def test_zero_points_non_sla_is_rejected():
+    check = _valid_check(expect={"equals": "y", "points": 0})
+    errors = validate_scenario_yaml(_scenario(check), "x.yaml")
+    assert any("non-zero" in e for e in errors)
+
+
+def test_max_points_must_match_points():
+    check = _valid_check(max_points=10)
+    errors = validate_scenario_yaml(_scenario(check), "x.yaml")
+    assert any("max_points" in e and "must match" in e for e in errors)
+
+
+def test_penalty_max_points_uses_absolute_points():
+    check = _valid_check(category="penalty", max_points=10, type="service_state",
+                         collect={"service": "atd"},
+                         expect={"equals": True, "field": "active", "points": -10})
+    assert validate_scenario_yaml(_scenario(check), "x.yaml") == []
+
+
+def test_is_sla_without_sla_is_rejected():
+    check = _valid_check(is_sla=True)
+    errors = validate_scenario_yaml(_scenario(check), "x.yaml")
+    assert any("without expect.sla" in e for e in errors)
+
+
+def test_sla_missing_interval_is_rejected_cleanly():
+    check = _valid_check(expect={"equals": True, "field": "active", "points": 0,
+                                 "sla": {"points_per_interval": 1}})
+    errors = validate_scenario_yaml(_scenario(check), "x.yaml")
+    assert any("interval_s" in e for e in errors)
+
+
+def test_missing_collect_param_is_rejected():
+    check = _valid_check(collect={"path": "/etc/x"})
+    errors = validate_scenario_yaml(_scenario(check), "x.yaml")
+    assert any("missing required key 'extract'" in e for e in errors)
+
+
+def test_engine_url_must_be_http_scheme():
+    parsed = _scenario()
+    parsed["scenario"]["mode"] = "ranked"
+    parsed["scenario"]["engine_url"] = "engine.example.org"
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("engine_url must be an http" in e for e in errors)
+
+
+def test_adversary_requires_ids_finite_windows_and_known_actions():
+    parsed = _scenario(adversary={"events": [
+        {"action": "kill_servce", "window_s": [1, 2], "params": {"service": "atd"}},
+        {"id": "ok", "action": "kill_service", "window_s": [float("nan"), 2],
+         "params": {"service": "atd"}},
+    ]})
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("non-empty string (stable event id)" in e for e in errors)
+    assert any("must be one of" in e for e in errors)
+    assert any("finite" in e for e in errors)
+
+
+def test_affects_check_must_reference_an_sla_check():
+    check = _valid_check()
+    parsed = _scenario(check, adversary={"events": [{
+        "id": "e1", "action": "kill_service", "window_s": [1, 2],
+        "params": {"service": "atd"}, "affects_check": "c1",
+    }]})
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("must name an SLA check" in e for e in errors)

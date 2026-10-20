@@ -201,9 +201,22 @@ broke. Mode (`honor`/`ranked`) and `engine_url` live here. See
 ```yaml
 scenario: ./scenario.yaml
 nakon_config: ./nakon.json
-provider: {name: ssh, host: 192.168.50.10, user: ubuntu, password: ubuntu}
-authoring_key: ./authoring.key     # optional; auto-generated+persisted (0600) if absent
+provider:
+  name: ssh
+  host: 192.168.50.10
+  user: ubuntu
+  password: ubuntu
+  known_hosts: ~/.ssh/known_hosts   # required unless you opt into insecure host keys
+authoring_key: ./authoring.key      # optional; auto-generated+persisted (0600) if absent
 ```
+
+The SSH provider refuses to connect without a pinned host key by default
+(`HUITZILOPOCHTLI_INSECURE_HOST_KEYS=1` is a loud, throwaway-lab-only opt-out).
+Ranked installs refuse to send the admin token or rubric over plain HTTP to a
+non-loopback engine unless `HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE=1`; prefer
+`https://`. The artifacts directory is created `0700`, rubrics/engine
+records/configs are `0600`, and the transient nakon deploy config (which holds
+the SSH password) is deleted immediately after deploy.
 
 Mode is read from the scenario, not duplicated here.
 
@@ -240,17 +253,21 @@ boxbuilder plant   --spec box.yaml [--out artifacts/] [--bundle DIR] [--json]
     Deploy the vulns onto the box via nakon. (Needs only paramiko.)
 
 boxbuilder install --spec box.yaml [--out artifacts/] [--init systemd|openrc|none]
-                   [--admin-token T] [--checkin-interval N] [--json]
+                   [--checkin-interval N] [--json]
     Place agent + manifest (+ rubric for honor) on the box and enable the init
-    unit. Ranked also uploads the engine record + mints an enrollment token.
+    unit. Ranked also uploads the engine record + mints an enrollment token
+    (admin token from $HUITZILOPOCHTLI_ADMIN_TOKEN).
 
 boxbuilder package --spec box.yaml --image-out box.ova [--format ova|qcow2|raw] [--json]
     Export the box image for distribution.
 
 boxbuilder build   --spec box.yaml [--from-step compile|plant|install|package]
                    [--image-out box.ova] [--json]
-    Run all four steps with resumability. compile writes artifacts/build-state.json;
-    later steps read it, so you can resume after a failure with --from-step.
+    Run all four steps with resumability. compile writes artifacts/build-state.json
+    with an input fingerprint; later steps refuse to resume if the scenario or
+    nakon config changed (re-run compile). Reinstalling clears the install dir
+    unconditionally, so no previous rubric/identity/report survives a mode or
+    scenario change.
 ```
 
 You can pass the two inputs directly instead of `--spec`:

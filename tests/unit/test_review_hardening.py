@@ -111,7 +111,7 @@ def test_checkin_500_body_omits_exception_text(store, monkeypatch):
 
     monkeypatch.setattr(server_mod, "handle_checkin", _raise)
     body = json.dumps(server_mod._jsonable(_bundle([]))).encode()
-    store.save_scenario("sc", json.dumps({"scenario_name": "sc", "entries": []}),
+    store.save_scenario("sc", 1, json.dumps({"scenario_name": "sc", "scenario_version": 1, "entries": []}),
                         json.dumps({}))
     status, payload = _serve_once(store, "POST", "/checkin", body)
     assert status == 500
@@ -520,3 +520,80 @@ def test_agent_runs_nothing_when_executed_record_is_corrupt(tmp_path, monkeypatc
     agent_main._run_directives(_directive_response(issued=["e1"]),
                                str(tmp_path / "identity.json"), None)
     assert ran == []
+
+
+# --- 1.0: adversary outage floor / SLA docking --------------------------------
+
+def _dock_rubric():
+    from common.schema import SlaParams
+    return Rubric(schema_version=1, scenario_name="sc", scenario_version=1, entries=[
+        RubricEntry(check_id="sla1", category=Category.VULN,
+                    matcher={"tag": "equals", "value": "up"},
+                    points=0,
+                    sla=SlaParams(interval_s=60, points_per_interval=5,
+                                  hysteresis_fail_n=2, hysteresis_ok_n=2,
+                                  max_intervals_per_checkin=3)),
+    ])
+
+
+def test_adversary_event_forces_mapped_sla_down_until_restored(enrolled, monkeypatch):
+    rubric = _dock_rubric()
+    pool = [{"id": "kill-atd", "action": "kill_service",
+             "params": {"service": "atd"}, "window_s": [0, 0],
+             "affects_check": "sla1"}]
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(checkin_mod.time, "time", lambda: clock["now"])
+
+    # The first check-in issues the event and must dock the SLA even though
+    # the evidence collected before execution still says "up".
+    first = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=1),
+                           b"sig", rubric, b"secret", pool)
+    assert [d.event_id for d in first.directives] == ["kill-atd"]
+    assert first.score.sla_status[0].state == "DOWN"
+    assert first.score.sla_status[0].accrued_points == 0
+
+    # Evidence on the check-in AFTER issuance shows restoration: the effect is
+    # marked restored, but recovery still obeys the DOWN hysteresis.
+    clock["now"] = 1060.0
+    second = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=2),
+                            b"sig", rubric, b"secret", pool)
+    assert second.directives == []
+    assert second.score.sla_status[0].state == "DOWN"
+
+    clock["now"] = 1120.0
+    third = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=3),
+                           b"sig", rubric, b"secret", pool)
+    assert third.score.sla_status[0].state == "UP"
+
+    # Accrual resumes only after the recovery anchor, never for the outage.
+    clock["now"] = 1180.0
+    fourth = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=4),
+                            b"sig", rubric, b"secret", pool)
+    assert fourth.score.sla_status[0].accrued_points == 5
+    effects = enrolled.get_issued_directives("box-1")
+    assert effects[0]["fire_time"] == 1000.0
+    assert effects[0]["affects_check"] == "sla1"
+
+
+def test_forced_down_sla_resets_up_counters(enrolled):
+    from engine.sla import update_sla
+    params = _dock_rubric().entries[0].sla
+    update_sla(enrolled, "box-1", "sla1", params, True, 1000.0)
+    rec = update_sla(enrolled, "box-1", "sla1", params, True, 1060.0,
+                     force_down=True)
+    assert rec.state == "DOWN"
+    assert rec.consec_ok == 0
+    assert rec.consec_fail >= params.hysteresis_fail_n
+
+
+@pytest.mark.parametrize("payload", ["{}", "null", '""', '[{"event_id": "e1"}]'])
+def test_agent_refuses_wrong_shape_directives_record(tmp_path, monkeypatch, payload):
+    import agent.__main__ as agent_main
+
+    ran = []
+    monkeypatch.setattr(agent_main.agent.adversary.executor, "execute",
+                        lambda d, ctx: ran.append(d.event_id))
+    (tmp_path / "identity.json.directives").write_text(payload)
+    response = _directive_response(issued=["e1"])
+    agent_main._run_directives(response, str(tmp_path / "identity.json"), None)
+    assert ran == [], "wrong-shape directive record re-ran historical actions"

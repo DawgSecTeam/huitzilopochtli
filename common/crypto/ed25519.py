@@ -45,12 +45,13 @@ def H(m):
 
 
 def expmod(base, e, m):
-    if e == 0:
-        return 1
-    t = expmod(base, e // 2, m) ** 2 % m
-    if e & 1:
-        t = (t * base) % m
-    return t
+    # Semantically identical to the reference implementation's square-and-
+    # multiply loop, but the C-level three-argument pow() is dramatically
+    # faster on the multi-hundred-bit exponents this module uses. Verification
+    # runs this many times per check-in on the engine; the reference recursive
+    # version made a single verify take seconds. The arithmetic result is the
+    # same integer; RFC 8032 vectors pin that (tests/unit/test_crypto.py).
+    return pow(base, e, m)
 
 
 def inv(x):
@@ -153,13 +154,32 @@ def decodeint(s):
 
 def decodepoint(s):
     y = sum(2 ** i * bit(s, i) for i in range(0, b - 1))
+    if y >= q:
+        raise ValueError("non-canonical point encoding (y >= q)")
     x = xrecover(y)
     if x & 1 != bit(s, b - 1):
         x = q - x
     P = [x, y]
     if not isoncurve(P):
         raise ValueError("decoding point that is not on curve")
+    # Reject non-canonical encodings (including a sign bit that does not match
+    # the recovered x). Without this, two byte strings can decode to the same
+    # point, which makes signatures malleable.
+    if encodepoint(P) != s:
+        raise ValueError("non-canonical point encoding")
     return P
+
+
+def _is_small_order_point(P) -> bool:
+    """True for pure-torsion points (order dividing 8), including identity.
+
+    The reference verifier never rejects these. A public key fixed at the
+    identity point, paired with R = B and S = 1, satisfies [S]B = R + [h]A for
+    ANY message, so enrollment's proof-of-private-key-possession would accept
+    a key nobody holds. Reject them at verification.
+    """
+    Q = scalarmult(P, 8)
+    return Q[0] % q == 0 and Q[1] % q == 1
 
 
 def checkvalid(s, m, pk):
@@ -169,6 +189,10 @@ def checkvalid(s, m, pk):
         raise ValueError("public-key length is wrong")
     R = decodepoint(s[0 : b // 8])
     A = decodepoint(pk)
+    if _is_small_order_point(R):
+        raise ValueError("signature R is a small-order point")
+    if _is_small_order_point(A):
+        raise ValueError("public key is a small-order point")
     S = decodeint(s[b // 8 : b // 4])
     if S >= l:
         raise ValueError("signature S component >= l (malleable)")
