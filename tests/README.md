@@ -86,7 +86,7 @@ file runs a scenario hitting seven of the twelve registered check types
 `process_state`, `command_json`, `forensics_answer`, `powershell_json`, and
 `registry_value` are unit-tested (Windows ones statically mocked), not live.
 
-- **Ubuntu 24.04: 70/70.** All seven check types collect and score
+- **Ubuntu 24.04: 70/70.** All seven covered check types collect and score
   correctly against real OS state.
 - **Fedora 44: xfail (30/70)** (only `file_regex`/`permission`/`user_group`,
   which need no subprocess or network call, pass). The test still executes and asserts
