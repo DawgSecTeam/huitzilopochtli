@@ -14,6 +14,7 @@ import ipaddress
 import json
 import os
 import ssl
+import sys
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -56,7 +57,7 @@ def _request(scheme: str, host: str, port: int, method: str, path: str,
         print(
             f"WARNING: HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE=1: sending the "
             f"admin token and rubric over plain HTTP to {host}:{port}",
-            file=__import__("sys").stderr,
+            file=sys.stderr,
         )
 
     payload = json.dumps(body).encode("utf-8") if body is not None else b""

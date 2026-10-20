@@ -22,6 +22,10 @@ class RunLock:
             try:
                 import msvcrt
                 self._fh = open(self.path, "a+b")
+                self._fh.seek(0, os.SEEK_END)
+                if self._fh.tell() == 0:
+                    self._fh.write(b"\0")
+                    self._fh.flush()
                 self._fh.seek(0)
                 msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
                 return True
