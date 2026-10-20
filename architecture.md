@@ -659,11 +659,13 @@ huitzilopochtli/
     cli.py               # huitz terminal console (§13.3)
     term.py              # terminal kit: color/unicode/width/key polling
     answers.py           # forensics answers-file format (collector + CLI)
+    runlock.py           # inter-process grade/report publication lock
     notify.py            # score-change sound + toast
   engine/
     server.py            # endpoints
     enrollment.py
     checkin.py
+    scenario.py          # stored record parse/validate/versioned lookup
     sla.py               # ledger + hysteresis
     adversary_oracle.py  # scheduler
     leaderboard.py
