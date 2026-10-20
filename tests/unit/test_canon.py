@@ -1,4 +1,6 @@
 """Unit tests for common/canon.py canonicalize()."""
+import pytest
+
 from common.canon import canonicalize
 
 
@@ -74,3 +76,19 @@ def test_decomposed_vs_composed_dict_key_canonicalizes_identically():
     decomposed = {"e\u0301": "value"}   # e + combining acute accent
     composed = {"\u00e9": "value"}      # é precomposed
     assert canonicalize(decomposed) == canonicalize(composed)
+
+
+def test_canonicalize_rejects_nfc_key_collision():
+    import unicodedata
+    composed = "é"
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    with pytest.raises(ValueError, match="key collision"):
+        canonicalize({composed: 1, decomposed: 2})
+
+
+def test_canonicalize_rejects_nan_and_infinity():
+    with pytest.raises(ValueError):
+        canonicalize({"x": float("nan")})
+    with pytest.raises(ValueError):
+        canonicalize({"x": float("inf")})
