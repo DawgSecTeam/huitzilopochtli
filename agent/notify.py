@@ -83,20 +83,27 @@ def _write_state(path: str, total: int, scenario_version: str) -> None:
             pass
 
 
-def consume_delta(state_path: str, total: int, scenario_version: str) -> int | None:
-    """Diff this run's total against the baseline; persist the new one.
+def peek_delta(state_path: str, total: int, scenario_version) -> int | None:
+    """Return the change versus the baseline WITHOUT persisting the new total.
 
-    Returns None when there is no comparable baseline -- first run after
-    install or re-arm, a corrupted state file, or a different
-    scenario_version (the box was rebuilt). Silence on those is the point:
-    a fresh box must not be greeted by the penalty alarm. Otherwise returns
-    ``total - previous`` (0 = unchanged).
+    Publication code calls this before writing the report/snapshot and only
+    calls record_score() after they succeed, so a failed write cannot consume
+    the notification or advance the baseline.
     """
     state = _load_state(state_path)
-    delta = None
     if state is not None and state["scenario_version"] == scenario_version:
-        delta = total - state["total"]
+        return total - state["total"]
+    return None
+
+
+def record_score(state_path: str, total: int, scenario_version) -> None:
     _write_state(state_path, total, scenario_version)
+
+
+def consume_delta(state_path: str, total: int, scenario_version: str) -> int | None:
+    """Diff and persist in one step (kept for callers/tests that want it)."""
+    delta = peek_delta(state_path, total, scenario_version)
+    record_score(state_path, total, scenario_version)
     return delta
 
 

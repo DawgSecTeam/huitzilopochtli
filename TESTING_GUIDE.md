@@ -9,10 +9,12 @@ Run every command from the repo root unless noted otherwise.
 ```bash
 cd /home/hna/dev/dawgsec/huitzilopochtli
 python3 --version        # 3.10+ recommended; this was built/tested on 3.14
-pip install --user pytest
+pip install --user -r requirements-dev.txt
 ```
 
-That's the only new dependency you need for this guide. (`proxmoxer` and `python-dotenv` are only needed if you later attempt the Proxmox tier in `tests/README.md` — not covered here.)
+`requirements-dev.txt` covers the default tier (pytest, PyYAML, requests,
+python-dotenv for the Proxmox conftest, plus optional paramiko/proxmoxer for
+those tiers). The shipped agent/core remain stdlib-only.
 
 ## 1. Automated suite — fastest confidence check
 
@@ -20,12 +22,28 @@ That's the only new dependency you need for this guide. (`proxmoxer` and `python
 pytest
 ```
 
-Expected: `248 passed` in a few minutes. Most of that time is the vendored Ed25519 implementation's cost (~1.5-2 seconds per sign/verify call — a real, documented, measured property of the exact reference implementation vendored in `common/crypto/ed25519.py`, not a bug; see `tests/README.md` for why).
+Expected: the whole default tier passes. The suite has grown well past the
+old fixed count; rely on pytest's own summary rather than a hard-coded number.
+Most of the runtime is still claimed by Ed25519 sign/verify (the reference
+arithmetic is pure Python), but the modular exponentiation now uses the
+built-in `pow()`, which made it several times faster than the original
+recursive reference version.
 
 What this covers:
-- **`tests/unit/`** (226 tests, ~40s): schema validation, canonical serialization, all 8 matcher predicates, category-based scoring, Ed25519 sign/verify against real RFC 8032 known-answer vectors, the SLA hysteresis ledger, the adversary oracle's determinism, every `Store` method, all 7 check plugins, the platform layer, and the closed adversary action vocabulary (including a check that no network-egress code exists in it at all).
-- **`tests/integration/`** (22 tests, ~3 min): the honor-mode pipeline end-to-end, the ranked-mode loopback (enrollment, restart behavior, crash recovery), admin endpoints, TLS + secret persistence, and zipapp/source-tree equivalence.
-- **`tests/proxmox/`**: excluded by default (`pytest -m proxmox` to opt in). One test (`test_local_honor_distribution.py`) passes against real cloned Ubuntu/Fedora VMs; the other (`test_ranked_two_machines.py`) is currently blocked on two infrastructure issues documented in `tests/README.md` — not something to chase in this guide.
+- **`tests/unit/`**: schema/type validation, canonical serialization, every
+  registered matcher, category-based scoring, Ed25519 RFC 8032 + small-order
+  vectors, the SLA ledger (including the outage-cap drain), the adversary
+  oracle and outage floor, every `Store` method and migration, all registered
+  check plugins (mock where appropriate), the platform layer, and the closed
+  adversary action vocabulary.
+- **`tests/integration/`**: the honor pipeline end-to-end, ranked loopback
+  (enrollment, restart, crash recovery), admin/protocol errors, TLS + secret
+  persistence, and zipapp/source-tree equivalence.
+- **`tests/proxmox/`**: excluded by default (`pytest -m proxmox` to opt in;
+  skips with a reason when `.env` is absent). `test_local_honor_distribution.py`
+  and `test_ranked_two_machines.py` cover real clones; `test_all_check_types_live.py`
+  is 70/70 on Ubuntu and a strict xfail on the Fedora template (documented
+  environment/SELinux limits, not claimed as passing).
 
 If this step passes, you already have strong evidence everything works. Steps 2-4 below let you *see* it happen rather than trust a green checkmark.
 
@@ -331,4 +349,9 @@ rm -rf /tmp/huitzilopochtli-manual
 
 ## Going further
 
-`tests/README.md` documents the `tests/proxmox/` tier — real cloned VMs on Proxmox. `test_local_honor_distribution.py` passes there against real Ubuntu/Fedora clones; `test_ranked_two_machines.py` is currently blocked on two infrastructure issues (a Proxmox template machine-id collision, and Fedora's guest-agent SELinux confinement blocking outbound network) that are documented there in detail, with options laid out for fixing them. Not necessary for the verification above — only relevant if you want to push further into real-VM/real-network testing.
+`tests/README.md` documents the `tests/proxmox/` tier — real cloned VMs on
+Proxmox. `test_local_honor_distribution.py` and `test_ranked_two_machines.py`
+are the real-network checks; the latter now sets its own bind address and
+regenerates clone machine-ids. Fedora remains a documented environment
+limitation (strict xfail), not a passing claim. This tier is optional for the
+local verification above; configure `tests/proxmox/.env` to run it.

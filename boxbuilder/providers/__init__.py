@@ -10,7 +10,8 @@ def _register_builtins() -> None:
     and guarded so a missing optional dep (e.g. paramiko) doesn't break importing
     the base abstractions."""
     try:
-        from boxbuilder.providers import ssh as _ssh  # noqa: F401
+        import importlib
+        importlib.import_module("boxbuilder.providers.ssh")
     except Exception:
         # SshProvider registration doesn't import paramiko at module scope (it's
         # imported lazily in connect()), so this should never fail on import. But

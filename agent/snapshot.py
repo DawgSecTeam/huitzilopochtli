@@ -23,10 +23,13 @@ Secrecy follows the HTML report's per-mode contract (§13):
 clear message instead of misrendering.
 """
 import json
+import math
 import os
 import sys
+import time
 
 from agent import board as board_mod
+from agent import term as term_mod
 
 SNAPSHOT_VERSION = 1
 _FILENAME = "report.json"
@@ -135,7 +138,11 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         snap["next_checkin_s"] = next_checkin_s
         if server_time is not None and isinstance(next_checkin_s, (int, float)) \
                 and not isinstance(next_checkin_s, bool) and next_checkin_s > 0:
-            snap["next_event_at"] = float(server_time) + float(next_checkin_s)
+            # Countdown must be anchored to the box receipt time, not the
+            # engine clock: the browser/CLI compares it with Date.now()/
+            # time.time() (box clock). Using server_time made a skewed box
+            # clock show 00:00 (or 11:00) for the whole interval.
+            snap["next_event_at"] = time.time() + float(next_checkin_s)
     else:
         snap["next_event_at"] = float(computed_at) + float(honor_interval_s)
 
@@ -168,9 +175,118 @@ def write(report_path: str, snapshot: dict) -> bool:
         return False
 
 
+def _is_number(value) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+    )
+
+
+def _validate_snapshot(data: dict, path: str) -> None:
+    """Validate the fields the CLI dereferences, so a corrupt/forged snapshot
+    produces a clean SnapshotError instead of a ValueError/TypeError trace."""
+    errors = []
+
+    def bad(msg):
+        errors.append(msg)
+
+    mode = data.get("mode")
+    if mode not in ("honor", "ranked"):
+        bad("mode must be 'honor' or 'ranked'")
+    if data.get("total") is not None and (
+        isinstance(data.get("total"), bool) or not isinstance(data.get("total"), int)
+    ):
+        bad("total must be an integer or null")
+    pct = data.get("progress_pct")
+    if pct is not None and (
+        isinstance(pct, bool) or not isinstance(pct, int) or not 0 <= pct <= 100
+    ):
+        bad("progress_pct must be an integer in 0..100")
+    for key in ("computed_at", "next_event_at", "last_confirmed_at"):
+        if data.get(key) is not None and not _is_number(data.get(key)):
+            bad(f"{key} must be a finite number or null")
+    if data.get("next_checkin_s") is not None and (
+        isinstance(data.get("next_checkin_s"), bool)
+        or not isinstance(data.get("next_checkin_s"), int)
+    ):
+        bad("next_checkin_s must be an integer or null")
+    if data.get("delta") is not None and (
+        isinstance(data.get("delta"), bool) or not isinstance(data.get("delta"), int)
+    ):
+        bad("delta must be an integer or null")
+    if data.get("awaiting_engine") is not None and not isinstance(
+            data.get("awaiting_engine"), bool):
+        bad("awaiting_engine must be a boolean")
+
+    def check_list(key, fields):
+        rows = data.get(key)
+        if rows is None:
+            return
+        if not isinstance(rows, list):
+            bad(f"{key} must be a list")
+            return
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                bad(f"{key}[{i}] must be an object")
+                continue
+            for field, kind in fields:
+                value = row.get(field)
+                if kind == "str" and not isinstance(value, str):
+                    bad(f"{key}[{i}].{field} must be a string")
+                elif kind == "int" and (
+                        isinstance(value, bool) or not isinstance(value, int)):
+                    bad(f"{key}[{i}].{field} must be an integer")
+                elif kind == "bool" and not isinstance(value, bool):
+                    bad(f"{key}[{i}].{field} must be a boolean")
+
+    check_list("fixed", [("title", "str"), ("points", "int")])
+    check_list("penalties", [("title", "str"), ("points", "int")])
+    check_list("forensics", [
+        ("id", "str"), ("ordinal", "int"), ("question", "str"),
+        ("max_points", "int"), ("answered", "bool"), ("points", "int"),
+        ("answers_path", "str"),
+    ])
+    check_list("results", [
+        ("check_id", "str"), ("category", "str"), ("awarded_points", "int"),
+        ("passed", "bool"), ("reason", "str"),
+    ])
+    check_list("sla_status", [
+        ("check_id", "str"), ("state", "str"), ("accrued_points", "int"),
+    ])
+    for key in ("snapshot_version", "scenario_version", "vulns_fixed",
+                "vulns_total", "remaining", "max_possible", "forensics_earned"):
+        value = data.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            bad(f"{key} must be an integer")
+    for key in ("scenario_name", "title", "organization", "readme",
+                "agent_version", "accent"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, str):
+            bad(f"{key} must be a string or null")
+    if data.get("accent") is not None and not board_mod.ACCENT_RE.match(data["accent"]):
+        # Drop an invalid accent rather than abort the whole report; it is
+        # cosmetic, and the renderer already guards.
+        data["accent"] = None
+
+    if errors:
+        raise SnapshotError(
+            f"{path} is not a usable huitz snapshot: " + "; ".join(errors[:6]))
+
+
+def _sanitize_strings(value):
+    if isinstance(value, str):
+        return term_mod.sanitize_text(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_strings(v) for v in value]
+    return value
+
+
 def read(path: str) -> dict:
-    """Load + sanity-check a snapshot. Raises SnapshotError with a message
-    meant for the terminal (the CLI surfaces it verbatim)."""
+    """Load + validate a snapshot. Raises SnapshotError with a message meant
+    for the terminal (the CLI surfaces it verbatim)."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -189,4 +305,5 @@ def read(path: str) -> dict:
             f"{path} is snapshot v{version}, but this huitz understands up to "
             f"v{SNAPSHOT_VERSION}; update the agent on this box"
         )
-    return data
+    _validate_snapshot(data, path)
+    return _sanitize_strings(data)

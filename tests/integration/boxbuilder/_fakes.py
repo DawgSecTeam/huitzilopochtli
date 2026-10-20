@@ -107,11 +107,22 @@ def install_fake_nakon(tmp_path, monkeypatch, *, build_json=None, deploy_json=No
     build_blob = json.dumps(build_json)
     deploy_blob = json.dumps(deploy_json)
     (pkg / "__main__.py").write_text(textwrap.dedent(f"""\
-        import sys, json
+        import sys, json, os
         cmd = sys.argv[1] if len(sys.argv) > 1 else ""
         if cmd == "build":
             print({build_blob!r})
         elif cmd == "deploy":
+            cap = os.environ.get("FAKE_NAKON_DEPLOY_CAPTURE")
+            if cap:
+                args = sys.argv[1:]
+                try:
+                    src = args[args.index("--config") + 1]
+                    with open(src) as f:
+                        data = f.read()
+                    with open(cap, "w") as f:
+                        f.write(data)
+                except (ValueError, IndexError, OSError) as e:
+                    print("capture failed: " + str(e), file=sys.stderr)
             print({deploy_blob!r})
         sys.exit(0)
     """))

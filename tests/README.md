@@ -4,12 +4,13 @@ Three tiers. A root `conftest.py` puts the repo root on `sys.path`, so every
 test imports `agent`/`common`/`engine`/`authoring` directly — no installed
 package, no path hacking needed in individual test files.
 
-## `tests/unit/` — fast, hermetic
+## `tests/unit/` — fast, mostly hermetic
 
-No external processes; mocked `subprocess`/filesystem where the real thing
+No VM/network boundary; mocked `subprocess`/filesystem where the real thing
 would be slow, flaky, or system-dependent (platform layer, package managers).
-Real (but temporary/local) files and sqlite DBs where that's cheap and more
-representative (checks, store). ~40s.
+A few tests intentionally spawn a real short-lived process or loopback socket
+to pin timeout/collector behavior. Real (but temporary/local) files and sqlite
+DBs where that's cheap and more representative (checks, store).
 
 ## `tests/integration/` — real processes, same host
 
@@ -76,17 +77,22 @@ goes through the QEMU guest agent API (file-write/file-read/exec), not SSH.
 pytest -m proxmox
 ```
 
-### `test_all_check_types_live.py` — PASSES (Ubuntu 24.04 full; Fedora 44 partial)
+### `test_all_check_types_live.py` — Ubuntu 24.04 passes; Fedora is a strict xfail
 
 `test_local_honor_distribution.py` only ever exercised `file_regex`. This
-file runs a scenario hitting all seven check types (`file_regex`,
-`permission`, `user_group`, `service_state`, `package`, `http_uptime`,
-`db_query`) in one pass against a real, freshly-cloned VM.
+file runs a scenario hitting seven of the twelve registered check types
+(`file_regex`, `permission`, `user_group`, `service_state`, `package`,
+`http_uptime`, `db_query`) in one pass against a real, freshly-cloned VM.
+`process_state`, `command_json`, `forensics_answer`, `powershell_json`, and
+`registry_value` are unit-tested (Windows ones statically mocked), not live.
 
 - **Ubuntu 24.04: 70/70.** All seven check types collect and score
   correctly against real OS state.
-- **Fedora 44: 30/70** (only `file_regex`/`permission`/`user_group`, which
-  need no subprocess or network call, pass). The remaining four score 0 for
+- **Fedora 44: xfail (30/70)** (only `file_regex`/`permission`/`user_group`,
+  which need no subprocess or network call, pass). The test still executes and asserts
+  30/70 (so a regression fails), then reports xfail; a future environment fix
+  that reaches 70 fails the old 30 assertion and forces an update rather than
+  silently keeping the partial claim. The remaining four score 0 for
   reasons confirmed to be template/environment facts, not product bugs:
   `crond` isn't active by default on this minimal cloud image; `rpm` isn't
   reachable via the guest-agent's exec PATH so `package_installed()`
@@ -256,7 +262,8 @@ inferred from reading the code:
   reopens the files by path to read them back.
 
 After both fixes, `pytest tests/unit tests/integration` passes clean:
-**278 passed in ~91s**, with no hangs.
+All collected default-tier tests passed (see the pytest summary; counts are
+intentionally not hard-coded here).
 
 ### Setup used for the runs above
 

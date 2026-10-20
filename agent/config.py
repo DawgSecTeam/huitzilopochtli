@@ -40,6 +40,13 @@ def load_config(config_path: str) -> AgentConfig:
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    for key in ("allow_unsigned_manifest", "notifications"):
+        if key in data and not isinstance(data[key], bool):
+            raise ValueError(
+                f"config {config_path!r}: '{key}' must be a JSON boolean "
+                f"(got {type(data[key]).__name__}); refusing to guess"
+            )
+
     config = AgentConfig(
         mode=Mode(data["mode"]),
         manifest_path=data["manifest_path"],

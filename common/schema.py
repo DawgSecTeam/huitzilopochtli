@@ -3,11 +3,14 @@
 Pure stdlib dataclasses. No Pydantic (breaks the pure-Python/zipapp constraint).
 All schema objects are serialized as JSON; on-box parsing is stdlib json only.
 """
+import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+from urllib.parse import urlsplit
 
-from common.matchers import MATCHERS
+from common.matchers import validate_matcher
 
 SCHEMA_VERSION = 1
 
@@ -208,6 +211,7 @@ _REQUIRED_RUBRIC_ENTRY_KEYS = ("check_id", "category", "matcher", "points")
 _REQUIRED_RUBRIC_KEYS = (
     "schema_version", "scenario_name", "scenario_version", "entries",
 )
+_ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def validate_manifest(obj: dict) -> list:
@@ -225,20 +229,52 @@ def validate_manifest(obj: dict) -> list:
         if key not in obj:
             errors.append(f"manifest missing required key '{key}'")
 
-    if "schema_version" in obj and obj["schema_version"] != SCHEMA_VERSION:
-        errors.append(
-            f"manifest schema_version {obj['schema_version']!r} != "
-            f"supported {SCHEMA_VERSION!r}"
-        )
+    if "schema_version" in obj:
+        version = obj["schema_version"]
+        if isinstance(version, bool) or not isinstance(version, int):
+            errors.append("manifest schema_version must be an integer")
+        elif version != SCHEMA_VERSION:
+            errors.append(
+                f"manifest schema_version {version!r} != "
+                f"supported {SCHEMA_VERSION!r}"
+            )
+
+    scenario_name = obj.get("scenario_name")
+    if scenario_name is not None and (
+        not isinstance(scenario_name, str) or not scenario_name.strip()
+    ):
+        errors.append("manifest.scenario_name must be a non-empty string")
+    scenario_version = obj.get("scenario_version")
+    if scenario_version is not None and (
+        isinstance(scenario_version, bool)
+        or not isinstance(scenario_version, int)
+        or scenario_version < 0
+    ):
+        errors.append("manifest.scenario_version must be a non-negative integer")
 
     if "mode" in obj and obj["mode"] not in (Mode.HONOR.value, Mode.RANKED.value):
         errors.append(f"manifest mode must be 'honor' or 'ranked', got {obj['mode']!r}")
 
-    if obj.get("mode") == Mode.RANKED.value and not obj.get("engine_url"):
+    engine_url = obj.get("engine_url")
+    if engine_url is not None:
+        if not isinstance(engine_url, str) or not engine_url.strip():
+            errors.append("manifest.engine_url must be a non-empty string")
+        else:
+            parts = urlsplit(engine_url)
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                errors.append(
+                    f"manifest.engine_url must be an http(s) URL with a host, "
+                    f"got {engine_url!r}"
+                )
+    if obj.get("mode") == Mode.RANKED.value and not engine_url:
         errors.append("manifest mode is 'ranked' but engine_url is missing/empty")
 
-    if "hosts" in obj and not isinstance(obj["hosts"], list):
-        errors.append("manifest.hosts must be a list")
+    hosts = obj.get("hosts")
+    if hosts is not None:
+        if not isinstance(hosts, list):
+            errors.append("manifest.hosts must be a list")
+        elif not all(isinstance(h, str) and h.strip() for h in hosts):
+            errors.append("manifest.hosts entries must be non-empty strings")
 
     checks = obj.get("checks")
     if checks is None:
@@ -255,6 +291,42 @@ def validate_manifest(obj: dict) -> list:
             for key in _REQUIRED_CHECK_SPEC_KEYS:
                 if key not in check:
                     errors.append(f"{ref} missing required key '{key}'")
+            cid = check.get("id")
+            if cid is not None:
+                if not isinstance(cid, str) or not cid.strip():
+                    errors.append(f"{ref}.id must be a non-empty string")
+                elif cid in seen_ids:
+                    errors.append(f"{ref} duplicate check id '{cid}'")
+                else:
+                    seen_ids.add(cid)
+            check_type = check.get("type")
+            if check_type is not None and (
+                not isinstance(check_type, str) or not check_type.strip()
+            ):
+                errors.append(f"{ref}.type must be a non-empty string")
+            host_id = check.get("host_id")
+            if host_id is not None and (
+                not isinstance(host_id, str) or not host_id.strip()
+            ):
+                errors.append(f"{ref}.host_id must be a non-empty string")
+            display_title = check.get("display_title")
+            if display_title is not None and not isinstance(display_title, str):
+                errors.append(f"{ref}.display_title must be a string")
+            max_points = check.get("display_max_points")
+            if max_points is not None and (
+                isinstance(max_points, bool) or not isinstance(max_points, int)
+                or max_points < 0
+            ):
+                errors.append(f"{ref}.display_max_points must be a non-negative integer")
+            timeout_s = check.get("timeout_s")
+            if timeout_s is not None and (
+                isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                or not math.isfinite(timeout_s) or timeout_s <= 0
+            ):
+                errors.append(f"{ref}.timeout_s must be a finite positive number")
+            is_sla = check.get("is_sla")
+            if is_sla is not None and not isinstance(is_sla, bool):
+                errors.append(f"{ref}.is_sla must be a boolean")
             if "category" in check and check["category"] not in (
                 Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
             ):
@@ -264,18 +336,15 @@ def validate_manifest(obj: dict) -> list:
                 )
             # §6.1: collect_params must never contain rubric data.
             collect_params = check.get("collect_params")
-            if isinstance(collect_params, dict):
+            if collect_params is not None and not isinstance(collect_params, dict):
+                errors.append(f"{ref}.collect_params must be an object")
+            elif isinstance(collect_params, dict):
                 for leaked_key in ("expect", "points", "matcher"):
                     if leaked_key in collect_params:
                         errors.append(
                             f"{ref}.collect_params must not contain '{leaked_key}' "
                             "(rubric data must never ship in the manifest)"
                         )
-            cid = check.get("id")
-            if cid is not None:
-                if cid in seen_ids:
-                    errors.append(f"{ref} duplicate check id '{cid}'")
-                seen_ids.add(cid)
 
     forensics = obj.get("forensics")
     if forensics is not None:
@@ -327,35 +396,34 @@ def validate_manifest(obj: dict) -> list:
                             "(answer keys must never ship in the manifest)"
                         )
 
+    theme = obj.get("theme")
+    if theme is not None:
+        if not isinstance(theme, dict):
+            errors.append("manifest.theme must be an object or null")
+        else:
+            for key in ("title", "organization", "accent", "logo_b64", "readme_text"):
+                if key in theme and theme[key] is not None and not isinstance(theme[key], str):
+                    errors.append(f"manifest.theme.{key} must be a string")
+            accent = theme.get("accent")
+            if isinstance(accent, str) and not _ACCENT_RE.match(accent):
+                errors.append(
+                    f"manifest.theme.accent must be a #rrggbb color, got {accent!r}"
+                )
+
     return errors
 
 
 def _matcher_errors(matcher, ref: str) -> list:
     """Validate a rubric entry's matcher would resolve at evaluation time.
 
-    evaluate_matcher resolves the predicate via an explicit "tag" or, in
-    shorthand form, by finding exactly one key that names a registered
-    matcher. Anything ambiguous/unknown raises KeyError mid-evaluation today —
-    catch it here at upload time instead.
+    Delegates to common.matchers.validate_matcher, which checks the argument
+    shapes each predicate reads (field/pattern/value/allowed/...). Keeping one
+    validator means the upload-time check and the runtime predicate cannot
+    drift.
     """
     if not isinstance(matcher, dict):
         return []  # shape error already reported by the caller
-    # NOTE: booleans are legitimate matcher values here (permission checks
-    # produce boolean `exists` evidence and match `equals: false`), and the
-    # rubric carries no check-type context to know better. The YAML 1.1
-    # unquoted-`no`-becomes-bool trap is caught authoring-side instead, where
-    # the check type is known (authoring/validate.py).
-    tag = matcher.get("tag")
-    if tag is not None:
-        if tag not in MATCHERS:
-            return [f"{ref}.matcher has unknown tag {tag!r}"]
-        return []
-    candidates = [k for k in matcher if k in MATCHERS]
-    if len(candidates) == 1:
-        return []
-    if not candidates:
-        return [f"{ref}.matcher has no resolvable tag (none of its keys name a registered matcher)"]
-    return [f"{ref}.matcher is ambiguous: several keys name registered matchers ({candidates})"]
+    return [f"{ref}: {err}" for err in validate_matcher(matcher)]
 
 
 def validate_rubric(obj: dict) -> list:
@@ -368,11 +436,28 @@ def validate_rubric(obj: dict) -> list:
         if key not in obj:
             errors.append(f"rubric missing required key '{key}'")
 
-    if "schema_version" in obj and obj["schema_version"] != SCHEMA_VERSION:
-        errors.append(
-            f"rubric schema_version {obj['schema_version']!r} != "
-            f"supported {SCHEMA_VERSION!r}"
-        )
+    if "schema_version" in obj:
+        version = obj["schema_version"]
+        if isinstance(version, bool) or not isinstance(version, int):
+            errors.append("rubric schema_version must be an integer")
+        elif version != SCHEMA_VERSION:
+            errors.append(
+                f"rubric schema_version {version!r} != "
+                f"supported {SCHEMA_VERSION!r}"
+            )
+
+    scenario_name = obj.get("scenario_name")
+    if scenario_name is not None and (
+        not isinstance(scenario_name, str) or not scenario_name.strip()
+    ):
+        errors.append("rubric.scenario_name must be a non-empty string")
+    scenario_version = obj.get("scenario_version")
+    if scenario_version is not None and (
+        isinstance(scenario_version, bool)
+        or not isinstance(scenario_version, int)
+        or scenario_version < 0
+    ):
+        errors.append("rubric.scenario_version must be a non-negative integer")
 
     entries = obj.get("entries")
     if entries is None:
@@ -413,9 +498,12 @@ def validate_rubric(obj: dict) -> list:
                 errors.extend(_matcher_errors(entry["matcher"], ref))
             cid = entry.get("check_id")
             if cid is not None:
-                if cid in seen_ids:
+                if not isinstance(cid, str) or not cid.strip():
+                    errors.append(f"{ref}.check_id must be a non-empty string")
+                elif cid in seen_ids:
                     errors.append(f"{ref} duplicate check_id '{cid}'")
-                seen_ids.add(cid)
+                else:
+                    seen_ids.add(cid)
             sla = entry.get("sla")
             if sla is not None and not isinstance(sla, dict):
                 errors.append(f"{ref}.sla must be an object or null")
@@ -423,8 +511,11 @@ def validate_rubric(obj: dict) -> list:
                 interval_s = sla.get("interval_s")
                 if (isinstance(interval_s, bool)
                         or not isinstance(interval_s, (int, float))
+                        or not math.isfinite(interval_s)
                         or interval_s <= 0):
-                    errors.append(f"{ref}.sla.interval_s must be a positive number")
+                    errors.append(
+                        f"{ref}.sla.interval_s must be a finite positive number"
+                    )
                 ppi = sla.get("points_per_interval")
                 if isinstance(ppi, bool) or not isinstance(ppi, int) or ppi <= 0:
                     errors.append(
@@ -446,5 +537,15 @@ def validate_rubric(obj: dict) -> list:
                 unknown = sorted(set(sla) - set(SlaParams.__dataclass_fields__))
                 if unknown:
                     errors.append(f"{ref}.sla has unknown key(s): {', '.join(unknown)}")
+
+            # A zero-point non-SLA entry can never change the score and (for
+            # a VULN) makes the board count a "fixed" issue that awards
+            # nothing. SLA entries legitimately carry points=0 because their
+            # points come from points_per_interval.
+            if (not isinstance(points, bool) and isinstance(points, int)
+                    and not isinstance(sla, dict) and points == 0):
+                errors.append(
+                    f"{ref}.points must be non-zero for a non-SLA entry"
+                )
 
     return errors

@@ -58,14 +58,23 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
             # Undetermined evidence is never a confirmed observation.
             awarded = 0
             matched = False
+            passed = False
             matcher_reason = (
                 f"evidence unavailable; scored as not satisfied ({matcher_reason})"
             )
-        elif entry.category == Category.PENALTY:
-            awarded = entry.points if not matched else 0
         else:
-            # VULN and PROHIBITED both award on matcher PASS (§10.1).
-            awarded = entry.points if matched else 0
+            # `passed` is the human-facing "requirement satisfied" bit, not
+            # "matcher returned True": for PROHIBITED, a passing matcher means
+            # the forbidden state is present, so the requirement is NOT met.
+            if entry.category == Category.PENALTY:
+                awarded = entry.points if not matched else 0
+                passed = matched
+            elif entry.category == Category.PROHIBITED:
+                awarded = entry.points if matched else 0
+                passed = not matched
+            else:
+                awarded = entry.points if matched else 0
+                passed = matched
 
         if ev is not None and ev.reason:
             reason = f"{matcher_reason} (evidence: {ev.reason})"
@@ -77,7 +86,7 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
                 check_id=entry.check_id,
                 category=entry.category,
                 awarded_points=awarded,
-                passed=matched,
+                passed=passed,
                 reason=reason,
             )
         )

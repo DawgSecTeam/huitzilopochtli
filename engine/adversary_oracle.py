@@ -57,7 +57,11 @@ def due_directives(store: Store, box_id: str, server_secret: bytes,
             continue
         if received_at >= fire_time:
             params = event.get("params", {})
-            if store.log_adversary_event(box_id, event_id, action, received_at, params):
+            affects_check = event.get("affects_check")
+            if store.log_adversary_event(
+                    box_id, event_id, action, received_at, params,
+                    fire_time=fire_time,
+                    affects_check=affects_check if isinstance(affects_check, str) else None):
                 directives.append(
                     Directive(event_id=event_id, action=action, params=params)
                 )

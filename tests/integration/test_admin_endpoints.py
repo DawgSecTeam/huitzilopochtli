@@ -27,6 +27,7 @@ from authoring.compile import compile_scenario
 from common import canon
 from common.crypto import signing
 from common.schema import Bundle, CollectorStatus, Evidence
+from common.version import AGENT_VERSION
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -185,7 +186,7 @@ checks:
     host_id: localhost
     display: "Test check"
     max_points: {points}
-    collect: {{}}
+    collect: {{path: /etc/x, extract: "x=(\\\\w+)"}}
     expect:
       equals: "{expected_value}"
       points: {points}
@@ -225,7 +226,7 @@ def _enroll_box(base_url: str, admin_token: str, scenario_name: str, box_id: str
         "enrollment_token": enrollment_token,
         "box_id": box_id,
         "public_key": pub_key_b64,
-        "agent_version": "0.1.0-test",
+        "agent_version": AGENT_VERSION,
         "scenario_name": scenario_name,
         "scenario_version": 1,
     }
@@ -245,7 +246,7 @@ def _make_checkin_body(box_id: str, scenario_name: str, seq: int, matched_value:
         box_id=box_id,
         seq=seq,
         boot_id="boot-1",
-        agent_version="0.1.0-test",
+        agent_version=AGENT_VERSION,
         scenario_name=scenario_name,
         scenario_version=1,
         evidence=[
@@ -301,7 +302,7 @@ def test_admin_tokens_and_scenarios_succeed_with_correct_token(engine, tmp_path)
         timeout=REQUEST_TIMEOUT,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"ok": True, "scenario_name": scenario_name}
+    assert resp.json() == {"ok": True, "scenario_name": scenario_name, "scenario_version": 1}
 
 
 # --- BUG-E5: malformed rubric upload must be rejected, not stored ------------
@@ -361,8 +362,8 @@ def test_admin_scenarios_rejects_invalid_adversary_pool_with_400(engine, tmp_pat
     )
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body.get("error") == "invalid adversary pool"
-    assert "action" in body.get("detail", "")
+    assert body.get("error") == "invalid scenario record"
+    assert any("action" in e for e in body.get("details", []))
 
 
 def test_checkin_with_malformed_stored_rubric_returns_clean_500(engine, tmp_path):
@@ -383,10 +384,11 @@ def test_checkin_with_malformed_stored_rubric_returns_clean_500(engine, tmp_path
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
-            "INSERT INTO scenarios (scenario_name, rubric_json, adversary_json, uploaded_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO scenarios (scenario_name, scenario_version, rubric_json, "
+            "adversary_json, uploaded_at) VALUES (?, ?, ?, ?, ?)",
             (
                 scenario_name,
+                1,
                 _json.dumps({
                     "schema_version": 1,
                     "scenario_name": scenario_name,
@@ -412,7 +414,7 @@ def test_checkin_with_malformed_stored_rubric_returns_clean_500(engine, tmp_path
     resp = _signed_checkin(base_url, priv_key, body)
     assert resp.status_code == 500, resp.text
     body = resp.json()
-    assert "malformed rubric" in body["error"]
+    assert "scenario record is invalid" in body["error"]
     # The parse error quotes rubric content; it must stay engine-side (§2.4).
     assert "not-a-real-category" not in resp.text
 
@@ -555,11 +557,10 @@ def test_checkin_unknown_scenario_returns_clean_400(engine, tmp_path):
                                seq=1, matched_value="yes")
     resp = _signed_checkin(base_url, priv_key, body)
 
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 409, resp.text
     payload = resp.json()
-    assert "unknown scenario" in payload["error"].lower()
-    assert payload.get("scenario_name") == unknown_scenario
-    assert payload.get("last_seq") is None
+    assert "no engine record" in payload["error"].lower()
+    assert payload.get("last_seq") == 0
 
 
 # --- 6. leaderboard reflects a real checkin's score -------------------------

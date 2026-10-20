@@ -191,6 +191,9 @@ checks:
         #    agent.identity.enroll()'s urllib POST in ranked mode, now
         #    confirmed to block ANY outbound connect() from a process the
         #    guest agent spawns, not just that one call site.
+        # Fedora is a documented partial: the assertion below still runs, so a
+        # regression from 30 fails, but a pass is reported as xfail (not a
+        # green "all check types work" claim).
         ("fedora", "TEST_TEMPLATE_VMID_FEDORA", "crond", "cronie", 30),
     ],
 )
@@ -226,5 +229,9 @@ def test_all_check_types_on_real_vm(proxmox, tmp_path, label, template_env_var, 
         report_bytes = ph.guest_file_read(proxmox, vmid, f"{INSTALL_DIR}/report.html")
         report_html = report_bytes.decode("utf-8")
         assert f"Total: {expected_total}" in report_html, report_html
+        if label == "fedora" and expected_total == 30:
+            pytest.xfail(
+                "Fedora template: guest-agent PATH/SELinux egress limits make "
+                "4 of 7 checks unobservable (documented partial, 30/70)")
     finally:
         ph.destroy_vm(proxmox, vmid)

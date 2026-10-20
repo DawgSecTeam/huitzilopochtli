@@ -155,9 +155,45 @@ def test_max_intervals_per_checkin_caps_credit(store):
                       received_at=1000.0 + 1000 * 60)
     assert rec.state == "UP"
     assert rec.accrued_points == 3 * 5
-    # watermark only advances by the credited (capped) intervals, not all
-    # the way to received_at.
-    assert rec.last_credited_at == 1000.0 + 3 * 60
+    # The cap FORFEITS the uncredited backlog: the anchor jumps to the receipt
+    # time (no fractional remainder here), so the next check-in cannot drain
+    # the rest of the outage.
+    assert rec.last_credited_at == 1000.0 + 1000 * 60
+
+
+def test_long_outage_is_not_back_claimed_over_later_checkins(store):
+    params = make_params(interval_s=60, points_per_interval=5,
+                          max_intervals_per_checkin=3)
+    update_sla(store, "box1", "check1", params, is_up=True, received_at=1000.0)
+
+    # One hour offline; the reconnect earns the capped 3 intervals only.
+    reconnect = 1000.0 + 3600.0
+    rec = update_sla(store, "box1", "check1", params, is_up=True,
+                      received_at=reconnect)
+    assert rec.accrued_points == 15
+
+    # Rapid check-ins after reconnect must not keep paying the old gap.
+    for i in range(1, 21):
+        rec = update_sla(store, "box1", "check1", params, is_up=True,
+                          received_at=reconnect + i)
+    assert rec.accrued_points == 15, "outage backlog was cashed in after the cap"
+
+    # Normal cadence resumes crediting one interval at a time.
+    rec = update_sla(store, "box1", "check1", params, is_up=True,
+                      received_at=reconnect + 60)
+    assert rec.accrued_points == 20
+
+
+def test_capped_gap_preserves_sub_interval_remainder(store):
+    params = make_params(interval_s=60, points_per_interval=5,
+                          max_intervals_per_checkin=3)
+    update_sla(store, "box1", "check1", params, is_up=True, received_at=1000.0)
+    # 200s elapsed = 3 intervals + 20s; cap is 3, so the 20s must survive.
+    rec = update_sla(store, "box1", "check1", params, is_up=True, received_at=1200.0)
+    assert rec.accrued_points == 15
+    assert rec.last_credited_at == 1180.0
+    rec = update_sla(store, "box1", "check1", params, is_up=True, received_at=1240.0)
+    assert rec.accrued_points == 20
 
 
 def test_watermark_carries_fractional_leftover_while_up(store):

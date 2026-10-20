@@ -33,7 +33,8 @@ def run_ps(script: str, timeout: float = 20) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-Command", _PS_PREAMBLE + script],
-        capture_output=True, text=True, errors="replace", timeout=timeout,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=timeout,
     )
 
 

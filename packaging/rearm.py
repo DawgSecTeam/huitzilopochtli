@@ -76,8 +76,45 @@ def _snapshot_path(report_path: str) -> str:
 def _maybe_remove(path: str) -> bool:
     """Remove `path` if it exists. Returns whether it was removed."""
     if path and os.path.exists(path):
-        os.remove(path)
-        return True
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+
+
+def _remove_user_mirrors() -> list:
+    """Delete the per-user Documents/Desktop report mirrors.
+
+    The CLI searches those mirrors first, so leaving them behind means
+    `huitz score` keeps showing the previous session after a re-arm.
+    """
+    removed = []
+    if os.name == "nt":
+        homes = [os.environ.get("PUBLIC", r"C:\Users\Public")]
+    else:
+        homes = []
+        try:
+            import pwd
+            for entry in pwd.getpwall():
+                if 1000 <= entry.pw_uid < 60000:
+                    shell = entry.pw_shell or ""
+                    if shell.endswith(("/nologin", "/false")):
+                        continue
+                    homes.append(entry.pw_dir)
+        except (ImportError, KeyError):
+            pass
+    for home in homes:
+        for rel in (
+            os.path.join("Documents", "huitzilopochtli", "report.html"),
+            os.path.join("Documents", "huitzilopochtli", "report.json"),
+            os.path.join("Desktop", "report.html"),
+            os.path.join("Desktop", "report.json"),
+        ):
+            path = os.path.join(home, rel)
+            if _maybe_remove(path):
+                removed.append(path)
+    return removed
     return False
 
 
@@ -109,6 +146,9 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
     else:
         actions.append(f"no report snapshot to remove at: {snapshot}")
 
+    for removed in _remove_user_mirrors():
+        actions.append(f"removed user report mirror: {removed}")
+
     if reset_identity:
         if config.identity_path:
             queue_path = config.identity_path + ".queue"
@@ -122,6 +162,11 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
                 actions.append(f"removed queued check-in bundles: {queue_path}")
             else:
                 actions.append(f"no queued check-in bundles at: {queue_path}")
+            for suffix in (".queue.fail", ".queue.dead", ".directives",
+                           ".directives.tmp"):
+                path = config.identity_path + suffix
+                if _maybe_remove(path):
+                    actions.append(f"removed state file: {path}")
             # The .enrolled marker must go too: agent/__main__.py::_ensure_enrolled
             # short-circuits on it, so a leftover marker would make the brand-new
             # box_id/keypair (above) skip /enroll and be rejected by the engine

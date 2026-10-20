@@ -6,10 +6,10 @@ stderr so `boxbuilder <cmd> --json | jq` works.
 
 Usage:
     python3 -m boxbuilder compile --spec box.yaml [--out artifacts/] [--json]
-    python3 -m boxbuilder plant   --spec box.yaml [--artifacts artifacts/] [--json]
-    python3 -m boxbuilder install --spec box.yaml --artifacts artifacts/ [--json]
-    python3 -m boxbuilder package --spec box.yaml --artifacts artifacts/ --out box.ova [--json]
-    python3 -m boxbuilder build   --spec box.yaml [--from-step compile|plant|install|package] [--json]
+    python3 -m boxbuilder plant   --spec box.yaml [--out artifacts/] [--json]
+    python3 -m boxbuilder install --spec box.yaml [--out artifacts/] [--json]
+    python3 -m boxbuilder package --spec box.yaml [--out artifacts/] --image-out box.ova [--json]
+    python3 -m boxbuilder build   --spec box.yaml [--image-out box.ova] [--from-step compile|plant|install|package] [--json]
     python3 -m boxbuilder answer-key --scenario scenario.yaml [--out PATH] [--html] [--json]
 
 The spec file may be replaced by direct flags (--scenario, --nakon-config,
@@ -21,7 +21,6 @@ import os
 import sys
 from typing import Optional
 
-from boxbuilder import nakon as nakon_mod
 from boxbuilder.pipeline import (
     build_all, compile_box, install_box, package_box, plant_box,
 )
@@ -197,7 +196,9 @@ def cmd_build(args) -> int:
     except Exception as e:
         _eprint(f"build failed: {e}")
         if args.json:
-            _emit({"ok": False, "error": str(e), "completed_step": None}, as_json=True)
+            _emit({"ok": False, "error": str(e),
+                   "completed_step": getattr(e, "completed_step", None)},
+                  as_json=True)
         return 1
     _emit(result, args.json)
     return 0 if result.get("ok", False) else 1

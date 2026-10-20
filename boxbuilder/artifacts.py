@@ -54,7 +54,16 @@ MOTD_PATH = "/etc/update-motd.d/90-huitzilopochtli"
 
 
 def _sh_single_quoted(text: str) -> str:
-    """Escape `text` for a single-quoted POSIX shell string (' -> '\\'')."""
+    """Escape `text` for a single-quoted POSIX shell string (' -> '\\'').
+
+    Control characters (especially newlines) would terminate the generated
+    printf line and inject shell into a root-executed /etc/update-motd.d
+    script, so collapse them to spaces before quoting.
+    """
+    text = "".join(
+        ch if ord(ch) >= 0x20 and not 0x7F <= ord(ch) <= 0x9F else " "
+        for ch in str(text)
+    )
     return text.replace("'", "'\\''")
 
 
@@ -213,7 +222,14 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict,
     # artifacts dir first, then treat it as a normal file to place.
     artifacts_dir = os.path.dirname(compile_result["agent_pyz"])
     cfg_path = os.path.join(artifacts_dir, "agent_config.json")
-    with open(cfg_path, "w", encoding="utf-8") as f:
+    fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(agent_config, f, indent=2)
-    files.append(OnBoxFile(cfg_path, f"{base}{sep}agent_config.json"))
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.chmod(cfg_path, 0o600)
+    except OSError:
+        pass
+    files.append(OnBoxFile(cfg_path, f"{base}{sep}agent_config.json", mode=0o600))
     return files

@@ -144,7 +144,7 @@ def test_identity_load_rejects_bad_last_seq(tmp_path):
 
 # --- collector: a slow-but-finished check keeps its result ---------------------
 
-def test_collector_keeps_result_of_check_that_finishes_after_own_timeout():
+def test_collector_discards_result_of_check_that_finishes_after_own_timeout():
     import agent.collector as collector
     import time
     from common.schema import CheckSpec, Category, CollectorStatus, Evidence
@@ -164,8 +164,7 @@ def test_collector_keeps_result_of_check_that_finishes_after_own_timeout():
     with patch.dict(collector.CHECKS, {"_slow": SlowCheck}):
         results = collector.run_all([spec], ctx=None)
     assert len(results) == 1
-    assert results[0].status == CollectorStatus.OK
-    assert results[0].raw == {"ok": True}
+    assert results[0].status == CollectorStatus.TIMEOUT
 
 
 # --- enrollment marker semantics ------------------------------------------------

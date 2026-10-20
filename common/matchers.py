@@ -62,25 +62,116 @@ def register(tag: str):
     return deco
 
 
+def _resolve_tag(matcher: dict):
+    """Resolve the matcher tag, including the documented shorthand form.
+
+    Returns the tag string, or None when the matcher is not an object, the tag
+    is not a string/registered, or the shorthand form is ambiguous.
+    """
+    if not isinstance(matcher, dict):
+        return None
+    tag = matcher.get("tag")
+    if tag is None:
+        candidates = [k for k in matcher if isinstance(k, str) and k in MATCHERS]
+        if len(candidates) != 1:
+            return None
+        return candidates[0]
+    if not isinstance(tag, str) or tag not in MATCHERS:
+        return None
+    return tag
+
+
+def validate_matcher(matcher: dict) -> list:
+    """Return human-readable argument errors for a matcher (empty = valid).
+
+    Upload-time validation is tag-only without this: a rubric such as
+    ``{"tag": "regex", "pattern": 123}`` passes the tag check and then raises
+    TypeError inside evaluate(), which (on the engine) fails every check-in for
+    the scenario. This validates the arguments each registered predicate
+    actually reads, using the same shorthand fallbacks the predicate uses.
+    """
+    errors = []
+    if not isinstance(matcher, dict):
+        return ["matcher must be an object"]
+
+    tag = matcher.get("tag")
+    if tag is None:
+        candidates = [k for k in matcher if isinstance(k, str) and k in MATCHERS]
+        if len(candidates) != 1:
+            if not candidates:
+                return ["matcher has no resolvable tag (none of its keys name a registered matcher)"]
+            return [f"matcher is ambiguous: several keys name registered matchers ({candidates})"]
+        tag = candidates[0]
+    elif not isinstance(tag, str):
+        return ["matcher tag must be a string"]
+    elif tag not in MATCHERS:
+        return [f"matcher has unknown tag {tag!r}"]
+
+    if "field" in matcher and not isinstance(matcher["field"], str):
+        errors.append("matcher field must be a string")
+
+    if tag in ("equals", "not_equals", "contains"):
+        if "value" not in matcher and tag not in matcher:
+            errors.append(f"{tag} matcher is missing its expected value")
+    elif tag == "regex":
+        pattern = _expected_value(matcher, "regex", "pattern")
+        if pattern is _MISSING:
+            errors.append("regex matcher is missing its pattern")
+        elif not isinstance(pattern, str):
+            errors.append(f"regex pattern must be a string, got {type(pattern).__name__}")
+        else:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                errors.append(f"regex pattern does not compile: {exc}")
+    elif tag == "mode_at_most":
+        max_mode = matcher.get("max_mode")
+        if max_mode is None:
+            errors.append("mode_at_most matcher is missing max_mode")
+        else:
+            try:
+                _parse_mode(max_mode)
+            except (TypeError, ValueError):
+                errors.append(f"mode_at_most max_mode is not a valid mode: {max_mode!r}")
+    elif tag in ("user_absent", "user_present"):
+        username = matcher.get("username")
+        if not isinstance(username, str) or not username:
+            errors.append(f"{tag} matcher requires a non-empty string username")
+    elif tag == "group_members_subset_of":
+        group = matcher.get("group")
+        allowed = matcher.get("allowed")
+        if not isinstance(group, str) or not group:
+            errors.append("group_members_subset_of requires a non-empty string group")
+        if not isinstance(allowed, list) or not all(isinstance(a, str) for a in allowed):
+            errors.append("group_members_subset_of requires allowed to be a list of strings")
+    elif tag == "answer_equals":
+        value = matcher.get("value")
+        accept = matcher.get("accept")
+        if value is None and accept is None:
+            errors.append("answer_equals requires value or accept")
+        if value is not None and not isinstance(value, str):
+            errors.append("answer_equals value must be a string")
+        if accept is not None and (
+            not isinstance(accept, list) or not all(isinstance(a, str) for a in accept)
+        ):
+            errors.append("answer_equals accept must be a list of strings")
+    return errors
+
+
 def evaluate_matcher(matcher: dict, raw: dict) -> tuple:
     """Look up matcher['tag'] in MATCHERS and evaluate it against raw.
 
-    Returns (passed: bool, reason: str).
-
-    If "tag" is absent, fall back to the §8 shorthand form where the tag
-    name itself is used as the expected-value key (e.g. {"equals": "no"}):
-    infer the tag as the one key present in `matcher` that also names a
-    registered matcher. This keeps the call signature unchanged while
-    letting the documented shorthand YAML work without an explicit "tag".
+    Returns (passed: bool, reason: str). Never raises: a malformed matcher is
+    an unsatisfied/unavailable observation, not a crash that aborts a whole
+    check-in. Upload-time validation should catch these first.
     """
-    tag = matcher.get("tag")
+    tag = _resolve_tag(matcher)
     if tag is None:
-        candidates = [k for k in matcher if k in MATCHERS]
-        if len(candidates) == 1:
-            tag = candidates[0]
-        else:
-            raise KeyError("tag")
-    return MATCHERS[tag](matcher, raw)
+        return False, "matcher has no resolvable tag"
+    try:
+        return MATCHERS[tag](matcher, raw)
+    except Exception as exc:  # noqa: BLE001 - evaluator must stay total
+        return False, f"matcher {tag!r} could not be evaluated ({type(exc).__name__})"
 
 
 # --- internal helpers -------------------------------------------------------

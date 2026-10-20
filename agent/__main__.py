@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import zlib
@@ -17,6 +18,7 @@ import agent.notify
 import agent.platform.detect
 import agent.reporter
 import agent.snapshot
+import agent.runlock
 import agent.transport
 import agent.adversary.executor
 import common.evaluator
@@ -26,6 +28,8 @@ from common import rubric_codec
 from common.schema import (
     Bundle,
     Category,
+    CheckinResponse,
+    CheckResult,
     CheckSpec,
     ForensicsQuestion,
     Manifest,
@@ -35,6 +39,7 @@ from common.schema import (
     SCHEMA_VERSION,
     ScoreBreakdown,
     SlaParams,
+    SlaStatus,
     validate_manifest,
 )
 from common.version import AGENT_VERSION
@@ -384,6 +389,11 @@ def _load_rubric(config):
             rubric_dict = rubric_codec.decode_rubric(rubric_raw)
         else:
             rubric_dict = json.loads(rubric_raw.decode("utf-8"))
+        from common.schema import validate_rubric
+        errors = validate_rubric(rubric_dict)
+        if errors:
+            raise ValueError(
+                "rubric failed validation: " + "; ".join(errors[:6]))
         return _rubric_from_dict(rubric_dict)
     except (OSError, ValueError, KeyError, TypeError, EOFError,
             zlib.error) as e:
@@ -392,6 +402,28 @@ def _load_rubric(config):
             f"unreadable, or corrupt ({e}) -- the box cannot score without "
             f"it; restore the file or reinstall the agent"
         ) from e
+
+
+def _write_text_atomic(path: str, text: str, mode: int = 0o644) -> None:
+    """Write a file via a same-directory temp + rename (never a partial read)."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".huitz-write-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def honor_grade(config, manifest, ctx) -> tuple:
@@ -403,41 +435,59 @@ def honor_grade(config, manifest, ctx) -> tuple:
     Scoring stays a pure function of (evidence, rubric, clock) — everything
     here is presentation or bookkeeping around that (§2.1).
     """
-    rubric = _load_rubric(config)
-    evidence = agent.collector.run_all(manifest.checks, ctx)
+    lock = None
+    report_path = getattr(config, "report_path", None)
+    if report_path:
+        lock = agent.runlock.RunLock(
+            os.path.join(os.path.dirname(os.path.abspath(report_path)),
+                         ".grade.lock"))
+        if not lock.acquire():
+            raise agent.runlock.AlreadyRunning(
+                "another grade is already running on this box")
+    try:
+        rubric = _load_rubric(config)
+        evidence = agent.collector.run_all(manifest.checks, ctx)
 
-    score = common.evaluator.evaluate(evidence, rubric, _WallClock())
-    # Diff against the previous run's total (None on first run / rebuilt
-    # scenario -- deliberately silent, see agent/notify.py).
-    delta = agent.notify.consume_delta(
-        agent.notify.state_path_for(config.report_path),
-        score.total, manifest.scenario_version,
-    )
-    html = agent.reporter.render_report(
-        score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest,
-        score_delta=delta,
-        honor_interval_s=_honor_interval_s(),
-    )
-    with open(config.report_path, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    snap = agent.snapshot.build_snapshot(
-        score, manifest, mode="honor", agent_version=AGENT_VERSION,
-        delta=delta, computed_at=score.computed_at,
-    )
-    agent.snapshot.write(config.report_path, snap)
-
-    if delta:
-        agent.notify.announce(
-            delta, score.total, title=_theme_title(manifest),
-            enabled=config.notifications,
+        score = common.evaluator.evaluate(evidence, rubric, _WallClock())
+        # Diff against the previous total (None on first run / rebuilt
+        # scenario). The baseline is recorded only after publication.
+        state_path = agent.notify.state_path_for(config.report_path)
+        delta = agent.notify.peek_delta(
+            state_path, score.total, manifest.scenario_version)
+        honor_interval_s = _honor_interval_s() or 70
+        html = agent.reporter.render_report(
+            score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest,
+            score_delta=delta,
+            honor_interval_s=honor_interval_s,
         )
-    _sync_desktop_copies(config)
-    return score, delta, snap
+        _write_text_atomic(config.report_path, html)
+
+        snap = agent.snapshot.build_snapshot(
+            score, manifest, mode="honor", agent_version=AGENT_VERSION,
+            delta=delta, computed_at=score.computed_at,
+            honor_interval_s=honor_interval_s,
+        )
+        agent.snapshot.write(config.report_path, snap)
+        agent.notify.record_score(
+            state_path, score.total, manifest.scenario_version)
+
+        if delta:
+            agent.notify.announce(
+                delta, score.total, title=_theme_title(manifest),
+                enabled=config.notifications,
+            )
+        _sync_desktop_copies(config)
+        return score, delta, snap
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def _run_honor(config, manifest, ctx) -> None:
-    honor_grade(config, manifest, ctx)
+    try:
+        honor_grade(config, manifest, ctx)
+    except agent.runlock.AlreadyRunning as e:
+        print(f"WARNING: {e}; skipping this timed grade", file=sys.stderr)
 
 
 def _enrolled_marker_path(identity_path: str) -> str:
@@ -475,7 +525,15 @@ def _load_executed_directives(identity_path: str) -> set:
         raise RuntimeError(
             f"cannot read executed-directives file: {e}; refusing to run "
             f"directives until it is repaired or removed") from e
-    return {str(i) for i in ids} if isinstance(ids, list) else set()
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        # A valid JSON document of the wrong shape used to be treated as an
+        # empty set, which re-ran every historical directive (flush_firewall /
+        # kill_service). Fail closed instead.
+        raise RuntimeError(
+            "executed-directives file is not a JSON list of event-id strings; "
+            "refusing to run directives until it is repaired or removed"
+        )
+    return set(ids)
 
 
 def _save_executed_directives(identity_path: str, ids: set) -> None:
@@ -578,9 +636,63 @@ def _warn_if_plain_http(manifest) -> None:
     )
 
 
+def _cached_ranked_response(config, manifest):
+    """Rebuild the last authoritative response from report.json, if any.
+
+    The ranked dashboard is a cache of the engine's last response (§13); a
+    process restart used to blank it to "awaiting engine" until the next
+    successful check-in, which on an offline box could be forever.
+    """
+    try:
+        snap = agent.snapshot.read(agent.snapshot.snapshot_path_for(config.report_path))
+    except Exception:
+        return None
+    if snap.get("mode") != "ranked" or snap.get("awaiting_engine"):
+        return None
+    if snap.get("scenario_name") != manifest.scenario_name:
+        return None
+    if snap.get("scenario_version") != manifest.scenario_version:
+        return None
+    try:
+        results = [
+            CheckResult(
+                check_id=r["check_id"],
+                category=Category(r["category"]),
+                awarded_points=r["awarded_points"],
+                passed=r["passed"],
+                reason=r.get("reason", ""),
+            )
+            for r in snap.get("results") or []
+        ]
+        sla = [
+            SlaStatus(check_id=s["check_id"], state=s["state"],
+                      accrued_points=s["accrued_points"])
+            for s in snap.get("sla_status") or []
+        ]
+        score = ScoreBreakdown(
+            scenario_name=snap["scenario_name"],
+            scenario_version=snap["scenario_version"],
+            total=snap["total"],
+            results=results,
+            sla_status=sla,
+            computed_at=snap.get("computed_at") or 0.0,
+        )
+        next_s = snap.get("next_checkin_s") or config.checkin_interval_s or 60
+        return CheckinResponse(
+            server_time=snap.get("last_confirmed_at") or score.computed_at,
+            score=score,
+            directives=[],
+            next_checkin_s=int(next_s),
+            last_seq=0,
+            issued_directives=[],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _run_ranked(config, manifest, ctx) -> None:
     queue_path = config.identity_path + ".queue"
-    last_response = None  # cached CheckinResponse across loop iterations
+    last_response = _cached_ranked_response(config, manifest)
 
     _warn_if_plain_http(manifest)
     identity = agent.identity.load_or_create(config.identity_path)
@@ -592,7 +704,16 @@ def _run_ranked(config, manifest, ctx) -> None:
         try:
             _ensure_enrolled(config, manifest, identity)
             break
-        except Exception as e:  # noqa: BLE001 — network, 4xx/5xx, config
+        except (agent.identity.EnrollmentConflict,
+                agent.identity.EnrollmentRejected,
+                ValueError, FileNotFoundError) as e:
+            # Configuration errors and permanent rejections cannot be fixed by
+            # retrying. Fail loudly so an operator reprovisions; systemd will
+            # surface the non-zero exit instead of silently retrying forever.
+            print(f"FATAL: enrollment cannot succeed without operator action: {e}",
+                  file=sys.stderr)
+            raise SystemExit(1)
+        except Exception as e:  # noqa: BLE001 — network/5xx/config read
             print(f"WARNING: enrollment failed, retrying later: {e}",
                   file=sys.stderr)
             time.sleep(max(config.checkin_interval_s or 0, 60))
@@ -622,6 +743,10 @@ def _run_ranked(config, manifest, ctx) -> None:
         )
         try:
             response = client.checkin(bundle)
+        except agent.transport.FatalTransportError as e:
+            print(f"FATAL: {e}; fix the engine certificate before retrying",
+                  file=sys.stderr)
+            raise SystemExit(1)
         except agent.transport.PermanentRejection as e:
             # The engine refused the bundle outright (§14.2: logic error, not
             # transient). The bundle is dropped; on a replay rejection the
@@ -644,9 +769,10 @@ def _run_ranked(config, manifest, ctx) -> None:
         delta = None
         try:
             if last_response is not None:
-                delta = agent.notify.consume_delta(
-                    agent.notify.state_path_for(config.report_path),
-                    last_response.score.total, manifest.scenario_version,
+                state_path = agent.notify.state_path_for(config.report_path)
+                delta = agent.notify.peek_delta(
+                    state_path, last_response.score.total,
+                    manifest.scenario_version,
                 )
                 html = agent.reporter.render_report(
                     last_response.score, Mode.RANKED, last_response.server_time,
@@ -679,9 +805,12 @@ def _run_ranked(config, manifest, ctx) -> None:
                     computed_at=placeholder.computed_at,
                     awaiting_engine=True,
                 )
-            with open(config.report_path, "w", encoding="utf-8") as f:
-                f.write(html)
+            _write_text_atomic(config.report_path, html)
             agent.snapshot.write(config.report_path, snap)
+            if last_response is not None:
+                agent.notify.record_score(
+                    agent.notify.state_path_for(config.report_path),
+                    last_response.score.total, manifest.scenario_version)
             # Publish the user-readable mirror (Documents/huitzilopochtli):
             # the unit's ExecStartPost fires before the first check-in even
             # exists, and the install dir is 0700 root -- without this, the
@@ -739,6 +868,12 @@ def main() -> None:
         config.authoring_public_key_path,
         allow_unsigned=config.allow_unsigned_manifest,
     )
+    if manifest.mode != config.mode:
+        raise ValueError(
+            f"config mode {config.mode.value!r} does not match the signed "
+            f"manifest mode {manifest.mode.value!r}; refusing to run a mode "
+            f"the box was not provisioned for"
+        )
     ctx = agent.platform.detect.detect()
 
     _prepare_forensics(

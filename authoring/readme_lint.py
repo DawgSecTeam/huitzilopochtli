@@ -17,6 +17,7 @@ commands and no planted names passes cleanly. The one-question test in
 HANDBOOK_GUIDE.md ("could a player earn this check by copying the
 handbook?") is the human half of the review.
 """
+import html as _html
 import re
 import string
 
@@ -41,9 +42,28 @@ _MIN_SOLUTION_LINE_WORDS = 3
 _MIN_PATH_CHARS = 6
 
 
+def _visible_text(text: str) -> str:
+    """Approximate the text a player actually sees in the rendered page.
+
+    The lint used to compare raw Markdown/HTML, so an answer split by markup
+    (``cocoa-<span>hidden</span>-sync`` or ``cocoa-**hidden**-sync``) was
+    invisible to it while obvious on screen. Strip tags/entities, link
+    syntax, and emphasis/code markers before normalizing. This is a net, not
+    a renderer, but it closes the easy bypass.
+    """
+    visible = str(text)
+    visible = re.sub(r"<[^>]*>", "", visible)
+    visible = _html.unescape(visible)
+    visible = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", visible)
+    visible = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", visible)
+    visible = visible.replace("`", "")
+    visible = re.sub(r"(\*\*|__|\*|_)", "", visible)
+    return visible
+
+
 def _norm(text: str) -> str:
-    """Casefold + collapse whitespace, so wrapped markdown still matches."""
-    return " ".join(str(text).casefold().split())
+    """Casefold + collapse whitespace, so wrapped/rendered markdown matches."""
+    return " ".join(_visible_text(text).casefold().split())
 
 
 def _strip_punct(text: str) -> str:
@@ -256,7 +276,7 @@ def _path_present(haystack_norm: str, needle_norm: str) -> bool:
     """Containment that will not match a parent dir of a longer named path
     ('/home/x/.ssh' must not fire on the briefed '/home/x/.ssh/id_rsa')."""
     return re.search(
-        r"(?<![a-z0-9\\])" + re.escape(needle_norm) + r"(?![\w.@+/-])",
+        r"(?<![a-z0-9\\])" + re.escape(needle_norm) + r"(?![\w@+/-])",
         haystack_norm,
     ) is not None
 

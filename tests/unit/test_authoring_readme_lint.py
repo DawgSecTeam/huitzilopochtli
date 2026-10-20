@@ -19,7 +19,7 @@ def _parsed(readme="", forensics=None, checks=None, theme=None):
         "scenario": {"name": "x", "version": 1, "mode": "honor", "hosts": ["h"]},
         "checks": checks if checks is not None else [{
             "id": "c1", "type": "file_regex", "category": "vuln", "display": "d",
-            "max_points": 5, "collect": {}, "expect": {"equals": "y", "points": 5},
+            "max_points": 5, "collect": {"path": "/etc/x", "extract": "x=(\\w+)"}, "expect": {"equals": "y", "points": 5},
         }],
         "forensics": forensics if forensics is not None else [{
             "id": "fq1", "question": "What is the name of the rogue account?",
@@ -95,7 +95,7 @@ def test_word_boundary_answer_does_not_fire_inside_longer_words():
 def _check_with_solution(solution):
     return {
         "id": "c1", "type": "file_regex", "category": "vuln", "display": "d",
-        "max_points": 5, "collect": {}, "expect": {"equals": "y", "points": 5},
+        "max_points": 5, "collect": {"path": "/etc/x", "extract": "x=(\\w+)"}, "expect": {"equals": "y", "points": 5},
         "solution": solution,
     }
 
@@ -275,3 +275,23 @@ def test_every_box_in_repo_is_lint_clean():
         box = os.path.basename(os.path.dirname(scenario_path))
         leaks.extend(f"{box}: {m}" for m in errors + warnings)
     assert leaks == [], "\n".join(leaks)
+
+
+# --- 1.0: markup must not hide an answer ------------------------------------
+
+def test_answer_split_by_html_markup_is_still_an_error():
+    parsed = _parsed(forensics=[{
+        "id": "fq1", "question": "What is the rogue account?",
+        "answer": "svc_legacy", "points": 10,
+    }])
+    errors, _ = _lint(parsed, "The account is <span>svc</span>_<b>legacy</b>.")
+    assert errors, "HTML markup hid a verbatim forensics answer from the lint"
+
+
+def test_answer_split_by_markdown_emphasis_is_still_an_error():
+    parsed = _parsed(forensics=[{
+        "id": "fq1", "question": "What is the rogue account?",
+        "answer": "svc_legacy", "points": 10,
+    }])
+    errors, _ = _lint(parsed, "The account is svc**_**legacy.")
+    assert errors, "Markdown emphasis hid a verbatim forensics answer from the lint"
