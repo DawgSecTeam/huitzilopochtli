@@ -637,6 +637,8 @@ huitzilopochtli/
     canon.py             # canonical serialization (§7)
     evaluator.py         # pure scorer (§10) — identical everywhere
     matchers.py          # matcher registry (§10.2)
+    check_types.py       # shared registered check-type keys
+    adversary.py         # closed action vocabulary + pool validation
     crypto/
       ed25519.py         # vendored, pinned
       signing.py         # sign/verify wrapper
