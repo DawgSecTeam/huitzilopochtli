@@ -182,6 +182,9 @@ def cmd_package(args) -> int:
 
 
 def cmd_build(args) -> int:
+    if getattr(args, "admin_token", None):
+        _eprint("WARNING: --admin-token is visible in process lists and shell "
+                "history; prefer $HUITZILOPOCHTLI_ADMIN_TOKEN")
     spec = _spec_from_args(args)
     out = args.out or os.path.join(os.getcwd(), "artifacts")
     try:
@@ -205,6 +208,9 @@ def cmd_build(args) -> int:
 
 
 def cmd_install(args) -> int:
+    if getattr(args, "admin_token", None):
+        _eprint("WARNING: --admin-token is visible in process lists and shell "
+                "history; prefer $HUITZILOPOCHTLI_ADMIN_TOKEN")
     spec = _spec_from_args(args)
     out = args.out or os.path.join(os.getcwd(), "artifacts")
     try:
