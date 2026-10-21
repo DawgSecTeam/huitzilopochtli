@@ -209,9 +209,15 @@ Real infrastructure (Proxmox, fresh linked clones):
 - `test_ranked_two_machines.py`: **1 passed** (engine VM + agent VM, real
   network hop, enrollment → check-in → leaderboard total=10).
 - `test_local_honor_distribution.py`: **Ubuntu passed, Fedora passed**.
-- `test_all_check_types_live.py`: **Ubuntu 70/70 passed**; Fedora is a
-  documented runtime xfail (30/70 environment/SELinux limits; the 30
-  assertion still runs and a regression fails).
+- `test_all_check_types_live.py`: **Ubuntu 70/70 and Fedora 70/70 passed**
+  (Fedora over root SSH; the guest agent's SELinux domain was the old 30/70
+  limit, not the product).
+- `test_windows_live.py`: **Windows Server 2022 90/90 passed** across
+  `file_regex`, `permission`, `user_group`, `service_state`, `process_state`,
+  `registry_value`, `powershell_json`, `http_uptime`, and `db_query`; the
+  opt-in install test passed on a prepared clone (files, `icacls` seal, SYSTEM
+  `HuitzilopochtliAgent` task, 80/80 first report).
+- Full fast suite: **1005 passed, 1 skipped, 7 deselected**.
 - Compiled `chocolate-factory` honor artifacts on a fresh clone: agent graded
   (`Total: 100` baseline with no vulns planted), `huitz score` rendered the
   board and exited 0, `huitz forensics` displayed and edited the answers file,
