@@ -17,7 +17,7 @@ Both modes share the same on-box collector: it gathers structured evidence and m
 
 ```bash
 python3 --version        # 3.10+ required; built/tested on 3.14
-pip install --user pytest
+pip install --user -r requirements-dev.txt
 pytest                    # runs the full unit + integration suite
 ```
 

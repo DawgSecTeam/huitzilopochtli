@@ -29,8 +29,27 @@ def load_or_create(identity_path: str) -> Identity:
     The private key never leaves the box.
     """
     if os.path.exists(identity_path):
-        with open(identity_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        if os.name != "nt":
+            st = os.stat(identity_path)
+            if st.st_mode & 0o077:
+                # §16 requires 0600. Tighten it rather than silently running
+                # with a world-readable private key; fail if we cannot.
+                try:
+                    os.chmod(identity_path, 0o600)
+                except OSError as exc:
+                    raise ValueError(
+                        f"identity file {identity_path!r} is accessible by other "
+                        f"users and could not be tightened to 0600: {exc}"
+                    ) from exc
+        try:
+            with open(identity_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"identity file {identity_path!r} is unreadable or corrupt "
+                f"({exc}); re-arm with --reset-identity only if a new box "
+                f"identity is intended"
+            ) from exc
         private_key = base64.b64decode(data["private_key"], validate=True)
         public_key = base64.b64decode(data["public_key"], validate=True)
         box_id = data["box_id"]
@@ -71,9 +90,18 @@ def load_or_create(identity_path: str) -> Identity:
 
 
 class EnrollmentTokenConsumed(Exception):
-    """Raised on HTTP 409: the engine already has this box enrolled under
-    this token. Callers should treat this as success (idempotent retry),
-    not as a fatal enrollment failure."""
+    """Raised on HTTP 409 token-already-consumed: an idempotent retry of this
+    same box's enrollment, not a fatal failure."""
+
+
+class EnrollmentConflict(Exception):
+    """Raised on HTTP 409 box-id-already-enrolled: the token was consumed by
+    a different identity. Retrying cannot fix it; the box needs a new token
+    (or the conflicting box must be removed)."""
+
+
+class EnrollmentRejected(Exception):
+    """A permanent enrollment rejection (400/410): reprovisioning is required."""
 
 
 def enroll(engine_url: str, enrollment_token: str, identity: Identity,
@@ -113,18 +141,40 @@ def enroll(engine_url: str, enrollment_token: str, identity: Identity,
     except urllib.error.HTTPError as e:
         status = e.code
         response_bytes = e.read()
+    except urllib.error.URLError as e:
+        if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+            raise EnrollmentRejected(
+                f"enrollment failed: engine TLS certificate verification failed "
+                f"({e.reason})"
+            ) from e
+        raise
 
     if status == 200:
         return json.loads(response_bytes.decode("utf-8"))
 
     reasons = {
-        409: "enrollment token already consumed",
         410: "enrollment token expired",
         400: "malformed enrollment request",
     }
-    reason = reasons.get(status, "unexpected response")
+    engine_error = ""
+    try:
+        parsed = json.loads(response_bytes.decode("utf-8"))
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+            engine_error = parsed["error"]
+    except (ValueError, UnicodeDecodeError):
+        pass
     if status == 409:
-        raise EnrollmentTokenConsumed(f"enrollment failed: HTTP {status} ({reason})")
+        if "already enrolled" in engine_error.lower():
+            raise EnrollmentConflict(
+                f"enrollment failed: HTTP {status} ({engine_error or 'box_id already enrolled'})"
+            )
+        raise EnrollmentTokenConsumed(
+            f"enrollment failed: HTTP {status} "
+            f"({engine_error or 'enrollment token already consumed'})"
+        )
+    reason = engine_error or reasons.get(status, "unexpected response")
+    if status in (400, 410):
+        raise EnrollmentRejected(f"enrollment failed: HTTP {status} ({reason})")
     raise Exception(f"enrollment failed: HTTP {status} ({reason})")
 
 
@@ -146,8 +196,21 @@ def save(identity_path: str, identity: Identity) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
         os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, identity_path)
+        # Persist the rename itself on POSIX. Best-effort: Windows has no
+        # directory fsync.
+        if os.name != "nt":
+            try:
+                dfd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
     except BaseException:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

@@ -14,9 +14,9 @@ Design notes:
     (SshProvider can't snapshot a remote box it doesn't own). Those return
     mode="manual" with instructions; the caller surfaces that in --json.
 """
-import os
+import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -86,6 +86,7 @@ class BoxHandle(ABC):
 
 
 _STAGE_PREFIX = "/tmp/huitzilopochtli-stage."
+_STAGE_DIR_RE = re.compile(r"^/tmp/huitzilopochtli-stage\.[A-Za-z0-9]+$")
 
 
 def stage_path(handle, name: str) -> str:
@@ -102,7 +103,7 @@ def stage_path(handle, name: str) -> str:
     if stage_dir is None:
         res = handle.run(f"mktemp -d {_STAGE_PREFIX}XXXXXX", sudo=False)
         stage_dir = res.stdout.strip()
-        if not res.ok or not stage_dir.startswith(_STAGE_PREFIX):
+        if not res.ok or not _STAGE_DIR_RE.fullmatch(stage_dir):
             raise RuntimeError(
                 f"could not create a private staging dir on {handle.addr}: "
                 f"{(res.stderr or res.stdout).strip()}"

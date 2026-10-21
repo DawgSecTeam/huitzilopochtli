@@ -184,10 +184,10 @@ phase.
    `"identity_path": "/opt/.huitzilopochtli/identity.json"`, and a real
    `checkin_interval_s"`.)
 
-   `authoring_public_key_path` is optional for backwards compatibility
-   with configs written before manifest verification existed -- if
-   omitted, the agent falls back to a loud warn-and-proceed-unverified
-   instead of failing closed. Always set it for real deployments.
+   `authoring_public_key_path` is **required**: if omitted, the agent
+   refuses to run (fails closed). Development fixtures may opt out with
+   `"allow_unsigned_manifest": true`, which is explicit and logged loudly;
+   never use it for a real box.
 
 4. Install the init unit for the box's init system:
 
@@ -252,14 +252,15 @@ To let a take-home box be replayed without a full redeploy:
 python3 packaging/rearm.py /opt/.huitzilopochtli
 ```
 
-By default this only deletes the cached report (`report_path` from
-`agent_config.json`) and the score baseline (`score_state.json`, so the
-replayed session starts silent instead of announcing a fake score
-change), leaving box identity and sequence number
-untouched -- appropriate for "let me retake this scenario" without
-re-enrolling as a new box with the engine. Pass `--reset-identity` to
-additionally delete the ranked-mode identity file and its transport
-queue, which forces generation of a brand-new box identity (new
-`box_id` + Ed25519 keypair, `last_seq` back to 0) on the next ranked
-run -- see the comment in `rearm.py` for why that's opt-in rather than
-the default.
+By default this deletes the cached report (`report_path` from
+`agent_config.json`), the `report.json` snapshot, the score baseline
+(`score_state.json`, so the replayed session starts silent instead of
+announcing a fake score change), and the per-user Documents/Desktop report
+mirrors, leaving box identity and sequence number untouched -- appropriate
+for "let me retake this scenario" without re-enrolling as a new box. Pass
+`--reset-identity` to additionally delete the ranked-mode identity file,
+its transport queue (including `.queue.fail`/`.queue.dead`), the
+`.directives` execution record, and the `.enrolled` marker. That forces a
+brand-new box identity (new `box_id` + Ed25519 keypair, `last_seq` back to
+0) on the next ranked run -- see the comment in `rearm.py` for why that's
+opt-in rather than the default.

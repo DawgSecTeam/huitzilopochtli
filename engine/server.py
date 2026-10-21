@@ -27,77 +27,18 @@ from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
-from common.schema import (
-    Bundle, Category, CollectorStatus, Evidence, Rubric, RubricEntry, SlaParams,
-    SCHEMA_VERSION, validate_rubric,
-)
+from common.schema import Bundle, CollectorStatus, Evidence, SCHEMA_VERSION
 from engine import enrollment, leaderboard
+from engine import scenario as scenario_mod
 from engine.checkin import CheckinError, handle_checkin
 from engine.enrollment import EnrollError
 from engine.store import Store
 
 
-def _rubric_from_dict(d: dict) -> Rubric:
-    entries = []
-    for e in d.get("entries", []):
-        sla = e.get("sla")
-        sla_obj = SlaParams(**sla) if sla is not None else None
-        entries.append(
-            RubricEntry(
-                check_id=e["check_id"],
-                category=Category(e["category"]),
-                matcher=e["matcher"],
-                points=e["points"],
-                sla=sla_obj,
-            )
-        )
-    return Rubric(
-        schema_version=d.get("schema_version", 1),
-        scenario_name=d.get("scenario_name", ""),
-        scenario_version=d.get("scenario_version", 0),
-        entries=entries,
-    )
-
-
 def _load_engine_record(path: str) -> dict:
     """Load engine_record.json for seeding the store via save_scenario."""
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def _validate_adversary_pool(adversary: dict) -> None:
-    """Validate adversary pool at upload time; raises ValueError on bad input."""
-    events = adversary.get("events", [])
-    if not isinstance(events, list):
-        raise ValueError("adversary.events must be a list")
-    seen_ids = set()
-    for idx, event in enumerate(events):
-        if not isinstance(event, dict):
-            raise ValueError(f"adversary.events[{idx}] must be an object")
-        window_s = event.get("window_s")
-        if (not isinstance(window_s, (list, tuple)) or len(window_s) != 2
-                or not all(isinstance(b, (int, float)) and not isinstance(b, bool)
-                            for b in window_s)):
-            raise ValueError(
-                f"adversary.events[{idx}].window_s must be [min_s, max_s] "
-                f"(numeric pair), got {window_s!r}"
-            )
-        if window_s[0] > window_s[1]:
-            raise ValueError(
-                f"adversary.events[{idx}].window_s must have min_s <= max_s, "
-                f"got {window_s!r}"
-            )
-        action = event.get("action")
-        if not isinstance(action, str) or not action:
-            raise ValueError(
-                f"adversary.events[{idx}].action must be a non-empty string"
-            )
-        event_id = str(event.get("id", f"e{idx}"))
-        if event_id in seen_ids:
-            raise ValueError(
-                f"adversary.events[{idx}] has duplicate event id {event_id!r}"
-            )
-        seen_ids.add(event_id)
 
 
 def _require_str(d: dict, key: str) -> str:
@@ -217,12 +158,43 @@ def _jsonable(obj):
     return obj
 
 
+class _RateLimiter:
+    """Small per-source token bucket for the two unauthenticated endpoints.
+
+    Signature verification is intentionally expensive; without a cheap
+    admission control, a flood of well-formed bogus signatures can starve the
+    verify gate and every real box's check-in. This is deliberately simple
+    (in-process, per source IP) and configurable/disable-able via env.
+    """
+
+    def __init__(self, per_minute: int, burst: int):
+        self.per_minute = per_minute
+        self.burst = burst
+        self._lock = threading.Lock()
+        self._state = {}  # ip -> (tokens, last_monotonic)
+
+    def allow(self, ip: str) -> bool:
+        if self.per_minute <= 0:
+            return True
+        now = time.monotonic()
+        with self._lock:
+            tokens, last = self._state.get(ip, (float(self.burst), now))
+            tokens = min(float(self.burst),
+                         tokens + (now - last) * (self.per_minute / 60.0))
+            if tokens < 1.0:
+                self._state[ip] = (tokens, now)
+                return False
+            self._state[ip] = (tokens - 1.0, now)
+            return True
+
+
 class Handler(BaseHTTPRequestHandler):
     # Populated by main() before the server starts serving.
     store: Store = None
     server_secret: bytes = b""
     admin_token: str = ""
     next_checkin_s: int = 60
+    rate_limiter: "_RateLimiter" = None
 
     timeout = 30
 
@@ -248,7 +220,14 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         if not raw:
             return {}
-        return json.loads(raw.decode("utf-8"))
+
+        def _reject_constant(value):
+            # Python's json accepts NaN/Infinity by default; neither is JSON,
+            # and canonicalization (used for signatures and audit storage)
+            # must be strict. Reject them at the wire boundary.
+            raise ValueError(f"non-finite JSON constant {value}")
+
+        return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
 
     def _sig_header(self) -> bytes:
         sig_b64 = self.headers.get("X-HUITZILOPOCHTLI-Sig", "")
@@ -296,12 +275,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not found"})
 
+    def _rate_limited(self) -> bool:
+        if self.rate_limiter is None:
+            return False
+        ip = self.client_address[0] if self.client_address else "unknown"
+        if self.rate_limiter.allow(ip):
+            return False
+        self._send_json(429, {"error": "rate limited; retry later", "last_seq": None})
+        return True
+
     def do_POST(self):
         parts = urlsplit(self.path)
         if parts.path == "/enroll":
+            if self._rate_limited():
+                return
             self._handle_enroll()
             return
         if parts.path == "/checkin":
+            if self._rate_limited():
+                return
             self._handle_checkin()
             return
         if parts.path == "/admin/tokens":
@@ -316,6 +308,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
         except Exception:
+            self._send_json(400, {"error": "malformed JSON body"})
+            return
+        if not isinstance(body, dict):
             self._send_json(400, {"error": "malformed JSON body"})
             return
         sig = self._sig_header()
@@ -348,38 +343,9 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        scenario_row = self.store.get_scenario(bundle.scenario_name)
-        if scenario_row is None:
-            self._send_json(
-                400,
-                {
-                    "error": "unknown scenario",
-                    "scenario_name": bundle.scenario_name,
-                    "last_seq": None,
-                },
-            )
-            return
-        try:
-            rubric = _rubric_from_dict(json.loads(scenario_row["rubric_json"]))
-            event_pool = json.loads(scenario_row["adversary_json"]).get("events", [])
-        except (ValueError, KeyError, TypeError) as e:
-            # The parse error can quote rubric keys/values (§2.4): log it
-            # engine-side, send the box only the fact of failure.
-            print(f"ERROR: stored scenario {bundle.scenario_name!r} has a "
-                  f"malformed rubric: {e!r}", file=sys.stderr)
-            self._send_json(
-                500,
-                {
-                    "error": f"stored scenario {bundle.scenario_name!r} has a "
-                    f"malformed rubric",
-                    "last_seq": None,
-                },
-            )
-            return
-
         try:
             response = handle_checkin(
-                self.store, bundle, sig, rubric, self.server_secret, event_pool,
+                self.store, bundle, sig, None, self.server_secret, None,
                 next_checkin_s=self.next_checkin_s,
             )
         except CheckinError as e:
@@ -406,7 +372,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body()
+            if not isinstance(body, dict):
+                raise ValueError("body must be an object")
             scenario_name = body["scenario_name"]
+            if not isinstance(scenario_name, str) or not scenario_name.strip():
+                raise ValueError("scenario_name must be a non-empty string")
             ttl_s = body.get("ttl_s", 3600)
             # json.loads accepts NaN/Infinity: Infinity would mint a token
             # that never expires, NaN would break the NOT NULL insert.
@@ -430,27 +400,36 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body()
+            if not isinstance(body, dict):
+                raise ValueError("body must be an object")
             rubric = body["rubric"]
+            adversary = body.get("adversary", {})
+            if not isinstance(rubric, dict):
+                raise ValueError("rubric must be an object")
+            if not isinstance(adversary, dict):
+                raise ValueError("adversary must be an object")
             scenario_name = rubric["scenario_name"]
+            scenario_version = rubric["scenario_version"]
         except Exception:
             self._send_json(
                 400,
                 {"error": "malformed body; expected engine_record.json shape "
-                          "{rubric: {..., scenario_name}, adversary: {...}}"},
+                          "{rubric: {..., scenario_name, scenario_version}, "
+                          "adversary: {...}}"},
             )
             return
-        errors = validate_rubric(rubric)
+        errors = scenario_mod.validate_scenario_record(rubric, adversary)
         if errors:
-            self._send_json(400, {"error": "invalid rubric", "details": errors})
+            self._send_json(400, {"error": "invalid scenario record", "details": errors})
             return
-        adversary = body.get("adversary", {})
         try:
-            _validate_adversary_pool(adversary)
-        except ValueError as exc:
-            self._send_json(400, {"error": "invalid adversary pool", "detail": str(exc)})
+            scenario_mod.save_scenario_record(self.store, rubric, adversary)
+        except Exception:
+            print("ERROR: could not persist scenario record", file=sys.stderr)
+            self._send_json(500, {"error": "could not persist scenario record"})
             return
-        self.store.save_scenario(scenario_name, json.dumps(rubric), json.dumps(adversary))
-        self._send_json(200, {"ok": True, "scenario_name": scenario_name})
+        self._send_json(200, {"ok": True, "scenario_name": scenario_name,
+                              "scenario_version": scenario_version})
 
 
 class _EngineHTTPServer(ThreadingHTTPServer):
@@ -522,14 +501,26 @@ def main() -> None:
     engine_record_path = os.environ.get("HUITZILOPOCHTLI_ENGINE_RECORD_PATH")
     if engine_record_path:
         record = _load_engine_record(engine_record_path)
-        scenario_name = record["rubric"]["scenario_name"]
-        store.save_scenario(
-            scenario_name, json.dumps(record["rubric"]), json.dumps(record.get("adversary", {}))
-        )
+        rubric = record.get("rubric")
+        adversary = record.get("adversary", {})
+        errors = scenario_mod.validate_scenario_record(rubric, adversary)
+        if errors:
+            raise SystemExit(
+                f"{engine_record_path} is not a valid engine record:\n  "
+                + "\n  ".join(errors)
+            )
+        scenario_mod.save_scenario_record(store, rubric, adversary)
+        print(f"loaded scenario record from {engine_record_path}")
 
     Handler.store = store
     Handler.server_secret = server_secret
     Handler.admin_token = os.environ.get("HUITZILOPOCHTLI_ADMIN_TOKEN", "")
+    try:
+        rate = int(os.environ.get("HUITZILOPOCHTLI_RATE_LIMIT_PER_MIN", "600"))
+        burst = int(os.environ.get("HUITZILOPOCHTLI_RATE_BURST", "100"))
+    except ValueError:
+        rate, burst = 600, 100
+    Handler.rate_limiter = _RateLimiter(rate, max(1, burst))
     if not Handler.admin_token:
         print("WARNING: HUITZILOPOCHTLI_ADMIN_TOKEN not set; /admin/* endpoints disabled (503)")
 

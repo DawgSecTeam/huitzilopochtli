@@ -135,8 +135,11 @@ def build_board(score, manifest) -> Board:
         cat = _category_str(r.category)
         title = (lookup.get(r.check_id, {}) or {}).get("display_title") or r.check_id
         if cat == "vuln":
-            # Only surfaced once passed; failed vulns stay anonymous.
-            if r.passed and r.awarded_points != 0 and r.check_id not in forensics_ids:
+            # Only surfaced once passed; failed vulns stay anonymous. Do not
+            # filter on awarded_points: a zero-point VULN (legacy artifact or
+            # an author mistake) still counts as fixed, otherwise progress can
+            # never reach 100% while the check remains in vulns_total.
+            if r.passed and r.check_id not in forensics_ids:
                 fixed.append(FixedVuln(title=title, points=r.awarded_points))
         else:
             # penalty / prohibited: surface only when actually incurred.

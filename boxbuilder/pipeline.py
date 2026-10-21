@@ -5,17 +5,61 @@ adds argparse + stdout/stderr discipline.
 Steps are independently callable so an agent (or a test) can run/verify them
 piecemeal. The unified `build` in cli.py chains them with resumability.
 """
+import hashlib
 import json
 import os
 from typing import Optional
 
 from boxbuilder import keys, nakon
-from boxbuilder.artifacts import INSTALL_DIR  # single source of the install path
 from boxbuilder.providers.base import stage_path
 from boxbuilder.spec import BoxSpec
 from boxbuilder.theme import resolve_theme_configurations
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _sha256_json(value) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _input_fingerprint(spec: BoxSpec) -> dict:
+    """Hashes of the author inputs that determine what gets built."""
+    return {
+        "scenario_sha256": _sha256_json(spec.scenario),
+        "nakon_config_sha256": _sha256_json(spec.nakon_config),
+        "mode": spec.mode,
+        "engine_url": spec.engine_url,
+    }
+
+
+def _fingerprint_digest(parts: dict) -> str:
+    return _sha256_json(parts)
+
+
+def _verify_state_fresh(spec: BoxSpec, state: dict) -> None:
+    """Refuse plant/install when build-state.json came from different inputs.
+
+    Fixed filenames (manifest.signed.json/agent.pyz) and the compiled
+    nakon-config.json are shared between runs; without this check a resume or
+    a failed-then-retried compile can silently deploy the previous box's
+    scenario/config while claiming success.
+    """
+    if not isinstance(state, dict):
+        return
+    recorded = state.get("input_fingerprint")
+    if not isinstance(recorded, dict):
+        print("[boxbuilder] WARNING: build-state.json has no input fingerprint "
+              "(pre-1.0 artifact); recompile to enable stale-state protection")
+        return
+    current = _input_fingerprint(spec)
+    if _fingerprint_digest(current) != _fingerprint_digest(recorded):
+        raise ValueError(
+            "build-state.json does not match the current scenario/nakon config "
+            "(one of them changed, or the artifacts dir belongs to another box). "
+            "Re-run `compile` before plant/install."
+        )
 
 
 def _load_build_zipapp():
@@ -33,7 +77,11 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
                 log=print) -> dict:
     """Step 1: compile scenario, build agent.pyz, and build nakon bundle."""
     artifacts_dir = os.path.abspath(artifacts_dir)
-    os.makedirs(artifacts_dir, exist_ok=True)
+    os.makedirs(artifacts_dir, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(artifacts_dir, 0o700)
+    except OSError:
+        pass
 
     priv_key, key_path = keys.load_authoring_key(spec.authoring_key_path, artifacts_dir)
     log(f"[boxbuilder] authoring key: {key_path}")
@@ -87,6 +135,7 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
         "agent_pyz": agent_pyz,
         "bundle": bundle,
         "bundle_path": bundle["path"],
+        "input_fingerprint": _input_fingerprint(spec),
     }
     _save_state(artifacts_dir, result)
     return result
@@ -112,6 +161,7 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
         if os.path.isfile(state_path):
             with open(state_path, "r", encoding="utf-8") as f:
                 state = _json.load(f)
+            _verify_state_fresh(spec, state)
             bundle_path = state.get("bundle_path")
         if not bundle_path:
             raise ValueError(
@@ -149,16 +199,24 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
             host=handle.addr, user=handle.user, password=handle.password,
             port=getattr(handle, "port", 22),
         )
-        derived_path = os.path.join(artifacts_dir, "nakon-deploy-config.json")
-        fd = os.open(derived_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            _json.dump(derived, f, indent=2)
-            f.flush()
-        os.chmod(derived_path, 0o600)
-        log(f"[boxbuilder] planting vulns on {handle.name} ({handle.addr}) via nakon deploy")
-
-        ndir = nakon.resolve_nakon_dir(nakon_dir)
-        deploy = nakon.deploy_bundle(ndir, bundle_path, derived_path)
+        import tempfile
+        fd, derived_path = tempfile.mkstemp(
+            dir=artifacts_dir, prefix=".huitz-deploy-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                _json.dump(derived, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(derived_path, 0o600)
+            log(f"[boxbuilder] planting vulns on {handle.name} ({handle.addr}) via nakon deploy")
+            ndir = nakon.resolve_nakon_dir(nakon_dir)
+            deploy = nakon.deploy_bundle(ndir, bundle_path, derived_path)
+        finally:
+            # This file contains the SSH password; never leave it in artifacts.
+            try:
+                os.remove(derived_path)
+            except OSError:
+                pass
         log(f"[boxbuilder] nakon deploy: {'ok' if deploy['ok'] else 'FAILURES=' + str(deploy['failures'])}")
         return {
             "bundle_id": deploy.get("bundle_id"),
@@ -212,6 +270,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         compile_result = _load_state(artifacts_dir)
         if compile_result is None:
             raise ValueError("no compile result given and no build-state.json; run `compile` first")
+    _verify_state_fresh(spec, compile_result)
 
     if not spec.provider.get("name"):
         raise ValueError("install requires a provider; set provider.name in the spec")
@@ -274,6 +333,37 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                                f"-Path '{install_dir}' | Out-Null")
             if not mk.ok:
                 raise RuntimeError(f"could not create {install_dir}: {mk.stderr.strip()}")
+            # A reinstall must not inherit a previous scenario's rubric,
+            # identity, enrollment marker or reports. On a Windows template
+            # that already carries the SYSTEM agent task, the old agent can
+            # be mid-run holding .grade.lock; stop the task and any running
+            # agent processes first, or Remove-Item fails with a sharing
+            # violation. `schtasks /End` stops the trigger; `taskkill` on
+            # python.exe releases the lock. Never kill powershell here: this
+            # installer and the task wrapper are both powershell.
+            clean_script = (
+                "$ErrorActionPreference = 'Continue'; "
+                "schtasks.exe /End /TN 'HuitzilopochtliAgent' 2>$null | Out-Null; "
+                # The agent's python process holds .grade.lock. Killing by
+                # image name is deliberate: the task wrapper is powershell,
+                # and killing powershell here would kill this installer.
+                "taskkill.exe /F /IM python.exe 2>$null | Out-Null; "
+                "Start-Sleep -Milliseconds 800; "
+                f"Get-ChildItem -LiteralPath '{install_dir}' -Force | "
+                "Remove-Item -Recurse -Force -ErrorAction Stop; exit 0"
+            )
+            clean = handle.run_ps(clean_script)
+            if not clean.ok and "grade.lock" in (clean.stderr or ""):
+                # One retry after a short settle: a just-stopped SYSTEM
+                # process can take a moment to release the lock handle.
+                import time as _time
+                _time.sleep(2)
+                clean = handle.run_ps(clean_script)
+            if not clean.ok:
+                raise RuntimeError(
+                    f"could not clear stale files in {install_dir}: "
+                    f"{clean.stderr.strip() or clean.stdout.strip()}"
+                )
         else:
             mk = handle.run(f"mkdir -p {install_dir}")
             if not mk.ok:
@@ -281,10 +371,10 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             if getattr(handle, "user", "root") != "root":
                 ids = handle.run("id -u; id -g", sudo=False)
                 parts = ids.stdout.split()
-                if not ids.ok or len(parts) < 2:
+                if not ids.ok or len(parts) < 2 or not all(p.isdigit() for p in parts[:2]):
                     raise RuntimeError(
-                        f"could not determine uid:gid for {handle.user} on {handle.addr}; "
-                        f"cannot make {install_dir} writable"
+                        f"could not determine a numeric uid:gid for {handle.user} "
+                        f"on {handle.addr}; cannot make {install_dir} writable"
                     )
                 ch = handle.run(f"chown {parts[0]}:{parts[1]} {install_dir}")
                 if not ch.ok:
@@ -292,28 +382,21 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                         f"could not chown {install_dir} to {parts[0]}:{parts[1]}: "
                         f"{ch.stderr.strip()}"
                     )
-                # A previous install's files are root-owned (the seal) and
-                # SFTP cannot overwrite them; clear the dir before placement.
-                clean = handle.run(f"find {install_dir} -mindepth 1 -delete")
-                if not clean.ok:
-                    raise RuntimeError(
-                        f"could not clear stale files in {install_dir}: "
-                        f"{clean.stderr.strip()}"
-                    )
+            # Unconditional: root installs (and non-root ones after the chown
+            # above) must clear the sealed dir. An honor->ranked reinstall
+            # otherwise leaves .score.dat (the answer key) and ranked
+            # reinstalls leave identity/.enrolled for the old box.
+            clean = handle.run(f"find {install_dir} -mindepth 1 -delete")
+            if not clean.ok:
+                raise RuntimeError(
+                    f"could not clear stale files in {install_dir}: "
+                    f"{clean.stderr.strip()}"
+                )
         placed = []
         for f in files:
             handle.put(f.local, f.remote, mode=f.mode)
             placed.append(f.remote)
         log(f"[boxbuilder] placed {len(placed)} file(s) under {install_dir}")
-        # A score baseline left by a previous install (agent/notify.py) would
-        # fire one spurious change alert on the new scenario's first grade;
-        # a (re)install starts silent and baselines on first run.
-        rm_cmd = (
-            handle.run_ps(f"Remove-Item -Force -ErrorAction Ignore "
-                          f"'{install_dir}\\score_state.json'")
-            if os_name == "windows"
-            else handle.run(f"rm -f {install_dir}/score_state.json")
-        )
         # Seal the dir back to admins-only. POSIX: root:root 0700 (the SFTP
         # puts above could only run as the SSH login user -- why the dir was
         # chowned at the top -- so this must come after them). Windows:
@@ -399,12 +482,14 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                 from boxbuilder.providers.ssh import detect_init
                 init_kind = detect_init(handle)
             except Exception as e:
-                # Fail-open to "none" is intentional (best-effort detection), but
-                # it silently produces a box whose agent never auto-starts, so
-                # surface it loudly instead of swallowing it.
-                log(f"[boxbuilder] WARNING: could not detect init system ({e}); "
-                    f"the agent will not auto-start -- pass --init or enable it manually")
-                init_kind = "none"
+                raise RuntimeError(
+                    f"could not detect the init system on {handle.addr}: {e}; "
+                    f"pass --init systemd|openrc|none explicitly") from e
+            if init_kind == "none":
+                raise RuntimeError(
+                    f"no supported init system detected on {handle.addr}; "
+                    f"the agent would never auto-start. Pass --init none only "
+                    f"if you intend to run it manually.")
         handle.install_init(init_kind, mode)
         log(f"[boxbuilder] init unit: {init_kind}")
 
@@ -457,7 +542,7 @@ def package_box(spec: BoxSpec, artifacts_dir: str, image_out: str, fmt: str = "o
         if result.mode == "wrote":
             log(f"[boxbuilder] wrote image -> {result.path}")
         else:
-            log(f"[boxbuilder] manual export required (provider can't self-export)")
+            log("[boxbuilder] manual export required (provider can't self-export)")
         return {"image": image, "ok": True}
     finally:
         provider.stop(handle)
@@ -487,13 +572,27 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
     results = {"from_step": from_step, "ok": True}
     start_idx = _BUILD_STEPS.index(from_step)
 
+    # Fail before touching a box if packaging will need an output path.
+    if start_idx <= 3 and not image_out:
+        raise ValueError("package step requires --image-out (the output image path)")
+
+    def _run_step(name, fn):
+        try:
+            return fn()
+        except Exception as exc:
+            try:
+                exc.completed_step = name
+            except Exception:
+                pass
+            raise
+
     # 1. compile (or load existing state if resuming past it).
     if start_idx <= 0:
         log("[boxbuilder] === step 1/4: compile ===")
-        results["compile"] = compile_box(
+        results["compile"] = _run_step("compile", lambda: compile_box(
             spec, artifacts_dir, nakon_dir=nakon_dir,
             vulndb_url=vulndb_url, log=log,
-        )
+        ))
     else:
         state = _load_state(artifacts_dir)
         if state is None:
@@ -508,10 +607,10 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
     last_run = "compile" if start_idx == 0 else from_step
     if start_idx <= 1:
         log("[boxbuilder] === step 2/4: plant ===")
-        results["plant"] = plant_box(
+        results["plant"] = _run_step("plant", lambda: plant_box(
             spec, artifacts_dir, nakon_dir=nakon_dir,
             provider_factory=provider_factory, log=log,
-        )
+        ))
         last_run = "plant"
         if not results["plant"].get("ok"):
             results["ok"] = False
@@ -521,11 +620,11 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
     # 3. install.
     if start_idx <= 2:
         log("[boxbuilder] === step 3/4: install ===")
-        results["install"] = install_box(
+        results["install"] = _run_step("install", lambda: install_box(
             spec, artifacts_dir, provider_factory=provider_factory, init_kind=init_kind,
             admin_token=admin_token, checkin_interval_s=checkin_interval_s,
             enrollment_ttl_s=enrollment_ttl_s, log=log,
-        )
+        ))
         last_run = "install"
         if not results["install"].get("ok"):
             results["ok"] = False
@@ -535,12 +634,10 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
     # 4. package.
     if start_idx <= 3:
         log("[boxbuilder] === step 4/4: package ===")
-        if not image_out:
-            raise ValueError("package step requires --image-out (the output image path)")
-        results["package"] = package_box(
+        results["package"] = _run_step("package", lambda: package_box(
             spec, artifacts_dir, image_out=image_out, fmt=fmt,
             provider_factory=provider_factory, log=log,
-        )
+        ))
         last_run = "package"
 
     results["completed_step"] = last_run

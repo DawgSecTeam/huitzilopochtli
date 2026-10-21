@@ -266,29 +266,42 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
 
     signed_manifest = sign_manifest(manifest_dict, authoring_private_key)
 
-    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(out_dir, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(out_dir, 0o700)
+    except OSError:
+        pass
 
     outputs = {}
 
+    def _write_json(path: str, value, private: bool) -> None:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                     0o600 if private else 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(path, 0o600 if private else 0o644)
+        except OSError:
+            pass
+
     manifest_path = os.path.join(out_dir, "manifest.signed.json")
-    with open(manifest_path, "w") as f:
-        json.dump(signed_manifest, f)
+    _write_json(manifest_path, signed_manifest, private=False)
     outputs["manifest"] = manifest_path
 
     if manifest.mode == Mode.HONOR:
         rubric_path = os.path.join(out_dir, "rubric.json")
-        with open(rubric_path, "w") as f:
-            json.dump(rubric_dict, f)
+        _write_json(rubric_path, rubric_dict, private=True)
         outputs["rubric"] = rubric_path
 
     engine_record_path = os.path.join(out_dir, "engine_record.json")
-    with open(engine_record_path, "w") as f:
-        json.dump(engine_record, f)
+    _write_json(engine_record_path, engine_record, private=True)
     outputs["engine_record"] = engine_record_path
 
     public_key = public_key_from_private(authoring_private_key)
     public_key_path = os.path.join(out_dir, "authoring_public_key.b64")
-    with open(public_key_path, "w") as f:
+    with open(public_key_path, "w", encoding="ascii") as f:
         f.write(base64.b64encode(public_key).decode("ascii"))
     outputs["authoring_public_key"] = public_key_path
 

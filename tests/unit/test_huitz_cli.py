@@ -247,7 +247,10 @@ class TestSnapshot:
         assert [r["check_id"] for r in snap["results"]] == ["c1", "c2", "p1", "f1"]
         assert snap["sla_status"][0]["state"] == "UP"
         assert snap["last_confirmed_at"] == 500.0
-        assert snap["next_event_at"] == 560.0
+        # Countdown is anchored to box receipt time, not the engine clock.
+        import time as _time
+        now = _time.time()
+        assert now + 55 <= snap["next_event_at"] <= now + 65
 
     def test_awaiting_engine_total_is_null(self):
         snap = snapshot.build_snapshot(
@@ -1057,3 +1060,97 @@ class TestOverdueCountdown:
         frame = cli.render_scorecard(snap, sty, term.Symbols(True), 80,
                                      now=snap["next_event_at"] + 300)
         assert "next re-grade overdue by 05:00 (timer stalled?)" in frame
+
+
+# --- 1.0 CLI hardening ------------------------------------------------------
+
+def test_help_survives_ascii_only_output():
+    import os
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ, PYTHONIOENCODING="ascii")
+    proc = subprocess.run([sys.executable, "-m", "agent", "help"],
+                          cwd=root, env=env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_forged_accent_cannot_inject_an_escape():
+    import io
+    import agent.cli as cli
+    stream = io.StringIO()
+    sty = cli._make_style({"--color": "always"}, stream,
+                          {"accent": "#\x1b[2J"})
+    rendered = sty.color("X", "accent")
+    assert "\x1b[2J" not in rendered
+
+
+def test_snapshot_read_rejects_wrong_field_types(tmp_path):
+    from agent import snapshot
+    score = _score()
+    snap = snapshot.build_snapshot(score, _manifest(), mode="honor",
+                                   agent_version="t", delta=0, computed_at=1.0)
+    snap["progress_pct"] = "abc"
+    path = tmp_path / "report.json"
+    path.write_text(__import__("json").dumps(snap))
+    with pytest.raises(snapshot.SnapshotError):
+        snapshot.read(str(path))
+
+
+def test_snapshot_read_strips_terminal_escapes(tmp_path):
+    import json
+    from agent import snapshot
+    score = _score()
+    snap = snapshot.build_snapshot(score, _manifest(), mode="honor",
+                                   agent_version="t", delta=0, computed_at=1.0)
+    snap["title"] = "safe\x1b]52;c;evil\x07"
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(snap))
+    assert "\x1b" not in snapshot.read(str(path))["title"]
+
+
+def test_per_question_answers_paths_are_honored(tmp_path):
+    import agent.cli as cli
+    from agent import snapshot
+    manifests = _manifest()
+    # Two questions, two different answers files.
+    manifests.forensics = []
+    snap = snapshot.build_snapshot(_score(), manifests, mode="honor",
+                                   agent_version="t", delta=0, computed_at=1.0)
+    p1 = str(tmp_path / "a.txt")
+    p2 = str(tmp_path / "b.txt")
+    snap["forensics"] = [
+        {"id": "f1", "ordinal": 1, "question": "q1", "max_points": 5,
+         "answered": False, "points": 0, "answers_path": p1},
+        {"id": "f2", "ordinal": 2, "question": "q2", "max_points": 5,
+         "answered": False, "points": 0, "answers_path": p2},
+    ]
+    cli.set_forensics_answer(snap, 2, "second answer", None, None, __import__("io").StringIO())
+    assert "second answer" in open(p2, encoding="utf-8").read()
+    assert not __import__("os").path.exists(p1) or "second answer" not in open(p1, encoding="utf-8").read()
+
+
+def test_broken_pipe_is_a_clean_exit():
+    import agent.cli as cli
+
+    class Broken:
+        def write(self, _):
+            raise BrokenPipeError()
+        def flush(self):
+            pass
+
+    assert cli.main(["help"], outstream=Broken()) == 141
+
+
+def test_answer_text_starting_with_minus_is_not_an_option():
+    import io
+    import agent.cli as cli
+    opts_pos, opts = cli._split_flags(["-5"], set(), set())
+    assert opts_pos == ["-5"]
+    assert opts == {}
+
+
+def test_unknown_long_option_is_a_usage_error():
+    import agent.cli as cli
+    with pytest.raises(cli.UsageError):
+        cli._split_flags(["--definitely-not-a-flag"], set(), set())

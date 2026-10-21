@@ -105,3 +105,65 @@ def test_rfc8032_known_answer_vectors(vector):
     assert produced_signature == expected_signature
 
     assert verify(expected_public_key, message, expected_signature) is True
+
+
+# --- 1.0: reject small-order / non-canonical points -------------------------
+
+def _identity_encoding():
+    return bytes([1]) + bytes(31)
+
+
+def _order_two_encoding():
+    from common.crypto import ed25519
+    return ed25519.encodepoint([0, ed25519.q - 1])
+
+
+def test_identity_point_public_key_cannot_forge_a_signature():
+    from common.crypto import ed25519
+    # The classic small-order forgery: A = identity, R = B, S = 1.
+    pk = _identity_encoding()
+    sig = ed25519.encodepoint(ed25519.B) + ed25519.encodeint(1)
+    assert verify(pk, b"any message", sig) is False
+
+
+def test_order_two_public_key_is_rejected():
+    from common.crypto import ed25519
+    pk = _order_two_encoding()
+    sig = ed25519.encodepoint(ed25519.B) + ed25519.encodeint(1)
+    assert verify(pk, b"any message", sig) is False
+
+
+def test_non_canonical_public_key_encoding_is_rejected():
+    from common.crypto import ed25519
+    # y == q is not a canonical field encoding.
+    raw = ed25519.q.to_bytes(32, "little")
+    pk = bytes([raw[0] & 0x7F]) + raw[1:]
+    sig = ed25519.encodepoint(ed25519.B) + ed25519.encodeint(1)
+    assert verify(pk, b"any message", sig) is False
+
+
+def test_enrollment_rejects_small_order_public_key():
+    import time
+    from common.crypto import ed25519
+    from engine.enrollment import EnrollError, handle_enroll
+    from engine.store import Store
+    import base64
+
+    store = Store(":memory:")
+    store.create_token("tok", "scenario", time.time() + 3600)
+    pk = _identity_encoding()
+    body = {
+        "enrollment_token": "tok",
+        "box_id": "evil",
+        "public_key": base64.b64encode(pk).decode("ascii"),
+        "agent_version": "1.0.0",
+        "scenario_name": "scenario",
+        "scenario_version": 1,
+    }
+    sig = ed25519.encodepoint(ed25519.B) + ed25519.encodeint(1)
+    try:
+        handle_enroll(store, body, sig)
+    except EnrollError as e:
+        assert e.status_code == 403
+    else:
+        raise AssertionError("small-order public key was accepted at enrollment")

@@ -104,3 +104,24 @@ def test_rearm_reports_missing_report_snapshot(tmp_path):
     config_path = _write_config(tmp_path, tmp_path / "identity")
     actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
     assert any("no report snapshot" in a for a in actions)
+
+
+def test_reset_identity_removes_directive_and_queue_failure_state(tmp_path, monkeypatch):
+    identity_path = tmp_path / "identity"
+    identity_path.write_bytes(b"fake identity")
+    for suffix in (".directives", ".queue.fail", ".queue.dead"):
+        (tmp_path / ("identity" + suffix)).write_text("x")
+    config_path = _write_config(tmp_path, identity_path)
+
+    rearm.rearm(str(tmp_path), str(config_path), reset_identity=True)
+
+    for suffix in (".directives", ".queue.fail", ".queue.dead"):
+        assert not (tmp_path / ("identity" + suffix)).exists(), suffix
+
+
+def test_rearm_removes_per_user_report_mirrors(tmp_path, monkeypatch):
+    monkeypatch.setattr(rearm, "_remove_user_mirrors",
+                        lambda: [str(tmp_path / "old-report.json")])
+    config_path = _write_config(tmp_path, tmp_path / "identity")
+    actions = rearm.rearm(str(tmp_path), str(config_path), reset_identity=False)
+    assert any("user report mirror" in a for a in actions)

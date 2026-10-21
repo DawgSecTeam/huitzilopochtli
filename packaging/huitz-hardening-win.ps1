@@ -108,7 +108,14 @@ try {
     } else {
         foreach ($code in ($codes | Select-Object -Unique)) {
             Info "repairing python MSI $code (defuses advertised-shortcut self-repair)"
-            Start-Process msiexec.exe -ArgumentList "/faus $code /qn" -Wait
+            # Bounded wait, not -Wait: msiexec /faus can block for many
+            # minutes on a healthy install. Hardening is best-effort and must
+            # never stall a build, so give it two minutes and move on.
+            $repair = Start-Process msiexec.exe -ArgumentList "/faus $code /qn" -PassThru
+            if (-not $repair.WaitForExit(120000)) {
+                Info "WARNING: python MSI repair $code exceeded 120s; continuing"
+                Stop-Process -Id $repair.Id -Force -ErrorAction SilentlyContinue
+            }
         }
         Get-Item 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Python 3.*' `
             -ErrorAction SilentlyContinue |

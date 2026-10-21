@@ -54,6 +54,11 @@ def load_authoring_key(
 
 def _read_key(path: str) -> bytes:
     """Read a hex-encoded 32-byte Ed25519 seed."""
+    st = os.lstat(path)
+    if not os.path.isfile(path) or os.path.islink(path):
+        raise ValueError(f"{path}: authoring key must be a regular file, not a symlink")
+    if os.name != "nt" and st.st_uid != os.geteuid():
+        raise ValueError(f"{path}: authoring key is owned by another user")
     with open(path, "r", encoding="utf-8") as f:
         text = f.read().strip()
     try:
@@ -73,17 +78,20 @@ def _write_key(path: str, priv: bytes) -> None:
     # Atomic temp-file + rename, then lock down perms. 0600 because this
     # signs manifests; a leaked key lets an attacker forge manifests for any
     # box trusting the matching public key.
+    import tempfile
     directory = os.path.dirname(os.path.abspath(path)) or "."
-    tmp_path = os.path.join(directory, f".{os.path.basename(path)}.tmp")
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".huitz-key-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(priv.hex())
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, path)
     except BaseException:
-        if os.path.exists(tmp_path):
+        try:
             os.remove(tmp_path)
+        except OSError:
+            pass
         raise
     os.chmod(path, 0o600)

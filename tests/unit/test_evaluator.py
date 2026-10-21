@@ -134,7 +134,9 @@ def test_prohibited_awards_points_when_matcher_passes_forbidden_present():
     score = evaluate(evidence, make_rubric([entry]), FakeClock(SENTINEL_TIME))
 
     result = score.results[0]
-    assert result.passed is True
+    # The matcher passed (forbidden state present), but the *requirement*
+    # ("this must not exist") is not satisfied.
+    assert result.passed is False
     assert result.awarded_points == -20
     assert result.category == Category.PROHIBITED
 
@@ -150,7 +152,7 @@ def test_prohibited_awards_zero_when_matcher_fails():
     score = evaluate(evidence, make_rubric([entry]), FakeClock(SENTINEL_TIME))
 
     result = score.results[0]
-    assert result.passed is False
+    assert result.passed is True
     assert result.awarded_points == 0
 
 

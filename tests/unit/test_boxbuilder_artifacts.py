@@ -217,3 +217,32 @@ def test_motd_script_defaults_org_and_ends_with_newline():
     s = artifacts.motd_script("Only Title", None, "honor")
     assert "Welcome to Only Title" in s
     assert s.endswith("\n")
+
+
+# --- 1.0 artifact hygiene ---------------------------------------------------
+
+def test_on_box_files_writes_config_0600(tmp_path):
+    ad = tmp_path / "artifacts"
+    ad.mkdir()
+    for name in ("agent.pyz", "manifest.signed.json", "authoring_public_key.b64"):
+        (ad / name).write_text("x")
+    (ad / "rubric.json").write_text("{}")
+    cr = {
+        "agent_pyz": str(ad / "agent.pyz"),
+        "manifest": str(ad / "manifest.signed.json"),
+        "authoring_public_key": str(ad / "authoring_public_key.b64"),
+        "rubric": str(ad / "rubric.json"),
+    }
+    cfg = artifacts.agent_config_dict("demo", "honor")
+    artifacts.on_box_files(cr, "honor", cfg)
+    assert (os.stat(ad / "agent_config.json").st_mode & 0o777) == 0o600
+
+
+def test_motd_script_collapses_newline_injection():
+    import subprocess
+    s = artifacts.motd_script("X'\nrm -rf /", None, "honor")
+    run = subprocess.run(["sh", "-c", s], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    # The newline is collapsed to a space, so it is inert display text rather
+    # than a second shell command.
+    assert "\nrm -rf /" not in s

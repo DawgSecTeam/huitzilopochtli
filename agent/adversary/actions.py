@@ -4,7 +4,6 @@ No action may open an outbound connection — there is no network-egress
 primitive in this module. Do not add a generic "run command" primitive.
 """
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -26,11 +25,9 @@ _DEFAULT_ARTIFACT_DIR = (
     if os.name == "nt" else "/var/lib/huitzilopochtli/adversary"
 )
 
-#: What a service/unit name may look like. The first character cannot be
-#: ``-``, so a params value is never parsed as an option by systemctl /
-#: rc-service; ``/``, whitespace, ``$`` etc. are excluded outright. Real
-#: names (``nginx.service``, ``php8.2-fpm``, ``openvpn@server``) all pass.
-_SERVICE_NAME_RE = re.compile(r"[A-Za-z0-9_.@+][A-Za-z0-9_.@+-]*\Z")
+from common.adversary import SERVICE_NAME_RE as _SERVICE_NAME_RE
+
+_IS_WINDOWS = os.name == "nt"
 
 
 def _artifact_base() -> str:
@@ -110,6 +107,15 @@ def register(name: str):
 @register("flush_firewall")
 def _flush_firewall(params: dict, ctx: "agent.platform.base.PlatformContext") -> None:
     """Flush local packet filter rules. Tries iptables then nft; no-op if absent."""
+    if _IS_WINDOWS:
+        # Windows has no iptables/nft. Reset the advfirewall profiles to their
+        # default rule set (removes the box's custom rules).
+        try:
+            subprocess.run(["netsh", "advfirewall", "reset"], check=False,
+                           capture_output=True, timeout=15)
+        except Exception:
+            pass
+        return
     if shutil.which("iptables"):
         flush_ok = False
         try:
@@ -147,7 +153,10 @@ def _kill_service(params: dict, ctx: "agent.platform.base.PlatformContext") -> N
         )
         return
     try:
-        if os.path.exists("/run/systemd/system"):
+        if _IS_WINDOWS:
+            subprocess.run(["sc.exe", "stop", service], check=False,
+                           capture_output=True, timeout=15)
+        elif os.path.exists("/run/systemd/system"):
             subprocess.run(["systemctl", "stop", service], check=False,
                             capture_output=True, timeout=15)
         else:
@@ -173,7 +182,7 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
         return
     base = _artifact_base()
     content = "HUITZILOPOCHTLI adversary marker - inert, non-executable\n"
-    if os.name != "nt":
+    if not _IS_WINDOWS:
         try:
             fd = _open_confined_posix(base, requested)
         except OSError:

@@ -348,3 +348,76 @@ def test_manifest_dataclass_theme_round_trips():
     d = dataclasses.asdict(m)
     assert d["theme"] == theme
     assert validate_manifest(d) == []
+
+
+# --- 1.0: strict structural/type validation ---------------------------------
+
+@pytest.mark.parametrize("mutate, needle", [
+    (lambda m: m.update(scenario_version="1"), "scenario_version"),
+    (lambda m: m.update(scenario_name=""), "scenario_name"),
+    (lambda m: m.update(schema_version=True), "schema_version"),
+    (lambda m: m.update(engine_url="not a url"), "engine_url"),
+    (lambda m: m.update(hosts=[""]), "hosts"),
+])
+def test_manifest_rejects_wrong_top_level_types(mutate, needle):
+    manifest = minimal_manifest()
+    mutate(manifest)
+    errors = validate_manifest(manifest)
+    assert any(needle in e for e in errors)
+
+
+@pytest.mark.parametrize("mutate, needle", [
+    (lambda c: c.update(id=1), "id"),
+    (lambda c: c.update(type=""), "type"),
+    (lambda c: c.update(host_id=1), "host_id"),
+    (lambda c: c.update(collect_params=[]), "collect_params"),
+    (lambda c: c.update(display_max_points="5"), "display_max_points"),
+    (lambda c: c.update(timeout_s="soon"), "timeout_s"),
+    (lambda c: c.update(is_sla="yes"), "is_sla"),
+])
+def test_manifest_rejects_wrong_check_types(mutate, needle):
+    manifest = minimal_manifest()
+    check = minimal_check()
+    mutate(check)
+    manifest["checks"] = [check]
+    errors = validate_manifest(manifest)
+    assert any(needle in e for e in errors)
+
+
+def test_rubric_rejects_unhashable_check_id_without_crashing():
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["check_id"] = ["not", "hashable"]
+    rubric["entries"] = [entry]
+    errors = validate_rubric(rubric)  # must not raise TypeError
+    assert any("check_id" in e for e in errors)
+
+
+@pytest.mark.parametrize("matcher", [
+    {"tag": "regex", "pattern": 123},
+    {"tag": "equals", "field": ["matched"], "value": 1},
+    {"tag": "group_members_subset_of", "group": "sudo", "allowed": 5},
+])
+def test_rubric_rejects_matchers_that_would_crash(matcher):
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["matcher"] = matcher
+    rubric["entries"] = [entry]
+    assert validate_rubric(rubric) != []
+
+
+@pytest.mark.parametrize("interval", [float("nan"), float("inf"), 0, -1])
+def test_rubric_rejects_non_finite_or_nonpositive_sla_interval(interval):
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["sla"] = {"interval_s": interval, "points_per_interval": 1}
+    rubric["entries"] = [entry]
+    assert any("interval_s" in e for e in validate_rubric(rubric))
+
+
+def test_rubric_rejects_zero_points_for_non_sla_entry():
+    rubric = minimal_rubric()
+    entry = minimal_rubric_entry()
+    entry["points"] = 0
+    rubric["entries"] = [entry]
+    assert any("non-zero" in e for e in validate_rubric(rubric))

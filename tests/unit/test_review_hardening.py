@@ -111,7 +111,7 @@ def test_checkin_500_body_omits_exception_text(store, monkeypatch):
 
     monkeypatch.setattr(server_mod, "handle_checkin", _raise)
     body = json.dumps(server_mod._jsonable(_bundle([]))).encode()
-    store.save_scenario("sc", json.dumps({"scenario_name": "sc", "entries": []}),
+    store.save_scenario("sc", 1, json.dumps({"scenario_name": "sc", "scenario_version": 1, "entries": []}),
                         json.dumps({}))
     status, payload = _serve_once(store, "POST", "/checkin", body)
     assert status == 500
@@ -520,3 +520,107 @@ def test_agent_runs_nothing_when_executed_record_is_corrupt(tmp_path, monkeypatc
     agent_main._run_directives(_directive_response(issued=["e1"]),
                                str(tmp_path / "identity.json"), None)
     assert ran == []
+
+
+# --- 1.0: adversary outage floor / SLA docking --------------------------------
+
+def _dock_rubric():
+    from common.schema import SlaParams
+    return Rubric(schema_version=1, scenario_name="sc", scenario_version=1, entries=[
+        RubricEntry(check_id="sla1", category=Category.VULN,
+                    matcher={"tag": "equals", "value": "up"},
+                    points=0,
+                    sla=SlaParams(interval_s=60, points_per_interval=5,
+                                  hysteresis_fail_n=2, hysteresis_ok_n=2,
+                                  max_intervals_per_checkin=3)),
+    ])
+
+
+def test_adversary_event_forces_mapped_sla_down_until_restored(enrolled, monkeypatch):
+    rubric = _dock_rubric()
+    pool = [{"id": "kill-atd", "action": "kill_service",
+             "params": {"service": "atd"}, "window_s": [0, 0],
+             "affects_check": "sla1"}]
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(checkin_mod.time, "time", lambda: clock["now"])
+
+    # The first check-in issues the event and must dock the SLA even though
+    # the evidence collected before execution still says "up".
+    first = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=1),
+                           b"sig", rubric, b"secret", pool)
+    assert [d.event_id for d in first.directives] == ["kill-atd"]
+    assert first.score.sla_status[0].state == "DOWN"
+    assert first.score.sla_status[0].accrued_points == 0
+
+    # Evidence on the check-in AFTER issuance shows restoration: the effect is
+    # marked restored, but recovery still obeys the DOWN hysteresis.
+    clock["now"] = 1060.0
+    second = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=2),
+                            b"sig", rubric, b"secret", pool)
+    assert second.directives == []
+    assert second.score.sla_status[0].state == "DOWN"
+
+    clock["now"] = 1120.0
+    third = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=3),
+                           b"sig", rubric, b"secret", pool)
+    assert third.score.sla_status[0].state == "UP"
+
+    # Accrual resumes only after the recovery anchor, never for the outage.
+    clock["now"] = 1180.0
+    fourth = handle_checkin(enrolled, _bundle([_evidence("sla1", {"matched": "up"})], seq=4),
+                            b"sig", rubric, b"secret", pool)
+    assert fourth.score.sla_status[0].accrued_points == 5
+    effects = enrolled.get_issued_directives("box-1")
+    assert effects[0]["fire_time"] == 1000.0
+    assert effects[0]["affects_check"] == "sla1"
+
+
+def test_forced_down_sla_resets_up_counters(enrolled):
+    from engine.sla import update_sla
+    params = _dock_rubric().entries[0].sla
+    update_sla(enrolled, "box-1", "sla1", params, True, 1000.0)
+    rec = update_sla(enrolled, "box-1", "sla1", params, True, 1060.0,
+                     force_down=True)
+    assert rec.state == "DOWN"
+    assert rec.consec_ok == 0
+    assert rec.consec_fail >= params.hysteresis_fail_n
+
+
+@pytest.mark.parametrize("payload", ["{}", "null", '""', '[{"event_id": "e1"}]'])
+def test_agent_refuses_wrong_shape_directives_record(tmp_path, monkeypatch, payload):
+    import agent.__main__ as agent_main
+
+    ran = []
+    monkeypatch.setattr(agent_main.agent.adversary.executor, "execute",
+                        lambda d, ctx: ran.append(d.event_id))
+    (tmp_path / "identity.json.directives").write_text(payload)
+    response = _directive_response(issued=["e1"])
+    agent_main._run_directives(response, str(tmp_path / "identity.json"), None)
+    assert ran == [], "wrong-shape directive record re-ran historical actions"
+
+
+def test_engine_rate_limiter_caps_a_burst():
+    from engine.server import _RateLimiter
+    limiter = _RateLimiter(per_minute=60, burst=3)
+    assert [limiter.allow("1.2.3.4") for _ in range(4)] == [True, True, True, False]
+    assert limiter.allow("5.6.7.8") is True
+    assert _RateLimiter(0, 1).allow("x") is True
+
+
+def test_engine_charges_checkin_only_after_rubric_lookup_is_authorized():
+    # The pre-auth path no longer reads/parses a scenario: a bogus signature
+    # for a known box must fail without touching the scenarios table.
+    from engine.store import Store
+    from engine.checkin import CheckinError, handle_checkin
+    from common.schema import Bundle, SCHEMA_VERSION
+    from common.version import AGENT_VERSION
+    import base64
+
+    store = Store(":memory:")
+    store.create_box("box", base64.b64encode(b"k" * 32).decode(), "sc", 1)
+    bundle = Bundle(box_id="box", seq=1, boot_id="b", agent_version=AGENT_VERSION,
+                    scenario_name="sc", scenario_version=1, evidence=[],
+                    created_wall_claim=0.0, schema_version=SCHEMA_VERSION)
+    with pytest.raises(CheckinError) as e:
+        handle_checkin(store, bundle, b"bad-sig")
+    assert e.value.status_code == 403
