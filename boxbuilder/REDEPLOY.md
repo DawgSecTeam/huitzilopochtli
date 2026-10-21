@@ -55,7 +55,8 @@ spec's dir — a `/tmp` spec copy breaks with "theme.wallpaper ... not found"):
 
 ```bash
 python3 -m boxbuilder compile --spec boxes/chocolate-factory/box.yaml \
-  --out /tmp/choc --json        # build is always fresh (no cache to force)
+  --out /tmp/choc --json        # reuses nakon's content cache when unchanged;
+                                # use a fresh --out if you need a forced rebuild
 # plant/install need provider.host = the clone's CURRENT DHCP IP; use a temp
 # spec with absolute scenario/nakon_config paths + host overridden (do NOT
 # commit the DHCP IP into the example spec):

@@ -38,7 +38,7 @@ def _read_cmdline(pid: str) -> str:
 
 
 def _read_comm(pid: str) -> str:
-    with open(f"/proc/{pid}/comm", "r", errors="replace") as f:
+    with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="replace") as f:
         return f.read().strip()
 
 

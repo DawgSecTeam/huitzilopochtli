@@ -13,7 +13,6 @@ import sys
 from typing import Optional
 
 from boxbuilder import artifacts as artifacts_mod
-from boxbuilder.artifacts import INSTALL_DIR  # noqa: F401 — re-exported for callers
 from boxbuilder.providers.base import (
     BoxHandle, BoxProvider, ExportResult, RunResult, register_provider, stage_path,
 )
@@ -61,14 +60,20 @@ def _host_key_policy(client, known_hosts, addr, port):
         client.load_host_keys(env_kh)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
         return
-    print(
-        f"WARNING: ssh provider trusting ANY host key for {addr}:{port} "
-        f"(AutoAddPolicy) while sending a plaintext password. Pass "
-        f"provider.known_hosts (or set HUITZILOPOCHTLI_KNOWN_HOSTS) to pin "
-        f"the host key.",
-        file=sys.stderr,
+    if os.environ.get("HUITZILOPOCHTLI_INSECURE_HOST_KEYS") == "1":
+        print(
+            f"WARNING: HUITZILOPOCHTLI_INSECURE_HOST_KEYS=1: trusting ANY host "
+            f"key for {addr}:{port} while sending a plaintext password. This "
+            f"is MITM-able; use provider.known_hosts in production.",
+            file=sys.stderr,
+        )
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        return
+    raise SshProviderError(
+        f"refusing to SSH to {addr}:{port} without a pinned host key. Pass "
+        f"provider.known_hosts (or set HUITZILOPOCHTLI_KNOWN_HOSTS), or set "
+        f"HUITZILOPOCHTLI_INSECURE_HOST_KEYS=1 for a throwaway lab."
     )
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
 
 class SshHandle(BoxHandle):
@@ -188,12 +193,30 @@ class SshHandle(BoxHandle):
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
             # Same latent hang applies to non-sudo commands that read stdin.
             stdin.channel.shutdown_write()
+        import threading
+
+        # Drain stdout/stderr WHILE waiting for the exit status. Waiting for
+        # exit first deadlocks as soon as the remote writes more than the SSH
+        # channel window: the remote blocks on write, so the status never
+        # arrives.
+        out_buf, err_buf = [], []
+
+        def _drain(stream, buf):
+            try:
+                buf.append(stream.read())
+            except Exception:
+                buf.append(b"")
+
+        out_reader = threading.Thread(target=_drain, args=(stdout, out_buf),
+                                      daemon=True)
+        err_reader = threading.Thread(target=_drain, args=(stderr, err_buf),
+                                      daemon=True)
+        out_reader.start()
+        err_reader.start()
+
         try:
             # recv_exit_status() waits on a channel event that the timeout
-            # given to exec_command does NOT bound; if the channel dies
-            # without delivering a status it would block forever. A watchdog
-            # thread bounds it (daemon: never blocks interpreter exit).
-            import threading
+            # given to exec_command does NOT bound; a watchdog bounds it.
             status = {}
             watcher = threading.Thread(
                 target=lambda: status.__setitem__(
@@ -204,11 +227,20 @@ class SshHandle(BoxHandle):
             watcher.start()
             watcher.join(timeout)
             if watcher.is_alive():
+                try:
+                    stdout.channel.close()
+                except Exception:
+                    pass
                 raise SshProviderError(
                     f"command on {self.addr} produced no exit status within "
                     f"{timeout}s: {cmd!r}"
                 )
             exit_status = status["exit"]
+            out_reader.join(timeout=5)
+            err_reader.join(timeout=5)
+            if out_reader.is_alive() or err_reader.is_alive():
+                raise SshProviderError(
+                    f"command output on {self.addr} did not close after exit: {cmd!r}")
         except SshProviderError:
             raise
         except Exception as e:
@@ -217,8 +249,8 @@ class SshHandle(BoxHandle):
             ) from e
         return RunResult(
             exit_status=exit_status,
-            stdout=stdout.read().decode("utf-8", "replace"),
-            stderr=stderr.read().decode("utf-8", "replace"),
+            stdout=(out_buf[0] if out_buf else b"").decode("utf-8", "replace"),
+            stderr=(err_buf[0] if err_buf else b"").decode("utf-8", "replace"),
         )
 
     def run_ps(self, script: str, *, timeout: int = 1800) -> RunResult:
@@ -274,8 +306,6 @@ class SshHandle(BoxHandle):
             sftp.close()
 
     def install_init(self, kind: str, mode: str = "honor") -> None:
-        if kind == "none":
-            return
         if kind == "windows":
             return self._install_init_windows()
         # The `huitz` console (agent/cli.py): a world-readable copy of the
@@ -295,6 +325,8 @@ class SshHandle(BoxHandle):
         if not shim.ok:
             print(f"WARNING: could not install the huitz CLI shim "
                   f"(/usr/local/bin/huitz): {shim.stderr.strip()}")
+        if kind == "none":
+            return
         # Ensure the install dir exists, then copy + enable the unit. We SFTP the
         # template up and let the box's own init system install it, per
         # the templates in packaging/.)

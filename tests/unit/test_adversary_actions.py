@@ -361,3 +361,21 @@ def test_no_forbidden_network_or_shell_primitives(path):
             "this module must never gain a network-egress or shell-injection "
             "primitive (architecture.md §12.2 / §2.7)"
         )
+
+
+def test_kill_service_uses_sc_exe_on_windows(monkeypatch):
+    calls = []
+    monkeypatch.setattr(actions, "_IS_WINDOWS", True)
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv))
+    actions._kill_service({"service": "atd"}, None)
+    assert calls == [["sc.exe", "stop", "atd"]]
+
+
+def test_flush_firewall_uses_netsh_on_windows(monkeypatch):
+    calls = []
+    monkeypatch.setattr(actions, "_IS_WINDOWS", True)
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv))
+    actions._flush_firewall({}, None)
+    assert calls == [["netsh", "advfirewall", "reset"]]

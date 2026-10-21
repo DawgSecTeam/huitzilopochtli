@@ -463,8 +463,10 @@ def test_windows_hardening_script_kills_the_known_popups():
     # Server Manager in C:\Users\Default\NTUSER.DAT via reg load/unload
     assert "NTUSER.DAT" in script and "DoNotOpenAtLogon" in script
     assert "reg load" in script and "reg unload" in script
-    # python advertised shortcuts (gotcha 26): repair + remove the Start-menu folder
+    # python advertised shortcuts (gotcha 26): repair + remove the Start-menu
+    # folder, with the repair bounded so a slow msiexec cannot stall a build.
     assert "/faus" in script and "Start Menu\\Programs\\Python" in script
+    assert "WaitForExit(120000)" in script and "Stop-Process" in script
     # Best-effort contract: every section guarded, script always exits 0.
     assert script.rstrip().endswith("exit 0")
     assert script.count("WARNING:") >= 3
@@ -480,8 +482,20 @@ def test_pipeline_installs_hardening_on_windows_only():
     assert "huitz-hardening-win.ps1" in src
     _, _, tail = src.partition("# --- Windows logon/browser hardening")
     block = tail[:tail.find("# --- first-login motd")]
-    assert 'if os_name == "windows":' in block
+    assert 'os_name == "windows"' in block
     assert "harden_remote" in block and "harden_local" in block
+
+
+def test_pipeline_stops_old_windows_agent_before_reinstall_clean():
+    """A template clone can inherit a running SYSTEM agent holding
+    .grade.lock; install_box must stop the task/agent before Remove-Item or
+    every reinstall fails with a sharing violation."""
+    import inspect
+    from boxbuilder import pipeline
+    src = inspect.getsource(pipeline.install_box)
+    assert "schtasks.exe /End" in src
+    assert "taskkill.exe /F /IM python.exe" in src
+    assert ".grade.lock" in src
 
 
 def test_win_task_script_mirrors_to_public_documents():

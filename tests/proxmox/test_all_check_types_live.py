@@ -34,7 +34,7 @@ def proxmox():
     return ph.get_proxmox_client()
 
 
-def _build_artifacts(tmp_path, cron_service: str, cron_package: str):
+def _build_artifacts(tmp_path, service_name: str):
     sys.path.insert(0, REPO_ROOT)
     from authoring.compile import compile_scenario
     from common.crypto import signing
@@ -84,13 +84,13 @@ checks:
       username: root
       points: 10
 
-  - id: cron_active
+  - id: sshd_active
     type: service_state
     category: vuln
-    display: "cron service active"
+    display: "ssh daemon active"
     max_points: 10
     collect:
-      service: {cron_service}
+      service: {service_name}
     expect:
       equals: true
       field: active
@@ -169,62 +169,85 @@ checks:
 
 
 @pytest.mark.parametrize(
-    "label,template_env_var,cron_service,cron_package,expected_total",
+    "label,template_env_var,transport,service_name",
     [
-        # Ubuntu 24.04: all 7 checks pass for real (cron running by default,
-        # openssh-server installed, and the guest-agent-spawned agent.pyz
-        # process can make outbound connections) -- confirmed empirically,
-        # 70/70.
-        ("ubuntu", "TEST_TEMPLATE_VMID_UBUNTU", "cron", "cron", 70),
-        # Fedora 44: only the first 3 checks (file_regex/permission/user_group,
-        # none of which need a subprocess or network) score points here.
-        # Confirmed empirically, all three infra-level, not product bugs:
-        #  - crond is not active by default on this minimal cloud template
-        #    (cron_active correctly collects/scores active=False).
-        #  - `rpm` is not on the guest-agent's PATH in this exec context, so
-        #    package_installed() correctly falls through to (False, None)
-        #    rather than erroring (agent/platform/pkg.py already handles a
-        #    missing package-manager binary gracefully).
-        #  - http_uptime and db_query both get errno 13 (Permission denied)
-        #    on outbound connect() -- the same SELinux `virt_qemu_ga_t`
-        #    confinement documented in tests/README.md as blocking
-        #    agent.identity.enroll()'s urllib POST in ranked mode, now
-        #    confirmed to block ANY outbound connect() from a process the
-        #    guest agent spawns, not just that one call site.
-        ("fedora", "TEST_TEMPLATE_VMID_FEDORA", "crond", "cronie", 30),
+        # Ubuntu 24.04 over the guest-agent channel (no credentials needed).
+        # Its ssh.service is socket-activated (inactive; ssh.socket is what
+        # listens), so use cron for the active-service assertion. Fedora's
+        # sshd is a conventional always-on service.
+        ("ubuntu", "TEST_TEMPLATE_VMID_UBUNTU", "agent", "cron"),
+        # Fedora 44 over SSH: unconfined_t, the way the agent actually runs
+        # on the box (see the module docstring).
+        ("fedora", "TEST_TEMPLATE_VMID_FEDORA", "ssh", "sshd"),
     ],
 )
-def test_all_check_types_on_real_vm(proxmox, tmp_path, label, template_env_var, cron_service, cron_package, expected_total):
+def test_all_check_types_on_real_vm(proxmox, tmp_path, label, template_env_var,
+                                     transport, service_name):
     template_vmid = int(os.environ[template_env_var])
-    files = _build_artifacts(tmp_path, cron_service, cron_package)
+    files = _build_artifacts(tmp_path, service_name)
 
     vmid = ph.clone_vm(proxmox, template_vmid, f"allchecks-{label}")
     try:
         ph.wait_for_agent(proxmox, vmid, timeout_s=180)
 
-        ph.guest_exec(proxmox, vmid, ["mkdir", "-p", INSTALL_DIR])
-        for filename, content in files.items():
-            ph.guest_file_write(proxmox, vmid, f"{INSTALL_DIR}/{filename}", content)
+        if transport == "ssh":
+            key_path = str(tmp_path / "rootkey")
+            ph.generate_ssh_key(key_path)
+            ip = ph.wait_for_ip(proxmox, vmid, timeout_s=180)
+            client = ph.enable_root_ssh(
+                proxmox, vmid, ip, key_path, login_user="fedora",
+                expected_hostname=ph.vm_name(proxmox, vmid))
+            try:
+                mk = ph.ssh_exec(client, f"mkdir -p {INSTALL_DIR}")
+                assert mk["exitcode"] == 0, mk
+                for filename, content in files.items():
+                    ph.sftp_put_bytes(client, f"{INSTALL_DIR}/{filename}", content)
+                serve_cmd = (
+                    f"cd {INSTALL_DIR} && "
+                    f"(setsid python3 -m http.server {HTTP_PORT} --bind 127.0.0.1 "
+                    f"</dev/null >/tmp/http_server.log 2>&1 &); "
+                    f"sleep 1; python3 -c \"import urllib.request; "
+                    f"print(urllib.request.urlopen('http://127.0.0.1:{HTTP_PORT}/').status)\""
+                )
+                serve = ph.ssh_exec(client, serve_cmd, timeout_s=30)
+                assert serve["exitcode"] == 0 and serve["out"].strip() == "200", serve
+                run_result = ph.ssh_exec(
+                    client,
+                    f"cd {INSTALL_DIR} && python3 agent.pyz agent_config.json",
+                    timeout_s=120,
+                )
+                assert run_result["exitcode"] == 0, (
+                    f"agent.pyz failed on real {label} VM: {run_result}"
+                )
+                report_bytes = ph.sftp_read_bytes(
+                    client, f"{INSTALL_DIR}/report.html")
+            finally:
+                client.close()
+        else:
+            ph.guest_exec(proxmox, vmid, ["mkdir", "-p", INSTALL_DIR])
+            for filename, content in files.items():
+                ph.guest_file_write(proxmox, vmid, f"{INSTALL_DIR}/{filename}", content)
 
-        # http_uptime needs something listening on HTTP_PORT before the agent runs.
-        serve_cmd = (
-            f"cd {INSTALL_DIR} && nohup python3 -m http.server {HTTP_PORT} "
-            f"--bind 127.0.0.1 > /tmp/http_server.log 2>&1 & echo started"
-        )
-        serve_result = ph.guest_exec(proxmox, vmid, ["/bin/sh", "-c", serve_cmd])
-        assert serve_result["exitcode"] == 0, serve_result
+            # http_uptime needs something listening on HTTP_PORT before the agent runs.
+            serve_cmd = (
+                f"cd {INSTALL_DIR} && nohup python3 -m http.server {HTTP_PORT} "
+                f"--bind 127.0.0.1 > /tmp/http_server.log 2>&1 & echo started"
+            )
+            serve_result = ph.guest_exec(proxmox, vmid, ["/bin/sh", "-c", serve_cmd])
+            assert serve_result["exitcode"] == 0, serve_result
 
-        run_result = ph.guest_exec(
-            proxmox, vmid,
-            ["python3", f"{INSTALL_DIR}/agent.pyz", f"{INSTALL_DIR}/agent_config.json"],
-            timeout_s=60,
-        )
-        assert run_result["exitcode"] == 0, (
-            f"agent.pyz failed on real {label} VM: {run_result}"
-        )
+            run_result = ph.guest_exec(
+                proxmox, vmid,
+                ["python3", f"{INSTALL_DIR}/agent.pyz", f"{INSTALL_DIR}/agent_config.json"],
+                timeout_s=60,
+            )
+            assert run_result["exitcode"] == 0, (
+                f"agent.pyz failed on real {label} VM: {run_result}"
+            )
 
-        report_bytes = ph.guest_file_read(proxmox, vmid, f"{INSTALL_DIR}/report.html")
+            report_bytes = ph.guest_file_read(proxmox, vmid, f"{INSTALL_DIR}/report.html")
+
         report_html = report_bytes.decode("utf-8")
-        assert f"Total: {expected_total}" in report_html, report_html
+        assert "Total: 70" in report_html, report_html
     finally:
         ph.destroy_vm(proxmox, vmid)

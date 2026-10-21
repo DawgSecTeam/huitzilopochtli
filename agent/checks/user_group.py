@@ -15,7 +15,7 @@ from common.schema import CheckSpec, CollectorStatus, Evidence
 
 def _parse_passwd(path="/etc/passwd"):
     users = []
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -29,7 +29,7 @@ def _parse_passwd(path="/etc/passwd"):
 
 def _parse_group(path="/etc/group"):
     group_members = {}
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):

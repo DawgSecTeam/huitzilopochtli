@@ -292,38 +292,116 @@ def test_run_all_returns_results_in_input_order():
     assert [r.raw["id"] for r in results] == ["f0", "f1", "f2"]
 
 
-def test_run_all_caps_workers_at_20():
-    # Without a cap, max_workers scaled 1:1 with len(checks), so a scenario
-    # with hundreds of checks would spin up hundreds of threads. Cap at 20.
-    # Uses a wrapper that records max_workers then delegates to the real
-    # ThreadPoolExecutor so the run completes normally.
-    class _Echo:
-        type_key = "_echo_for_cap_test"
+def test_run_all_caps_active_checks_at_20():
+    # A scenario with hundreds of checks must not run them all at once.
+    import threading
+    lock = threading.Lock()
+    counters = {"active": 0, "peak": 0}
+
+    class _SlowEcho:
+        type_key = "_slow_echo_cap"
         def collect(self, spec, ctx):
+            with lock:
+                counters["active"] += 1
+                counters["peak"] = max(counters["peak"], counters["active"])
+            time.sleep(0.03)
+            with lock:
+                counters["active"] -= 1
             return Evidence(
                 check_id=spec.id, check_type=spec.type, host_id=spec.host_id,
                 status=CollectorStatus.OK, raw={}, reason="ok",
                 collected_monotonic=time.monotonic(), collected_wall_claim=time.time(),
             )
 
-    captured = {}
-    real_tpe = collector.concurrent.futures.ThreadPoolExecutor
-
-    class _RecordingTPE(real_tpe):
-        def __init__(self, *args, **kwargs):
-            captured["max_workers"] = kwargs.get("max_workers")
-            super().__init__(*args, **kwargs)
-
     specs = [
-        CheckSpec(id=f"c{i}", type="_echo_for_cap_test", category=Category.VULN,
+        CheckSpec(id=f"c{i}", type="_slow_echo_cap", category=Category.VULN,
                   host_id="h", collect_params={}, display_title="t",
                   display_max_points=1, timeout_s=2.0)
-        for i in range(50)  # 50 checks would otherwise spawn 50 threads
+        for i in range(50)
     ]
-    with patch.dict(collector.CHECKS, {"_echo_for_cap_test": _Echo}, clear=False):
-        with patch.object(collector, "_DaemonThreadPoolExecutor", _RecordingTPE):
-            results = collector.run_all(specs, ctx=None)
+    with patch.dict(collector.CHECKS, {"_slow_echo_cap": _SlowEcho}, clear=False):
+        results = collector.run_all(specs, ctx=None)
 
-    assert captured["max_workers"] == 20
     assert len(results) == 50
     assert all(r.status == CollectorStatus.OK for r in results)
+    assert 1 < counters["peak"] <= 20, counters
+
+
+def test_many_checks_are_not_timed_out_before_they_start():
+    """Regression: one global max(timeout_s) deadline starved queued checks.
+
+    140 checks that each finish well within their own 1s timeout must all be
+    OK, even though the whole run takes longer than any single timeout.
+    """
+    class _Quick:
+        type_key = "_quick_for_starvation"
+        def collect(self, spec, ctx):
+            time.sleep(0.02)
+            return Evidence(
+                check_id=spec.id, check_type=spec.type, host_id=spec.host_id,
+                status=CollectorStatus.OK, raw={}, reason="ok",
+                collected_monotonic=time.monotonic(), collected_wall_claim=time.time(),
+            )
+
+    specs = [
+        CheckSpec(id=f"q{i}", type="_quick_for_starvation", category=Category.VULN,
+                  host_id="h", collect_params={}, display_title="t",
+                  display_max_points=1, timeout_s=1.0)
+        for i in range(140)
+    ]
+    with patch.dict(collector.CHECKS, {"_quick_for_starvation": _Quick}, clear=False):
+        results = collector.run_all(specs, ctx=None)
+
+    assert all(r.status == CollectorStatus.OK for r in results), (
+        "checks were timed out before they ever ran")
+
+
+# --- 1.0: bounded queue, dead-lettering, bundle sizing ----------------------
+
+def _client(tmp_path):
+    return TransportClient("http://engine.example", FakeIdentity(),
+                           queue_path=str(tmp_path / "q"))
+
+
+def test_queue_file_is_private_and_capped(tmp_path, monkeypatch):
+    import json
+    import os
+    import agent.transport as transport
+    monkeypatch.setattr(transport, "_MAX_QUEUE_BUNDLES", 3)
+    client = _client(tmp_path)
+    for seq in range(1, 6):
+        client._append_queue(json.dumps({"seq": seq}))
+    lines = client._read_queue()
+    assert [json.loads(line)["seq"] for line in lines] == [3, 4, 5]
+    assert (os.stat(client.queue_path).st_mode & 0o777) == 0o600
+
+
+def test_repeated_server_errors_are_counted_and_dead_lettered(tmp_path):
+    import json
+    client = _client(tmp_path)
+    line = json.dumps({"seq": 7})
+    assert [client._bump_failure(line) for _ in range(3)] == [1, 2, 3]
+    client._dead_letter(line, "boom")
+    client._clear_failure(line)
+    assert client._read_failures() == {}
+    import json as _json
+    dead = _json.loads((tmp_path / "q.dead").read_text())
+    assert dead["reason"] == "boom"
+    assert _json.loads(dead["payload"])["seq"] == 7
+
+
+def test_oversized_bundle_is_shrunk_below_engine_cap(tmp_path):
+    import agent.transport as transport
+    client = _client(tmp_path)
+    bundle = _bundle()
+    bundle.evidence = [
+        Evidence(check_id="big", check_type="command_json", host_id="h",
+                 status=CollectorStatus.OK,
+                 raw={"data": {"text": "x" * 900_000}},
+                 reason="ok", collected_monotonic=0.0, collected_wall_claim=0.0),
+    ]
+    changed = client._shrink_bundle(bundle)
+    assert changed
+    from common.canon import canonicalize
+    import dataclasses
+    assert len(canonicalize(dataclasses.asdict(bundle))) <= transport.MAX_BUNDLE_BYTES

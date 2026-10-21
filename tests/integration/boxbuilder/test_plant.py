@@ -42,6 +42,8 @@ def test_plant_uses_provider_address(tmp_path, monkeypatch, fake_provider_factor
     nakon_dir = install_fake_nakon(
         tmp_path, monkeypatch, deploy_json=deploy_json
     )
+    capture = tmp_path / "deploy-capture.json"
+    monkeypatch.setenv("FAKE_NAKON_DEPLOY_CAPTURE", str(capture))
     # Pre-create a bundle dir so the bundle_path check passes.
     bundle = tmp_path / "bundle"
     bundle.mkdir()
@@ -56,7 +58,10 @@ def test_plant_uses_provider_address(tmp_path, monkeypatch, fake_provider_factor
     assert result["machine"]["port"] == 2222
 
     # The derived deploy config captured the provider's address + agent's vulns.
-    derived = json.loads((tmp_path / "nakon-deploy-config.json").read_text())
+    # It is deliberately deleted after deploy (it contains the SSH password);
+    # the fake nakon captured a copy.
+    assert not (tmp_path / "nakon-deploy-config.json").exists()
+    derived = json.loads(capture.read_text())
     m = derived["machines"][0]
     assert m["ip"] == "192.168.50.10"
     assert m["user"] == "provuser"
@@ -89,6 +94,8 @@ def test_plant_reads_bundle_from_state(tmp_path, monkeypatch, fake_provider_fact
     nakon_dir = install_fake_nakon(
         tmp_path, monkeypatch, deploy_json=deploy_json
     )
+    capture = tmp_path / "deploy-capture.json"
+    monkeypatch.setenv("FAKE_NAKON_DEPLOY_CAPTURE", str(capture))
     result = plant_box(
         _spec({"name": "fake", "host": "h", "user": "u", "password": "p"}),
         artifacts_dir=str(tmp_path), nakon_dir=nakon_dir,
@@ -105,6 +112,8 @@ def test_plant_reports_failures(tmp_path, monkeypatch, fake_provider_factory):
     nakon_dir = install_fake_nakon(
         tmp_path, monkeypatch, deploy_json=deploy_json
     )
+    capture = tmp_path / "deploy-capture.json"
+    monkeypatch.setenv("FAKE_NAKON_DEPLOY_CAPTURE", str(capture))
     result = plant_box(
         _spec({"name": "fake", "host": "h", "user": "u", "password": "p"}),
         artifacts_dir=str(tmp_path), bundle_path=str(bundle), nakon_dir=nakon_dir,
@@ -112,3 +121,22 @@ def test_plant_reports_failures(tmp_path, monkeypatch, fake_provider_factory):
     )
     assert result["ok"] is False
     assert result["deploy"]["failures"] == 2
+
+
+def test_plant_refuses_state_from_a_different_scenario(tmp_path):
+    from boxbuilder.pipeline import _input_fingerprint
+    spec = _spec({"name": "fake", "host": "h", "user": "u", "password": "p"})
+    state = {
+        "bundle_path": str(tmp_path / "bundle"),
+        "input_fingerprint": _input_fingerprint(spec),
+    }
+    (tmp_path / "build-state.json").write_text(json.dumps(state))
+
+    changed = _spec({"name": "fake", "host": "h", "user": "u", "password": "p"})
+    changed.scenario = {**changed.scenario, "scenario": {
+        **changed.scenario["scenario"], "name": "Different Box"}}
+
+    with pytest.raises(ValueError, match="does not match the current"):
+        plant_box(changed, artifacts_dir=str(tmp_path), bundle_path=None,
+                  provider_factory=lambda *a: pytest.fail("provider was contacted"),
+                  log=lambda *a: None)

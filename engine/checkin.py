@@ -4,6 +4,7 @@ import dataclasses
 import json
 import sqlite3
 import time
+from typing import Optional
 
 import engine.sla as sla
 import engine.adversary_oracle as adversary_oracle
@@ -14,6 +15,7 @@ from common.schema import (
     Bundle, CheckinResponse, CollectorStatus, Directive, Rubric, SCHEMA_VERSION, SlaStatus,
 )
 from common.version import AGENT_VERSION
+from engine import scenario as scenario_mod
 from engine import verify_gate
 from engine.store import Store
 
@@ -51,6 +53,13 @@ def _redact_for_box(score, evidence_by_check_id: dict) -> None:
         result.reason = ev.reason if ev is not None and ev.reason else ""
 
 
+def _entry_matcher(rubric: Rubric, check_id: str) -> dict:
+    for entry in rubric.entries:
+        if entry.check_id == check_id:
+            return entry.matcher
+    return {"tag": "equals", "value": None}
+
+
 class _Clock:
     """Trivial Clock (see common.evaluator.Clock protocol) fixed to the
     engine's authoritative received_at for this check-in."""
@@ -62,8 +71,9 @@ class _Clock:
         return self._received_at
 
 
-def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
-                    server_secret: bytes, event_pool: list,
+def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
+                    rubric: Optional[Rubric] = None,
+                    server_secret: bytes = b"", event_pool: Optional[list] = None,
                     next_checkin_s: int = 60) -> CheckinResponse:
     """Fail-closed handler order (§14.2):
       1. Look up box_id -> public key. Unknown box -> 403.
@@ -117,6 +127,28 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         raise CheckinError(409, "scenario_version does not match the box's enrolled version",
                            last_seq=box.last_seq)
 
+    # Load the rubric only after signature verification: an unauthenticated
+    # caller must not learn whether a scenario exists or force a JSON parse of
+    # the stored record. The record is keyed by the *enrolled* version, so a
+    # v2 upload cannot silently rescore a v1 box.
+    if rubric is None:
+        try:
+            rubric, event_pool = scenario_mod.load_scenario(
+                store, box.scenario_name, box.scenario_version)
+        except scenario_mod.ScenarioNotFound:
+            raise CheckinError(
+                409,
+                f"no engine record for scenario {box.scenario_name!r} "
+                f"version {box.scenario_version}",
+                last_seq=box.last_seq,
+            )
+        except scenario_mod.ScenarioError:
+            raise CheckinError(
+                500, "stored scenario record is invalid", last_seq=box.last_seq
+            )
+    if event_pool is None:
+        event_pool = []
+
     # 3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
     if bundle.seq <= box.last_seq:
         raise CheckinError(409, "replay/stale seq", last_seq=box.last_seq)
@@ -128,11 +160,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
     with store.atomic():
         # 4. Stamp received_at = engine_now(). First check-in for this box sets T0.
         received_at = time.time()
-        if box.t0 is None:
-            store.set_t0_if_unset(bundle.box_id, received_at)
-            t0_to_use = received_at
-        else:
-            t0_to_use = box.t0
+        t0_to_use = store.get_or_set_t0(bundle.box_id, received_at)
 
         if not store.update_box_seq(bundle.box_id, bundle.seq, bundle.boot_id):
             fresh = store.get_box(bundle.box_id)
@@ -154,9 +182,38 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
         # 6. Evaluate point-in-time evidence against the engine-held rubric.
         clock = _Clock(received_at)
         score = evaluate(bundle.evidence, rubric, clock)
-
-        # 7. Update SLA ledger (§11.3) for every rubric entry that has SLA params.
         evidence_by_check_id = {e.check_id: e for e in bundle.evidence}
+
+        # 7. Run the adversary scheduler before the SLA ledger so a directive
+        # issued by *this* check-in can dock the mapped SLA immediately (§12.1).
+        directives = adversary_oracle.due_directives(
+            store, bundle.box_id, server_secret, event_pool, t0_to_use, received_at
+        )
+
+        # The engine caused the disruption, so it knows the outage floor: from
+        # the check-in after issuance until the box reports the affected check
+        # healthy again, force that SLA DOWN. Evidence collected by the same
+        # check-in that receives a directive predates execution, so it cannot
+        # count as restoration.
+        sla_ids = {e.check_id for e in rubric.entries if e.sla is not None}
+        forced_down = set()
+        for effect in store.get_active_adversary_effects(bundle.box_id, received_at):
+            check_id = effect["affects_check"]
+            if check_id not in sla_ids:
+                continue
+            ev = evidence_by_check_id.get(check_id)
+            currently_up = False
+            if ev is not None and ev.status == CollectorStatus.OK:
+                currently_up, _reason = evaluate_matcher(
+                    _entry_matcher(rubric, check_id), ev.raw)
+            if (currently_up
+                    and float(effect["issued_at"] or 0) < received_at):
+                store.mark_adversary_restored(
+                    bundle.box_id, effect["event_id"], received_at)
+            else:
+                forced_down.add(check_id)
+
+        # 8. Update SLA ledger (§11.3) for every rubric entry that has SLA params.
         sla_statuses = []
         sla_accrued_total = 0
         for entry in rubric.entries:
@@ -171,7 +228,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
             else:
                 is_up = False
             sla_rec = sla.update_sla(
-                store, bundle.box_id, entry.check_id, entry.sla, is_up, received_at
+                store, bundle.box_id, entry.check_id, entry.sla, is_up,
+                received_at, force_down=entry.check_id in forced_down,
             )
             sla_statuses.append(
                 SlaStatus(
@@ -183,10 +241,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes, rubric: Rubric,
             sla_accrued_total += sla_rec.accrued_points
         score.sla_status = sla_statuses
 
-        # 8. Run adversary scheduler; collect any due directives (§12.1).
-        directives = adversary_oracle.due_directives(
-            store, bundle.box_id, server_secret, event_pool, t0_to_use, received_at
-        )
         # At-least-once delivery: re-send everything issued so far (this
         # check-in's included), so a response lost after commit -- or dropped
         # by the agent while flushing its queue -- can't lose a directive.

@@ -208,3 +208,17 @@ def test_install_ranked_requires_admin_token(tmp_path, fake_provider_factory, mo
         install_box(_spec("ranked"), artifacts_dir=str(tmp_path), compile_result=cr,
                     provider_factory=fake_provider_factory, init_kind="none",
                     admin_token=None, log=lambda *a: None)
+
+
+def test_reinstall_clears_stale_files_even_for_root(tmp_path, fake_provider_factory,
+                                                     fake_provider):
+    """Cleanup must run for root SSH installs too: an honor->ranked reinstall
+    would otherwise leave .score.dat (the answer key) on a ranked box."""
+    cr = _compile_result(tmp_path, "honor")
+    spec = _spec("honor")
+    spec.provider["user"] = "root"
+    install_box(spec, artifacts_dir=str(tmp_path), compile_result=cr,
+                provider_factory=fake_provider_factory, init_kind="none",
+                log=lambda *a: None)
+    handle = fake_provider.last_handle
+    assert any(f"find {INSTALL_DIR} -mindepth 1 -delete" in c for c in handle.runs)

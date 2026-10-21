@@ -321,12 +321,12 @@ def test_consume_token_sets_consumed_at(store):
 
 
 def test_get_scenario_unknown_returns_none(store):
-    assert store.get_scenario("no-such-scenario") is None
+    assert store.get_scenario("no-such-scenario", 1) is None
 
 
 def test_save_scenario_get_scenario_round_trip(store):
-    store.save_scenario("scenario-a", '{"rubric": true}', '{"adversary": true}')
-    scen = store.get_scenario("scenario-a")
+    store.save_scenario("scenario-a", 1, '{"rubric": true}', '{"adversary": true}')
+    scen = store.get_scenario("scenario-a", 1)
     assert scen == {
         "rubric_json": '{"rubric": true}',
         "adversary_json": '{"adversary": true}',
@@ -336,10 +336,10 @@ def test_save_scenario_get_scenario_round_trip(store):
 
 
 def test_save_scenario_updates_not_duplicates(store):
-    store.save_scenario("scenario-a", '{"v": 1}', '{"a": 1}')
-    store.save_scenario("scenario-a", '{"v": 2}', '{"a": 2}')
+    store.save_scenario("scenario-a", 1, '{"v": 1}', '{"a": 1}')
+    store.save_scenario("scenario-a", 1, '{"v": 2}', '{"a": 2}')
 
-    scen = store.get_scenario("scenario-a")
+    scen = store.get_scenario("scenario-a", 1)
     assert scen["rubric_json"] == '{"v": 2}'
     assert scen["adversary_json"] == '{"a": 2}'
 
@@ -392,3 +392,80 @@ def test_concurrent_upsert_score_no_deadlock_no_lost_writes(store):
     by_box = {s.box_id: s.total for s in scores}
     for i in range(n_workers):
         assert by_box[f"box-{i}"] == i * 10
+
+
+# --- 1.0: DB permissions, migrations, versioned scenarios -------------------
+
+def test_database_file_is_private(tmp_path):
+    import os
+    path = str(tmp_path / "private.db")
+    Store(path)
+    assert (os.stat(path).st_mode & 0o777) == 0o600
+
+
+def test_pre_1_0_scenarios_table_is_migrated_in_place(tmp_path):
+    import json
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE scenarios (
+            scenario_name TEXT PRIMARY KEY,
+            rubric_json TEXT NOT NULL,
+            adversary_json TEXT NOT NULL,
+            uploaded_at REAL NOT NULL
+        );
+        CREATE TABLE scores (
+            box_id TEXT PRIMARY KEY,
+            scenario_name TEXT NOT NULL,
+            total INTEGER NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE TABLE adversary_log (
+            box_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            issued_at REAL NOT NULL,
+            params_json TEXT NOT NULL
+        );
+    """)
+    rubric = json.dumps({"scenario_name": "legacy", "scenario_version": 7,
+                         "schema_version": 1, "entries": []})
+    conn.execute("INSERT INTO scenarios VALUES (?, ?, ?, ?)",
+                 ("legacy", rubric, "{}", 123.0))
+    conn.execute("INSERT INTO scores VALUES (?, ?, ?, ?)",
+                 ("box", "legacy", 42, 200.0))
+    conn.commit()
+    conn.close()
+
+    store = Store(path)
+    assert store.get_scenario("legacy", 7)["rubric_json"] == rubric
+    assert store.get_scenario("legacy", 1) is None
+    scores = store.get_scores("legacy")
+    assert scores[0].first_scored_at == 200.0
+
+
+def test_scenarios_are_keyed_by_name_and_version(store):
+    store.save_scenario("sc", 1, '{"v":1}', "{}")
+    store.save_scenario("sc", 2, '{"v":2}', "{}")
+    assert store.get_scenario("sc", 1)["rubric_json"] == '{"v":1}'
+    assert store.get_scenario("sc", 2)["rubric_json"] == '{"v":2}'
+    assert store.get_latest_scenario_version("sc") == 2
+
+
+def test_get_or_set_t0_is_authoritative(store):
+    store.create_box("b", "pk", "sc")
+    assert store.get_or_set_t0("b", 100.0) == 100.0
+    assert store.get_or_set_t0("b", 200.0) == 100.0
+
+
+def test_leaderboard_tie_break_uses_first_scored_at(store):
+    store.upsert_score("early", "sc", 50)
+    store._conn.execute("UPDATE scores SET first_scored_at = 100 WHERE box_id='early'")
+    store._conn.commit()
+    store.upsert_score("late", "sc", 50)
+    store._conn.execute("UPDATE scores SET first_scored_at = 200 WHERE box_id='late'")
+    store._conn.execute("UPDATE scores SET updated_at = 1 WHERE box_id='early'")
+    store._conn.execute("UPDATE scores SET updated_at = 999 WHERE box_id='late'")
+    store._conn.commit()
+    assert [r.box_id for r in store.get_scores("sc")] == ["early", "late"]

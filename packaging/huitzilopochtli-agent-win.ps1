@@ -41,11 +41,24 @@ try {
     # which cannot express two triggers but covers the 5-minute cadence.
     schtasks.exe /Create /F /TN $taskName /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST `
         /TR "`"$wrapper`" $arguments" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "schtasks /Create failed with exit code $LASTEXITCODE"
+    }
     schtasks.exe /Change /TN $taskName /ST 00:00 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "schtasks /Change failed with exit code $LASTEXITCODE"
+    }
+}
+
+if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
+    throw "scheduled task '$taskName' was not registered"
 }
 
 # Run once now: install-time report, notifications baseline, visible errors.
 & $wrapper -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $taskScript
+if ($LASTEXITCODE -ne 0) {
+    throw "first huitz run failed with exit code $LASTEXITCODE"
+}
 
 Write-Output "huitzilopochtli agent task registered ($taskName)"
 exit 0

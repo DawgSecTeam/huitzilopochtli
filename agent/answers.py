@@ -135,9 +135,10 @@ def render_template(questions: list) -> str:
 _WRITE_AS_OWNER = (
     "import os,sys,tempfile\n"
     "p=sys.argv[1]\n"
+    "data=sys.stdin.buffer.read().decode('utf-8', 'replace')\n"
     "fd,t=tempfile.mkstemp(dir=os.path.dirname(p) or '.',prefix='.huitz-')\n"
     "try:\n"
-    "    with os.fdopen(fd,'w',encoding='utf-8') as f: f.write(sys.stdin.read())\n"
+    "    with os.fdopen(fd,'w',encoding='utf-8') as f: f.write(data)\n"
     "    os.chmod(t,int(sys.argv[2],8)); os.replace(t,p)\n"
     "except BaseException:\n"
     "    os.unlink(t); raise\n"
@@ -155,7 +156,8 @@ def write_as_owner(path: str, content: str, uid: int, gid: int,
     """
     subprocess.run(
         [sys.executable, "-c", _WRITE_AS_OWNER, path, oct(mode)],
-        input=content, text=True, user=uid, group=gid, extra_groups=[],
+        input=content, text=True, encoding="utf-8", user=uid, group=gid,
+        extra_groups=[],
         check=True, timeout=15,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )

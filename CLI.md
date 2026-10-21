@@ -91,9 +91,11 @@ back into the evaluator, so scoring stays a pure function of
 (`agent/board.py`) feeds all three renderers: HTML, JSON snapshot, terminal.
 
 That design is also what makes the CLI work for **any account on the box**:
-the sealed install dir (`/opt/.huitzilopochtli/`, 0700 root) is never
-touched by the reading commands — they read the Desktop copy, exactly like
-the browser shortcut does.
+reading commands never *write* the sealed install dir
+(`/opt/.huitzilopochtli/`, 0700 root). Non-root users read the
+`Documents/huitzilopochtli/report.json` mirror (the same path the browser
+shortcut opens); root may additionally read the install-dir snapshot as a
+fallback.
 
 ### Honor vs ranked presentation
 
@@ -173,11 +175,12 @@ the Public Desktop `report.json` that the scheduled-task wrapper mirrors.
 `huitz` locates a snapshot to read by trying, in order:
 
 1. `--report PATH` (or `$HUITZ_REPORT`) when given — authoritative, no
-   fallback;
+   fallback (a stale value is an error, not a silent fall-through);
 2. this box's install dir via `agent_config.json` (or `$HUITZ_CONFIG`);
    root reaches the sealed dir directly here;
-3. your own Desktop's `report.json`;
-4. any other real user's Desktop copy (the same uid-1000-59999 +
+3. your own `Documents/huitzilopochtli/report.json` (then the legacy
+   Desktop copy);
+4. any other real user's Documents/Desktop copy (the same uid-1000-59999 +
    login-shell heuristic `sync-report.sh` uses).
 
 The first readable snapshot wins, so an SSH session as root shows the same
@@ -193,6 +196,7 @@ snapshot is reported verbatim instead of misrendered.
 | `1` | runtime failure (no snapshot, unreadable manifest, …) |
 | `2` | usage error (unknown command/flag, missing value) |
 | `130` | interrupted (`Ctrl-C`) |
+| `141` | output pipe closed (e.g. `huitz score | head`) |
 
 ## For maintainers
 

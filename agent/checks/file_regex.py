@@ -29,7 +29,7 @@ class FileRegexCheck(Check):
 
         try:
             try:
-                with open(path, "r", errors="replace") as f:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read(_CONTENT_LIMIT + 1)
                 if len(content) > _CONTENT_LIMIT:
                     return self._error(

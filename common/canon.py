@@ -16,10 +16,18 @@ def _normalize_strings(obj):
         return unicodedata.normalize("NFC", obj)
     if isinstance(obj, dict):
         # Normalize keys and values so decomposed vs composed forms match.
-        return {
-            _normalize_strings(k): _normalize_strings(v)
-            for k, v in obj.items()
-        }
+        # Refuse two keys that normalize to the same string: silently keeping
+        # one would make canonical bytes verify for a body whose parsed keys
+        # differ (signature semantics ambiguity).
+        normalized = {}
+        for key, value in obj.items():
+            norm_key = _normalize_strings(key)
+            if norm_key in normalized:
+                raise ValueError(
+                    f"canonicalization key collision: {key!r} normalizes to "
+                    f"the same string as another key")
+            normalized[norm_key] = _normalize_strings(value)
+        return normalized
     if isinstance(obj, (list, tuple)):
         return [_normalize_strings(v) for v in obj]
     return obj
@@ -33,5 +41,5 @@ def canonicalize(obj) -> bytes:
     """
     return json.dumps(
         _normalize_strings(obj), sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False,
+        ensure_ascii=False, allow_nan=False,
     ).encode("utf-8")
