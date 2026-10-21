@@ -232,9 +232,15 @@ SLA outage back-claiming, rubric versioning (records are now keyed by
 `(scenario_name, scenario_version)`), adversary fire-time persistence +
 `affects_check` outage flooring, small-order Ed25519 keys, DB permissions,
 auth-before-rubric-parse, rate limiting, queue dead-lettering, and the
-Windows/CLI/boxbuilder findings from the full review. The remaining notes in
-this section are kept for history; the shipped-box `at-job` fuse and the
-engine TLS/deployment story still need operational decisions.
+Windows/CLI/boxbuilder findings from the full review. Live verification now
+includes Fedora 44 all-check-types at **70/70** over root SSH (template 1016;
+the guest agent's `virt_qemu_ga_t` domain, not the product, caused the old
+30/70), Windows Server 2022 at **90/90** across nine Windows-first check types,
+and a real `boxbuilder install` on Windows that registers the SYSTEM
+`HuitzilopochtliAgent` task, seals `C:\ProgramData\huitzilopochtli`, and
+produces an initial report. The remaining notes in this section are kept for
+history; the shipped-box `at-job` fuse and the engine TLS/deployment story
+still need operational decisions.
 
 ## Known issues needing a decision (not fixed here)
 
