@@ -41,9 +41,11 @@ What this covers:
   persistence, and zipapp/source-tree equivalence.
 - **`tests/proxmox/`**: excluded by default (`pytest -m proxmox` to opt in;
   skips with a reason when `.env` is absent). `test_local_honor_distribution.py`
-  and `test_ranked_two_machines.py` cover real clones; `test_all_check_types_live.py`
-  is 70/70 on Ubuntu and a strict xfail on the Fedora template (documented
-  environment/SELinux limits, not claimed as passing).
+  and `test_ranked_two_machines.py` cover real clones;
+  `test_all_check_types_live.py` is 70/70 on both Ubuntu and Fedora (Fedora
+  runs over root SSH because its guest agent is SELinux-confined), and
+  `test_windows_live.py` is 90/90 on Windows Server 2022 plus a real
+  boxbuilder install (SYSTEM scheduled task, ACL seal, first report).
 
 If this step passes, you already have strong evidence everything works. Steps 2-4 below let you *see* it happen rather than trust a green checkmark.
 
@@ -352,6 +354,8 @@ rm -rf /tmp/huitzilopochtli-manual
 `tests/README.md` documents the `tests/proxmox/` tier — real cloned VMs on
 Proxmox. `test_local_honor_distribution.py` and `test_ranked_two_machines.py`
 are the real-network checks; the latter now sets its own bind address and
-regenerates clone machine-ids. Fedora remains a documented environment
-limitation (strict xfail), not a passing claim. This tier is optional for the
-local verification above; configure `tests/proxmox/.env` to run it.
+regenerates clone machine-ids. `test_all_check_types_live.py` passes 70/70 on
+Ubuntu and Fedora (Fedora over root SSH, since its guest agent is
+SELinux-confined), and `test_windows_live.py` passes 90/90 on Windows Server
+2022 and exercises the real boxbuilder install path. This tier is optional for
+the local verification above; configure `tests/proxmox/.env` to run it.

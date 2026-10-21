@@ -480,8 +480,31 @@ def test_pipeline_installs_hardening_on_windows_only():
     assert "huitz-hardening-win.ps1" in src
     _, _, tail = src.partition("# --- Windows logon/browser hardening")
     block = tail[:tail.find("# --- first-login motd")]
-    assert 'if os_name == "windows":' in block
+    assert 'os_name == "windows"' in block
     assert "harden_remote" in block and "harden_local" in block
+
+
+def test_pipeline_stops_old_windows_agent_before_reinstall_clean():
+    """A template clone can inherit a running SYSTEM agent holding
+    .grade.lock; install_box must stop the task/agent before Remove-Item or
+    every reinstall fails with a sharing violation."""
+    import inspect
+    from boxbuilder import pipeline
+    src = inspect.getsource(pipeline.install_box)
+    assert "schtasks.exe /End" in src
+    assert "taskkill.exe /F /IM python.exe" in src
+    assert ".grade.lock" in src
+
+
+def test_pipeline_windows_hardening_skip_env():
+    """The live-tier escape hatch must be honored before any hardening SFTP
+    or run (the MSI repair can block for minutes on a Python-installed box)."""
+    import inspect
+    from boxbuilder import pipeline
+    src = inspect.getsource(pipeline.install_box)
+    guard = src.index("HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING")
+    assert guard < src.index("harden_local")
+    assert "windows hardening skipped" in src
 
 
 def test_win_task_script_mirrors_to_public_documents():

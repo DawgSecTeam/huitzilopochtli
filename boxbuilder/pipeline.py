@@ -334,11 +334,31 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             if not mk.ok:
                 raise RuntimeError(f"could not create {install_dir}: {mk.stderr.strip()}")
             # A reinstall must not inherit a previous scenario's rubric,
-            # identity, enrollment marker or reports.
-            clean = handle.run_ps(
+            # identity, enrollment marker or reports. On a Windows template
+            # that already carries the SYSTEM agent task, the old agent can
+            # be mid-run holding .grade.lock; stop the task and any running
+            # agent processes first, or Remove-Item fails with a sharing
+            # violation. `schtasks /End` stops the trigger; `taskkill` on
+            # python.exe releases the lock. Never kill powershell here: this
+            # installer and the task wrapper are both powershell.
+            clean_script = (
+                "$ErrorActionPreference = 'Continue'; "
+                "schtasks.exe /End /TN 'HuitzilopochtliAgent' 2>$null | Out-Null; "
+                # The agent's python process holds .grade.lock. Killing by
+                # image name is deliberate: the task wrapper is powershell,
+                # and killing powershell here would kill this installer.
+                "taskkill.exe /F /IM python.exe 2>$null | Out-Null; "
+                "Start-Sleep -Milliseconds 800; "
                 f"Get-ChildItem -LiteralPath '{install_dir}' -Force | "
-                f"Remove-Item -Recurse -Force -ErrorAction Stop; exit 0"
+                "Remove-Item -Recurse -Force -ErrorAction Stop; exit 0"
             )
+            clean = handle.run_ps(clean_script)
+            if not clean.ok and "grade.lock" in (clean.stderr or ""):
+                # One retry after a short settle: a just-stopped SYSTEM
+                # process can take a moment to release the lock handle.
+                import time as _time
+                _time.sleep(2)
+                clean = handle.run_ps(clean_script)
             if not clean.ok:
                 raise RuntimeError(
                     f"could not clear stale files in {install_dir}: "
@@ -409,7 +429,15 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # via result["hardening"], not result["files"] (that list stays
         # "everything under the install dir" placed via SFTP).
         hardening = None
-        if os_name == "windows":
+        if os_name == "windows" and os.environ.get(
+                "HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING") == "1":
+            # Lab/test escape hatch: the Python MSI repair (/faus) inside the
+            # hardening script can block for many minutes on a box whose
+            # Python install has advertised shortcuts. The install itself is
+            # unaffected; logon-popup hardening is orthogonal to scoring.
+            log("[boxbuilder] WARNING: windows hardening skipped "
+                "(HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING=1)")
+        elif os_name == "windows":
             harden_local = os.path.join(_REPO_ROOT, "packaging", "huitz-hardening-win.ps1")
             harden_remote = f"{install_dir}\\huitz-hardening-win.ps1"
             handle.put(harden_local, harden_remote)

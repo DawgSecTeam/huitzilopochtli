@@ -70,38 +70,76 @@ Not run by default (`pytest.ini` excludes the `proxmox` marker). These
 clone real, disposable VMs on a Proxmox host (credentials read from a local
 `tests/proxmox/.env`, gitignored, copied from `workshop-vm-distribution`'s
 own `.env` values -- this repo never reads or modifies that other, unrelated
-repo) to test what the fast tiers structurally cannot. All VM interaction
-goes through the QEMU guest agent API (file-write/file-read/exec), not SSH.
+repo) to test what the fast tiers structurally cannot. Most interaction goes
+through the QEMU guest agent API (file-write/file-read/exec). Two paths use
+SSH instead: Fedora's guest agent is SELinux-confined to `virt_qemu_ga_t`
+(no outbound `connect()`, unreadable parts of `/usr`, no writes to `/opt`),
+and Windows needs a real Python install plus SFTP for the 270KB agent bundle.
 
 ```
 pytest -m proxmox
 ```
 
-### `test_all_check_types_live.py` — Ubuntu 24.04 passes; Fedora is a strict xfail
+Set `TEST_TEMPLATE_VMID_FEDORA=1016` (`base-fedora44-fix`; it has the cloud
+`fedora` user) and `TEST_TEMPLATE_VMID_WINDOWS=953` in `tests/proxmox/.env`.
+Both live tests clone, bootstrap, assert, and destroy their own VM.
+
+### `test_all_check_types_live.py` — Ubuntu 24.04 and Fedora 44 both pass 70/70
 
 `test_local_honor_distribution.py` only ever exercised `file_regex`. This
 file runs a scenario hitting seven of the twelve registered check types
 (`file_regex`, `permission`, `user_group`, `service_state`, `package`,
 `http_uptime`, `db_query`) in one pass against a real, freshly-cloned VM.
 `process_state`, `command_json`, `forensics_answer`, `powershell_json`, and
-`registry_value` are unit-tested (Windows ones statically mocked), not live.
+`registry_value` are covered live on Windows by `test_windows_live.py`.
 
-- **Ubuntu 24.04: 70/70.** All seven covered check types collect and score
-  correctly against real OS state.
-- **Fedora 44: xfail (30/70)** (only `file_regex`/`permission`/`user_group`,
-  which need no subprocess or network call, pass). The test still executes and asserts
-  30/70 (so a regression fails), then reports xfail; a future environment fix
-  that reaches 70 fails the old 30 assertion and forces an update rather than
-  silently keeping the partial claim. The remaining four score 0 for
-  reasons confirmed to be template/environment facts, not product bugs:
-  `crond` isn't active by default on this minimal cloud image; `rpm` isn't
-  reachable via the guest-agent's exec PATH so `package_installed()`
-  correctly falls back to `(False, None)` instead of erroring; and
-  `http_uptime`/`db_query` both hit `errno 13 Permission denied` on
-  outbound `connect()` — the same SELinux `virt_qemu_ga_t` confinement
-  documented below for `test_ranked_two_machines.py`, now confirmed to block
-  outbound `connect()` from *any* process the guest agent spawns, not just
-  `agent.identity.enroll()`'s call site.
+- **Ubuntu 24.04: 70/70** over the guest-agent channel (no credentials).
+  Ubuntu's `ssh.service` is socket-activated, so the active-service check
+  uses `cron`.
+- **Fedora 44: 70/70** over a root SSH session (`unconfined_t`), using
+  `sshd`/`openssh-server`. The earlier 30/70 result was the guest agent's
+  SELinux domain — outbound `connect()`, `rpm`, and `/opt` were denied to
+  `virt_qemu_ga_t` — not a product defect. The helper generates an ephemeral
+  Ed25519 key, sets the cloud user/root passwords through qemu-ga, uses a PTY
+  `su` to append the key to `/root/.ssh/authorized_keys`, and runs the agent
+  as root. (The PTY marker is produced by the root shell via `$(id -u)`; a
+  plain marker matches the echoed command line and closes `su` before it
+  writes the key.)
+
+### `test_windows_live.py` — Windows Server 2022, 90/90 + real install
+
+Runs nine live checks on a fresh clone of 953 (`workshop-template-windows`
+lineage): `file_regex`, `permission`, `user_group`, `service_state`,
+`process_state`, `registry_value`, `powershell_json`, `http_uptime`, and
+`db_query`. Asserts `Total: 90` from the real agent zipapp under real Windows
+Python. The fixture sets an Administrator/sysadmin password through qemu-ga,
+adds the sshd firewall rule, then installs Python 3.12 over SSH (detached
+installer + poll) and writes a `python.cmd` shim so `python` is on PATH for
+boxbuilder. qemu-ga is used only for that one short bootstrap: this image's
+qga can die mid-session, and SSH is unaffected.
+
+`TEST_WINDOWS_PREPARED=1` tells the fixture that the template already has
+the `sysadmin` account, the sshd firewall rule, and Python 3.12 on PATH
+(the repo's local template 169 is prepared this way). It then skips qemu-ga
+bootstrap and the Python install, which is both faster and far more stable --
+this image's qemu-ga can die under guest-exec. Without the flag the fixture
+bootstraps stock 953: one short `cmd /c` (netsh + net user), then Python over
+SSH as a detached SYSTEM scheduled task (a 27MB synchronous download can
+outlive the SSH channel and leave a 0-byte installer).
+
+The install path is a second, opt-in test (`TEST_WINDOWS_INSTALL_HOST`, plus
+`TEST_WINDOWS_INSTALL_PASSWORD` if not the default lab password). It does not
+clone: point it at a prepared Windows box and it drives
+`boxbuilder.pipeline.install_box` end to end -- place + `icacls`-seal
+`C:\ProgramData\huitzilopochtli` (inheritance off, SYSTEM+Administrators),
+skip the logon-popup hardening (`HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING=1`:
+its Python MSI repair can block for minutes and is orthogonal to scoring),
+register the SYSTEM `HuitzilopochtliAgent` task, run it once, and assert the
+first report is 80/80 (the 8 non-HTTP checks; the direct test covers
+http_uptime). It also exercises the reinstall clean: if the box already has
+the agent task, `install_box` ends the task, kills its python process, and
+removes the locked `.grade.lock` before re-placing files. Lab only: sets
+`HUITZILOPOCHTLI_INSECURE_HOST_KEYS=1` because the host key is ephemeral.
 
 ### `test_local_honor_distribution.py` — PASSES (Ubuntu 24.04 + Fedora 44)
 
