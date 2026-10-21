@@ -429,15 +429,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # via result["hardening"], not result["files"] (that list stays
         # "everything under the install dir" placed via SFTP).
         hardening = None
-        if os_name == "windows" and os.environ.get(
-                "HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING") == "1":
-            # Lab/test escape hatch: the Python MSI repair (/faus) inside the
-            # hardening script can block for many minutes on a box whose
-            # Python install has advertised shortcuts. The install itself is
-            # unaffected; logon-popup hardening is orthogonal to scoring.
-            log("[boxbuilder] WARNING: windows hardening skipped "
-                "(HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING=1)")
-        elif os_name == "windows":
+        if os_name == "windows":
             harden_local = os.path.join(_REPO_ROOT, "packaging", "huitz-hardening-win.ps1")
             harden_remote = f"{install_dir}\\huitz-hardening-win.ps1"
             handle.put(harden_local, harden_remote)

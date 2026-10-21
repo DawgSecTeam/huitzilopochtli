@@ -363,7 +363,6 @@ def test_boxbuilder_installs_on_live_windows_host(tmp_path, monkeypatch):
     from boxbuilder.spec import BoxSpec
 
     monkeypatch.setenv("HUITZILOPOCHTLI_INSECURE_HOST_KEYS", "1")
-    monkeypatch.setenv("HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING", "1")
     host = os.environ["TEST_WINDOWS_INSTALL_HOST"]
     password = os.environ.get("TEST_WINDOWS_INSTALL_PASSWORD",
                               ph.TEST_VM_PASSWORD)
