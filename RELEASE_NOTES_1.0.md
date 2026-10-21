@@ -91,5 +91,10 @@ protocol, score ledger, and box factory safe to run as a 1.0 system.
   small-order keys, version isolation, docking, queue limits, Windows CLI,
   boxbuilder state/cleanup, rearm, etc.).
 - Removed hard-coded test counts, stale “blocked” claims, and “all seven check
-  types” claims; added `requirements-dev.txt`; Proxmox tier skips with a
-  reason and Fedora is an honest strict xfail.
+  types” claims; added `requirements-dev.txt`; the Proxmox tier skips with a
+  reason when no credentials are configured.
+- Live matrix now includes Fedora 44 all-check-types at **70/70** over root SSH
+  (the old 30/70 was the guest agent's SELinux domain, not the product), and a
+  real Windows Server 2022 run at **90/90** across nine Windows-first check
+  types, plus a boxbuilder install (SYSTEM task, ACL seal, first report).
+  Full fast suite: **1005 passed, 1 skipped**.
