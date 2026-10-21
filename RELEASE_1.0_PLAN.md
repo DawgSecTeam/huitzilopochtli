@@ -217,7 +217,7 @@ Real infrastructure (Proxmox, fresh linked clones):
   `registry_value`, `powershell_json`, `http_uptime`, and `db_query`; the
   opt-in install test passed on a prepared clone (files, `icacls` seal, SYSTEM
   `HuitzilopochtliAgent` task, 80/80 first report).
-- Full fast suite: **1005 passed, 1 skipped, 7 deselected**.
+- Full fast suite: **1004 passed, 1 skipped, 7 deselected**.
 - Compiled `chocolate-factory` honor artifacts on a fresh clone: agent graded
   (`Total: 100` baseline with no vulns planted), `huitz score` rendered the
   board and exited 0, `huitz forensics` displayed and edited the answers file,

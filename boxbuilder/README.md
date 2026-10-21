@@ -271,12 +271,11 @@ boxbuilder build   --spec box.yaml [--from-step compile|plant|install|package]
 ```
 
 Windows targets also run `packaging/huitz-hardening-win.ps1` (logon pop-ups,
-Edge first-run, Python MSI advertised shortcuts). Its MSI repair can block for
-minutes on a box whose Python install has advertised shortcuts; set
-`HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING=1` for disposable lab/test installs.
-Reinstalling over a box that already carries the SYSTEM `HuitzilopochtliAgent`
-task stops the task and kills the old agent's python process first, so the
-locked `.grade.lock` cannot block the clean.
+Edge first-run, Python MSI advertised shortcuts), exactly like the POSIX init
+customization. The Python MSI repair is bounded at 120s so a slow msiexec
+cannot stall a build. Reinstalling over a box that already carries the SYSTEM
+`HuitzilopochtliAgent` task stops the task and kills the old agent's python
+process first, so the locked `.grade.lock` cannot block the clean.
 
 You can pass the two inputs directly instead of `--spec`:
 `--scenario X.yaml --nakon-config Y.json --provider ssh --provider-host ...`.

@@ -463,8 +463,10 @@ def test_windows_hardening_script_kills_the_known_popups():
     # Server Manager in C:\Users\Default\NTUSER.DAT via reg load/unload
     assert "NTUSER.DAT" in script and "DoNotOpenAtLogon" in script
     assert "reg load" in script and "reg unload" in script
-    # python advertised shortcuts (gotcha 26): repair + remove the Start-menu folder
+    # python advertised shortcuts (gotcha 26): repair + remove the Start-menu
+    # folder, with the repair bounded so a slow msiexec cannot stall a build.
     assert "/faus" in script and "Start Menu\\Programs\\Python" in script
+    assert "WaitForExit(120000)" in script and "Stop-Process" in script
     # Best-effort contract: every section guarded, script always exits 0.
     assert script.rstrip().endswith("exit 0")
     assert script.count("WARNING:") >= 3
@@ -494,17 +496,6 @@ def test_pipeline_stops_old_windows_agent_before_reinstall_clean():
     assert "schtasks.exe /End" in src
     assert "taskkill.exe /F /IM python.exe" in src
     assert ".grade.lock" in src
-
-
-def test_pipeline_windows_hardening_skip_env():
-    """The live-tier escape hatch must be honored before any hardening SFTP
-    or run (the MSI repair can block for minutes on a Python-installed box)."""
-    import inspect
-    from boxbuilder import pipeline
-    src = inspect.getsource(pipeline.install_box)
-    guard = src.index("HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING")
-    assert guard < src.index("harden_local")
-    assert "windows hardening skipped" in src
 
 
 def test_win_task_script_mirrors_to_public_documents():

@@ -132,9 +132,9 @@ The install path is a second, opt-in test (`TEST_WINDOWS_INSTALL_HOST`, plus
 clone: point it at a prepared Windows box and it drives
 `boxbuilder.pipeline.install_box` end to end -- place + `icacls`-seal
 `C:\ProgramData\huitzilopochtli` (inheritance off, SYSTEM+Administrators),
-skip the logon-popup hardening (`HUITZILOPOCHTLI_SKIP_WINDOWS_HARDENING=1`:
-its Python MSI repair can block for minutes and is orthogonal to scoring),
-register the SYSTEM `HuitzilopochtliAgent` task, run it once, and assert the
+run the same logon-popup/browser hardening as a Linux box gets its init
+customization (the Python MSI repair is bounded at 120s so it cannot stall a
+build), register the SYSTEM `HuitzilopochtliAgent` task, run it once, and assert the
 first report is 80/80 (the 8 non-HTTP checks; the direct test covers
 http_uptime). It also exercises the reinstall clean: if the box already has
 the agent task, `install_box` ends the task, kills its python process, and

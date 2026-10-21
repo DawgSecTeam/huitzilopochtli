@@ -1,6 +1,6 @@
 # Huitzilopochtli 1.0.0
 
-Release branch: `release/1.0-hardening`
+Release: **v1.0.0**
 
 This release closes the full-project review findings and makes the ranked
 protocol, score ledger, and box factory safe to run as a 1.0 system.
@@ -83,6 +83,12 @@ protocol, score ledger, and box factory safe to run as a 1.0 system.
   is drained concurrently; `--image-out` is validated before mutating a box;
   `--init none` still installs the `huitz` shim; Windows installer checks exit
   codes.
+- Windows reinstalls stop the inherited `HuitzilopochtliAgent` task and its
+  python process before clearing the install dir, so a locked `.grade.lock`
+  cannot block an honor→ranked rebuild.
+- Windows logon/browser hardening gets the same install-time treatment as the
+  POSIX init customization; its Python MSI repair is bounded at 120s so a slow
+  msiexec can never stall a build.
 - Re-arm clears per-user report mirrors and transport/directive state.
 
 ## Tests / docs
@@ -97,4 +103,4 @@ protocol, score ledger, and box factory safe to run as a 1.0 system.
   (the old 30/70 was the guest agent's SELinux domain, not the product), and a
   real Windows Server 2022 run at **90/90** across nine Windows-first check
   types, plus a boxbuilder install (SYSTEM task, ACL seal, first report).
-  Full fast suite: **1005 passed, 1 skipped**.
+  Full fast suite: **1004 passed, 1 skipped**.
