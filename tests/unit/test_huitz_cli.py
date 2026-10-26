@@ -26,6 +26,7 @@ from common.schema import (
     Manifest,
     Mode,
     ScoreBreakdown,
+    SlaStatus,
 )
 
 
@@ -160,6 +161,60 @@ class TestAnswers:
 
 
 # --- board ---------------------------------------------------------------------
+
+class TestRankedSplit:
+    """total = hardening + SLA accrual, derived once (round 6 finding 2).
+
+    Live symptom: `huitz score` printed "514 pts" beside a 150-pt board and
+    read as broken aggregation. The engine scores the sum; the box must show
+    the two parts so accrual is never mistaken for hardening progress.
+    """
+
+    def _ranked(self, total, accruals):
+        s = _score(
+            total=total,
+            results=[
+                CheckResult(check_id="c1", category=Category.VULN,
+                            awarded_points=10, passed=True, reason="ok"),
+                CheckResult(check_id="c2", category=Category.VULN,
+                            awarded_points=0, passed=False, reason="no"),
+            ],
+            sla_status=[
+                SlaStatus(check_id=f"svc{i}", state="UP", accrued_points=a)
+                for i, a in enumerate(accruals)
+            ],
+        )
+        return s
+
+    def test_split_sums_back_to_the_engine_total(self):
+        b = board_mod.build_board(self._ranked(514, [264, 240]), _manifest())
+        assert b.total == 514
+        assert (b.hardening_points, b.service_points) == (514 - 504, 504)
+
+    def test_honor_board_has_no_split(self):
+        b = board_mod.build_board(_score(), _manifest())
+        assert b.hardening_points is None and b.service_points is None
+
+    def test_ranked_split_reaches_the_snapshot(self):
+        snap = snapshot.build_snapshot(
+            self._ranked(40, [10, 20]), _manifest(), mode="ranked",
+            agent_version="t", delta=0, computed_at=100.0, server_time=500.0,
+            next_checkin_s=60)
+        assert snap["hardening_points"] == 10
+        assert snap["service_points"] == 30
+        # and the snapshot validator accepts it
+        snapshot.validate(snap, "mem") if hasattr(snapshot, "validate") else None
+
+    def test_ranked_header_shows_hardening_and_service(self):
+        snap = snapshot.build_snapshot(
+            self._ranked(40, [10, 20]), _manifest(), mode="ranked",
+            agent_version="t", delta=0, computed_at=100.0, server_time=500.0,
+            next_checkin_s=60)
+        frame = cli.render_scorecard(
+            snap, term.Style(term.NONE), term.Symbols(False),
+            100, hints=False)
+        assert "10 hardening  +  30 service uptime" in frame
+
 
 class TestBoard:
     def test_fixed_and_penalties_and_spoilers(self):

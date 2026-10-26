@@ -424,7 +424,7 @@
           "vars": {
             "PAYLOAD_PATH": "/opt/void/void-at",
             "PAYLOAD_BODY": "echo void >> /var/log/void.log 2>/dev/null || true",
-            "WHEN": "now + 3 days"
+            "WHEN": "-t 209912312359"
           }
         },
         {

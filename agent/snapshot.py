@@ -104,6 +104,11 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
             for f in b.forensics
         ],
         "forensics_earned": b.forensics_earned,
+        # Ranked only: total = hardening_points + service_points (null in
+        # honor mode). One derivation in agent/board.py; every renderer reads
+        # these rather than re-splitting the total.
+        "hardening_points": b.hardening_points,
+        "service_points": b.service_points,
         "delta": delta,
         "computed_at": computed_at,
         "next_event_at": None,
@@ -264,6 +269,10 @@ def _validate_snapshot(data: dict, path: str) -> None:
         value = data.get(key)
         if value is not None and not isinstance(value, str):
             bad(f"{key} must be a string or null")
+    for key in ("hardening_points", "service_points"):
+        value = data.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            bad(f"{key} must be an integer or null")
     if data.get("accent") is not None and not board_mod.ACCENT_RE.match(data["accent"]):
         # Drop an invalid accent rather than abort the whole report; it is
         # cosmetic, and the renderer already guards.

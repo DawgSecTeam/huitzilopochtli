@@ -141,6 +141,7 @@ hr { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
 .total { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1;
          color: var(--accent, var(--ink)); }
 .total-suffix { font-size: 1rem; font-weight: 600; color: var(--muted); margin-left: 0.2rem; }
+.total-split { font-size: 0.85rem; color: var(--muted); margin-top: 0.25rem; }
 .fraction { color: var(--muted); font-size: 0.9rem; margin-top: 0.3rem; }
 .countdown-wrap { text-align: right; min-width: 9rem; }
 .countdown-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;

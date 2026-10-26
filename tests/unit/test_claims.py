@@ -260,6 +260,13 @@ def test_start_falls_back_when_the_portal_has_no_prebind_secret(store, comp,
     fresh = store.get_player(player.player_id)
     assert fresh.claim_url == "http://guac/raw"
     assert fresh.claim_error is None
+    # The fallback must be visible to the operator, not silent: a configured
+    # HUITZILOPOCHTLI_WORKSHOP_SECRET with a portal that ignores it used to
+    # disable the no-typing join invisibly (round 6 finding 6).
+    audit = [a for a in store.list_audit() if a.action == "prebind_unavailable"]
+    assert audit, "the prebind fallback must leave an audit trail"
+    assert audit[0].player_id == player.player_id
+    assert audit[0].competition_id == comp.id
 
 
 def test_start_provisions_a_pool_when_the_competition_has_none(

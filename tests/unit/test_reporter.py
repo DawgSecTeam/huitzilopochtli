@@ -181,6 +181,31 @@ def test_ranked_still_verbose():
     assert "Reason" in out
 
 
+def test_ranked_total_shows_the_hardening_service_split():
+    """A 514-pt total beside a 150-pt board read as broken aggregation.
+
+    The engine scores total = hardening + SLA accrual; the rendered report
+    must show both parts (round 6 finding 2).
+    """
+    score = ScoreBreakdown(
+        scenario_name="Test Scenario", scenario_version=1, total=514,
+        results=[CheckResult(check_id="c1", category=Category.VULN,
+                             awarded_points=190, passed=True, reason="ok")],
+        sla_status=[SlaStatus(check_id="svc_a", state="UP", accrued_points=200),
+                    SlaStatus(check_id="svc_b", state="UP", accrued_points=124)],
+        computed_at=1234.0,
+    )
+    out = render_report(score, Mode.RANKED, 1700000000.0)
+    assert "190 pts hardening" in out
+    assert "324 pts service uptime" in out
+    assert 'class="total-split"' in out
+
+
+def test_honor_report_has_no_total_split():
+    out = render_report(_score(), Mode.HONOR, 1700000000.0)
+    assert 'class="total-split"' not in out
+
+
 def test_ranked_countdown_when_next_checkin_known():
     score = _score()
     out = render_report(score, Mode.RANKED, 1700000000.0, next_checkin_s=60)

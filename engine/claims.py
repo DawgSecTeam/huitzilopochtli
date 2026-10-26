@@ -212,8 +212,16 @@ def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
     except workshop.WorkshopError as exc:
         # The portal may not have the prebind secret yet. A plain claim still
         # gets the player a VM, so fall back to the manual join rather than
-        # leaving them with nothing.
+        # leaving them with nothing. This used to be silent, which meant an
+        # operator who configured HUITZILOPOCHTLI_WORKSHOP_SECRET never
+        # learned the advertised no-typing join was off (round 6 finding 6).
         if secret and "prebind" in str(exc).lower():
+            store.add_audit("system", "prebind_unavailable", comp.id,
+                            player.player_id,
+                            details_json=json.dumps({"error": str(exc)[:200]}))
+            print(f"competition {comp.slug}: portal prebind unavailable "
+                  f"({exc}); players must enter their join code by hand",
+                  flush=True)
             try:
                 result = workshop.claim_vm(base, pool)
             except workshop.WorkshopError as exc2:

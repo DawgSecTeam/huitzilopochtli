@@ -320,10 +320,21 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             else:
                 target_epoch = None
             # countdown element goes inside header when present
+            # Total = hardening + service accrual, both derived once in
+            # agent/board.py (ranked_split) — never re-split here.
+            _rb = board_mod.build_board(score, manifest)
+            split_html = ""
+            if _rb.hardening_points is not None and _rb.service_points is not None:
+                split_html = (
+                    '<div class="total-split">{h} pts hardening'
+                    ' &middot; {s} pts service uptime</div>'.format(
+                        h=html.escape(str(_rb.hardening_points)),
+                        s=html.escape(str(_rb.service_points))))
             body_main = f"""
 {_render_delta_banner(score_delta)}
 <div class="score-header">
   <div class="total">Total: {html.escape(str(score.total))}<span class="total-suffix"> pts</span></div>
+  {split_html}
   {rank_countdown_block}
 </div>
 {stamp_html}

@@ -352,3 +352,61 @@ def test_static_pine_new_seeds_are_clean_and_generic():
     # seed decodes whatever base64 it is given: exercise the round trip
     probe = base64.b64encode(blob).decode()
     assert probe == nakon_ld["vars"]["SO_B64"]
+
+
+# --- at(1) plant timing: the seal-time time bomb ------------------------------
+
+def test_at_job_seed_default_is_a_far_future_absolute_time():
+    """A relative WHEN ('now + N days') is a time bomb for a sealed template.
+
+    at(1) deletes the job when it fires, so a box sealed more than N days ago
+    starts with an empty queue: the paired 'queue is empty' check awards its
+    points for free and the `at -c` forensics evidence is gone (round 5
+    finding 3 — live on two dispenser clones). The seed default must be an
+    absolute far-future time.
+    """
+    seed = json.load(open(os.path.join(SEEDS, "at-job-persistence.json"),
+                          encoding="utf-8"))
+    default = re.search(r"at \$\{WHEN:-([^}]*)\}", seed["script"])
+    assert default, (
+        "at-job-persistence must default WHEN via ${WHEN:-...} so the safe "
+        "default is visible in the script"
+    )
+    spec = default.group(1).strip()
+    assert re.match(r"^-t \d{12}$", spec), (
+        f"WHEN default must be an absolute at(1) time (-t CCYYMMDDhhmm), "
+        f"got {spec!r}"
+    )
+    # 2099 or later: far beyond any template's shelf life.
+    assert spec[3:7] >= "2099", f"WHEN default {spec!r} is not far enough out"
+
+
+def test_no_box_schedules_an_at_job_with_a_relative_offset():
+    """Every box that plants at-job-persistence must use an absolute WHEN.
+
+    The plant happens once, at build time; anything relative to 'now' starts
+    expiring the moment the image is sealed.
+    """
+    offenders = []
+    boxes_dir = os.path.join(REPO_ROOT, "boxes")
+    for box in sorted(os.listdir(boxes_dir)):
+        nakon = os.path.join(boxes_dir, box, "nakon.json")
+        if not os.path.isfile(nakon):
+            continue
+        try:
+            cfg = json.load(open(nakon, encoding="utf-8"))
+        except ValueError:
+            continue
+        for machine in cfg.get("machines", []):
+            for entry in machine.get("configurations") or []:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("name") != "at-job-persistence":
+                    continue
+                when = str((entry.get("vars") or {}).get("WHEN", ""))
+                if not re.match(r"^-t \d{12}$", when):
+                    offenders.append(f"{box}: WHEN={when!r}")
+    assert not offenders, (
+        "relative at(1) schedules expire and make the queue-empty check pass "
+        "for free on later clones: " + "; ".join(offenders)
+    )

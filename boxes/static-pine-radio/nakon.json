@@ -89,7 +89,7 @@
           "vars": {
             "PAYLOAD_PATH": "/opt/nightcast/late-shift",
             "PAYLOAD_BODY": "printf '%s\\n' \"$(date '+%F %T') late-shift: the Nightcast scheduled its own comeback\" >> /var/log/nightcast.log",
-            "WHEN": "now + 2 days"
+            "WHEN": "-t 209912312359"
           }
         },
         {

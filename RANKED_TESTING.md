@@ -662,3 +662,108 @@ behavior. Provisioning is serialized portal-side (one job at a time); a
 checkout carries an uncommitted `provision.py` edit referencing an undefined
 `WORKSHOP_POOL` — deploying that checkout as-is would break cloning; leave
 the prod portal alone.
+
+---
+
+# Round 6 — live two-player ranked round vs the public competition engine (2026-10-26)
+
+Two blue teamers (subagents, as in rounds 2–3) played a real ranked round
+against the **production engine at `http://10.0.0.160:8080`** — a newer
+competitions build (web UI, join codes, portal-dispenser provisioning, systemd
+unit + rate limiting) than anything in this checkout (main = v1.0.0; deployed
+tree has no local source — snapshot kept, see Notes). This was the first round
+through that build, the first through the dispenser path, and the first with
+wire probes against a *shared* engine.
+
+**Setup.** Comp `round4-blue-duo` (Static Pine Community Radio v1, max 2,
+5400 s) created via `POST /admin/api/competitions` (Basic auth), live at
+05:05–06:46 UTC. Portal dispenser (pool `9W3C2`) cloned template 184 → VMs
+1202/1203 (10.0.0.105 / 10.0.0.122); join codes taken from the engine DB and
+entered manually with `huitz join` in-guest (portal `HUITZ_PREBIND_SECRET`
+is unset → the zero-touch prebind path **never fired and fell back silently**
+— finding 6). Both boxes enrolled, 90/90 check-ins at the 60 s cadence.
+
+**Result.**
+
+| Team | Strategy | Hardening | Forensics | SLA accrual | Final total |
+|---|---|---|---|---|---|
+| Falcon | full sweep | **190** (16/16, killed reborn-chain units before payloads) | 4/4 | 534, no penalty | **724** |
+| Otter | selective | 30 (4 EASY + the +10 baseline fuse, finding 3) | 1/4 | 484, frozen ~25 min after `svc_scheduler` DOWN | **514** |
+
+Engine-side assertions that held (all observed live on prod):
+- Penalty −10 (`atd_service_healthy`) landed and stuck; scheduler SLA DOWN
+  froze accrual while `svc_ssh` kept earning — per-service independence ✓.
+- No answer key anywhere: box manifest carries ids/display/weights + collect
+  params only, zero `expect`/`solution`; `/opt/.huitzilopochtli` 0700 root;
+  rubric engine-side only. CLI mirrors engine exactly, per cadence ✓.
+- Wire probes (7/7) re-signed with our own legitimately-held box keys: replay
+  → 409 + `last_seq`; tampered-evidence **re-signed at old seq** → 409 (never
+  re-scored); foreign-key signature → 403; Box-header mismatch → 400;
+  seq ≥ 2⁶³ → 400; 900-deep `raw` → 400; unknown box → 403. Zero state change
+  (seqs stayed 90/90) ✓.
+- Box clock +2 h (NTP off, mid-run): `created_wall_claim` drift +7199 s,
+  `received_at` cadence uniform, accrual and totals unaffected — receipt-clock
+  invariant holds on the live build ✓.
+- Engine `systemctl restart` post-round: 146/133-row sequences of other live
+  competitions' boxes show **no gaps or dupes** across the restart; admin
+  auth, scenario records and ended comps intact ✓. (Post-restart *reconnect*
+  not re-observed here — other competitors' dispenser TTLs had already reaped
+  their VMs; covered by the suites and round 3.)
+- Referee discipline: player action logs were treated as claims only; every
+  delta was attributed from engine check-in data. That caught a sloppy
+  retro-logged session (Falcon fixed everything — the log just lagged) and
+  rewarded honest reconciliation (Otter refused backdating and flagged the
+  discrepancy themselves).
+
+**Findings, and what happened to each after the round:**
+1. **`competition_end` 500s — `engine.claims` has no `cleanup_pool`**
+   (deployed `engine/server.py:908`, `AttributeError`): the status flips to
+   `ended` first, then the handler dies, so the admin call returns a broken
+   500 and **claimed portal VMs are never released** — every ended
+   competition leaks its seats until the portal reaper fires (~4 h TTL here).
+   Verified live on my comp; both VMs released by hand via portal
+   `POST /api/release`. **Resolved:** `claims.cleanup_pool` exists in
+   `c93f893` (per-competition pools + sweeper retry); the running box was a
+   stale build missing it. The box still wants that upgrade.
+2. **Ranked totals unbounded and mixed on-box**: `report.json` renders
+   `total 514` against `max_possible 150` (SSH uptime accrual alone 264 and
+   climbing); on long rounds SLA points drown the hardening signal the board
+   is about. The API already splits `hardening_points`/`service_points` —
+   the CLI/report should too, and uptime accrual wants a cap or decay story.
+   **Fixed:** `agent/board.py` derives `(hardening, service)` once
+   (`ranked_split`); the CLI, the HTML report and `report.json` now show the
+   split instead of a bare total. Tests: `test_huitz_cli.py::TestRankedSplit`,
+   `test_reporter.py`.
+3. **Baseline +10 `at_queue_emptied` fuse confirmed on fresh template-184
+   dispenser clones** (both boxes enrolled at hard=10 with zero play) — the
+   R3 known issue survives re-sealing; every ranked prediction must subtract
+   it until the re-anchor/re-arm decision lands (Hamza).
+4. **Auto pool pick is scenario-blind** (`claims.resolve_pool` /
+   `workshop.pick_pool`): with no free VMs anywhere it takes the first
+   *dispenser by name* — a Static Pine comp would happily claim Chocolate
+   Factory boxes and loop `scenario_mismatch` joins against a shared portal.
+   The admin pool action can only *clear* a pin. I pinned `9W3C2` via a direct
+   DB `UPDATE` before first join to prevent it. Filter pools by scenario or
+   require an explicit pin at creation. **Resolved:** `c93f893` replaced
+   auto-pick with `claims.ensure_pool` — each competition provisions its own
+   pool from the scenario's `pool:` block and never picks among pre-existing
+   pools (now an AGENTS.md invariant).
+5. **Engine build drift**: the running engine is not in this repo, any local
+   branch, or a tag — bugs found here can't be regression-tested from main.
+   Snapshot of the deployed `engine/`+`common/` preserved at
+   `artifacts/round4-evidence/deployed-engine-snapshot.tgz` (code only, no
+   secrets; note the `*.bak4` files inside — the box was hand-patched in
+   place); pull it into the repo (and its tests) before the next round.
+6. **Prebind silently disabled**: engine is configured for prebind
+   (`HUITZILOPOCHTLI_WORKSHOP_SECRET`) but the portal has no
+   `HUITZ_PREBIND_SECRET`, so the advertised no-typing join never happens and
+   the fallback is invisible to the admin. Set it or surface the fallback.
+   **Fixed:** the fallback now writes a `prebind_unavailable` audit row and a
+   warning naming the competition, instead of degrading silently.
+
+**Notes.** Join codes and box private keys touched this round were kept in a
+local scratch dir and deleted with it after the round; engine admin creds are
+in the box env (`/etc/huitzilopochtli/engine.env`, root 600). Engine DB
+snapshotted pre-teardown (`/var/backups/huitzilopochtli/engine-20261026-075658.db`).
+Portal prebind route exists but returns 403-disabled; `huitz join` is
+stdin/TTY-only (no positional code) — worth a `--code` flag for scripted play.

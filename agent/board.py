@@ -56,6 +56,12 @@ class Board:
     penalties: list = field(default_factory=list)   # list[ActivePenalty]
     forensics: list = field(default_factory=list)   # list[ForensicsEntry]
     forensics_earned: int = 0
+    # Ranked only (None in honor mode): the engine scores
+    # total = point-in-time hardening + SLA accrual (engine/checkin.py), so a
+    # long run's total can far exceed max_possible. The split keeps the
+    # headline number honest in every renderer (round 6 finding 2).
+    hardening_points: int | None = None
+    service_points: int | None = None
 
 
 def _manifest_checks(manifest) -> list:
@@ -63,6 +69,24 @@ def _manifest_checks(manifest) -> list:
     if checks is None and isinstance(manifest, dict):
         checks = manifest.get("checks", [])
     return checks or []
+
+
+def ranked_split(total, sla_status) -> tuple:
+    """(hardening, service) split of a ranked total.
+
+    The engine scores ``final_total = hardening_total + sla_accrued_total``
+    (engine/checkin.py) and sends the box the final total plus each service's
+    accrual — so the box re-derives the exact same split from data it already
+    carries. Every ranked renderer (CLI, HTML, report.json) must show this
+    one split, never re-derive it (round 6 finding 2: a 514-pt total against
+    a 150-pt board read as broken aggregation).
+    """
+    service = 0
+    for s in (sla_status or []):
+        accrued = (s.accrued_points if hasattr(s, "accrued_points")
+                   else (s or {}).get("accrued_points", 0))
+        service += int(accrued or 0)
+    return int(total) - service, service
 
 
 def _check_field(check, name, default=None):
@@ -203,6 +227,15 @@ def build_board(score, manifest) -> Board:
     accent = theme.get("accent")
     accent = str(accent) if accent and ACCENT_RE.match(str(accent)) else None
 
+    # Ranked only: expose the hardening/service split so the headline total
+    # can never be mistaken for progress against max_possible. Honor runs get
+    # None (their total IS the hardening score); `sla_status` is empty in
+    # honor mode by construction (§9), so its presence identifies ranked.
+    hardening_points = service_points = None
+    sla_status = getattr(score, "sla_status", None) or []
+    if sla_status:
+        hardening_points, service_points = ranked_split(score.total, sla_status)
+
     return Board(
         title=theme.get("title") or getattr(score, "scenario_name", None)
         or (manifest.get("scenario_name") if isinstance(manifest, dict) else None)
@@ -220,4 +253,6 @@ def build_board(score, manifest) -> Board:
         penalties=penalties,
         forensics=forensics,
         forensics_earned=forensics_earned,
+        hardening_points=hardening_points,
+        service_points=service_points,
     )

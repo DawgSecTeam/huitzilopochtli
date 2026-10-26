@@ -333,6 +333,14 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     else:
         row += "  the engine's authoritative score"
     lines.append(row)
+    # Split the headline so accrual is never mistaken for hardening progress:
+    # total = hardening + SLA uptime (engine/checkin.py). Its own line so a
+    # narrow terminal cannot truncate the breakdown.
+    hard = snap.get("hardening_points")
+    svc = snap.get("service_points")
+    if mode != "honor" and isinstance(hard, int) and isinstance(svc, int):
+        lines.append("  " + sty.color(
+            f"{hard} hardening  +  {svc} service uptime", "muted"))
     lines.append("")
 
     if mode == "honor":
@@ -474,6 +482,11 @@ def _ranked_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
     if sla:
         lines.append("")
         lines.append("  " + sty.bold("SLA STATUS"))
+        svc = snap.get("service_points")
+        if isinstance(svc, int):
+            lines.append(sty.color(
+                f"  service accrual {svc} pts is uptime, separate from the "
+                f"{snap.get('max_possible', 0)}-pt hardening board", "muted"))
         for s in sla:
             state = str(s.get("state", "?")).upper()
             colored = (sty.color(state, "ok", 1) if state == "UP"

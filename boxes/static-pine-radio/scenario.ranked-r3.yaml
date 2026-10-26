@@ -489,7 +489,7 @@ checks:
       atq
       ```
 
-      One job, queued for ~2 days out. Read what it will run BEFORE deleting
+      One job, queued for a far-off date. Read what it will run BEFORE deleting
       it (`at -c` prints the job; the number comes from atq):
 
       ```
