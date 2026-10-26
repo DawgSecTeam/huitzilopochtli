@@ -235,6 +235,14 @@ For ranked mode, set `HUITZILOPOCHTLI_ADMIN_TOKEN` (the engine's admin token)
 or pass `--admin-token`; boxbuilder uses the engine's `/admin/scenarios` and
 `/admin/tokens` endpoints (engine/server.py).
 
+**Ranked competition mode** (`install`/`build --competition`): the scenario
+record is uploaded by the competition admin, not by boxbuilder. Boxbuilder
+installs the agent + signed manifest + authoring key with no enrollment token
+and leaves the agent unit disabled. The player runs `huitz join` with the
+one-time code from the competition page; that binds the box and starts the
+unit. Use this for a box that will be handed out by a workshop pool. Honor
+boxes cannot be converted to this lineage.
+
 > **Note:** what lands *on the box* is the **agent** (`.pyz`) + manifest in both
 > modes. The **engine** (server) only exists in ranked mode and runs on a
 > *separate* host — there is no engine on a practice box. (architecture.md §5.2)

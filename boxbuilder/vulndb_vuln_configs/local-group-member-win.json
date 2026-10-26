@@ -1,0 +1,10 @@
+{
+  "name": "local-group-member-win",
+  "description": "Practice-box helper (Windows): adds local account $USERNAME to local group $GROUP (the local-group analog of ad-group-member-win). Vars: GROUP (required); USERNAME (required). Pairs with checks that expect a planted over-privileged membership to be removed while the account itself survives. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $GROUP -or -not $USERNAME) { throw 'GROUP and USERNAME are required' }\nAdd-LocalGroupMember -Group $GROUP -Member $USERNAME -ErrorAction Ignore\nWrite-Output \"local group membership ensured: $USERNAME -> $GROUP\"\n",
+  "depends_on": []
+}

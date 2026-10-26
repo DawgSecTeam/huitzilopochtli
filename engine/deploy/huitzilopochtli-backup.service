@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up the Huitzilopochtli engine database
+
+[Service]
+Type=oneshot
+User=huitz
+Group=huitz
+EnvironmentFile=/etc/huitzilopochtli/engine.env
+ExecStart=/usr/bin/python3 /opt/huitzilopochtli/engine/deploy/backup.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/huitzilopochtli

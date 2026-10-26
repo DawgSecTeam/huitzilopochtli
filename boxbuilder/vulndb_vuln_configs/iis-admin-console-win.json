@@ -1,0 +1,14 @@
+{
+  "name": "iis-admin-console-win",
+  "description": "Practice-box helper (Windows): plants an undocumented IIS admin console -- web site 'SaltmarshAdmin' on TCP 8080 rooted at C:\\inetpub\\saltmarsh\\admin with its own app pool, plus the SaltmarshAdmin inbound firewall rule. Vars: none. Pairs with admin_console_removed (both the site and the rule must be gone). Depends on iis-ftp-base-win. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Import-Module WebAdministration -ErrorAction Ignore\n$site = 'SaltmarshAdmin'\n$pool = 'SaltmarshAdmin'\n$root = 'C:\\inetpub\\saltmarsh\\admin'\nNew-Item -ItemType Directory -Force -Path $root | Out-Null\nif (-not (Test-Path \"IIS:\\AppPools\\$pool\")) { New-WebAppPool -Name $pool | Out-Null }\nif (-not (Get-Website -Name $site -ErrorAction Ignore)) {\n    New-Website -Name $site -PhysicalPath $root -Port 8080 -ApplicationPool $pool | Out-Null\n} else {\n    Set-ItemProperty -Path \"IIS:\\Sites\\$site\" -Name physicalPath -Value $root -ErrorAction Ignore\n}\n$page = @'\n<!doctype html>\n<html><body><h1>Saltmarsh internal console</h1></body></html>\n'@\nSet-Content -Path (Join-Path $root 'default.html') -Value $page -Encoding ascii\nif (-not (Get-NetFirewallRule -Name 'SaltmarshAdmin' -ErrorAction Ignore)) {\n    New-NetFirewallRule -Name 'SaltmarshAdmin' -DisplayName 'SaltmarshAdmin' `\n        -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Any | Out-Null\n}\nStart-Website -Name $site -ErrorAction Ignore\nWrite-Output 'admin console site planted'\n",
+  "depends_on": [
+    {
+      "name": "iis-ftp-base-win"
+    }
+  ]
+}

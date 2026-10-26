@@ -1,0 +1,83 @@
+{
+  "_comment": "Broadneck Post plants (headless Debian 13 mail-server box). The box's LEGITIMATE furniture -- postmaster (sudo, player) + dispatch/routes/freight (mail users), the postfix+dovecot stack with the WEAK contractor-era configs (open relay: mynetworks 0.0.0.0/0, no reject_unauth_destination; dovecot ssl=yes + disable_plaintext_auth=no, plaintext 143/110 open), the depot TLS certs in /etc/ssl/depot-mail, seeded Maildirs (dispatch/routes/freight + the delivered lure copy in freight's), persistent journald, rsyslog flat logs, and the /etc/aliases pipe-backdoor (routesupport -> |.queue-flush) -- is baked in during TEMPLATE PREP, NOT planted here. The SABOTAGE (stop+mask postfix/dovecot, delete /etc/postfix /etc/dovecot /etc/ssl/depot-mail, truncate live mail.log+auth.log, freeze one held message in the postfix queue, stash the backdoored /root/.mail-restore kit, pack the dispatch mailbox tarball into /var/backups, plant /home/postmaster/.forward) is ALSO prep (assets/prep/90-sabotage.sh), because it must run with the real stack live. This config plants only the intruder's generic persistence, staging, and tooling: every one paired with a check in boxes/broadneck-post/scenario.yaml (asserted by tests/unit/test_boxbuilder_broadneck_post.py). Couplings (nakon vars <-> check): authorized-keys-persistence PUBLIC_KEY comment redtag@198.51.100.23 on postmaster <-> authorized_keys_clean; cron-d-persistence queue-tidy /etc/cron.d + /opt/redtag/queue-tidy (PAYLOAD_BODY truncates /var/log/mail.log) <-> queue_tidy_cron_removed; systemd-timer-persistence redtag-harvest + /opt/redtag/harvest, OnUnitActiveSec=20min <-> harvest_timer_neutralized; systemd-service smtpd-metrics + /opt/redtag/.metrics-snap <-> metrics_service_removed; sudoers-rule routeaudit-recovery <-> sudoers_dropin_removed; backdoor-firewall-rule 198.51.100.23:25 <-> firewall_rule_removed; local-user mailsync (mail group, /bin/bash) <-> mailsync_removed; apt-service-install swaks (apt history = fq-swaks-tool evidence) <-> swaks_uninstalled. PREP-BAKED (no row here, still scored): the entire rebuild/hardening ledger (postconf/doveconf effective-state checks, listener probes), routeaudit_disabled (the account is created in 02-accounts.sh), forward_interception_removed + restore_kit_removed + mailroom_export_removed + aliases_pipe_backdoor_removed (files written by the replay/sabotage). ORDER MATTERS across prep: 80-replay runs the relay blast + interception plants with the WEAK stack live, 85 forces the log rotation that saves the blast into /var/log/mail.log.1, 90-sabotage clears the deferred queue then freezes ONE held message, stops+mask+deletes. All plants must stay IN PLACE at seal: the paired checks score their absence. No at-jobs, no self-healing plants -- the box must sit stable for the full workshop TTL. NOTE for the swaks plant: apt needs the build network (vmbr0) at plant time; the sealed box itself never needs egress.",
+  "machines": [
+    {
+      "id": 1,
+      "name": "broadneck-post-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "debian-13-cli",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "authorized-keys-persistence",
+          "vars": {
+            "USERNAME": "postmaster",
+            "PUBLIC_KEY": "ssh-ed25519 c3NoLWVkMjU1MTkgUkVEVEFHREVQT1RLRVkwMTIzNDU2Nzg5YWJjZGVmZ2hpag== redtag@198.51.100.23"
+          }
+        },
+        {
+          "name": "cron-d-persistence",
+          "vars": {
+            "CRON_FILE": "queue-tidy",
+            "SCHEDULE": "* * * * *",
+            "PAYLOAD_PATH": "/opt/redtag/queue-tidy",
+            "PAYLOAD_BODY": "truncate -s 0 /var/log/mail.log 2>/dev/null || true"
+          }
+        },
+        {
+          "name": "systemd-timer-persistence",
+          "vars": {
+            "TIMER_NAME": "redtag-harvest",
+            "DESCRIPTION": "Delivery retry sweep",
+            "EXEC_START": "/opt/redtag/harvest",
+            "PAYLOAD_PATH": "/opt/redtag/harvest",
+            "PAYLOAD_BODY": "grep -h '^From: ' /home/*/Maildir/new/* /home/*/Maildir/cur/* 2>/dev/null | sort -u > /var/tmp/.senders 2>/dev/null || true",
+            "ON_BOOT_SEC": "5min",
+            "ON_UNIT_ACTIVE_SEC": "20min"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "smtpd-metrics",
+            "DESCRIPTION": "SMTP throughput metrics",
+            "EXEC_START": "/opt/redtag/.metrics-snap",
+            "PAYLOAD_PATH": "/opt/redtag/.metrics-snap",
+            "PAYLOAD_BODY": "while :; do ss -tin 2>/dev/null | grep -c segs_out > /var/tmp/.msnap 2>/dev/null || true; sleep 30; done",
+            "SERVICE_TYPE": "simple"
+          }
+        },
+        {
+          "name": "sudoers-rule",
+          "vars": {
+            "DROPIN_NAME": "routeaudit-recovery",
+            "RULE": "routeaudit ALL=(ALL) NOPASSWD:ALL"
+          }
+        },
+        {
+          "name": "backdoor-firewall-rule",
+          "vars": {
+            "SOURCE_IP": "198.51.100.23",
+            "DST_PORT": "25"
+          }
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "mailsync",
+            "PASSWORD": "mailsync",
+            "GROUPS_ADD": "mail"
+          }
+        },
+        {
+          "name": "apt-service-install",
+          "vars": {
+            "PACKAGES": "swaks"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "insecure-smb-share-quiet-win",
+  "description": "Practice-box helper (Windows): creates (or reconfigures) an SMB share $SHARE_NAME over $SHARE_PATH with Everyone = Full Control. This is the -ErrorAction Ignore variant of insecure-smb-share-win so a not-yet-existing share does not pollute $Error (the nakon rc trailer). Vars: SHARE_NAME (required); SHARE_PATH (required); DESCRIPTION (optional). Idempotent: an existing share is re-granted. Pairs with web_share_restricted.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $SHARE_NAME -or -not $SHARE_PATH) { throw 'SHARE_NAME and SHARE_PATH are required' }\nStart-Service LanmanServer -ErrorAction Ignore\nNew-Item -ItemType Directory -Force -Path $SHARE_PATH | Out-Null\n$share = Get-SmbShare -Name $SHARE_NAME -ErrorAction Ignore\nif ($share) {\n    Grant-SmbShareAccess -Name $SHARE_NAME -AccountName 'Everyone' -AccessRight Full -Force | Out-Null\n} else {\n    New-SmbShare -Name $SHARE_NAME -Path $SHARE_PATH -FullAccess 'Everyone' -Description $DESCRIPTION | Out-Null\n}\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "local-user-enable-win",
+  "description": "Practice-box helper (Windows): re-enables an existing local account. Needed because local-user-win's update path never flips the Enabled flag, so a re-plant after a team disables a planted account would otherwise leave it disabled. Vars: USERNAME (required). Pairs with disable-not-delete checks such as webdeploy_account_disabled. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $USERNAME) { throw 'USERNAME is required' }\nEnable-LocalUser -Name $USERNAME -ErrorAction Ignore\nWrite-Output \"local account enabled: $USERNAME\"\n",
+  "depends_on": []
+}

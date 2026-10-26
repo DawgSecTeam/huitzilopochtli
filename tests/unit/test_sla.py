@@ -263,3 +263,10 @@ def test_update_sla_consecutive_counter_survives_concurrent_updaters(store):
     # If the RMW were non-atomic, lost updates would leave this below 9.
     rec = store.get_sla_state("box1", "check1")
     assert rec.consec_ok == 9
+
+
+def test_engine_accepts_a_full_class_of_simultaneous_connections():
+    # socketserver defaults to a backlog of 5; a class-wide check-in burst
+    # would be reset by the kernel before the engine could answer.
+    from engine.server import _EngineHTTPServer
+    assert _EngineHTTPServer.request_queue_size >= 64

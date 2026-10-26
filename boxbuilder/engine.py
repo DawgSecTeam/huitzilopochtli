@@ -121,7 +121,8 @@ def upload_scenario(engine_url: str, admin_token: str, engine_record_path: str,
         raise EngineError(
             f"engine record at {engine_record_path} is not valid JSON: {e}"
         ) from e
-    # The endpoint expects exactly {rubric, adversary}; engine_record has that shape.
+    # The endpoint accepts the engine_record shape (rubric, adversary, plus
+    # optional services and pool) and validates what it needs.
     scheme, host, port = _split_url(engine_url)
     return _request(scheme, host, port, "POST", "/admin/scenarios", admin_token,
                     body=record, timeout=timeout)

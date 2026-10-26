@@ -247,7 +247,8 @@ def _resolve_provider(provider_cfg: dict, provider_factory, log):
 def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict] = None,
                 provider_factory=None, init_kind: Optional[str] = None,
                 admin_token: Optional[str] = None, checkin_interval_s: int = 60,
-                enrollment_ttl_s: int = 86400, log=print) -> dict:
+                enrollment_ttl_s: int = 86400, competition_mode: bool = False,
+                log=print) -> dict:
     """Step 3: place the agent + manifest (+ rubric for honor) on the box and
     enable the init unit. For ranked mode, also upload the engine record and
     mint an enrollment token first.
@@ -285,7 +286,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # they derive from the same scenario); used for both the upload and the
         # on-box agent_config so they can never diverge.
         resolved_engine_url = compile_result.get("engine_url") or spec.engine_url
-        if mode == "ranked":
+        if mode == "ranked" and not competition_mode:
             from boxbuilder import engine
             token = engine.resolve_admin_token(admin_token)
             if not resolved_engine_url:
@@ -299,6 +300,12 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             )
             ranked = {"scenario_uploaded": True, "enrollment_token": enrollment_token}
             log("[boxbuilder] minted enrollment token (consumed once on first boot)")
+        elif mode == "ranked" and competition_mode:
+            if not resolved_engine_url:
+                raise ValueError("ranked competition mode requires engine_url (in scenario or compile state)")
+            ranked = {"scenario_uploaded": False, "enrollment_token": None,
+                      "competition_mode": True}
+            log("[boxbuilder] competition mode: no token; the player runs `huitz join`")
 
         # --- build the on-box file set + agent_config.json per mode ---
         from boxbuilder import artifacts as artifacts_mod
@@ -558,7 +565,8 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
               vulndb_url: Optional[str] = None,
               provider_factory=None, init_kind: Optional[str] = None,
               admin_token: Optional[str] = None, checkin_interval_s: int = 60,
-              enrollment_ttl_s: int = 86400, log=print) -> dict:
+              enrollment_ttl_s: int = 86400, competition_mode: bool = False,
+              log=print) -> dict:
     """Run the full pipeline (or resume from `from_step`), returning a combined result.
 
     Resumability: compile writes build-state.json; plant/install/package read it.
@@ -623,7 +631,8 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
         results["install"] = _run_step("install", lambda: install_box(
             spec, artifacts_dir, provider_factory=provider_factory, init_kind=init_kind,
             admin_token=admin_token, checkin_interval_s=checkin_interval_s,
-            enrollment_ttl_s=enrollment_ttl_s, log=log,
+            enrollment_ttl_s=enrollment_ttl_s,
+            competition_mode=competition_mode, log=log,
         ))
         last_run = "install"
         if not results["install"].get("ok"):

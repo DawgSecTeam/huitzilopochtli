@@ -8,6 +8,7 @@ Huitzilopochtli scores boxes in two modes:
 
 - **Honor mode** — offline, self-paced. Ideal for take-home assignments, workshops, and solo practice. No network required; the box scores itself against a rubric it ships with. Untimed, no adversary.
 - **Ranked mode** — an always-on engine that aggregates signed check-ins from multiple boxes. Supports timed scenarios, a live adversary, and a shared leaderboard. Keeps the answer key off the box. Built for team competitions and structured exercises.
+- **Ranked competitions (v1.1)** — a public join page, per-player timed runs, self-reported scored services, a live per-competition leaderboard, and an admin console. Players join online and get one VM link: the box joins itself from the workshop portal, so there is no terminal step. The admin starts and ends the competition. See [`RANKED_COMPETITION.md`](RANKED_COMPETITION.md) for the operator runbook.
 
 Both modes share the same on-box collector: it gathers structured evidence and makes no scoring decisions. Only the evaluator's location (box vs. engine) and the rubric's location change between modes. See [`architecture.md`](architecture.md) for the full design spec.
 
@@ -66,6 +67,7 @@ The zipapp bundles only `agent/` + `common/` (pure stdlib, runs anywhere `python
 
 - [`architecture.md`](architecture.md) — full architecture & implementation spec; source of truth for component contracts.
 - [`CLI.md`](CLI.md) — the `huitz` terminal console: score / watch / forensics / grade.
+- [`RANKED_COMPETITION.md`](RANKED_COMPETITION.md) — ranked-competition operator runbook (engine VM, join flow, services, admin/leaderboard).
 - [`TESTING_GUIDE.md`](TESTING_GUIDE.md) — hands-on manual walkthrough end to end.
 - [`tests/README.md`](tests/README.md) — test suite tiers, including the Proxmox live-infrastructure tier.
 - [`packaging/README.md`](packaging/README.md) — build, install, and re-arm/reset details.

@@ -311,3 +311,19 @@ excluded from this pass. VM naming uses the `dawgtest-` prefix (mirroring
 `workshop-vm-distribution`'s own `workshop-` convention); every test tears
 its own clones down in a `finally` block regardless of outcome, confirmed
 empirically to leave zero stray VMs after each run.
+
+
+## Ranked competition suites (v1.1)
+
+- `tests/unit/test_competition.py` — competition/player/run state, join codes,
+  max players, run expiry, service accrual.
+- `tests/unit/test_services_compile.py` — `services:` compilation and SLA
+  rubric entries.
+- `tests/unit/test_tcp_port_check.py` — generic service probe.
+- `tests/integration/test_competition_http.py` — public join, signed `/join`,
+  check-in, leaderboard, admin End over real HTTP.
+- `tests/integration/test_competition_admin_ui.py` — admin Basic login,
+  session/CSRF, Start action.
+
+Live competition rounds are recorded in `RANKED_TESTING.md`; the operator
+runbook is `RANKED_COMPETITION.md`.

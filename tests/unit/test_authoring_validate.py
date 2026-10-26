@@ -246,3 +246,67 @@ def test_affects_check_must_reference_an_sla_check():
     }]})
     errors = validate_scenario_yaml(parsed, "x.yaml")
     assert any("must name an SLA check" in e for e in errors)
+
+
+# --- pool block (ranked-only workshop pool provisioning spec) -------------------
+
+
+def _ranked_base():
+    parsed = _base()
+    parsed["scenario"]["mode"] = "ranked"
+    parsed["scenario"]["engine_url"] = "http://engine:8080"
+    return parsed
+
+
+def _pool_block():
+    return {"template_vm_id": 183, "template_vm_access_method": "vnc",
+            "template_vm_username": "sysadmin", "template_vm_password": "asdf",
+            "vm_count": 2}
+
+
+def test_pool_block_on_a_ranked_scenario_is_valid():
+    parsed = _ranked_base()
+    parsed["pool"] = _pool_block()
+    assert validate_scenario_yaml(parsed, "x.yaml") == []
+
+
+def test_pool_block_on_an_honor_scenario_is_rejected():
+    parsed = _base()
+    parsed["pool"] = _pool_block()
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("'pool' is only valid for ranked scenarios" in e for e in errors)
+
+
+def test_pool_block_missing_required_template_keys():
+    parsed = _ranked_base()
+    parsed["pool"] = {"vm_count": 2}
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    for key in ("template_vm_id", "template_vm_access_method",
+                "template_vm_username", "template_vm_password"):
+        assert any(f"pool missing required key '{key}'" in e for e in errors)
+
+
+def test_pool_block_rejects_bad_values():
+    parsed = _ranked_base()
+    parsed["pool"] = dict(_pool_block(), template_vm_id=0,
+                          template_vm_access_method="telnet", vm_count=-1,
+                          guac_link_ttl_seconds=10, dispenser="yes",
+                          group="Ranked")
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("pool.template_vm_id must be a positive integer" in e for e in errors)
+    assert any("pool.template_vm_access_method must be one of" in e for e in errors)
+    assert any("pool.vm_count must be an integer >= 0" in e for e in errors)
+    assert any("pool.guac_link_ttl_seconds must be an integer >= 60" in e
+               for e in errors)
+    assert any("pool.dispenser must be a boolean" in e for e in errors)
+    assert any("pool.group must be one of" in e for e in errors)
+
+
+def test_pool_block_rejects_unknown_keys_and_an_empty_block():
+    parsed = _ranked_base()
+    parsed["pool"] = dict(_pool_block(), proxmox_url="http://x")
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("pool has unknown key(s): proxmox_url" in e for e in errors)
+    parsed["pool"] = {}
+    errors = validate_scenario_yaml(parsed, "x.yaml")
+    assert any("'pool' must be a non-empty mapping" in e for e in errors)

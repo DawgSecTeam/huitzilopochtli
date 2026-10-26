@@ -53,7 +53,7 @@ scenario:
   name: "Static Pine Community Radio"
   version: 1
   mode: ranked
-  engine_url: "http://10.0.0.116:8080"
+  engine_url: "http://10.0.0.160:8080"
   hosts: ["localhost"]
 
 checks:
@@ -787,3 +787,21 @@ forensics:
       `atq` lists the queued job id, then `at -c <id>` prints the job -- the
       last lines are the command it will run: /opt/nightcast/late-shift.
       `at -c` BEFORE `atrm`: evicting the job destroys the evidence.
+
+services:
+  - id: ssh
+    display: "SSH"
+    type: tcp_port
+    collect: {host: 127.0.0.1, port: 22}
+    expect: {equals: true, field: open}
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: scheduler
+    display: "Scheduled jobs (atd)"
+    type: service_state
+    collect: {service: atd}
+    expect: {equals: true, field: active}
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3

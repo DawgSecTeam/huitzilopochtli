@@ -1,0 +1,14 @@
+{
+  "name": "ftp-hardening-off-win",
+  "description": "Practice-box helper (Windows): flips the Saltmarsh VendorDrop FTP site into the planted insecure state -- anonymous authentication on, a server-level Allow '*' Read/Write authorization rule, SslAllow with no certificate bound, user isolation None, Everyone:(OI)(CI)F on C:\\inetpub\\saltmarsh\\ftproot, and the SaltmarshFtpIn firewall rule widened to RemoteAddress Any. Vars: none. Pairs with ftp_anonymous_off, ftp_anonymous_write_off, ftp_control_ssl_required, ftp_data_ssl_required, ftp_user_isolation_on, ftp_root_acl_restricted, ftp_firewall_scoped. Depends on iis-ftp-base-win. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Import-Module WebAdministration -ErrorAction Ignore\n$ftpBase = \"system.applicationHost/sites/site[@name='VendorDrop']/ftpServer\"\nSet-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter \"$ftpBase/security/authentication/anonymousAuthentication\" -Name enabled -Value $true\nClear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter 'system.ftpServer/security/authorization' -ErrorAction Ignore\nAdd-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter 'system.ftpServer/security/authorization' `\n    -Value @{accessType = 'Allow'; users = '*'; permissions = 'Read, Write'}\nAdd-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter 'system.ftpServer/security/authorization' `\n    -Value @{accessType = 'Allow'; roles = 'SaltmarshVendors'; permissions = 'Read'}\nAdd-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter 'system.ftpServer/security/authorization' `\n    -Value @{accessType = 'Allow'; users = 'ftp_vendor'; permissions = 'Read, Write'}\n\nSet-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter \"$ftpBase/security/ssl\" -Name controlChannelPolicy -Value 'SslAllow'\nSet-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter \"$ftpBase/security/ssl\" -Name dataChannelPolicy -Value 'SslAllow'\nSet-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter \"$ftpBase/security/ssl\" -Name serverCertHash -Value '' -ErrorAction Ignore\nSet-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `\n    -Filter \"$ftpBase/userIsolation\" -Name mode -Value 'None'\n\nicacls 'C:\\inetpub\\saltmarsh\\ftproot' /grant 'Everyone:(OI)(CI)(F)' | Out-Null\n\nif (Get-NetFirewallRule -Name 'SaltmarshFtpIn' -ErrorAction Ignore) {\n    Set-NetFirewallRule -Name 'SaltmarshFtpIn' -RemoteAddress 'Any' -ErrorAction Ignore\n} else {\n    New-NetFirewallRule -Name 'SaltmarshFtpIn' -DisplayName 'SaltmarshFtpIn' `\n        -Direction Inbound -Protocol TCP -LocalPort 21 -Action Allow -Profile Any | Out-Null\n}\nWrite-Output 'FTP hardening off'\n",
+  "depends_on": [
+    {
+      "name": "iis-ftp-base-win"
+    }
+  ]
+}

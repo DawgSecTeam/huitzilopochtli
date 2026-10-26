@@ -83,4 +83,4 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
             rec.last_credited_at = received_at
         return rec
 
-    return store.update_sla_atomic(box_id, check_id, _apply)
+    return store.update_sla_atomic(box_id, check_id, _apply, observed_at=received_at)

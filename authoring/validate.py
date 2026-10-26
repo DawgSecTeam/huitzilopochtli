@@ -16,8 +16,17 @@ from common.matchers import validate_matcher
 _VALID_MODES = ("honor", "ranked")
 _VALID_CATEGORIES = ("vuln", "penalty", "prohibited")
 
-_TOP_LEVEL_KEYS = frozenset({"scenario", "checks", "theme", "forensics", "adversary"})
+_TOP_LEVEL_KEYS = frozenset({"scenario", "checks", "services", "theme", "forensics", "adversary", "pool"})
 _SCENARIO_KEYS = frozenset({"name", "version", "mode", "hosts", "engine_url"})
+
+# workshop-vm-distribution provision API contract (provision.GROUPS there).
+_POOL_GROUPS = ("Workshop", "Challenge", "Generic")
+_POOL_ACCESS_METHODS = ("ssh", "vnc", "rdp")
+_POOL_KEYS = frozenset({
+    "template_vm_id", "template_vm_access_method", "template_vm_username",
+    "template_vm_password", "vm_count", "guac_link_ttl_seconds",
+    "dispenser", "private", "group",
+})
 
 # Required keys on each `checks[]` entry, per architecture.md §8.
 _REQUIRED_CHECK_KEYS = ("id", "type", "category", "display", "max_points", "collect", "expect")
@@ -37,6 +46,7 @@ _REQUIRED_COLLECT = {
     "command_json": ("script",),
     "powershell_json": ("script",),
     "registry_value": ("hive", "key"),
+    "tcp_port": ("host", "port"),
 }
 
 _THEME_KEYS = frozenset({
@@ -150,6 +160,9 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             f"{source_path}: scenario.engine_url is required when mode is 'ranked'"
         )
 
+    if "pool" in parsed_yaml:
+        errors.extend(_validate_pool(parsed_yaml.get("pool"), mode, source_path))
+
     checks = parsed_yaml.get("checks")
     check_by_id = {}
     if checks is None:
@@ -249,14 +262,23 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                     _validate_solution(check["solution"], f"{source_path}: {ref}.solution")
                 )
 
-    if not checks and not parsed_yaml.get("forensics"):
-        errors.append(f"{source_path}: scenario has no checks and no forensics questions")
+    services = parsed_yaml.get("services") or []
+    if services:
+        errors.extend(_validate_services(services, checks, source_path))
+    if not checks and not parsed_yaml.get("forensics") and not services:
+        errors.append(
+            f"{source_path}: scenario has no checks, services, or forensics questions"
+        )
 
     # --- adversary ------------------------------------------------------
     if "adversary" in parsed_yaml:
         adversary = parsed_yaml.get("adversary")
         adv_errors = validate_adversary_pool(adversary)
         errors.extend(f"{source_path}: {e}" for e in adv_errors)
+        service_ids = {
+            s.get("id") for s in services
+            if isinstance(s, dict) and isinstance(s.get("id"), str)
+        }
         if isinstance(adversary, dict) and isinstance(adversary.get("events"), list):
             for idx, event in enumerate(adversary["events"]):
                 if not isinstance(event, dict):
@@ -264,11 +286,13 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                 affects = event.get("affects_check")
                 if affects is None or not isinstance(affects, str):
                     continue
+                if affects in service_ids:
+                    continue
                 target = check_by_id.get(affects)
                 if target is None:
                     errors.append(
                         f"{source_path}: adversary.events[{idx}].affects_check "
-                        f"{affects!r} is not a check id in this scenario"
+                        f"{affects!r} is not a check id or service id in this scenario"
                     )
                 elif not isinstance((target.get("expect") or {}).get("sla"), dict):
                     errors.append(
@@ -282,6 +306,152 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
     if "forensics" in parsed_yaml:
         errors.extend(_validate_forensics(parsed_yaml.get("forensics"), checks, source_path))
 
+    return errors
+
+
+def _validate_pool(pool, mode, source_path: str) -> list:
+    """Validate the optional top-level ``pool`` block (ranked only).
+
+    The engine provisions one workshop pool per competition from this block;
+    field names mirror workshop-vm-distribution's POST /api/admin/provision
+    1:1 so the engine can pass them through untouched.
+    """
+    errors = []
+    if mode == "honor":
+        return [
+            f"{source_path}: 'pool' is only valid for ranked scenarios — an "
+            "honor box is never handed out from a workshop pool"
+        ]
+    if pool is None or not isinstance(pool, dict) or not pool:
+        return [f"{source_path}: 'pool' must be a non-empty mapping"]
+
+    unknown = sorted(set(pool) - _POOL_KEYS)
+    if unknown:
+        errors.append(f"{source_path}: pool has unknown key(s): {', '.join(unknown)}")
+
+    for key in ("template_vm_id", "template_vm_access_method",
+                "template_vm_username", "template_vm_password"):
+        if key not in pool:
+            errors.append(f"{source_path}: pool missing required key '{key}'")
+
+    vm_id = pool.get("template_vm_id")
+    if vm_id is not None and (isinstance(vm_id, bool) or not isinstance(vm_id, int)
+                              or vm_id < 1):
+        errors.append(f"{source_path}: pool.template_vm_id must be a positive integer")
+
+    access = pool.get("template_vm_access_method")
+    if access is not None and access not in _POOL_ACCESS_METHODS:
+        errors.append(
+            f"{source_path}: pool.template_vm_access_method must be one of "
+            f"{_POOL_ACCESS_METHODS!r}, got {access!r}"
+        )
+
+    for key in ("template_vm_username", "template_vm_password"):
+        value = pool.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"{source_path}: pool.{key} must be a non-empty string")
+
+    for key, minimum in (("vm_count", 0), ("guac_link_ttl_seconds", 60)):
+        value = pool.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                  or value < minimum):
+            errors.append(
+                f"{source_path}: pool.{key} must be an integer >= {minimum}"
+            )
+
+    for key in ("dispenser", "private"):
+        value = pool.get(key)
+        if value is not None and not isinstance(value, bool):
+            errors.append(f"{source_path}: pool.{key} must be a boolean")
+
+    group = pool.get("group")
+    if group is not None and group not in _POOL_GROUPS:
+        errors.append(
+            f"{source_path}: pool.group must be one of {_POOL_GROUPS!r}, got {group!r}"
+        )
+
+    return errors
+
+
+_SERVICE_KEYS = frozenset({
+    "id", "display", "type", "collect", "expect", "interval_s",
+    "points_per_interval", "hysteresis_fail_n", "hysteresis_ok_n",
+    "max_intervals_per_checkin", "timeout_s", "solution",
+})
+
+
+def _validate_services(services, checks, source_path: str) -> list:
+    errors = []
+    if not isinstance(services, list):
+        return [f"{source_path}: 'services' must be a list"]
+    check_ids = {c.get("id") for c in (checks or [])
+                 if isinstance(c, dict) and isinstance(c.get("id"), str)}
+    seen = set()
+    for idx, svc in enumerate(services):
+        ref = f"services[{idx}]"
+        if not isinstance(svc, dict):
+            errors.append(f"{source_path}: {ref} must be a mapping")
+            continue
+        unknown = sorted(set(svc) - _SERVICE_KEYS)
+        if unknown:
+            errors.append(
+                f"{source_path}: {ref} has unknown key(s): {', '.join(unknown)}"
+            )
+        for key in ("id", "display", "type", "collect", "expect",
+                    "interval_s", "points_per_interval"):
+            if key not in svc:
+                errors.append(f"{source_path}: {ref} missing required key '{key}'")
+        sid = svc.get("id")
+        if isinstance(sid, str) and sid:
+            if sid in seen:
+                errors.append(f"{source_path}: {ref} duplicate service id {sid!r}")
+            seen.add(sid)
+            if f"svc_{sid}" in check_ids:
+                errors.append(
+                    f"{source_path}: {ref} service id {sid!r} collides with "
+                    f"check id 'svc_{sid}'"
+                )
+        elif sid is not None:
+            errors.append(f"{source_path}: {ref}.id must be a non-empty string")
+        display = svc.get("display")
+        if display is not None and (not isinstance(display, str) or not display.strip()):
+            errors.append(f"{source_path}: {ref}.display must be a non-empty string")
+        stype = svc.get("type")
+        if isinstance(stype, str) and stype and stype not in CHECK_TYPES:
+            errors.append(
+                f"{source_path}: {ref}.type {stype!r} is not a registered check type "
+                f"(known: {', '.join(sorted(CHECK_TYPES))})"
+            )
+        collect = svc.get("collect")
+        if collect is not None and not isinstance(collect, dict):
+            errors.append(f"{source_path}: {ref}.collect must be a mapping")
+        elif isinstance(collect, dict) and isinstance(stype, str):
+            for required_key in _REQUIRED_COLLECT.get(stype, ()):
+                if required_key not in collect:
+                    errors.append(
+                        f"{source_path}: {ref}.collect missing required key "
+                        f"'{required_key}' for type {stype!r}"
+                    )
+        expect = svc.get("expect")
+        if not isinstance(expect, dict) or not expect:
+            errors.append(f"{source_path}: {ref}.expect must be a non-empty mapping")
+        else:
+            for err in validate_matcher(expect):
+                errors.append(f"{source_path}: {ref}.expect {err}")
+        for key in ("interval_s", "points_per_interval"):
+            val = svc.get(key)
+            if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+                errors.append(f"{source_path}: {ref}.{key} must be a positive integer")
+        for key in ("hysteresis_fail_n", "hysteresis_ok_n",
+                    "max_intervals_per_checkin"):
+            if key in svc:
+                val = svc[key]
+                if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+                    errors.append(f"{source_path}: {ref}.{key} must be a positive integer")
+        timeout_s = svc.get("timeout_s")
+        if timeout_s is not None and (
+                not _is_finite_number(timeout_s) or timeout_s <= 0):
+            errors.append(f"{source_path}: {ref}.timeout_s must be a finite positive number")
     return errors
 
 

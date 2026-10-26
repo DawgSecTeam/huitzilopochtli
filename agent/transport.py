@@ -90,6 +90,10 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         next_checkin_s=data["next_checkin_s"],
         last_seq=data["last_seq"],
         issued_directives=issued_directives,
+        run_status=data.get("run_status", "running"),
+        run_ends_at=data.get("run_ends_at"),
+        player_name=data.get("player_name"),
+        competition_name=data.get("competition_name"),
     )
 
 

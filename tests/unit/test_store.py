@@ -325,14 +325,20 @@ def test_get_scenario_unknown_returns_none(store):
 
 
 def test_save_scenario_get_scenario_round_trip(store):
-    store.save_scenario("scenario-a", 1, '{"rubric": true}', '{"adversary": true}')
+    store.save_scenario("scenario-a", 1, '{"rubric": true}', '{"adversary": true}',
+                        '[]', '{"template_vm_id": 183}')
     scen = store.get_scenario("scenario-a", 1)
     assert scen == {
         "rubric_json": '{"rubric": true}',
         "adversary_json": '{"adversary": true}',
         "uploaded_at": scen["uploaded_at"],
+        "services_json": "[]",
+        "pool_json": '{"template_vm_id": 183}',
     }
     assert scen["uploaded_at"] > 0
+    # A record without a pool block round-trips as None (legacy rows).
+    store.save_scenario("scenario-b", 1, '{"v": 1}', '{"a": 1}')
+    assert store.get_scenario("scenario-b", 1)["pool_json"] is None
 
 
 def test_save_scenario_updates_not_duplicates(store):

@@ -1,0 +1,10 @@
+{
+  "name": "wmsvc-enabled-win",
+  "description": "Practice-box helper (Windows): turns the IIS Web Management Service (WMSVC) on -- Automatic startup and started -- the remote-IIS-manager finding. Vars: none. Pairs with wmsvc_disabled (the hardened state is stopped and not Automatic). Idempotent; a no-op when the management-service feature is not installed.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$svc = Get-Service -Name 'WMSVC' -ErrorAction Ignore\nif ($svc) {\n    Set-Service -Name 'WMSVC' -StartupType Automatic\n    Start-Service -Name 'WMSVC' -ErrorAction Ignore\n}\nWrite-Output 'WMSVC enabled'\n",
+  "depends_on": []
+}

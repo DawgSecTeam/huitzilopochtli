@@ -97,6 +97,18 @@ class ForensicsQuestion:
 
 
 @dataclass
+class ServiceSpec:
+    """Public service metadata (no expected values). Ranked competition UI
+    uses this to label service rows; scoring stays in the rubric/SLA ledger."""
+    id: str
+    check_id: str
+    display: str
+    type: str
+    interval_s: int
+    points_per_interval: int
+
+
+@dataclass
 class Manifest:
     schema_version: int
     scenario_name: str
@@ -110,6 +122,8 @@ class Manifest:
     theme: Optional[dict] = None
     # Scored forensics questions (question text only — no answer keys).
     forensics: Optional[list] = None  # list[ForensicsQuestion]
+    # Public scored-service labels (no expected values).
+    services: Optional[list] = None  # list[ServiceSpec]
 
 
 # --- §6.5 Rubric -------------------------------------------------------------
@@ -189,6 +203,11 @@ class CheckinResponse:
     # it already ran. `directives` stays "newly issued" so agents that
     # predate this field keep their at-most-once behavior.
     issued_directives: list = field(default_factory=list)  # list[Directive]
+    # Ranked competition run state (additive; legacy agents ignore it).
+    run_status: str = "running"  # running|finished|disqualified|ended
+    run_ends_at: Optional[float] = None
+    player_name: Optional[str] = None
+    competition_name: Optional[str] = None
 
 
 @dataclass
@@ -345,6 +364,42 @@ def validate_manifest(obj: dict) -> list:
                             f"{ref}.collect_params must not contain '{leaked_key}' "
                             "(rubric data must never ship in the manifest)"
                         )
+
+    services = obj.get("services")
+    if services is not None:
+        if not isinstance(services, list):
+            errors.append("manifest.services must be a list")
+        else:
+            seen_service_ids = set()
+            for idx, svc in enumerate(services):
+                ref = f"manifest.services[{idx}]"
+                if not isinstance(svc, dict):
+                    errors.append(f"{ref} must be an object")
+                    continue
+                for key in ("id", "check_id", "display", "type",
+                            "interval_s", "points_per_interval"):
+                    if key not in svc:
+                        errors.append(f"{ref} missing required key '{key}'")
+                sid = svc.get("id")
+                if isinstance(sid, str) and sid:
+                    if sid in seen_service_ids:
+                        errors.append(f"{ref} duplicate service id '{sid}'")
+                    seen_service_ids.add(sid)
+                elif sid is not None:
+                    errors.append(f"{ref}.id must be a non-empty string")
+                if svc.get("check_id") is not None and (
+                        not isinstance(svc["check_id"], str) or not svc["check_id"]):
+                    errors.append(f"{ref}.check_id must be a non-empty string")
+                if svc.get("display") is not None and (
+                        not isinstance(svc["display"], str) or not svc["display"]):
+                    errors.append(f"{ref}.display must be a non-empty string")
+                if svc.get("type") is not None and (
+                        not isinstance(svc["type"], str) or not svc["type"]):
+                    errors.append(f"{ref}.type must be a non-empty string")
+                for key in ("interval_s", "points_per_interval"):
+                    val = svc.get(key)
+                    if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+                        errors.append(f"{ref}.{key} must be a positive integer")
 
     forensics = obj.get("forensics")
     if forensics is not None:

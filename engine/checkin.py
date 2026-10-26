@@ -12,7 +12,8 @@ from common import canon
 from common.evaluator import evaluate
 from common.matchers import evaluate_matcher
 from common.schema import (
-    Bundle, CheckinResponse, CollectorStatus, Directive, Rubric, SCHEMA_VERSION, SlaStatus,
+    Bundle, CheckinResponse, CollectorStatus, Directive, Rubric, SCHEMA_VERSION,
+    ScoreBreakdown, SlaStatus,
 )
 from common.version import AGENT_VERSION
 from engine import scenario as scenario_mod
@@ -71,6 +72,29 @@ class _Clock:
         return self._received_at
 
 
+def _frozen_score(store: Store, box_id: str, scenario_name: str,
+                  scenario_version: int, received_at: float) -> ScoreBreakdown:
+    """Return the last stored authoritative score, or a zero placeholder."""
+    stored = store.get_score(box_id)
+    if stored and stored.get("score_json"):
+        try:
+            data = json.loads(stored["score_json"])
+            return ScoreBreakdown(
+                scenario_name=data.get("scenario_name", scenario_name),
+                scenario_version=data.get("scenario_version", scenario_version),
+                total=int(data.get("total", stored["total"])),
+                results=[], sla_status=[],
+                computed_at=float(data.get("computed_at", received_at)),
+            )
+        except (ValueError, TypeError, KeyError):
+            pass
+    return ScoreBreakdown(
+        scenario_name=scenario_name, scenario_version=scenario_version,
+        total=int(stored["total"]) if stored else 0,
+        results=[], sla_status=[], computed_at=received_at,
+    )
+
+
 def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
                     rubric: Optional[Rubric] = None,
                     server_secret: bytes = b"", event_pool: Optional[list] = None,
@@ -127,6 +151,26 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         raise CheckinError(409, "scenario_version does not match the box's enrolled version",
                            last_seq=box.last_seq)
 
+    # Ranked competition state (additive; legacy boxes have no player row and
+    # keep the pre-competition behavior).
+    player = store.get_player_by_box(bundle.box_id)
+    comp = store.get_competition(player.competition_id) if player else None
+    now_for_run = time.time()
+    finished = False
+    run_status = "running"
+    run_ends_at = player.ends_at if player is not None else None
+    if player is not None:
+        if player.status in ("disqualified", "removed"):
+            finished, run_status = True, "disqualified"
+        elif comp is not None and comp.status == "ended":
+            finished, run_status = True, "ended"
+        elif player.status == "finished":
+            finished, run_status = True, "finished"
+        elif player.ends_at is not None and now_for_run >= player.ends_at:
+            finished, run_status = True, "finished"
+        elif comp is not None and comp.status != "live":
+            finished, run_status = True, "ended"
+
     # Load the rubric only after signature verification: an unauthenticated
     # caller must not learn whether a scenario exists or force a JSON parse of
     # the stored record. The record is keyed by the *enrolled* version, so a
@@ -153,6 +197,37 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     if bundle.seq <= box.last_seq:
         raise CheckinError(409, "replay/stale seq", last_seq=box.last_seq)
 
+    if finished:
+        # Accept the bundle so the agent's seq stays contiguous, but do not
+        # score it: the run is over. The agent stops on the returned status.
+        if (player is not None and run_status == "finished"
+                and player.status == "running"):
+            store.update_player(player.player_id, status="finished",
+                                finished_at=now_for_run)
+        with store.atomic():
+            if not store.update_box_seq(bundle.box_id, bundle.seq, bundle.boot_id):
+                fresh = store.get_box(bundle.box_id)
+                last = fresh.last_seq if fresh is not None else box.last_seq
+                raise CheckinError(409, "replay/stale seq", last_seq=last)
+            store.save_checkin(
+                bundle.box_id, bundle.seq, now_for_run,
+                json.dumps(dataclasses.asdict(bundle), default=str),
+            )
+        frozen = _frozen_score(store, bundle.box_id, box.scenario_name,
+                               box.scenario_version, now_for_run)
+        return CheckinResponse(
+            server_time=now_for_run,
+            score=frozen,
+            directives=[],
+            next_checkin_s=max(1, int(next_checkin_s)),
+            last_seq=bundle.seq,
+            issued_directives=[],
+            run_status=run_status,
+            run_ends_at=run_ends_at,
+            player_name=player.display_name if player is not None else None,
+            competition_name=comp.name if comp is not None else None,
+        )
+
     # Steps 4-9 are one transaction (§14.2): a failure part-way (e.g. a
     # malformed stored matcher) rolls back the seq advance, audit row, SLA
     # ledger and adversary log together, so the agent's retry of this same
@@ -160,7 +235,11 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     with store.atomic():
         # 4. Stamp received_at = engine_now(). First check-in for this box sets T0.
         received_at = time.time()
-        t0_to_use = store.get_or_set_t0(bundle.box_id, received_at)
+        if player is not None and player.started_at is not None:
+            t0_to_use = player.started_at
+            store.set_t0_if_unset(bundle.box_id, t0_to_use)
+        else:
+            t0_to_use = store.get_or_set_t0(bundle.box_id, received_at)
 
         if not store.update_box_seq(bundle.box_id, bundle.seq, bundle.boot_id):
             fresh = store.get_box(bundle.box_id)
@@ -249,10 +328,16 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             for d in store.get_issued_directives(bundle.box_id)
         ]
 
-        final_total = score.total + sla_accrued_total
+        hardening_total = score.total
+        final_total = hardening_total + sla_accrued_total
         score.total = final_total
 
-        store.upsert_score(bundle.box_id, rubric.scenario_name, final_total)
+        store.upsert_score(
+            bundle.box_id, rubric.scenario_name, final_total,
+            hardening_points=hardening_total,
+            service_points=sla_accrued_total,
+            score_json=json.dumps(dataclasses.asdict(score), default=str),
+        )
 
     # §2.4: matcher reasons embed expected values (the answer key); the box
     # only gets its own evidence reason alongside pass/points.
@@ -271,4 +356,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         next_checkin_s=max(1, int(next_checkin_s)),
         last_seq=bundle.seq,
         issued_directives=issued_directives,
+        run_status=run_status,
+        run_ends_at=run_ends_at,
+        player_name=player.display_name if player is not None else None,
+        competition_name=comp.name if comp is not None else None,
     )

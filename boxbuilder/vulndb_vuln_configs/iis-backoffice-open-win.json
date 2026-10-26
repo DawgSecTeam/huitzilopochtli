@@ -1,0 +1,14 @@
+{
+  "name": "iis-backoffice-open-win",
+  "description": "Practice-box helper (Windows): opens the Saltmarsh /backoffice application -- anonymous authentication on and Basic authentication on. Vars: none. Pairs with backoffice_anonymous_off and backoffice_basic_off. Depends on iis-ftp-base-win. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "Import-Module WebAdministration -ErrorAction Ignore\n$bo = 'IIS:\\Sites\\SaltmarshPortal\\backoffice'\nSet-WebConfigurationProperty -PSPath $bo `\n    -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name enabled -Value $true\nSet-WebConfigurationProperty -PSPath $bo `\n    -Filter 'system.webServer/security/authentication/basicAuthentication' -Name enabled -Value $true\nSet-WebConfigurationProperty -PSPath $bo `\n    -Filter 'system.webServer/security/authentication/windowsAuthentication' -Name enabled -Value $true\nWrite-Output 'backoffice authentication opened'\n",
+  "depends_on": [
+    {
+      "name": "iis-ftp-base-win"
+    }
+  ]
+}

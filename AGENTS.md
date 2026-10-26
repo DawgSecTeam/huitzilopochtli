@@ -37,6 +37,17 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
   receipt clock; never score from box-claimed time (§2.3, §11.3).
 - **The adversary is a closed allowlist with no network egress.** No scenario
   can author a callback, structurally — there is no code path for one (§2.7, §12).
+- **Ranked competition boxes are a separate lineage.** Honor boxes cannot be
+  converted: a competition box is built from a ranked scenario with scored
+  services and red-team exposure, carries no rubric/token, and is bound to a
+  player by `huitz join`. Do not add an honor→ranked shortcut.
+- **Each ranked competition provisions its own workshop pool.** The pool is
+  cloned from the ranked template named in the scenario record's `pool:` block
+  (`RANKED_COMPETITION.md` §3.1); the engine never picks among the portal's
+  pre-existing pools, so a ranked competition can never hand out an honor box.
+- **Competition run clocks are per-player** (start at join, fixed duration, no
+  pause) and all scoring timestamps remain engine receipt time. Self-reported
+  service checks are explicitly not independent uptime verification.
 
 ## Building a practice box (the boxbuilder workflow)
 

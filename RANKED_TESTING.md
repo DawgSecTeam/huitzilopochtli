@@ -301,3 +301,364 @@ still need operational decisions.
   fds (use `setsid nohup … > log 2>&1 < /dev/null &`) or the exec call hangs.
 - `--provider-host` on boxbuilder's CLI is ignored when `--spec` is given —
   put the IP in the spec (known gotcha, hit again this round).
+
+---
+
+# Round 4 — ranked competition surface (v1.1)
+
+Date: 2026-10-23. Scope: the new competition layer (engine VM, online join,
+per-player runs, scored services, public leaderboard, admin console, ranked
+box lineage). This round was driven end to end on real Proxmox VMs, not
+loopback mocks.
+
+## Environment
+
+- Engine: `huitzilopochtli-engine` (vmid 168), full clone of
+  `base-ubuntu24.04-fix` (955), Ubuntu 24.04, static `10.0.0.160`, systemd
+  `huitzilopochtli-engine.service`, SQLite at
+  `/var/lib/huitzilopochtli/engine.db`, daily backup timer.
+- Test boxes: vmid 171 / 173, linked clones of 955, agent installed from the
+  built `.pyz`, demo web service on `:8081`, OpenSSH installed, player joined
+  with `huitz join`; later a workshop pool from template 174.
+- Workshop portal: `http://10.0.0.102:5000`; a private 2-VM pool (`T38KZ`)
+  was provisioned from the ranked template and claimed through the engine's
+  join page.
+- Cadence: 10s for the test (`HUITZILOPOCHTLI_CHECKIN_INTERVAL_S`); service
+  interval 30s.
+
+## Runs
+
+1. **Single-player scored-service run** (`demo-run`, scenario v1): joined
+   `TestPlayer`, status file hardened +10, web service UP, SSH initially
+   DOWN because the base image had no sshd; installed `openssh-server`, SSH
+   recovered through hysteresis. Total 13 at end; admin End froze the board
+   at 13 and the agent exited with `run ended: ... final score 13`.
+2. **Adversary + service outage run** (`demo-run-2`, scenario v2): joined
+   `Grace`; the engine fired `kill-demo-web` inside its 20–40s window, the
+   agent executed `kill_service huitz-demo-web`, the engine forced the
+   `svc_web` SLA DOWN, no points accrued during the outage, restarting the
+   service restored UP after hysteresis. A second player (`Linus`) joined
+   from the first box after an identity reset; board showed both names with
+   Grace ahead.
+3. **Real workshop handout run** (`demo-run-3`, scenario v2, pool `T38KZ`):
+   the join page called the real workshop `/api/claim`, returned a Guacamole
+   URL, and the player's `huitz join` bound the claimed VM. The adversary
+   killed the web service on the clone; restarting it recovered the service.
+   A second player claimed the second pool VM; a third join was refused
+   (max 2 / pool exhausted). CSV export and admin roster both showed both
+   players.
+4. **Per-player expiry** (`expiry-test`, 60s duration): joined
+   `ExpiryPlayer`; after 60s the engine marked the player `finished`, froze
+   the score at 11, and the agent logged `run finished: ... final score 11`
+   and exited; the competition itself stayed live.
+5. **Engine reboot**: shut down/started vmid 168; static IP persisted,
+   `/health` returned, both competitions and scores survived, boxes resumed
+   check-ins after the outage.
+6. **Backup**: ran `huitzilopochtli-backup.service`; backup opened in SQLite
+   with all 14 expected tables.
+
+## Defects found and fixed this round
+
+1. `engine/scenario.py` used `Optional` without importing it — engine
+   crash-looped on the VM until fixed; caught only by the real deployment.
+2. `engine/deploy/install.sh` placed `deploy/` under the package directory
+   instead of the app root; the backup unit could not find `backup.py`.
+3. `engine/checkin.py` reported `finished` instead of `ended` when the admin
+   ended the competition (player status was updated first); status precedence
+   corrected.
+4. `agent/__main__.py` assumed every check-in response had `run_status`;
+   older/fake responses raised `AttributeError` in tests. Now uses
+   `getattr(..., "running")`.
+5. `engine/server.py` initially registered the JSON competition-create route
+   in `do_GET` rather than `do_POST` (404); moved to the POST router.
+6. `engine/server.py` admin actions returned an HTML redirect to header-token
+   API callers; token callers now get JSON, session/form callers still get a
+   redirect.
+7. `huitz join` had to be added to `VERBS` and the CLI; a fake response test
+   caught the run-status assumption before the live run.
+8. Reissue-code API accepted a running player, which would orphan the old
+   box; now only unbound/invited players can be reissued.
+9. `huitz join` on a clone inherited from a running box starts with an old
+   identity if the agent unit was active; the template build now stops and
+   disables the unit and removes identity/report state before sealing.
+
+## Known issues / follow-ups
+
+- **Self-reported services remain forgeable.** A root player can fake
+  `http_uptime`/`tcp_port` evidence. The competition UI says "self-reported";
+  engine-side probes are a separate future decision.
+- **HTTP-only, Basic auth.** Fine for the LAN; Cloudflare Tunnel/TLS is not
+  implemented. Admin credentials and Guacamole links are in the clear on the
+  LAN.
+- **Player cookie is a bearer of the player id.** It is HttpOnly and random
+  but not signed; a leaked cookie lets someone view `/me` (not the admin
+  console). Add an HMAC if this becomes multi-tenant.
+- **No score-preserving box replacement.** Reissue/removal is implemented;
+  replacing a bound box does not migrate its score/SLA state yet.
+- **No name moderation/profanity filter.** Names are length/control-char
+  validated and HTML-escaped, but public display is otherwise raw.
+- **Per-player clocks are not comparable while runs are in progress.** The
+  board shows status/remaining; final standings are only meaningful at End.
+- **Workshop admin password on the local dev checkout did not match the
+  deployed portal**, so pool creation was performed on the portal host using
+  its own `.env`; this is an external credential-drift issue, not a huitz
+  bug.
+- **No long-duration/scale soak** beyond two concurrent players; the engine
+  was tested at 10s cadence, not 30–50 boxes for hours.
+
+## Automated coverage added
+
+- `tests/unit/test_competition.py` — join/run clock/max players/expiry,
+  service accrual and frozen end.
+- `tests/unit/test_services_compile.py` — `services:` compilation, `svc_`
+  ids, SLA rubric entries, service-id collision.
+- `tests/unit/test_tcp_port_check.py` — open/closed port evidence.
+- `tests/integration/test_competition_http.py` — public join → signed
+  `/join` → check-in → leaderboard → admin End over real HTTP.
+- `tests/integration/test_competition_admin_ui.py` — Basic login → session,
+  CSRF rejection, Start via admin page.
+- Full fast suite after the round: **1014 passed, 1 skipped, 7 deselected**.
+
+# Round 5 — engine web UI redesign (cream editorial)
+
+Date: 2026-10-23 (same day). Scope: every page served by `engine/web.py` —
+public site, join flow, player status, admin console, display board. No
+scoring, store, or contract changes; `engine/web.py` + `engine/server.py`
+only. Deployed live to vmid 168 the same hour.
+
+## What changed
+
+- **Design system.** One token set, two themes: cream editorial (default —
+  hard 1px espresso frames, sharp corners everywhere, serif headings, small
+  uppercase sans labels/buttons, flat surfaces) and a warm dark-roast inverse.
+  Theme follows `prefers-color-scheme`, overrides via a header toggle persisted
+  in `huitz-theme` localStorage, applied pre-paint (no flash). Per-competition
+  accents survive; `_on_accent` picks readable text on them; accents are
+  validated `^#[0-9a-fA-F]{6}$` server-side (JSON API included).
+- **UX fixes:** join POST now 303-redirects to the (previously unreachable)
+  success page — browser refresh no longer re-submits the form; copy buttons
+  on the join code/VM link/join URL (the old `[data-copy]` JS had zero
+  elements); confirmations on Disqualify/Remove ("DQ" spelled out) plus End;
+  index cards and the join form gate on real joinability (draft/ended/full
+  explain themselves instead of rendering a form that 400s); all ~10 bare
+  `<h1>` error fragments replaced by a styled `web.error_page` (unknown
+  browser paths get HTML via Accept negotiation, APIs keep JSON 404);
+  `Cache-Control: no-store` on HTML.
+- **Liveness:** full-page meta-refresh replaced by fetch + section-swap polling
+  (leaderboard/display 5s, admin roster + /me 15s, dashboard 30s), paused when
+  the tab is hidden/focused, with `<noscript>` meta-refresh fallback; ticking
+  countdowns (`h:mm:ss`, not the ambiguous `119:59`); real "updated HH:MM:SS"
+  stamps; /me and the admin roster show last check-in age (warn-styled when
+  stale); display board gains per-player service dots + countdown and loses
+  its nav/footer (dark-pinned).
+- **Roster/leaderboard slimming:** status shown once (badge under the name),
+  service dots with tooltips instead of `name:STATE` strings, box/code columns
+  folded under the player cell, audit details pretty-printed `k=v`,
+  audit filter chips (`?action=`), joined-timezone `_fmt_ts`.
+
+## Verification
+
+- `tests/unit/test_web_pages.py` (19 new tests): theme tokens/no-FOUC, poll +
+  countdown + copy wiring, join gating, error page, formatting helpers,
+  confirmation dialogs, CSRF-input shape preserved.
+- `test_competition_http.py` updated for the 303 PRG (asserts Location, cookie
+  on the redirect, then success-page contents) + HTML/JSON 404 negotiation +
+  `data-poll`/`data-remaining` presence; `test_competition_admin_ui.py` kept
+  its load-bearing strings ("Admin login", "Admin console", csrf regex) and
+  now checks theme-toggle/poll hooks and the "Live" badge.
+- Full suite after the round: **1033 passed, 1 skipped, 7 deselected**.
+- Browser-verified locally (seeded engine, real join via the form, PRG
+  landing on success): index, leaderboard, display, join form/success, /me,
+  login, dashboard, roster, scenarios, audit, 404 — each in cream + dark
+  roast, plus a 375px pass; poll-swap confirmed with zero full reloads.
+- Deployed to vmid 168 via guest-agent (old files backed up to
+  `/root/{web,server}.py.bak-20261023`), service restarted, `/health` green,
+  live pages eyeballed on prod data.
+
+## Known issues / follow-ups (UI)
+
+- Admin pages have no authentication-rate limiting (unchanged from round 4).
+- The audit table caps at the store's 200 rows; no pagination.
+- Display board polls by re-fetching the whole page; a JSON diff endpoint
+  would be cheaper at scale (fine for lab sizes).
+
+
+## Round 5 — pre-bound joins, dispenser-first claims (2026-10-24)
+
+Goal: the player opens one link and types nothing. The engine picks a
+dispenser pool even with zero pre-cloned VMs, claims with the one-time join
+code plus a shared secret, and the portal runs `huitz join --code` in the
+guest when the player opens the stable `/r/<uid>` link. The run clock starts
+at that open (the bind), not at clone time.
+
+**Fixed on the way (found while wiring this):**
+
+- `GET /api/public/join/<player_id>/status` parsed the trailing `/status`
+  segment as the player id, so the join page's poll always 404'd. It now
+  requires exactly `.../<id>/status`.
+- Claim failures were swallowed (`except WorkshopError: pass`), and the page
+  told players to ask an admin for a VM that no admin action could attach.
+  Errors are now stored per player and shown, with a player-triggered
+  `POST /api/public/join/<id>/claim` that releases and re-claims.
+- `pick_pool` required `available > 0`, so a dispenser pool was never
+  auto-assigned and every join for that competition hit the dead-end message.
+- Newly created competitions had no way to get a pool code after the fact; the
+  admin page now edits it and retries claims for waiting players.
+- The portal rate-limits `/api/claim` at 10/min per IP; a class joining at once
+  would fail from the 11th player. Shared-secret engine calls are exempt.
+
+**Automated coverage (no VM required):**
+
+- `tests/unit/test_claims.py` — dispenser-first `pick_pool`, claim success /
+  202 ticket / portal error / no pool, poll throttling and backoff, code
+  rotation (and revert when the portal rejects the push), release-then-claim,
+  CSRF, prebind-disabled fallback to a plain claim.
+- `tests/integration/test_competition_http.py` — real engine + fake portal:
+  the prebind body/header the engine sends, the stable `open_url` on the page,
+  the fixed status endpoint, and reclaim (release + new claim + forged-CSRF
+  rejection).
+- `workshop-vm-distribution/test_prebind.py` (portal venv) — claim stores the
+  code, wrong/missing secret refused, guest join runs exactly once, failed
+  join returns the VM plus the error and back link, expired VM returns 410,
+  rotation is ignored after join, redeem never leaks the code, engine rate-limit
+  exemption, and reopening does not extend the machine's lifetime.
+
+**Not exercised on real VMs yet:** qemu-ga exec of `huitz join` on the ranked
+template, Guacamole re-mint through `/r/<uid>`, and the click-time clock on a
+live competition. Those need the portal and engine deployed together with a
+shared secret and a dispenser pool.
+
+## Round 6 — live deployment and four-comp load test (2026-10-24)
+
+Deployed the new engine + portal to the lab and ran four ranked competitions
+at once, two Windows and two Linux, each with six players.
+
+**Deployed**
+
+- Engine vmid 168 (`http://10.0.0.160:8080`): current `common/` + `engine/`
+  (backup at `/root/huitz-deploy-<stamp>/`), `HUITZILOPOCHTLI_WORKSHOP_SECRET`
+  added to `engine.env`, service restarted, `/health` green.
+- Portal vmid 111 (`http://10.0.0.102:5000`): `server.py` + `guest.py`, backup
+  at `/root/portal-deploy-20261024-053118/`, `HUITZ_PREBIND_SECRET` +
+  `PUBLIC_URL` added, `workshop-vm` restarted.
+- Proxmox: the portal's token (`workshop-vm-distribution@pve!workshop-vm-distribution`,
+  custom role) lacked `VM.GuestAgent.Unrestricted`; added that privilege to the
+  role and a scoped `HuitzAgentExec` role/ACL on `/vms`. Without it every
+  on-open join returned 403 and the player was left with a manual-join VM.
+
+**Ranked builds (honor → ranked copies, no conversion of a live box)**
+
+| Comp | Box | Template | Pool | Services |
+|---|---|---|---|---|
+| `chocolate-ranked` | Cocoa Falls Chocolate Works (Xubuntu) | 183 | 4UWK5 | SSH 22, VNC 5900 |
+| `static-pine-ranked` | Static Pine Community Radio (Debian) | 184 | 9W3C2 | SSH 22, atd |
+| `pinecrest-ranked` | Pinecrest Community Hospital (Win Server) | 185 | S29NP | RDP 3389, WinRM 5985 |
+| `saltmarsh-ranked` | Saltmarsh Exchange (Win Server, IIS/FTP) | 186 | QPDX6 | IIS 80, FTP 21 |
+
+Each: clone the sealed honor template → install the ranked agent with
+`boxbuilder install --competition` → verify → stop, disable the agent/task,
+delete `identity.json*` (so every clone gets its own box id) → seal → private
+dispenser pool (2 ready VMs) → competition (6 players, 1 h), engine record
+uploaded with two services.
+
+**Results**
+
+- Prebind end-to-end on all four boxes: joining the site, opening the portal
+  link, `huitz join` in the guest, engine bind, and service accrual all worked
+  for Linux (systemd) and Windows (`python agent.pyz` → scheduled task).
+- Six players per competition (5 real boxes + simulated signed check-ins; the
+  chocolate comp had 2 real boxes). Services scored: SSH/VNC, SSH/atd,
+  RDP/WinRM, IIS/FTP all UP on the real boxes; the leaderboard, `/me`,
+  display board and admin roster agreed throughout.
+- UI audit (headless Chrome): all public/admin pages, both themes, 375px
+  layout, 8 concurrent boards, live poll update, full-competition notices,
+  CSV, CSRF rejection — **PASS**, no console errors, 630–730 ms at 1280px.
+- Concurrency: 19 simultaneous check-ins (one per simulated box) → all 200,
+  no lost seq, no reset, after the fixes below. Sequential check-ins:
+  ~1.0 s avg, 1.5 s p95.
+
+**Fixed during the round**
+
+1. `huitz join` only started the agent on POSIX; Windows ranked boxes stayed
+   disabled after joining. `agent/join.py` now enables and runs the
+   `HuitzilopochtliAgent` scheduled task (`_start_agent`, covered by
+   `tests/unit/test_join_start.py`).
+2. Engine listen backlog was the socketserver default (5): a class checking in
+   at the same second had connections RSTed before the engine saw them.
+   `_EngineHTTPServer.request_queue_size = 128`.
+3. The join page's status endpoint parsed the trailing `/status` as the player
+   id (found earlier in the unit round; fixed and re-verified live).
+
+4. The admin "new competition" picker only scanned the repo `boxes/` folder,
+   which does not exist on the deployed engine — it said "No ranked scenarios
+   found" even though uploaded records were in the DB, and create would have
+   tried to re-import from the missing folder. The picker now merges uploaded
+   records with folder builds, and create uses the uploaded record when there
+   is no folder copy (`tests/unit/test_admin_scenarios.py` plus an integration
+   test against an engine with no box folder).
+5. Windows prebind needed `python agent.pyz`; the portal now selects the
+   command from the pool's access method.
+
+**Known limits observed**
+
+- `HUITZILOPOCHTLI_MAX_VERIFY=4` is the burst ceiling: 19 simultaneous
+  verifies produce 503 "engine busy" for most and the agent's retry/backoff
+  (queue-and-forward) is what makes it converge; wall time ~20 s for the
+  full burst. Fine for real agents, but a larger field should raise the gate
+  or jitter the check-in schedule.
+- The portal's dispenser creates a VM per claim; a scripted player-creation
+  mistake started several extra clones. They were released, but on a busier
+  host the 10/min `/api/release` limit (browser limit) makes cleanup slow —
+  consider exempting the shared-secret engine or documenting a bulk release.
+- The test competitions were created with a 1-hour run, so their boards are
+  frozen after that; scores, service dots and rosters remain viewable.
+
+## Round 7 — per-competition pool provisioning (2026-10-25)
+
+**Incident.** `cocoa-falls-demo` auto-picked the old Chocolate Factory honor
+pool (EUKT7, template 108) at claim time — `pick_pool` preferred "any pool
+with free VMs" and the ranked dispensers all report `available: 0`. The player
+got a VNC box with no `huitz` binary and `mode: honor` in its config: the
+portal's prebind join failed (transient qga 596, then structurally hopeless)
+and `huitz join` in the console said "command not found". Leaderboard stayed
+empty; the run clock never started. The engine's silence made diagnosis
+audit-log-only work.
+
+**What changed (portal untouched, per decision)**
+
+- The scenario YAML gains a ranked-only top-level `pool:` block (template vm
+  id, access method, credentials, vm_count; validated in `authoring/
+  validate.py`, emitted into the engine record by compile, persisted as
+  `scenarios.pool_json`, validated again engine-side).
+- `claims.ensure_pool` replaces pool *picking*: on first claim the engine
+  provisions a private dispenser pool `huitz-ranked-<slug>` from that block
+  (`POST /api/admin/provision`), pins the code (audit `source: provisioned`),
+  and reuses its own pool by name after restarts — refusing a same-name pool
+  that clones a different template. `pick_pool`/`auto_pool` and the
+  `HUITZILOPOCHTLI_WORKSHOP_RANKED_POOL` pin are retired; the JSON API no
+  longer accepts `workshop_pool_code`; the admin `pool` action is clear-only.
+  There is no path left that points a competition at an existing pool.
+- Ending a competition (admin End or next sweeper pass) releases its VMs and
+  deletes its pool (`cleanup_pool`); legacy-pinned shared pools are left
+  untouched and only unpinned.
+- The admin competition page shows the attached pool (read-only); the
+  join-success page renders the terminal-join fallback (and its code) only
+  when the automatic join failed; failed `/join` requests now log to the
+  journal.
+
+**Coverage.** 40 claims tests (provision/reuse/mismatch/409/missing-block,
+cleanup own vs legacy vs portal-down, sweep cleanup), authoring pool-block
+validation + compile emission (honor rejection), store `pool_json`
+round-trip, and the HTTP E2E extended: competition created without a pool →
+claim provisions `PROV1` from the box record's block → prebind claim →
+end releases VMs + deletes the pool (`tests/integration/
+test_competition_http.py`). 1115 passed, 1 skipped.
+
+**Known limits.** Old ranked templates' agents predate the join-`mode`
+claim idea entirely — mode enforcement lives in the pool/scenario lineage,
+not on the wire; a template rebuild would be needed to change agent
+behavior. Provisioning is serialized portal-side (one job at a time); a
+409 just defers to the next sweep. The local workshop-vm-distribution
+checkout carries an uncommitted `provision.py` edit referencing an undefined
+`WORKSHOP_POOL` — deploying that checkout as-is would break cloning; leave
+the prod portal alone.

@@ -27,6 +27,7 @@ import agent.checks.powershell_json  # noqa: F401
 import agent.checks.process_state  # noqa: F401
 import agent.checks.registry_value  # noqa: F401
 import agent.checks.service_state  # noqa: F401
+import agent.checks.tcp_port  # noqa: F401
 import agent.checks.user_group  # noqa: F401
 from agent.checks.base import CHECKS
 

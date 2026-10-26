@@ -765,6 +765,11 @@ def _run_ranked(config, manifest, ctx) -> None:
             # different box identity).
             _mark_enrolled(config.identity_path)
             _run_directives(response, config.identity_path, ctx)
+            if getattr(response, "run_status", "running") in ("finished", "ended", "disqualified"):
+                print(
+                    f"run {response.run_status}: {response.player_name or 'player'}"
+                    f" — final score {response.score.total}", file=sys.stderr)
+                break
 
         delta = None
         try:

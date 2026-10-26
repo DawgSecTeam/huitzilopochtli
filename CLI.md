@@ -41,6 +41,7 @@ scenario v3 · honor mode · Harbor Port Authority
 | `huitz forensics` | List the scenario's forensics questions with your recorded answers and last-grade verdicts. |
 | `huitz forensics N` | Answer question N interactively (Enter keeps, `-` clears). |
 | `huitz forensics N "text"` | Answer question N directly (scriptable). |
+| `huitz join` | Ranked competitions only: bind this box to a player slot with the one-time code from the competition page, then enable/start the ranked agent. `--code CODE` for scripted joins, `--no-start` to only enroll. |
 | `huitz grade` | Re-grade right now — the re-grade timer's work done on demand — then show the fresh scorecard. Honor boxes, root (`sudo huitz grade`). |
 | `huitz help` | This list. |
 
@@ -51,8 +52,10 @@ honored. `score`/`readme` take `--no-pager` to print flat even on a
 terminal. Paging engages only on an interactive stream — piped output is
 byte-identical to a plain print, so scripts and portals are unaffected —
 and honors `$PAGER` (falling back to `less -R`, then `more`).
-`grade` takes `--config PATH` for a non-default
-`agent_config.json` and `--quiet` for a one-line summary.
+`join` takes `--config PATH`, `--code CODE`, and `--no-start`; it reads the
+signed manifest's `engine_url`, signs a `/join` request with the box key, and
+then starts `huitzilopochtli-agent.service`. `grade` takes `--config PATH` for
+a non-default `agent_config.json` and `--quiet` for a one-line summary.
 
 ### Terminal styling conventions
 

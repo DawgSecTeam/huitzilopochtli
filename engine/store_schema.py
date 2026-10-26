@@ -74,4 +74,78 @@ CREATE TABLE IF NOT EXISTS engine_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Ranked competition mode (v1.1). All additive; legacy rows keep NULL
+-- competition_id/player_id and retain the pre-competition behavior.
+CREATE TABLE IF NOT EXISTS competitions (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    scenario_name TEXT NOT NULL,
+    scenario_version INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    join_open INTEGER NOT NULL DEFAULT 0,
+    max_players INTEGER NOT NULL,
+    duration_s INTEGER NOT NULL,
+    workshop_pool_code TEXT,
+    theme_json TEXT,
+    join_instructions TEXT,
+    created_at REAL NOT NULL,
+    started_at REAL,
+    ended_at REAL,
+    CHECK (status IN ('draft','live','ended'))
+);
+
+CREATE TABLE IF NOT EXISTS players (
+    player_id TEXT PRIMARY KEY,
+    competition_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    display_name_norm TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'invited',
+    join_code_hash TEXT,
+    join_code_plain TEXT,
+    join_code_expires_at REAL,
+    joined_at REAL NOT NULL,
+    started_at REAL,
+    ends_at REAL,
+    finished_at REAL,
+    box_id TEXT,
+    claim_url TEXT,
+    claim_uid TEXT,
+    claim_ticket TEXT,
+    claim_expires_at REAL,
+    claim_error TEXT,
+    claim_attempts INTEGER NOT NULL DEFAULT 0,
+    claim_last_attempt_at REAL,
+    claim_last_poll_at REAL,
+    UNIQUE (competition_id, display_name_norm)
+);
+
+CREATE TABLE IF NOT EXISTS player_boxes (
+    player_id TEXT NOT NULL,
+    box_id TEXT NOT NULL,
+    bound_at REAL NOT NULL,
+    unbound_at REAL,
+    reason TEXT,
+    PRIMARY KEY (player_id, box_id)
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    session_hash TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    csrf_token TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    competition_id TEXT,
+    player_id TEXT,
+    details_json TEXT,
+    remote_addr TEXT
+);
 """

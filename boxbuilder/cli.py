@@ -194,7 +194,8 @@ def cmd_build(args) -> int:
             vulndb_url=args.vulndb_url,
             init_kind=args.init,
             admin_token=args.admin_token, checkin_interval_s=args.checkin_interval,
-            enrollment_ttl_s=args.enrollment_ttl, log=_eprint,
+            enrollment_ttl_s=args.enrollment_ttl,
+            competition_mode=getattr(args, "competition", False), log=_eprint,
         )
     except Exception as e:
         _eprint(f"build failed: {e}")
@@ -221,6 +222,7 @@ def cmd_install(args) -> int:
             admin_token=args.admin_token,
             checkin_interval_s=args.checkin_interval,
             enrollment_ttl_s=args.enrollment_ttl,
+            competition_mode=getattr(args, "competition", False),
             log=_eprint,
         )
     except Exception as e:
@@ -301,6 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="ranked check-in interval seconds (default: 60)")
     p_install.add_argument("--enrollment-ttl", type=int, default=86400,
                            help="enrollment token TTL seconds (default: 86400)")
+    p_install.add_argument("--competition", action="store_true",
+                           help="ranked competition box: no token; player runs `huitz join`")
     p_install.set_defaults(func=cmd_install)
 
     p_package = sub.add_parser("package", help="export the box image for distribution")
@@ -323,6 +327,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="ranked check-in interval seconds (default: 60)")
     p_build.add_argument("--enrollment-ttl", type=int, default=86400,
                            help="enrollment token TTL seconds (default: 86400)")
+    p_build.add_argument("--competition", action="store_true",
+                         help="ranked competition box: no token; player runs `huitz join`")
     p_build.add_argument("--image-out", help="output image path (package step)")
     p_build.add_argument("--format", choices=("ova", "qcow2", "raw"), default="ova")
     p_build.set_defaults(func=cmd_build)

@@ -1,0 +1,10 @@
+{
+  "name": "zip-archive-win",
+  "description": "Practice-box helper (Windows): writes a real one-entry ZIP at $ZIP_PATH containing $ENTRY_NAME -- for the exposed-source-archive finding. Vars: ZIP_PATH (required); ENTRY_NAME (required); ENTRY_CONTENT (optional). Pairs with portal_archive_removed / file-existence checks. Idempotent (recreates the archive).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $ZIP_PATH -or -not $ENTRY_NAME) { throw 'ZIP_PATH and ENTRY_NAME are required' }\n$dir = Split-Path $ZIP_PATH -Parent\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\nif (Test-Path $ZIP_PATH) { Remove-Item -Path $ZIP_PATH -Force }\nAdd-Type -AssemblyName System.IO.Compression\nAdd-Type -AssemblyName System.IO.Compression.FileSystem\n$zip = [System.IO.Compression.ZipFile]::Open($ZIP_PATH, [System.IO.Compression.ZipArchiveMode]::Create)\n$entry = $zip.CreateEntry($ENTRY_NAME)\n$writer = New-Object System.IO.StreamWriter($entry.Open())\n$writer.Write($ENTRY_CONTENT)\n$writer.Dispose()\n$zip.Dispose()\nWrite-Output \"zip archive written: $ZIP_PATH\"\n",
+  "depends_on": []
+}

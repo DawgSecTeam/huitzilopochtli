@@ -45,7 +45,7 @@ import agent.snapshot
 import agent.term
 from agent.term import Symbols, Style
 
-VERBS = ("score", "grade", "watch", "forensics", "readme", "help")
+VERBS = ("score", "grade", "watch", "forensics", "readme", "join", "help")
 
 USAGE = """huitz — scoring console for this Huitzilopochtli box
 
@@ -58,6 +58,7 @@ usage:
   huitz readme --raw             ... as raw markdown, printed flat
   huitz forensics                list forensics questions + your answers
   huitz forensics N "answer"     answer question N (interactive if TEXT omitted)
+  huitz join                     bind this ranked box to a competition slot
   huitz grade                    re-grade right now (root; honor boxes)
 
 options:
@@ -1224,6 +1225,34 @@ def cmd_forensics(argv: list, outstream, instream) -> int:
 
 # --- entry -------------------------------------------------------------------------
 
+def cmd_join(argv: list, outstream, instream) -> int:
+    positional, opts = _split_flags(
+        argv, {"--no-start"}, {"--code", "--config", "--color"})
+    if positional:
+        raise UsageError(f"join takes no positional arguments (got {positional[0]!r})")
+    import agent.join as join_mod
+    code = opts.get("--code")
+    if not code:
+        if instream is not None and instream.isatty():
+            code = input("Join code from the competition page: ")
+        else:
+            code = instream.readline().strip() if instream is not None else ""
+    config_path = opts.get("--config") or _install_config_path()
+    try:
+        result = join_mod.join(
+            config_path, code, start_service="--no-start" not in opts)
+    except join_mod.JoinError as exc:
+        raise CliError(str(exc)) from exc
+    print(f"joined: {result.get('player_name', 'player')} "
+          f"· {result.get('competition_name', 'competition')}", file=outstream)
+    ends = result.get("run_ends_at")
+    if ends:
+        print(f"run ends at {_fmt_clock(ends)} UTC", file=outstream)
+    print("the ranked agent is starting; use `huitz watch` to follow along.",
+          file=outstream)
+    return _EXIT_OK
+
+
 def cmd_help(outstream) -> int:
     print(USAGE, file=outstream)
     return _EXIT_OK
@@ -1268,6 +1297,8 @@ def main(argv: list | None = None, outstream=None, instream=None) -> int:
             return cmd_grade(rest, outstream)
         if verb == "forensics":
             return cmd_forensics(rest, outstream, instream)
+        if verb == "join":
+            return cmd_join(rest, outstream, instream)
         close = difflib.get_close_matches(verb, VERBS, n=1)
         hint = f" — did you mean: huitz {close[0]}?" if close else ""
         raise UsageError(f"unknown command {verb!r}{hint}\n\n{USAGE}")

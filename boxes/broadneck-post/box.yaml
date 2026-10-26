@@ -1,0 +1,92 @@
+# Broadneck Post: a regional parcel courier's mail server (huitz terminal
+# console -- NO desktop, NO VNC): players connect over SSH (Guacamole ssh
+# link from the portal) and use `huitz score`, `huitz readme`, `huitz
+# watch`, `huitz forensics`. Built as the mail-flavored blue-team box: the
+# stack starts DOWN and the points are the rebuild. The intruder
+# ("redtag", documentation IP 198.51.100.23) brute-forced the password of
+# routeaudit, an ex-contractor account that should have been retired with
+# its contract, abused the contractor-era OPEN RELAY to blast a 40-message
+# phishing run (one copy delivered back in to freight's mailbox, the last
+# message frozen in the postfix hold queue), planted interception (a
+# .forward on the postmaster, a mail-triggered /etc/aliases pipe backdoor,
+# a mailbox tarball staged in /var/backups), then SABOTAGED AND EXITED:
+# stop + mask postfix/dovecot, DELETE /etc/postfix, /etc/dovecot and the
+# depot TLS certs, truncate the live logs, leave a cron that keeps wiping
+# the mail log, and stash a "restore kit" in /root whose main.cf re-opens
+# the relay for anyone who restores from it. THIRTY-EIGHT scored checks --
+# bring-up from scratch (9), postfix hardening (11), dovecot hardening
+# (7), red-path cleanup (11) -- difficulty-weighted (16 EASY x2 + 15
+# MODERATE x4 + 7 HARD x6 = 134), NO penalties (the stack starts down; the
+# bring-up checks are their own drift guard), and a 20-question forensics
+# block (6x2 + 10x4 + 4x6 = 76; 210 grand total).
+#
+# Template lineage: to be sealed as challenge-broadneck-post from the
+# base-debian13-lite lineage (the lantern-hill base, vmid 951). Validated
+# end-to-end on the build clone per the standard loop: planted baseline
+# Total 0 (everything vuln-side starts unmet -- the stack is down, every
+# plant is in place), then the scripted harden to 210/38 of 38/forensics
+# 20 of 20 on the identical rubric, then a fresh-clone seal-check.
+#
+# TEMPLATE PREP (before ANY nakon plant -- see assets/prep/prep-notes.md
+# for the full recipe; stage the prep dir at /root/broadneck-prep):
+#   01-packages.sh      apt stack: postfix, dovecot-core/imapd/pop3d,
+#                       rsyslog, python3(+paramiko for the replay), curl.
+#   02-accounts.sh      postmaster (sudo, player), dispatch/routes/freight
+#                       (mail users), routeaudit (ex-contractor, weak
+#                       password, the entry point), hostname
+#                       broadneck-mailer, tz America/New_York, sshd
+#                       drop-in keeping password auth on for REGULAR
+#                       users, root password for the replay, stray
+#                       sysadmin/ubuntu users deleted, persistent journald.
+#   03-mailstack.sh     WEAK contractor-era configs (postfix open relay;
+#                       dovecot ssl=yes, plaintext auth, 143/110 open),
+#                       depot self-signed cert pair in
+#                       /etc/ssl/depot-mail, Maildirs with seeded depot
+#                       mail, the /etc/aliases pipe backdoor
+#                       (routesupport -> /usr/local/libexec/.queue-flush),
+#                       both services enabled + started, smoke-tested.
+#   80-redtag-replay.py THE BREAK-IN: loopback alias 198.51.100.23, ssh
+#                       guessing run (2 fails vs postmaster, 3 fails vs
+#                       routeaudit, 1 success), the 40-message relay
+#                       blast (one SMTP connection per message from the
+#                       alias), the lure delivered back in to freight's
+#                       Maildir, dispatch's mailbox packed to
+#                       /var/backups/mailroom-export-2026-10-17.tar.gz,
+#                       /home/postmaster/.forward planted, the
+#                       routeaudit .bash_history left behind (partial --
+#                       they tried to clear it).
+#   85-rotate-logs.sh   mv /var/log/mail.log -> mail.log.1 + HUP rsyslog
+#                       -- THE step that saves the blast from the wiper:
+#                       the rotation copy keeps the whole run; the live
+#                       file the cron wipes is the fresh one.
+#   90-sabotage.sh      clears the deferred blast from the queue, sends
+#                       the LAST lure copy (held), freezes the hold queue,
+#                       stop + disable + MASK postfix/dovecot, deletes
+#                       /etc/postfix /etc/dovecot /etc/ssl/depot-mail,
+#                       truncates live mail.log + auth.log, writes the
+#                       backdoored /root/.mail-restore kit, verifies the
+#                       post-state (configs gone, units masked, exactly
+#                       one held message).
+#   SNAPSHOT AFTER ALL PREP (a pre-deploy snapshot does not cover prep),
+#   then compile --rebuild-bundle / plant / install per boxbuilder. The
+#   nakon plants (key, wiper cron, harvest timer, metrics service,
+#   sudoers drop-in, firewall rule, mailsync, swaks) land after the
+#   snapshot; swaks needs the build network (vmbr0) at plant time.
+#
+# Build loop notes: rebridge the build clone to vmbr0 for the build;
+# rebridge to untrustedbr (firewall=1) before sealing. The loopback alias
+# 198.51.100.23 is NOT persistent across reboot (by design -- the LOGS
+# carry the story; the mail.log.1 rotation copy is the primary witness).
+# The queue-tidy wiper cron starts truncating the live mail.log as soon
+# as the plants land -- that is the finding working, not a build failure.
+# provider.host below is whatever IP this specific build clone happens
+# to get from DHCP -- it WILL go stale.
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  host: 192.168.100.CHANGE-ME
+  port: 22
+  user: postmaster
+  password: postmaster
+# authoring_key: ./authoring.key

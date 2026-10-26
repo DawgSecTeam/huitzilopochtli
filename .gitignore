@@ -12,8 +12,8 @@ tests/proxmox/.env
 # boxbuilder artifacts: contain the authoring private key (signs manifests),
 # compiled rubric, and the agent zipapp -- all build outputs, never source.
 artifacts/
+boxes/*/artifacts*/
 *.key
 
 # local ZCode CLI session state (plans/scratch), never source
 .zcode/
-

@@ -1,0 +1,1563 @@
+# Saltmarsh Exchange: the IIS + FTP web-tier WINDOWS hardening box.
+# Workgroup member server "swa-web01" (no AD), honor mode, 37 scored
+# hardening checks (EASY 2 x14, MODERATE 4 x15, HARD 8 x8 = 152) + 3
+# penalty guards (-10 each) + 6 forensics questions (6 x 8 = 48) = 200
+# points. It is the web-tier counterpart to harborline-transit: same
+# ledger shape, tier weights, penalty pattern, forensics block, theme and
+# test contract, but the subject is the IIS portal / FTP vendor drop
+# instead of a domain controller.
+#
+# Ledger pinned by tests/unit/test_boxbuilder_saltmarsh_exchange.py:
+#   EASY 14 x2 = 28, MODERATE 15 x4 = 60, HARD 8 x8 = 64, vuls = 152;
+#   forensics 6 x8 = 48; max = 200.
+#
+# Planting is entirely seeds in boxbuilder/vulndb_vuln_configs/:
+#   iis-ftp-base-win builds the business-functional baseline (roles, site,
+#   app pool, /backoffice app, FTP site, group/user, ACLs, FTPS cert,
+#   logging, scoped firewall); iis-hardening-off-win,
+#   iis-backoffice-open-win, iis-admin-console-win and
+#   ftp-hardening-off-win flip the insecure states; the rest are the
+#   generic account/file/firewall helpers. Every scored finding is either
+#   explicitly planted or an explicitly planted absent-good-state (no
+#   HTTPS binding, no redirect) -- nothing is left to image defaults, so
+#   a re-plant reproduces the 0-state.
+#
+# Name discipline: every SITE / APP POOL / FTP SITE / GROUP / USER /
+# RULE_NAME / FILE_PATH in nakon.json matches its paired check's collect
+# params byte-for-byte. Nothing cross-validates them.
+#
+# Forensics-answer hygiene: the six answers (the rogue local
+# admin, the vendor password, the database password, the app-pool
+# identity, the webshell filename, the admin console port) are not in any
+# display string and not in the handbook. fq_webdeploy_account is the
+# documented non-pure answer (its disable check must name the account);
+# fq_admin_port appears in the console check's collect params as the
+# natural selector.
+#
+# Difficulty weighting: EASY 2 / MODERATE 4 / HARD 8 (vermilion/harborline
+# tiers), repeated in the in-box README.
+
+scenario:
+  name: "Saltmarsh Exchange"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # --- A. HOST ACCOUNTS, SERVICES & EXPOSURE --------------------------------
+  - id: local_admin_roster
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Only the authorized administrator sits in the local Administrators group"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        # The roster is sysadmin (the build/IT account) plus the built-in
+        # Administrator. Anything else -- an account created by the
+        # intruder, or a service account handed admin by mistake -- is a
+        # stray seat.
+        $allowed = @('Administrator', 'sysadmin')
+        $members = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Ignore |
+            ForEach-Object { ($_.Name -split '\\')[-1] })
+        $stray = @($members | Where-Object { $allowed -notcontains $_ })
+        ($stray.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Audit the group.** Every seat in local Administrators is a
+      full-system key on this box:
+
+      ```
+      Get-LocalGroupMember -Group 'Administrators' |
+          Select-Object Name, ObjectClass, PrincipalSource
+      ```
+
+      The roster is `sysadmin` and the built-in `Administrator`. Any other
+      account is a plant or a mistake -- read its description before you
+      touch it.
+
+      **2. Remove the stray seat** (the account itself is handled by its
+      own task -- disable it, do not delete it):
+
+      ```
+      Remove-LocalGroupMember -Group 'Administrators' -Member <the stray>
+      ```
+
+      GUI route: `lusrmgr.msc` > Groups > Administrators > Remove.
+
+      **3. Confirm.** The membership list holds only the two authorized
+      names.
+
+  - id: webdeploy_account_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The unauthorized web-deployment account is disabled"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        # Disable, do not delete: the incident report needs the account
+        # object (and its description) intact.
+        $u = Get-LocalUser -Name 'svc_webdeploy' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Read the account first.**
+
+      ```
+      Get-LocalUser -Name 'svc_webdeploy' |
+          Select-Object Name, Enabled, FullName, Description
+      ```
+
+      **2. Disable it** (this check wants the object to exist and be
+      disabled -- deleting it scores nothing, and destroys evidence):
+
+      ```
+      Disable-LocalUser -Name 'svc_webdeploy'
+      ```
+
+      GUI route: `lusrmgr.msc` > Users > right-click > Properties >
+      tick **Account is disabled**.
+
+      **3. Confirm.** `Get-LocalUser -Name 'svc_webdeploy'` reports
+      `Enabled : False`.
+
+  - id: guest_account_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The built-in Guest account is disabled"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'Guest' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check the built-in Guest account.**
+
+      ```
+      Get-LocalUser -Name 'Guest' | Select-Object Name, Enabled
+      ```
+
+      **2. Disable it.**
+
+      ```
+      Disable-LocalUser -Name 'Guest'
+      # or: net user Guest /active:no
+      ```
+
+      GUI route: `lusrmgr.msc` > Users > Guest > Properties > **Account is
+      disabled**.
+
+      **3. Confirm.** `Enabled : False`.
+
+  - id: ftp_vendor_not_admin
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The vendor FTP account is not a local administrator"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        # The vendor account must keep working (the drop is a business
+        # function); only the admin seat is the finding.
+        $u = Get-LocalUser -Name 'ftp_vendor' -ErrorAction Ignore
+        $members = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Ignore |
+            ForEach-Object { ($_.Name -split '\\')[-1] })
+        ($null -ne $u -and $u.Enabled -and ($members -notcontains 'ftp_vendor')) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. See who is in Administrators.**
+
+      ```
+      Get-LocalGroupMember -Group 'Administrators' | Select-Object Name
+      ```
+
+      `ftp_vendor` is a vendor drop account -- it needs read/write on the
+      drop, not full control of the box.
+
+      **2. Remove the group membership, keep the account.**
+
+      ```
+      Remove-LocalGroupMember -Group 'Administrators' -Member 'ftp_vendor'
+      ```
+
+      **3. Confirm the account still exists and is enabled** (disabled is
+      not the fix here -- the vendor must still be able to log in):
+
+      ```
+      Get-LocalUser -Name 'ftp_vendor' | Select-Object Name, Enabled
+      ```
+
+  - id: wmsvc_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The IIS Web Management Service is stopped and not set to Automatic"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        # Remote IIS management is a second control plane nobody asked
+        # for. Hardened: the service is absent, stopped, and not Auto.
+        $s = Get-CimInstance -ClassName Win32_Service -Filter "Name='WMSVC'" -ErrorAction Ignore
+        if ($null -eq $s) { $true | ConvertTo-Json -Compress; exit }
+        (($s.State -ne 'Running') -and ($s.StartMode -ne 'Auto')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check the management service.**
+
+      ```
+      Get-Service -Name WMSVC | Select-Object Name, Status, StartType
+      ```
+
+      **2. Stop and disable it.**
+
+      ```
+      Stop-Service -Name WMSVC
+      Set-Service -Name WMSVC -StartupType Disabled
+      ```
+
+      GUI route: `services.msc` > Web Management Service > Startup type
+      **Disabled**, then Stop.
+
+      **3. Confirm.** The service is Stopped/Disabled (or the management
+      service feature is removed entirely).
+
+  - id: admin_console_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The undocumented admin console site and its firewall rule are removed"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        # Two artifacts make the console: an IIS site and the inbound
+        # rule that publishes it. Removing only one leaves a path in.
+        $site = Get-Website -Name 'SaltmarshAdmin' -ErrorAction Ignore
+        $rule = Get-NetFirewallRule -Name 'SaltmarshAdmin' -ErrorAction Ignore
+        (($null -eq $site) -and ($null -eq $rule)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Find the extra site.** IIS Manager shows a site the agency
+      never asked for, on a non-standard port:
+
+      ```
+      Get-Website | Select-Object Name, State, PhysicalPath, Bindings
+      ```
+
+      **2. Find what publishes it.**
+
+      ```
+      Get-NetFirewallRule -Direction Inbound -Action Allow |
+          Where-Object DisplayName -notlike 'Saltmarsh*'
+      Get-NetFirewallPortFilter | Select-Object ...
+      ```
+
+      Simpler: match the site's port to an inbound rule.
+
+      **3. Remove both.**
+
+      ```
+      Remove-Website -Name 'SaltmarshAdmin'
+      Remove-NetFirewallRule -Name 'SaltmarshAdmin'
+      ```
+
+      **4. Confirm.** Neither `Get-Website -Name 'SaltmarshAdmin'` nor
+      `Get-NetFirewallRule -Name 'SaltmarshAdmin'` returns anything.
+
+  - id: rogue_ftp_rule_removed
+    type: powershell_json
+    category: vuln
+    display: "EASY: The undocumented alternate FTP firewall rule is removed"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        $r = Get-NetFirewallRule -Name 'VendorFtpAlt' -ErrorAction Ignore
+        ($null -eq $r) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. List inbound allow rules and their ports.**
+
+      ```
+      Get-NetFirewallRule -Direction Inbound -Action Allow |
+          Select-Object Name, DisplayName, Enabled
+      ```
+
+      One rule opens a second FTP port the agency's change record does not
+      mention.
+
+      **2. Remove it.**
+
+      ```
+      Remove-NetFirewallRule -Name 'VendorFtpAlt'
+      ```
+
+      **3. Confirm.** The rule name no longer resolves.
+
+  - id: web_share_restricted
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The web-content SMB share is removed or no longer grants Everyone"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        # The share exposes the whole web root. Removing it is fine;
+        # keeping it is fine only if Everyone is gone from the ACL.
+        $s = Get-SmbShare -Name 'SaltmarshWeb$' -ErrorAction Ignore
+        if ($null -eq $s) { $true | ConvertTo-Json -Compress; exit }
+        $bad = @(Get-SmbShareAccess -Name 'SaltmarshWeb$' -ErrorAction Ignore |
+            Where-Object { [string]$_.AccountName -match 'Everyone' })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Inspect the share and its ACL.**
+
+      ```
+      Get-SmbShare -Name 'SaltmarshWeb$'
+      Get-SmbShareAccess -Name 'SaltmarshWeb$'
+      ```
+
+      Everyone holds access to the entire content tree -- including the
+      web config and the FTP drop underneath it.
+
+      **2. Remove the Everyone grant** (or remove the share if nobody
+      needs it):
+
+      ```
+      Revoke-SmbShareAccess -Name 'SaltmarshWeb$' -AccountName 'Everyone' -Force
+      # or: Remove-SmbShare -Name 'SaltmarshWeb$' -Force
+      ```
+
+      **3. Confirm.** `Get-SmbShareAccess` shows no `Everyone` entry.
+
+  - id: aspnet_debug_off
+    type: file_regex
+    category: vuln
+    display: "EASY: ASP.NET compilation debug is off in the portal web.config"
+    max_points: 2
+    timeout_s: 10
+    collect:
+      path: C:\inetpub\saltmarsh\wwwroot\web.config
+      extract: 'debug="(true|false)"'
+    expect:
+      equals: "false"
+      field: matched
+      points: 2
+    solution: |
+      **1. Read the portal's live web.config.**
+
+      ```
+      Get-Content C:\inetpub\saltmarsh\wwwroot\web.config
+      ```
+
+      `<compilation debug="true" ... />` makes ASP.NET emit debug output
+      and detailed exception data to clients.
+
+      **2. Set it to false.**
+
+      ```
+      (Get-Content C:\inetpub\saltmarsh\wwwroot\web.config) `
+          -replace 'debug="true"', 'debug="false"' |
+          Set-Content C:\inetpub\saltmarsh\wwwroot\web.config
+      ```
+
+      **3. Confirm.** The file shows `debug="false"`; the site keeps
+      serving.
+
+  # --- B. IIS: SITE, APPLICATION POOL, CONTENT ------------------------------
+  - id: dir_browsing_off
+    type: powershell_json
+    category: vuln
+    display: "EASY: Directory browsing is disabled on the portal"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $v = (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+            -Filter 'system.webServer/directoryBrowse' -ErrorAction Ignore).enabled
+        (-not [bool]$v) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Look at the site's Directory Browsing feature** (IIS Manager >
+      site > Directory Browsing), or query it:
+
+      ```
+      (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/directoryBrowse').enabled
+      ```
+
+      **2. Disable it.**
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/directoryBrowse' -Name enabled -Value $false
+      ```
+
+      **3. Confirm.** The value reads `False`; browsing a directory without
+      a default document now returns 403 instead of a file list.
+
+  - id: detailed_errors_off
+    type: powershell_json
+    category: vuln
+    display: "EASY: Detailed IIS error pages are not sent to remote clients"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $v = (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+            -Filter 'system.webServer/httpErrors' -ErrorAction Ignore).errorMode
+        ([string]$v -ne 'Detailed') | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check HTTP Errors.** `Detailed` returns stack traces and local
+      paths to every client.
+
+      ```
+      (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/httpErrors').errorMode
+      ```
+
+      **2. Set the safe mode.**
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/httpErrors' -Name errorMode -Value 'DetailedLocalOnly'
+      ```
+
+      **3. Confirm.** The value is no longer `Detailed`; a remote 404 shows
+      the generic error page.
+
+  - id: version_headers_removed
+    type: powershell_json
+    category: vuln
+    display: "EASY: The portal no longer advertises .NET/IIS version headers"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $bad = @()
+        foreach ($p in @('IIS:\', 'IIS:\Sites\SaltmarshPortal')) {
+            $section = Get-WebConfiguration -PSPath $p `
+                -Filter 'system.webServer/httpProtocol/customHeaders' -ErrorAction Ignore
+            $headers = @($section.Collection | Where-Object { $_ })
+            $bad += @($headers | Where-Object {
+                [string]$_.name -in @('X-Powered-By', 'X-AspNet-Version', 'X-AspNetMvc-Version')
+            })
+        }
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Find the version headers.** `X-Powered-By` and
+      `X-AspNet-Version` tell an attacker exactly what to try next.
+
+      ```
+      Get-WebConfiguration -PSPath 'IIS:\' `
+          -Filter 'system.webServer/httpProtocol/customHeaders'
+      Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/httpProtocol/customHeaders'
+      ```
+
+      **2. Remove the entries** (server level and site level). In IIS
+      Manager: HTTP Response Headers > select > Remove.
+
+      **3. Confirm.** Neither the server nor the site lists
+      `X-Powered-By`, `X-AspNet-Version`, or `X-AspNetMvc-Version`.
+
+  - id: trace_verb_blocked
+    type: powershell_json
+    category: vuln
+    display: "EASY: The TRACE HTTP verb is blocked on the portal"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $section = Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+            -Filter 'system.webServer/security/requestFiltering/verbs' -ErrorAction Ignore
+        $verbs = @($section.Collection | Where-Object { $_ })
+        $rf = Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+            -Filter 'system.webServer/security/requestFiltering' -ErrorAction Ignore
+        $allow = $rf.allowUnlisted
+        $trace = @($verbs | Where-Object { [string]$_.verb -eq 'TRACE' })
+        if ($trace.Count -gt 0) {
+            $blocked = -not [bool]$trace[0].allowed
+        } else {
+            $blocked = -not [bool]$allow
+        }
+        $blocked | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check Request Filtering > HTTP Verbs.** TRACE reflects the
+      request back -- cross-site tracing fuel.
+
+      **2. Deny it** (IIS Manager: Request Filtering > HTTP Verbs > Deny
+      Verb). PowerShell route -- replace the verb list with an explicit
+      TRACE deny:
+
+      ```
+      Clear-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/security/requestFiltering/verbs'
+      Add-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/security/requestFiltering/verbs' `
+          -Value @{verb = 'TRACE'; allowed = 'false'}
+      ```
+
+      **3. Confirm.** A TRACE request now returns 405, and the verbs list
+      shows TRACE denied.
+
+  - id: access_logging_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: W3C access logging is enabled for the portal"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $enabled = (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter "system.applicationHost/sites/site[@name='SaltmarshPortal']/logFile" `
+            -ErrorAction Ignore).enabled
+        ([bool]$enabled) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the site's Logging feature** (IIS Manager > site >
+      Logging) or:
+
+      ```
+      (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter "system.applicationHost/sites/site[@name='SaltmarshPortal']/logFile").enabled
+      ```
+
+      **2. Enable it.**
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter "system.applicationHost/sites/site[@name='SaltmarshPortal']/logFile" `
+          -Name enabled -Value $true
+      ```
+
+      **3. Confirm.** A request writes a W3C line under
+      `C:\inetpub\logs\LogFiles`.
+
+  - id: apppool_least_priv
+    type: powershell_json
+    category: vuln
+    display: "HARD: The portal application pool runs as the least-privilege ApplicationPoolIdentity"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $id = [string](Get-Item 'IIS:\AppPools\SaltmarshPortal').processModel.identityType
+        (($id -eq 'ApplicationPoolIdentity') -or ($id -eq '4')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Check the pool identity.**
+
+      ```
+      (Get-Item 'IIS:\AppPools\SaltmarshPortal').processModel.identityType
+      ```
+
+      `LocalSystem` means every request runs with SYSTEM's token -- one
+      upload or traversal bug and the attacker owns the box.
+
+      **2. Switch to the built-in least-privilege identity.** IIS Manager >
+      Application Pools > SaltmarshPortal > Advanced Settings > Identity >
+      **ApplicationPoolIdentity**. PowerShell:
+
+      ```
+      Set-ItemProperty 'IIS:\AppPools\SaltmarshPortal' -Name processModel.identityType -Value 4
+      Restart-WebAppPool -Name 'SaltmarshPortal'
+      ```
+
+      **3. Confirm.** The identity reads `ApplicationPoolIdentity` and the
+      site still serves (`IIS_IUSRS` already has read on the content).
+
+  - id: apppool_integrated_pipeline
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The portal application pool uses the Integrated pipeline"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $m = [string](Get-Item 'IIS:\AppPools\SaltmarshPortal').managedPipelineMode
+        ($m -eq 'Integrated') | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the pipeline mode.**
+
+      ```
+      (Get-Item 'IIS:\AppPools\SaltmarshPortal').managedPipelineMode
+      ```
+
+      `Classic` runs request handling through the legacy ASP.NET pipeline
+      and is the compatibility setting, not the modern default.
+
+      **2. Switch to Integrated** (IIS Manager > Application Pools >
+      SaltmarshPortal > Basic Settings > Managed pipeline mode:
+      **Integrated**):
+
+      ```
+      Set-ItemProperty 'IIS:\AppPools\SaltmarshPortal' -Name managedPipelineMode -Value 'Integrated'
+      Restart-WebAppPool -Name 'SaltmarshPortal'
+      ```
+
+      **3. Confirm.** The value reads `Integrated`.
+
+  - id: wildcard_binding_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The portal binding uses its host name instead of a wildcard :80 binding"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $bindings = @(Get-WebBinding -Name 'SaltmarshPortal' -Protocol http -ErrorAction Ignore)
+        $bare = @($bindings | Where-Object {
+            (([string]$_.bindingInformation) -split ':')[2] -eq ''
+        })
+        $named = @($bindings | Where-Object {
+            (([string]$_.bindingInformation) -split ':')[2] -ne ''
+        })
+        (($bare.Count -eq 0) -and ($named.Count -ge 1)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Inspect the bindings.**
+
+      ```
+      Get-WebBinding -Name 'SaltmarshPortal'
+      ```
+
+      A `*:80:` binding answers on every name pointed at the box -- useful
+      for host-header attacks and for serving the site from an unintended
+      name.
+
+      **2. Rebind it to the portal host name.** IIS Manager > site >
+      Bindings > Edit > Host name `portal.saltmarsh.local`. PowerShell:
+
+      ```
+      Remove-WebBinding -Name 'SaltmarshPortal' -Protocol http
+      New-WebBinding -Name 'SaltmarshPortal' -Protocol http -Port 80 `
+          -IPAddress '*' -HostHeader 'portal.saltmarsh.local'
+      ```
+
+      **3. Confirm.** The only :80 binding carries the host name; there is
+      no bare `*:80:` left.
+
+  - id: https_binding_present
+    type: powershell_json
+    category: vuln
+    display: "HARD: The portal has an HTTPS binding with a certificate bound to port 443"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $https = @(Get-WebBinding -Name 'SaltmarshPortal' -Protocol https -ErrorAction Ignore)
+        $ssl = @(Get-ChildItem 'IIS:\SslBindings' -ErrorAction Ignore |
+            Where-Object { [string]$_.Name -match '!443$' -or [int]$_.Port -eq 443 })
+        (($https.Count -ge 1) -and ($ssl.Count -ge 1)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. See what the site offers.**
+
+      ```
+      Get-WebBinding -Name 'SaltmarshPortal'
+      Get-ChildItem 'IIS:\SslBindings'
+      ```
+
+      Today the portal is HTTP-only -- credentials and session cookies
+      cross the wire in clear text.
+
+      **2. Create/choose a certificate and add the binding.** A self-signed
+      cert is enough for the exercise:
+
+      ```
+      $cert = New-SelfSignedCertificate -DnsName 'portal.saltmarsh.local' `
+          -CertStoreLocation 'Cert:\LocalMachine\My'
+      New-WebBinding -Name 'SaltmarshPortal' -Protocol https -Port 443 `
+          -IPAddress '*' -HostHeader 'portal.saltmarsh.local'
+      New-Item 'IIS:\SslBindings\0.0.0.0!443' -Value $cert -Force
+      ```
+
+      GUI route: site > Bindings > Add > https/443, choose the certificate.
+
+      **3. Confirm.** `Get-WebBinding` shows an https binding and
+      `Get-ChildItem IIS:\SslBindings` shows a 443 entry.
+
+  - id: http_redirects_https
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: HTTP requests are redirected to HTTPS"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $sec = Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+            -Filter 'system.webServer/httpRedirect' -ErrorAction Ignore
+        (([bool]$sec.enabled) -and ([string]$sec.destination -match '^https://')) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check HTTP Redirect** (IIS Manager > site > HTTP Redirect).
+
+      **2. Send all HTTP traffic to the HTTPS site.**
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/httpRedirect' -Name enabled -Value $true
+      Set-WebConfigurationProperty -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/httpRedirect' -Name destination `
+          -Value 'https://portal.saltmarsh.local/'
+      ```
+
+      Tick **Redirect all requests to this destination** in the GUI if you
+      prefer.
+
+      **3. Confirm.** An `http://` request answers 302 to the `https://`
+      URL, and the site still serves over TLS.
+
+  - id: tls_legacy_disabled
+    type: powershell_json
+    category: vuln
+    display: "HARD: TLS 1.0 and TLS 1.1 are disabled for the web server"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        function Test-ProtocolOff($name) {
+            $key = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\$name\Server"
+            $enabled = (Get-ItemProperty -Path $key -Name Enabled -ErrorAction Ignore).Enabled
+            $default = (Get-ItemProperty -Path $key -Name DisabledByDefault -ErrorAction Ignore).DisabledByDefault
+            return (($enabled -eq 0) -or ($default -eq 1))
+        }
+        ((Test-ProtocolOff 'TLS 1.0') -and (Test-ProtocolOff 'TLS 1.1')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Inspect the Schannel protocol keys.**
+
+      ```
+      Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols' -Recurse
+      ```
+
+      **2. Disable the legacy server protocols.**
+
+      ```
+      foreach ($p in @('TLS 1.0', 'TLS 1.1')) {
+          $k = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\$p\Server"
+          New-Item -Path $k -Force | Out-Null
+          Set-ItemProperty -Path $k -Name Enabled -Value 0 -Type DWord
+          Set-ItemProperty -Path $k -Name DisabledByDefault -Value 1 -Type DWord
+      }
+      ```
+
+      **3. Confirm.** Both protocols report `Enabled = 0` (or
+      `DisabledByDefault = 1`). Restart the web service to apply.
+
+  - id: isapi_cgi_locked_down
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Unlisted CGI and ISAPI extensions are denied"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $sec = Get-WebConfiguration -PSPath 'IIS:\' `
+            -Filter 'system.webServer/security/isapiCgiRestriction' -ErrorAction Ignore
+        ((-not [bool]$sec.notListedCgisAllowed) -and
+         (-not [bool]$sec.notListedIsapisAllowed)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check ISAPI and CGI Restrictions** (IIS Manager > server >
+      ISAPI and CGI Restrictions).
+
+      **2. Deny anything not explicitly listed.**
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'IIS:\' `
+          -Filter 'system.webServer/security/isapiCgiRestriction' `
+          -Name notListedCgisAllowed -Value $false
+      Set-WebConfigurationProperty -PSPath 'IIS:\' `
+          -Filter 'system.webServer/security/isapiCgiRestriction' `
+          -Name notListedIsapisAllowed -Value $false
+      ```
+
+      **3. Confirm.** Both "not listed" switches are off; only the
+      approved extensions run.
+
+  - id: webdav_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: WebDAV authoring is disabled on the portal"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $v = (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+            -Filter 'system.webServer/webdav/authoring' -ErrorAction Ignore).enabled
+        (($null -eq $v) -or (-not [bool]$v)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check WebDAV.** IIS Manager > site > WebDAV Authoring Rules, or:
+
+      ```
+      (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/webdav/authoring').enabled
+      ```
+
+      **2. Disable authoring** (or remove the WebDAV Publishing feature if
+      the agency does not publish over WebDAV at all):
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'IIS:\Sites\SaltmarshPortal' `
+          -Filter 'system.webServer/webdav/authoring' -Name enabled -Value $false
+      ```
+
+      **3. Confirm.** Authoring is off; a WebDAV `PROPFIND` no longer
+      reaches the authoring module.
+
+  - id: backoffice_anonymous_off
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The internal backoffice application requires Windows authentication"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $bo = 'IIS:\Sites\SaltmarshPortal\backoffice'
+        $anon = (Get-WebConfiguration -PSPath $bo `
+            -Filter 'system.webServer/security/authentication/anonymousAuthentication' -ErrorAction Ignore).enabled
+        $win = (Get-WebConfiguration -PSPath $bo `
+            -Filter 'system.webServer/security/authentication/windowsAuthentication' -ErrorAction Ignore).enabled
+        ((-not [bool]$anon) -and [bool]$win) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the backoffice app's Authentication settings** (IIS Manager
+      > site > backoffice > Authentication).
+
+      **2. Disable Anonymous, enable Windows Authentication.**
+
+      ```
+      $bo = 'IIS:\Sites\SaltmarshPortal\backoffice'
+      Set-WebConfigurationProperty -PSPath $bo `
+          -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name enabled -Value $false
+      Set-WebConfigurationProperty -PSPath $bo `
+          -Filter 'system.webServer/security/authentication/windowsAuthentication' -Name enabled -Value $true
+      ```
+
+      **3. Confirm.** Anonymous is off and Windows auth is on; browsing
+      `/backoffice` prompts for credentials.
+
+  - id: backoffice_basic_off
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Basic authentication is disabled on the backoffice application"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $basic = (Get-WebConfiguration -PSPath 'IIS:\Sites\SaltmarshPortal\backoffice' `
+            -Filter 'system.webServer/security/authentication/basicAuthentication' -ErrorAction Ignore).enabled
+        (-not [bool]$basic) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check the backoffice app's authentication modes.** Basic sends
+      the password base64-encoded -- cleartext on an HTTP request.
+
+      **2. Disable Basic.**
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'IIS:\Sites\SaltmarshPortal\backoffice' `
+          -Filter 'system.webServer/security/authentication/basicAuthentication' -Name enabled -Value $false
+      ```
+
+      **3. Confirm.** Only Windows authentication remains enabled (pair
+      this with the HTTPS/redirect fixes).
+
+  - id: backoffice_outside_webroot
+    type: powershell_json
+    category: vuln
+    display: "HARD: The backoffice application's content lives outside the public web root"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        # An application inside wwwroot is also a directory of static
+        # files: its pages and config are one GET away. Hardened: the
+        # app points at a directory outside the public root and the
+        # content actually moved with it.
+        Import-Module WebAdministration -ErrorAction Ignore
+        $app = Get-WebApplication -Site 'SaltmarshPortal' -Name 'backoffice' -ErrorAction Ignore
+        if ($null -eq $app) { $false | ConvertTo-Json -Compress; exit }
+        $path = [string]$app.physicalPath
+        $outside = $path -notlike 'C:\inetpub\saltmarsh\wwwroot\*'
+        $present = Test-Path (Join-Path $path 'default.aspx') -ErrorAction Ignore
+        ($outside -and $present) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Find the application's physical path.**
+
+      ```
+      Get-WebApplication -Site 'SaltmarshPortal' -Name 'backoffice' |
+          Select-Object Path, PhysicalPath, ApplicationPool
+      ```
+
+      Today it points inside the public content root, so IIS will happily
+      serve the backoffice pages (and its `web.config`) as ordinary
+      static files to anyone who guesses the path.
+
+      **2. Move the content outside the public root and re-point the
+      application.**
+
+      ```
+      $private = 'C:\inetpub\saltmarsh\private\backoffice'
+      New-Item -ItemType Directory -Force -Path $private | Out-Null
+      Move-Item 'C:\inetpub\saltmarsh\wwwroot\backoffice\*' $private -Force
+      Set-ItemProperty 'IIS:\Sites\SaltmarshPortal\backoffice' `
+          -Name physicalPath -Value $private
+      ```
+
+      GUI route: IIS Manager > site > backoffice > Basic Settings >
+      Physical path.
+
+      **3. Confirm.** The application's physical path is outside
+      `wwwroot`, `default.aspx` exists in the new directory, and
+      `/backoffice` still serves (with the authentication settings you
+      set on the application).
+
+  - id: config_backup_removed
+    type: permission
+    category: vuln
+    display: "EASY: The leftover web.config backup under the application folder is removed"
+    max_points: 2
+    timeout_s: 10
+    collect:
+      path: C:\inetpub\saltmarsh\wwwroot\app\web.config.bak
+    expect:
+      equals: false
+      field: exists
+      points: 2
+    solution: |
+      **1. Read it first** -- a config backup usually carries connection
+      strings and keys:
+
+      ```
+      Get-Content C:\inetpub\saltmarsh\wwwroot\app\web.config.bak
+      ```
+
+      **2. Remove the leftover.** Backups do not belong under the web
+      root:
+
+      ```
+      Remove-Item C:\inetpub\saltmarsh\wwwroot\app\web.config.bak -Force
+      ```
+
+      **3. Confirm.** `Test-Path` returns False. If the credentials were
+      real, rotate them too.
+
+  - id: portal_archive_removed
+    type: permission
+    category: vuln
+    display: "EASY: The exposed source archive under the web root is removed"
+    max_points: 2
+    timeout_s: 10
+    collect:
+      path: C:\inetpub\saltmarsh\wwwroot\backup\portal-source.zip
+    expect:
+      equals: false
+      field: exists
+      points: 2
+    solution: |
+      **1. Locate the archive.** IIS happily serves `.zip` as static
+      content; the source tree is one request away.
+
+      **2. Remove it from the web root** (archive it off-box if it is
+      genuinely needed):
+
+      ```
+      Remove-Item C:\inetpub\saltmarsh\wwwroot\backup\portal-source.zip -Force
+      ```
+
+      **3. Confirm.** A request for the archive now returns 404.
+
+  - id: git_dir_removed
+    type: permission
+    category: vuln
+    display: "MODERATE: The exposed .git directory under the web root is removed"
+    max_points: 4
+    timeout_s: 10
+    collect:
+      path: C:\inetpub\saltmarsh\wwwroot\.git
+    expect:
+      equals: false
+      field: exists
+      points: 4
+    solution: |
+      **1. Check for repository metadata.**
+
+      ```
+      Get-ChildItem C:\inetpub\saltmarsh\wwwroot -Force | Select-Object Name
+      ```
+
+      A `.git` directory under the web root leaks history, remotes, and
+      sometimes credentials.
+
+      **2. Remove it** (move it somewhere off the web root if history is
+      needed):
+
+      ```
+      Remove-Item C:\inetpub\saltmarsh\wwwroot\.git -Recurse -Force
+      ```
+
+      **3. Confirm.** The directory is gone and `.git/config` is no longer
+      reachable.
+
+  - id: webshell_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: No unapproved server-side page remains under the web root"
+    max_points: 8
+    timeout_s: 60
+    collect:
+      script: |
+        # The portal's own pages are the allowlist. Anything else that
+        # executes server-side (.aspx/.ashx/.asmx) is a finding -- the
+        # planted command page is one of them.
+        $root = 'C:\inetpub\saltmarsh\wwwroot'
+        $allowed = @('app\default.aspx', 'app\login.aspx', 'backoffice\default.aspx')
+        $bad = @(Get-ChildItem -Path $root -Recurse -File -ErrorAction Ignore |
+            Where-Object { $_.Extension -in @('.aspx', '.ashx', '.asmx') } |
+            Where-Object { $allowed -notcontains $_.FullName.Substring($root.Length + 1) })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Sweep the web root for executable pages.**
+
+      ```
+      Get-ChildItem C:\inetpub\saltmarsh\wwwroot -Recurse -File |
+          Where-Object Extension -in '.aspx', '.ashx', '.asmx' |
+          Select-Object FullName, LastWriteTime
+      ```
+
+      The portal's own pages are under `app` and `backoffice`. A page in
+      the root that takes a command parameter is the intruder's.
+
+      **2. Read it, then remove it.**
+
+      ```
+      Get-Content <the page>
+      Remove-Item <the page> -Force
+      ```
+
+      **3. Confirm.** The sweep returns only the three approved pages (or
+      none, if the application pages were removed too).
+
+  # --- C. FTP ---------------------------------------------------------------
+  - id: ftp_anonymous_off
+    type: powershell_json
+    category: vuln
+    display: "EASY: Anonymous authentication is disabled on the vendor FTP site"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $v = (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/authentication/anonymousAuthentication" `
+            -ErrorAction Ignore).enabled
+        (-not [bool]$v) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check FTP Authentication** (IIS Manager > VendorDrop > FTP
+      Authentication).
+
+      **2. Disable Anonymous Authentication** (Enable Basic for the vendor
+      account; pair with FTPS so the password is not cleartext):
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/authentication/anonymousAuthentication" `
+          -Name enabled -Value $false
+      ```
+
+      **3. Confirm.** Anonymous is off; only the vendor account can log
+      in.
+
+  - id: ftp_anonymous_write_off
+    type: powershell_json
+    category: vuln
+    display: "EASY: No FTP authorization rule grants write access to anonymous or all users"
+    max_points: 2
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        # FTP authorization is a server-level section; the site inherits
+        # it, so read the inherited collection at the site.
+        $section = Get-WebConfiguration -PSPath 'IIS:\Sites\VendorDrop' `
+            -Filter 'system.ftpServer/security/authorization' -ErrorAction Ignore
+        $rules = @($section.Collection | Where-Object { $_ })
+        $bad = @($rules | Where-Object {
+            ([string]$_.accessType -eq 'Allow') -and
+            ([string]$_.permissions -match 'Write') -and
+            (([string]$_.users -eq '*') -or ([string]$_.users -eq '?') -or
+             ([string]$_.users -match 'anonymous') -or ([string]$_.roles -eq '*'))
+        })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 2
+    solution: |
+      **1. Check FTP Authorization Rules** (IIS Manager > VendorDrop > FTP
+      Authorization Rules).
+
+      **2. Remove the rule that grants write to everyone or anonymous.**
+      Leave the vendor group/user rules:
+
+      ```
+      $f = "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/authorization"
+      Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter $f
+      Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter $f `
+          -Name '.' -AtElement @{users = '*'}
+      ```
+
+      **3. Confirm.** The remaining rules grant read to the vendor group
+      and read/write only to `ftp_vendor`.
+
+  - id: ftp_control_ssl_required
+    type: powershell_json
+    category: vuln
+    display: "HARD: The FTP control channel requires SSL and a server certificate is bound"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $ssl = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl" `
+            -ErrorAction Ignore
+        (([string]$ssl.controlChannelPolicy -eq 'SslRequire') -and
+         ([string]$ssl.serverCertHash).Length -ge 16) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Check FTP SSL Settings** (IIS Manager > VendorDrop > FTP SSL
+      Settings). The current policy allows plaintext and no certificate is
+      bound.
+
+      **2. Choose a certificate and require SSL for the control channel.**
+
+      ```
+      $cert = Get-ChildItem Cert:\LocalMachine\My |
+          Where-Object FriendlyName -eq 'Saltmarsh FTP' | Select-Object -First 1
+      $f = "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl"
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter $f `
+          -Name serverCertHash -Value $cert.Thumbprint
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter $f `
+          -Name controlChannelPolicy -Value 'SslRequire'
+      ```
+
+      **3. Confirm.** The policy reads `SslRequire` and the certificate
+      thumbprint is bound; a plaintext `ftp.exe` login is refused.
+
+  - id: ftp_data_ssl_required
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The FTP data channel requires SSL"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $ssl = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl" `
+            -ErrorAction Ignore
+        ([string]$ssl.dataChannelPolicy -eq 'SslRequire') | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Check FTP SSL Settings > Advanced** -- the data channel may
+      still be allowed in cleartext even when the control channel is
+      protected.
+
+      **2. Require SSL on the data channel.**
+
+      ```
+      $f = "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl"
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter $f `
+          -Name dataChannelPolicy -Value 'SslRequire'
+      ```
+
+      **3. Confirm.** The data-channel policy reads `SslRequire`; file
+      transfers are encrypted too.
+
+  - id: ftp_user_isolation_on
+    type: powershell_json
+    category: vuln
+    display: "HARD: FTP users are isolated instead of all starting in the shared drop root"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $mode = (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' `
+            -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/userIsolation" `
+            -ErrorAction Ignore).mode
+        ([string]$mode -in @('IsolateRootDirectoryOnly', 'IsolateAllDirectories', 'ActiveDirectory')) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Check FTP User Isolation** (IIS Manager > VendorDrop > FTP User
+      Isolation). `None` puts every authenticated user in the same root --
+      one vendor can read the next vendor's uploads.
+
+      **2. Enable isolation** (the base image already creates
+      `ftproot\LocalUser\ftp_vendor` for the local account):
+
+      ```
+      Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+          -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/userIsolation" `
+          -Name mode -Value 'IsolateRootDirectoryOnly'
+      ```
+
+      **3. Confirm.** The mode is an isolate mode, and the vendor account
+      still lands in its own home directory.
+
+  - id: ftp_root_acl_restricted
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The vendor drop root no longer grants Everyone write access"
+    max_points: 4
+    timeout_s: 30
+    collect:
+      script: |
+        $acl = Get-Acl 'C:\inetpub\saltmarsh\ftproot' -ErrorAction Ignore
+        $bad = @($acl.Access | Where-Object {
+            (-not $_.IsInherited) -and
+            ([string]$_.IdentityReference -match 'Everyone') -and
+            ([string]$_.FileSystemRights -match 'FullControl|Modify|Write')
+        })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 4
+    solution: |
+      **1. Inspect the drop-root ACL.**
+
+      ```
+      Get-Acl C:\inetpub\saltmarsh\ftproot | Format-List
+      ```
+
+      Everyone holds full control -- the FTP service account is already
+      covered by the vendor group, so this is pure exposure.
+
+      **2. Remove the Everyone grant** (keep the vendor group and
+      IIS_IUSRS entries):
+
+      ```
+      icacls C:\inetpub\saltmarsh\ftproot /remove:g Everyone
+      ```
+
+      **3. Confirm.** `Get-Acl` shows no explicit Everyone ACE; uploads
+      still work for the vendor account.
+
+  - id: ftp_firewall_scoped
+    type: powershell_json
+    category: vuln
+    display: "HARD: The FTP firewall rule is removed or restricted to an approved remote range"
+    max_points: 8
+    timeout_s: 30
+    collect:
+      script: |
+        $r = Get-NetFirewallRule -Name 'SaltmarshFtpIn' -ErrorAction Ignore
+        if ($null -eq $r) { $true | ConvertTo-Json -Compress; exit }
+        $f = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $r -ErrorAction Ignore
+        $any = @($f.RemoteAddress | Where-Object { [string]$_ -eq 'Any' })
+        ($any.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Check the FTP rule's scope.**
+
+      ```
+      $r = Get-NetFirewallRule -Name 'SaltmarshFtpIn'
+      Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $r
+      ```
+
+      `RemoteAddress : Any` publishes port 21 to the whole network.
+
+      **2. Restrict it to the vendor range** (or remove the rule if the
+      drop is local-only):
+
+      ```
+      Set-NetFirewallRule -Name 'SaltmarshFtpIn' -RemoteAddress '10.20.0.0/24'
+      # or: Remove-NetFirewallRule -Name 'SaltmarshFtpIn'
+      ```
+
+      **3. Confirm.** The address filter no longer lists `Any`; the
+      vendor range still connects.
+
+  - id: ftp_cleartext_creds_removed
+    type: permission
+    category: vuln
+    display: "EASY: The leftover credential file in the FTP drop is removed"
+    max_points: 2
+    timeout_s: 10
+    collect:
+      path: C:\inetpub\saltmarsh\ftproot\outgoing\vendor-credentials.txt
+    expect:
+      equals: false
+      field: exists
+      points: 2
+    solution: |
+      **1. Read it first.** A cleartext vendor password in the drop is a
+      standing credential leak:
+
+      ```
+      Get-Content C:\inetpub\saltmarsh\ftproot\outgoing\vendor-credentials.txt
+      ```
+
+      **2. Remove the file and rotate the password** it contains (the
+      vendor account must keep working):
+
+      ```
+      Remove-Item C:\inetpub\saltmarsh\ftproot\outgoing\vendor-credentials.txt -Force
+      Set-LocalUser -Name 'ftp_vendor' -Password (Read-Host -AsSecureString)
+      ```
+
+      **3. Confirm.** The file is gone; the old password no longer
+      authenticates.
+
+  # --- PENALTY GUARDS -------------------------------------------------------
+  # These award 0 at baseline and -10 if a team "fixes" the box by
+  # breaking the business function. Same mechanics as harborline.
+  - id: penalty_w3svc_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: Stopping the World Wide Web Publishing Service costs 10 points"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: W3SVC
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      The portal is the agency's business function. Stopping W3SVC takes
+      the whole web tier dark and costs 10 points. Start it again and
+      harden the site in place.
+
+  - id: penalty_ftpsvc_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: Stopping the FTP service costs 10 points"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: FTPSVC
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      The vendor drop is a live business service. Removing the FTP
+      service is not a fix here -- disable anonymous access, require
+      FTPS, and scope the firewall. Leave FTPSVC running.
+
+  - id: penalty_portal_started
+    type: powershell_json
+    category: penalty
+    display: "PENALTY: Stopping the SaltmarshPortal site costs 10 points"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        Import-Module WebAdministration -ErrorAction Ignore
+        $s = Get-Website -Name 'SaltmarshPortal' -ErrorAction Ignore
+        ($null -ne $s -and [string]$s.State -eq 'Started') | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: -10
+    solution: |
+      The portal site must stay started. Harden the application, the
+      bindings, and the authentication in place; do not stop or delete
+      the site.
+
+forensics:
+  # Answers live only in the rubric / post-event answer key. The handbook
+  # never prints them and no display string contains them.
+  - id: fq_webdeploy_account
+    question: "One local account was added to Administrators by the intruder. What is that account's username?"
+    answer: "svc_webdeploy"
+    points: 8
+    solution: |
+      Enumerate local Administrators (and every local account) and read
+      the descriptions: `Get-LocalGroupMember -Group Administrators`,
+      `Get-LocalUser`. The stray seat is the intruder's deployment
+      account. Record the name before you disable it -- the answer file is
+      graded from what you type.
+
+  - id: fq_ftp_vendor_password
+    question: "A cleartext vendor password was left behind in the FTP drop. What is that password?"
+    answer: "Kestrel2026!"
+    points: 8
+    solution: |
+      Walk the FTP drop (including the outgoing folder) and read the
+      leftover credential file. The password is the value on the
+      `password:` line. Type it exactly; it is graded
+      case-insensitively but punctuation matters.
+
+  - id: fq_db_password
+    question: "The web root still holds a configuration backup with a database connection string. What is the database password in that file?"
+    answer: "SqlS3rv1ce!2024"
+    points: 8
+    solution: |
+      Find the `.bak` under the application folder and read the
+      connection string. The value after `Password=` is the answer.
+      Remove the backup afterward and rotate the credential.
+
+  - id: fq_apppool_identity
+    question: "What account identity does the portal's application pool currently run as?"
+    answer: "LocalSystem"
+    points: 8
+    solution: |
+      IIS Manager > Application Pools > SaltmarshPortal > Advanced
+      Settings > Identity, or
+      `(Get-Item 'IIS:\AppPools\SaltmarshPortal').processModel.identityType`.
+      The planted identity is the built-in SYSTEM account.
+
+  - id: fq_webshell_name
+    question: "A hidden server-side command page was left in the portal content. What is its filename (including the extension)?"
+    answer: "diag.aspx"
+    points: 8
+    solution: |
+      Sweep the web root for `.aspx`, `.ashx`, and `.asmx` files and
+      compare them with the portal's own pages. The extra page in the
+      root is the shell. Record its filename before deleting it.
+
+  - id: fq_admin_port
+    question: "An undocumented web admin console is published on a non-standard TCP port. What port is it?"
+    answer: "8080"
+    points: 8
+    solution: |
+      Compare the IIS site list with the business sites
+      (`Get-Website | Select Name, Bindings`) and the inbound firewall
+      rules. The extra site's binding is the port. Remove the site and
+      its rule.
+
+theme:
+  title: "Saltmarsh Regional Water Authority"
+  organization: "Saltmarsh Regional Water Authority"
+  accent: "#0F766E"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  desktop_shortcuts:
+    - name: "Hardening Handbook"
+      exec: "%PUBLIC%\\Documents\\huitzilopochtli\\README.html"

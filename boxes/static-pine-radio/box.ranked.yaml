@@ -79,7 +79,7 @@ scenario: scenario.ranked.yaml
 nakon_config: nakon.json
 provider:
   name: ssh
-  host: 10.0.0.157
+  host: 10.0.0.2
   port: 22
   user: stationlead
   password: stationlead

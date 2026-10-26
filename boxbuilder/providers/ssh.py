@@ -305,7 +305,8 @@ class SshHandle(BoxHandle):
         finally:
             sftp.close()
 
-    def install_init(self, kind: str, mode: str = "honor") -> None:
+    def install_init(self, kind: str, mode: str = "honor",
+                     start_agent: bool = True) -> None:
         if kind == "windows":
             return self._install_init_windows()
         # The `huitz` console (agent/cli.py): a world-readable copy of the
@@ -337,13 +338,23 @@ class SshHandle(BoxHandle):
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.service")
             tmp = stage_path(self, "huitzilopochtli-agent.service")
             self.put(local, tmp)
-            res = self.run(
-                f"install -m 644 {tmp} /etc/systemd/system/huitzilopochtli-agent.service && "
-                "systemctl daemon-reload && "
-                "systemctl enable --now huitzilopochtli-agent.service"
-            )
-            if not res.ok:
-                raise RuntimeError(f"failed to enable systemd unit: {res.stderr.strip()}")
+            if start_agent:
+                res = self.run(
+                    f"install -m 644 {tmp} /etc/systemd/system/huitzilopochtli-agent.service && "
+                    "systemctl daemon-reload && "
+                    "systemctl enable --now huitzilopochtli-agent.service"
+                )
+                if not res.ok:
+                    raise RuntimeError(f"failed to enable systemd unit: {res.stderr.strip()}")
+            else:
+                res = self.run(
+                    f"install -m 644 {tmp} /etc/systemd/system/huitzilopochtli-agent.service && "
+                    "systemctl daemon-reload && "
+                    "systemctl disable huitzilopochtli-agent.service >/dev/null 2>&1; "
+                    "systemctl stop huitzilopochtli-agent.service >/dev/null 2>&1; true"
+                )
+                if not res.ok:
+                    raise RuntimeError(f"failed to install systemd unit: {res.stderr.strip()}")
             if mode == "honor":
                 # Honor mode's agent process runs once and exits (see the
                 # unit's own comments); pair it with a timer so the report
@@ -375,11 +386,18 @@ class SshHandle(BoxHandle):
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.openrc")
             tmp = stage_path(self, "huitzilopochtli-agent")
             self.put(local, tmp)
-            res = self.run(
-                f"install -m 755 {tmp} /etc/init.d/huitzilopochtli-agent && "
-                "rc-update add huitzilopochtli-agent default && "
-                "rc-service huitzilopochtli-agent start"
-            )
+            if start_agent:
+                res = self.run(
+                    f"install -m 755 {tmp} /etc/init.d/huitzilopochtli-agent && "
+                    "rc-update add huitzilopochtli-agent default && "
+                    "rc-service huitzilopochtli-agent start"
+                )
+            else:
+                res = self.run(
+                    f"install -m 755 {tmp} /etc/init.d/huitzilopochtli-agent && "
+                    "rc-update add huitzilopochtli-agent default && "
+                    "rc-service huitzilopochtli-agent stop >/dev/null 2>&1; true"
+                )
             if not res.ok:
                 raise RuntimeError(f"failed to enable openrc service: {res.stderr.strip()}")
         else:

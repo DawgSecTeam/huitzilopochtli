@@ -1,0 +1,10 @@
+{
+  "name": "insecure-dir-acl-win",
+  "description": "Practice-box helper (Windows): creates $DIR_PATH and grants Everyone full control with inheritance -- the directory analog of insecure-file-acl-win (FTP roots, upload drops). Vars: DIR_PATH (required). Pairs with ftp_root_acl_restricted and similar directory-ACL sweeps. Idempotent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $DIR_PATH) { throw 'DIR_PATH is required' }\nNew-Item -ItemType Directory -Force -Path $DIR_PATH | Out-Null\nicacls $DIR_PATH /grant 'Everyone:(OI)(CI)(F)' | Out-Null\nWrite-Output \"directory ACL opened: $DIR_PATH\"\n",
+  "depends_on": []
+}

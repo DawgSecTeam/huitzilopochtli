@@ -704,3 +704,75 @@ huitzilopochtli/
 - Additional check types (e.g. sysctl, cron, scheduled-task) and matchers, added via the registries with no core changes.
 - Multi-host scenario execution once single-host is proven.
 ```
+
+## 21. Ranked competition mode (v1.1)
+
+This section extends §11/§14 with the competition layer. It does not change
+the collect/evaluate split, the engine-authored rubric rule, or the engine
+receipt clock.
+
+### 21.1 Model
+
+A **competition** binds one `(scenario_name, scenario_version)`, a maximum
+player count, a per-player run duration, and an optional
+`workshop-vm-distribution` pool code. Status is `draft → live → ended`; there is
+no pause. A **player** is one display name, at most one active box, and one run:
+`started_at` at join, `ends_at = started_at + duration_s`, both engine-stamped.
+`T0` for that box is `started_at` (not its first check-in). The admin can end
+the competition early, which freezes every run.
+
+### 21.2 Join
+
+`POST /join` remains the only binding operation: it is signed by the box key
+and consumes a one-time join code (stored as an HMAC hash), so a box still
+proves possession of its own key. What changed is who types the code.
+
+The engine reserves a slot, mints the one-time code, and claims a VM from the
+competition's workshop pool. The claim carries the code and a shared prebind
+secret to the portal, which returns a **stable open link** (`/r/<uid>`) rather
+than a short-lived Guacamole token. When the player opens that link, the portal
+mints a fresh session and, still before the console appears, runs
+`huitz join --code <code>` inside the guest through qemu-guest-agent. The box
+binds itself; `started_at` — and therefore `T0` — is stamped by the engine at
+that bind, i.e. at the player's click, not at clone time.
+
+The link is stable for the life of the claim, so a stale Guacamole token is
+never a dead end: every open re-mints the session. The engine tracks the claim
+(portal uid, ticket, expiry, last error) and exposes a player-triggered
+`POST /api/public/join/<player_id>/claim` (cookie + page CSRF) that releases
+the old VM and claims a new one. Failures are recorded per player and shown on
+the join page; nothing is silently swallowed. If the portal has no prebind
+secret, the engine falls back to a plain claim and the page shows the terminal
+fallback (`huitz join` plus the code), so the flow degrades instead of dying.
+A box with no player row keeps the pre-competition behavior, and `/enroll`
+remains for pre-provisioned boxes.
+
+### 21.3 Scoring and run end
+
+Point-in-time scoring is unchanged. Self-reported **scored services** are
+declared in a top-level `services:` scenario block; the compiler expands each
+into a check `id = svc_<id>` with `is_sla: true` and an SLA rubric entry, plus
+public label metadata in the manifest. `tcp_port` is a generic service probe.
+The engine splits `scores.total` into `hardening_points` + `service_points`.
+After `ends_at` (or admin End) check-ins are still accepted for seq continuity
+but return `run_status: finished|ended` and a frozen score; no SLA or adversary
+work runs.
+
+### 21.4 Web surface
+
+Public: `/`, `/c/<slug>`, `/c/<slug>/join`, `/c/<slug>/join/success`,
+`/c/<slug>/me`, `/c/<slug>/display`, `/api/public/*`.
+Admin: `/admin` (HTTP Basic → server-side session + CSRF), competition CRUD,
+start/end/close-joins, roster, join-code reissue, DQ/remove, scenario upload,
+audit, CSV export. Admin API under `/admin/api/*` accepts the legacy
+`X-HUITZILOPOCHTLI-Admin-Token` or Basic/session auth. The engine remains
+stdlib-only (`http.server`, `sqlite3`); HTML is server-rendered and escaped.
+
+### 21.5 Deployment and boxes
+
+The engine ships as a tarball (`packaging/build_engine_bundle.py`) installed by
+`engine/deploy/install.sh` as a hardened systemd unit with a daily SQLite
+backup. Ranked competition boxes are a separate lineage from honor boxes:
+`boxbuilder install --competition` installs the agent + signed manifest but no
+token, leaves the agent unit disabled, and the player runs `huitz join`.
+Honor boxes are not convertible.

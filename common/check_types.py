@@ -19,4 +19,5 @@ CHECK_TYPES = frozenset({
     "command_json",
     "powershell_json",
     "registry_value",
+    "tcp_port",
 })

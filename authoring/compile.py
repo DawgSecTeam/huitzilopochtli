@@ -20,6 +20,7 @@ from common.schema import (
     Rubric,
     RubricEntry,
     SCHEMA_VERSION,
+    ServiceSpec,
     SlaParams,
     validate_manifest,
     validate_rubric,
@@ -192,6 +193,56 @@ def _build_forensics(question: dict, ordinal: int) -> tuple:
     return spec, entry
 
 
+_SERVICE_KEYS = frozenset({
+    "id", "display", "type", "collect", "expect", "interval_s",
+    "points_per_interval", "hysteresis_fail_n", "hysteresis_ok_n",
+    "max_intervals_per_checkin", "timeout_s",
+})
+
+
+def _build_service(service: dict) -> tuple:
+    """Expand one services[] entry into (CheckSpec dict, RubricEntry dict,
+    public ServiceSpec metadata).
+
+    The check id is prefixed with ``svc_`` so a service can never collide with
+    an author-written check id. Expected values stay in the rubric only; the
+    manifest carries just the display metadata.
+    """
+    sid = service["id"]
+    check_id = f"svc_{sid}"
+    display = service["display"]
+    collect = dict(service.get("collect") or {})
+    expect = dict(service.get("expect") or {})
+    expect["points"] = 0
+    expect["sla"] = {
+        "interval_s": service["interval_s"],
+        "points_per_interval": service["points_per_interval"],
+        "hysteresis_fail_n": service.get("hysteresis_fail_n", 2),
+        "hysteresis_ok_n": service.get("hysteresis_ok_n", 2),
+        "max_intervals_per_checkin": service.get("max_intervals_per_checkin", 3),
+    }
+    check = {
+        "id": check_id,
+        "type": service["type"],
+        "category": "vuln",
+        "display": f"SERVICE: {display}",
+        "max_points": service["points_per_interval"],
+        "collect": collect,
+        "expect": expect,
+        "is_sla": True,
+        "timeout_s": service.get("timeout_s", _DEFAULT_TIMEOUT_S),
+    }
+    meta = ServiceSpec(
+        id=sid,
+        check_id=check_id,
+        display=display,
+        type=service["type"],
+        interval_s=service["interval_s"],
+        points_per_interval=service["points_per_interval"],
+    )
+    return check, meta
+
+
 def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes) -> dict:
     """Compile scenario YAML into signed manifest, rubric, and engine record."""
     with open(yaml_path, "r") as f:
@@ -202,8 +253,31 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         raise ValueError("\n".join(errors))
 
     scenario = parsed["scenario"]
-    checks = parsed["checks"]
+    checks = list(parsed["checks"])
     forensics = parsed.get("forensics") or []
+
+    service_specs = []
+    service_check_ids = {}
+    for service in parsed.get("services") or []:
+        check, meta = _build_service(service)
+        checks.append(check)
+        service_specs.append(meta)
+        service_check_ids[service["id"]] = check["id"]
+
+    # Let an adversary event name a service id (`web`) instead of the
+    # generated check id (`svc_web`); the rubric/scheduler needs the latter.
+    adversary_raw = parsed.get("adversary") or {}
+    if service_check_ids and isinstance(adversary_raw, dict):
+        rewritten = []
+        for event in adversary_raw.get("events", []):
+            if isinstance(event, dict):
+                target = event.get("affects_check")
+                if isinstance(target, str) and target in service_check_ids:
+                    event = dict(event)
+                    event["affects_check"] = service_check_ids[target]
+            rewritten.append(event)
+        adversary_raw = dict(adversary_raw)
+        adversary_raw["events"] = rewritten
 
     check_specs = [_build_check_spec(c) for c in checks]
     rubric_entries = [_build_rubric_entry(c) for c in checks]
@@ -239,6 +313,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         checks=check_specs,
         theme=manifest_theme,
         forensics=forensics_questions or None,
+        services=[dataclasses.asdict(s) for s in service_specs] or None,
     )
 
     rubric = Rubric(
@@ -250,8 +325,17 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
 
     engine_record = {
         "rubric": dataclasses.asdict(rubric),
-        "adversary": parsed.get("adversary", {}),
+        "adversary": adversary_raw,
+        "services": [dataclasses.asdict(s) for s in service_specs],
+        # The engine's box-folder listing filters on this (ranked boxes only);
+        # honor records simply carry "honor".
+        "mode": scenario.get("mode", "honor"),
     }
+    # Workshop pool provisioning spec (ranked only; validation rejects a pool
+    # block on honor scenarios). Passed through to the engine, which provisions
+    # one pool per competition from it.
+    if "pool" in parsed:
+        engine_record["pool"] = parsed["pool"]
 
     manifest_dict = dataclasses.asdict(manifest)
     rubric_dict = dataclasses.asdict(rubric)
