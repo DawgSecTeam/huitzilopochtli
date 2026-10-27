@@ -78,6 +78,12 @@ def _spec_from_args(args) -> BoxSpec:
 
     if args.spec:
         spec = load_spec(args.spec, mode=mode, engine_url=engine_url)
+        # --authoring-key applies to both input paths. The spec-file path used
+        # to ignore it, silently generating artifacts/<out>/authoring.key even
+        # when the operator asked for a specific key.
+        authoring_key = getattr(args, "authoring_key", None)
+        if authoring_key:
+            spec.authoring_key_path = os.path.abspath(authoring_key)
         return _apply_provider_overrides(spec, args)
 
     # Direct-flag assembly path (no box.yaml).

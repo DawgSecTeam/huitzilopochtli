@@ -508,6 +508,26 @@ def test_sweep_skips_bound_and_running_players(store, comp, player,
 # --- pool cleanup (competition end) --------------------------------------------
 
 
+def _patch_vm_teardown(monkeypatch, vms=None, status="done"):
+    """Fake the portal's VM list + destroy job; return the destroyed VMIDs."""
+    destroyed = []
+    calls = {"n": 0}
+
+    def destroy(_base, _pw, vmids, **kw):
+        destroyed.extend(vmids)
+        return {"status": status, "vmids": list(vmids), "job_id": "job-1"}
+
+    def listed(*a, **kw):
+        calls["n"] += 1
+        # A real destroy job removes the entries; the post-delete sweep must
+        # therefore see an empty list, not the same VMs again.
+        return list(vms or []) if calls["n"] == 1 else []
+
+    monkeypatch.setattr(claims.workshop, "list_vms", listed)
+    monkeypatch.setattr(claims.workshop, "destroy_vms", destroy)
+    return destroyed
+
+
 def test_cleanup_pool_releases_and_deletes_its_own_pool(store,
                                                         comp_provisioned,
                                                         monkeypatch):
@@ -522,6 +542,7 @@ def test_cleanup_pool_releases_and_deletes_its_own_pool(store,
                         lambda base, uid: released.append(uid))
     monkeypatch.setattr(claims.workshop, "delete_pool",
                         lambda base, pw, code, **kw: deleted.append(code))
+    _patch_vm_teardown(monkeypatch)
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
     store.update_competition(comp_provisioned.id, workshop_pool_code="OWNP1")
     stats = claims.cleanup_pool(store,
@@ -545,11 +566,35 @@ def test_cleanup_pool_releases_bound_boxes_too(store, comp_provisioned,
     monkeypatch.setattr(claims.workshop, "release_vm",
                         lambda base, uid: released.append(uid))
     monkeypatch.setattr(claims.workshop, "delete_pool", lambda *a, **kw: None)
+    _patch_vm_teardown(monkeypatch)
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
     store.update_competition(comp_provisioned.id, workshop_pool_code="OWNP1")
     stats = claims.cleanup_pool(store,
                                 store.get_competition(comp_provisioned.id))
     assert stats["released"] == 1
+
+
+def test_cleanup_pool_destroys_pre_provisioned_pool_clones(store,
+                                                           comp_provisioned,
+                                                           monkeypatch):
+    """Unclaimed dispenser clones must not survive the competition."""
+    monkeypatch.setattr(
+        claims.workshop, "list_pools",
+        lambda *a, **kw: [_portal_pool("OWNP1", "huitz-ranked-provision-me")])
+    monkeypatch.setattr(claims.workshop, "release_vm", lambda *a, **kw: None)
+    monkeypatch.setattr(claims.workshop, "delete_pool", lambda *a, **kw: None)
+    destroyed = _patch_vm_teardown(monkeypatch, vms=[
+        {"vmid": 101, "student_id": "huitz-ranked-provision-me-1"},
+        {"vmid": 102, "student_id": "huitz-ranked-provision-me-2"},
+        {"vmid": 999, "student_id": "huitz-ranked-other-pool-1"},
+        {"vmid": 1000, "student_id": "saltmarsh-exchange-4"},
+    ])
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    store.update_competition(comp_provisioned.id, workshop_pool_code="OWNP1")
+    stats = claims.cleanup_pool(store,
+                                store.get_competition(comp_provisioned.id))
+    assert destroyed == [101, 102]
+    assert stats["destroyed"] == 2 and stats["deleted"] is True
 
 
 def test_cleanup_pool_leaves_a_pre_existing_shared_pool_alone(store, comp,
@@ -585,7 +630,8 @@ def test_cleanup_pool_without_a_portal_clears_the_pin(store, comp,
                                                       monkeypatch):
     monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_URL")
     stats = claims.cleanup_pool(store, comp)
-    assert stats == {"released": 0, "deleted": False, "legacy": False}
+    assert stats == {"released": 0, "destroyed": 0, "deleted": False,
+                     "legacy": False, "destroy_pending": False}
     assert store.get_competition(comp.id).workshop_pool_code is None
 
 

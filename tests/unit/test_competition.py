@@ -155,6 +155,23 @@ def test_checkin_reports_live_scoreboard_position(store):
     assert rb2.rank_total == ra2.rank_total == 2
 
 
+def test_equal_totals_share_a_rank(store):
+    """A tie is a tie: equal totals share a rank, not start-time order."""
+    comp = _comp(store)
+    priv_a, box_a, _ = _join(store, comp, "Ada")
+    priv_b, box_b, _ = _join(store, comp, "Grace")
+
+    ra = _checkin(store, priv_a, _bundle(box_a, 1, web=False), 1000.0)
+    rb = _checkin(store, priv_b, _bundle(box_b, 1, web=False), 1001.0)
+    assert ra.score.total == rb.score.total == 10
+    assert (ra.rank, ra.rank_total) == (1, 2)
+    assert (rb.rank, rb.rank_total) == (1, 2)
+
+    board = competition.leaderboard_payload(store, comp, now=1002.0)
+    assert [row["rank"] for row in board["leaderboard"]] == [1, 1]
+    assert [row["total"] for row in board["leaderboard"]] == [10, 10]
+
+
 def test_run_expiry_freezes_and_marks_finished(store):
     comp = _comp(store)
     priv, box_id, payload = _join(store, comp)

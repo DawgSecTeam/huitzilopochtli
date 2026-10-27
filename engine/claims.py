@@ -110,6 +110,29 @@ def _pin_pool(store: Store, comp: CompetitionRecord, pool_code: str,
           flush=True)
 
 
+def _pool_vmids(base: str, password: str, prefix: str, pool_code: str,
+                expected: int) -> list:
+    """VMIDs the portal lists for this competition's pool.
+
+    Pre-provisioned clones register asynchronously, so an operator who ends a
+    competition immediately after its first claim can race the portal. When
+    the pool reports a non-zero size, poll briefly before concluding there is
+    nothing to destroy.
+    """
+    attempts = 5 if expected else 1
+    for attempt in range(attempts):
+        vms = workshop.list_vms(base, password)
+        vmids = [v.get("vmid") for v in vms
+                 if isinstance(v, dict)
+                 and (str(v.get("student_id") or "").startswith(prefix)
+                      or v.get("pool") == pool_code)]
+        if vmids:
+            return vmids
+        if attempt + 1 < attempts:
+            time.sleep(2.0)
+    return []
+
+
 def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
     """Release a competition's VMs and drop its pool once the run is over.
 
@@ -118,7 +141,8 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
     just has its pin cleared so the operator's pool stays untouched. Best
     effort and idempotent — the sweeper retries while the pin survives.
     """
-    stats = {"released": 0, "deleted": False, "legacy": False}
+    stats = {"released": 0, "destroyed": 0, "deleted": False,
+             "legacy": False, "destroy_pending": False}
     if comp is None or not comp.workshop_pool_code:
         return stats
     base, _secret = config()
@@ -142,11 +166,48 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
                         stats["released"] += 1
                     except workshop.WorkshopError:
                         pass  # the portal expires it; do not block deletion
+            # A dispenser pool pre-provisions clones that no player ever
+            # claimed. Releasing player claims does not touch those, so
+            # enumerate the portal's own VM list and destroy every clone
+            # that belongs to this competition's pool.
+            prefix = workshop.competition_pool_name(comp.slug) + "-"
+            expected = int((entry or {}).get("count")
+                           or (entry or {}).get("total") or 0)
+            try:
+                vmids = _pool_vmids(base, password, prefix, pinned, expected)
+            except workshop.WorkshopError:
+                return stats  # keep the pin; the sweeper retries
+            if vmids:
+                try:
+                    job = workshop.destroy_vms(base, password, vmids)
+                except workshop.WorkshopError:
+                    return stats  # keep the pin; the sweeper retries
+                if job.get("status") == "error":
+                    return stats
+                stats["destroyed"] += len(vmids)
+                stats["destroy_pending"] = job.get("status") != "done"
             try:
                 workshop.delete_pool(base, password, pinned)
                 stats["deleted"] = True
             except workshop.WorkshopError:
                 return stats  # keep the pin; the sweeper retries
+            # Deleting the config can race a clone registering itself. Sweep
+            # once more now that the pool is gone; the portal keeps the VM
+            # entry (and its pool code) even without a saved config.
+            try:
+                late = _pool_vmids(base, password, prefix, pinned, expected=0)
+            except workshop.WorkshopError:
+                late = []
+            if late:
+                try:
+                    job = workshop.destroy_vms(base, password, late)
+                except workshop.WorkshopError:
+                    return stats
+                if job.get("status") == "error":
+                    return stats
+                stats["destroyed"] += len(late)
+                stats["destroy_pending"] = (
+                    stats["destroy_pending"] or job.get("status") != "done")
     store.update_competition(comp.id, workshop_pool_code=None)
     store.add_audit("system", "competition_pool_cleanup", comp.id,
                     details_json=json.dumps({"pool": pinned, **stats}))
@@ -412,4 +473,5 @@ def describe(player: PlayerRecord) -> dict:
         "claim_attempts": player.claim_attempts or 0,
         "code_expires_at": player.join_code_expires_at,
         "box_bound": bool(player.box_id),
+        "run_ends_at": player.ends_at,
     }

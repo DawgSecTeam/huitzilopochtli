@@ -4,6 +4,7 @@ The engine asks the workshop portal to claim a VM from a pool and returns the
 Guacamole URL. It never receives Proxmox credentials.
 """
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -144,3 +145,46 @@ def delete_pool(base_url: str, admin_password: str, pool_code: str,
     """DELETE /api/admin/pools/<code> (config only; release VMs separately)."""
     _call(base_url, "DELETE", f"/api/admin/pools/{pool_code}", timeout=timeout,
           headers=_admin_headers(admin_password))
+
+
+def list_vms(base_url: str, admin_password: str, timeout: float = 15.0) -> list:
+    """GET /api/admin/pool: every VM the portal knows about.
+
+    Each entry carries {vmid, student_id, pool, claimed, expired, ...}. The
+    engine uses this only to find the clones belonging to its own competition
+    pool at teardown; it never selects a VM for a claim from this list.
+    """
+    return _call(base_url, "GET", "/api/admin/pool", timeout=timeout,
+                 headers=_admin_headers(admin_password))
+
+
+def destroy_vms(base_url: str, admin_password: str, vmids,
+                timeout: float = 10.0, wait_s: float = 60.0) -> dict:
+    """POST /api/admin/destroy (specific VMIDs) and wait for the teardown job.
+
+    The portal runs destruction asynchronously. Waiting here keeps the
+    competition-end path honest: when this returns, the competition's own
+    clones are gone (or the caller sees ``status != "done"`` and can retry).
+    """
+    ids = [int(v) for v in vmids if v is not None]
+    if not ids:
+        return {"status": "done", "vmids": [], "job_id": None}
+    result = _call(base_url, "POST", "/api/admin/destroy",
+                   {"mode": "specific", "vmids": ids}, timeout,
+                   headers=_admin_headers(admin_password))
+    job_id = result.get("job_id")
+    if not job_id:
+        return {"status": "done", "vmids": ids, "job_id": None}
+    deadline = time.monotonic() + max(0.0, wait_s)
+    job = {}
+    while True:
+        job = _call(base_url, "GET", f"/api/admin/job/{job_id}", timeout,
+                    headers=_admin_headers(admin_password))
+        if job.get("status") in ("done", "error"):
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
+    job["vmids"] = ids
+    return job
+
