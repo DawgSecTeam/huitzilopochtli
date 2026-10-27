@@ -20,6 +20,7 @@ from common.schema import (
     CollectorStatus,
     CheckResult,
     Directive,
+    SLA_HISTORY_MAX,
     ScoreBreakdown,
     SlaStatus,
 )
@@ -51,11 +52,22 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         for r in score_data.get("results", [])
     ]
 
+    def _state_history(value) -> list:
+        """Normalize the engine's SLA tick ring; tolerate pre-history engines."""
+        if not isinstance(value, list):
+            return []
+        states = [str(item).upper() for item in value]
+        return [s for s in states if s in ("UP", "DOWN")][-SLA_HISTORY_MAX:]
+
+    def _optional_int(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
     sla_status = [
         SlaStatus(
             check_id=s["check_id"],
             state=s["state"],
             accrued_points=s["accrued_points"],
+            history=_state_history(s.get("history")),
         )
         for s in score_data.get("sla_status", [])
     ]
@@ -94,6 +106,8 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         run_ends_at=data.get("run_ends_at"),
         player_name=data.get("player_name"),
         competition_name=data.get("competition_name"),
+        rank=_optional_int(data.get("rank")),
+        rank_total=_optional_int(data.get("rank_total")),
     )
 
 

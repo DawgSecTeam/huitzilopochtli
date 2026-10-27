@@ -1,7 +1,3 @@
-# Cocoa Falls Chocolate Works: a light, recognizable factory-themed hardening box.
-# The theme is flavor only; every task is solvable from ordinary Linux evidence.
-# Each selected nakon configuration plants the insecure state described by its paired check.
-
 scenario:
   name: "Cocoa Falls Chocolate Works"
   version: 1
@@ -9,26 +5,7 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # Difficulty spread, called out explicitly per-check below (and in the
-  # in-box README) so a self-paced beginner can tell what to try first:
-  #   EASY (8):     recipe_private, desktop_vault_code, no_tourguide,
-  #                 no_tempscout, no_shipping_bot, no_passwordless_sudo,
-  #                 no_malicious_autostart, media_is_not_script
-  #   MODERATE (9):  cron_file_private, deploy_key_private, ssh_no_root,
-  #                 intern_not_admin, service_account_no_shell,
-  #                 no_blank_tempscout_password, cocoaadm_password_set,
-  #                 cocoa_service_inactive,
-  #                 cocoa_service_disabled
-  #   HARD (3):     no_hidden_cron_file, no_hidden_payload,
-  #                 no_backdoor_ssh_key
-  #
-  # GUI-only findings (no terminal needed -- at least 4, called out with
-  # "GUI:" below): the three unauthorized accounts show up as login tiles
-  # on the greeter before you even reach a desktop; the autostart entry is
-  # a checkbox in Settings > Session and Startup > Application Autostart;
-  # the vault-code file sits in plain sight on the Desktop.
 
-  # --- basic file permissions --------------------------------------------
   - id: recipe_private
     type: permission
     category: vuln
@@ -163,7 +140,6 @@ checks:
       /home/cocoaadm/.ssh/authorized_keys` -- after the backdoor-key
       task the whole directory should be private to its owner.
 
-  # --- basic access control ----------------------------------------------
   - id: ssh_no_root
     type: file_regex
     category: vuln
@@ -267,8 +243,6 @@ checks:
 
       **3. Confirm.** `sudo -l` as cocoaadm now demands a password.
 
-
-  # --- malicious users and unwanted administration ----------------------
   - id: no_tourguide
     type: user_group
     category: vuln
@@ -357,7 +331,6 @@ checks:
     expect:
       group_members_subset_of: true
       group: sudo
-      # Ubuntu's connecting account is the legitimate administrator in the example box.
       allowed: [ubuntu, cocoaadm]
       points: 10
     solution: |
@@ -451,7 +424,6 @@ checks:
 
       **3. Confirm.** The awk one-liner prints nothing.
 
-  # --- difficult persistence and malicious-file findings ----------------
   - id: no_hidden_cron_file
     type: permission
     category: vuln
@@ -710,18 +682,9 @@ theme:
     Cocoa Falls Chocolate Works System
     Disconnect if you are unauthorized.
   desktop_shortcuts:
-    # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
-    # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
-    # launches it (GLib's desktop-entry parsing does quote-removal, not
-    # tilde/variable expansion).
     - name: "Factory Hardening Handbook"
       exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt on the Desktop; the agent re-grades the file each
-# pass. Correct answer = full points; wrong or blank = nothing, no penalty.
-# Each question must be answerable from the evidence on the box -- every key
-# below mirrors a planted vulnerability's check above.
 forensics:
   - id: fq-hidden-cron
     question: "A rogue scheduled job keeps phoning home. What is the filename of the hidden cron job?"
@@ -792,3 +755,31 @@ forensics:
       tag is the last whitespace-separated field of that line. Answer:
       `planted-training-key`. (Note it before removing the line in the
       hardening task.)
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: ssh
+    display: SSH
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: desktop
+    display: Desktop console (VNC)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 5900
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3

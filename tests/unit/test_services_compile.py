@@ -112,5 +112,5 @@ pool:
     yaml_path = tmp_path / "scenario.yaml"
     yaml_path.write_text(honor)
     priv, _pub = signing.keypair()
-    with pytest.raises(ValueError, match="only valid for ranked"):
+    with pytest.raises(ValueError, match="ranked-only"):
         compile_scenario(str(yaml_path), str(tmp_path / "out"), priv)

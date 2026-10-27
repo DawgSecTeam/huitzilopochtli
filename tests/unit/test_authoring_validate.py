@@ -274,7 +274,7 @@ def test_pool_block_on_an_honor_scenario_is_rejected():
     parsed = _base()
     parsed["pool"] = _pool_block()
     errors = validate_scenario_yaml(parsed, "x.yaml")
-    assert any("'pool' is only valid for ranked scenarios" in e for e in errors)
+    assert any("ranked-only" in e and "'pool'" in e for e in errors)
 
 
 def test_pool_block_missing_required_template_keys():

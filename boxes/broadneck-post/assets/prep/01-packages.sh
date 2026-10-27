@@ -12,6 +12,7 @@ apt-get install -y --no-install-recommends \
     postfix \
     dovecot-core dovecot-imapd dovecot-pop3d \
     rsyslog \
+    iptables \
     curl \
     python3 python3-paramiko
 

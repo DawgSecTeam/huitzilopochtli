@@ -53,7 +53,7 @@ def _compile_result(tmp_path, mode):
 def _spec(mode, provider_name="fake"):
     return BoxSpec(
         scenario_path="/dev/null", nakon_config_path="/dev/null",
-        provider={"name": provider_name, "host": "10.0.0.99", "user": "u", "password": "p"},
+        provider={"name": provider_name, "host": "192.0.2.99", "user": "u", "password": "p"},
         base_dir=".",
         scenario=(RANKED_SCENARIO if mode == "ranked" else HONOR_SCENARIO),
         nakon_config={"machines": [{"id": 1, "name": "web01", "configurations": []}]},
@@ -189,7 +189,7 @@ def test_install_skips_chown_when_root_user(tmp_path, fake_provider_factory, fak
     it is unconditional, not part of the handover."""
     cr = _compile_result(tmp_path, "honor")
     spec = _spec("honor")
-    spec.provider = {"name": "fake", "host": "10.0.0.99", "user": "root", "password": "p"}
+    spec.provider = {"name": "fake", "host": "192.0.2.99", "user": "root", "password": "p"}
     result = install_box(
         spec, artifacts_dir=str(tmp_path), compile_result=cr,
         provider_factory=fake_provider_factory, init_kind="none", log=lambda *a: None,
@@ -222,3 +222,32 @@ def test_reinstall_clears_stale_files_even_for_root(tmp_path, fake_provider_fact
                 log=lambda *a: None)
     handle = fake_provider.last_handle
     assert any(f"find {INSTALL_DIR} -mindepth 1 -delete" in c for c in handle.runs)
+
+
+def test_install_competition_leaves_the_agent_stopped(tmp_path, fake_provider_factory,
+                                                      fake_provider):
+    """The player's `huitz join` starts the unit; install must not."""
+    cr = _compile_result(tmp_path, "ranked")
+    result = install_box(
+        _spec("ranked"), artifacts_dir=str(tmp_path), compile_result=cr,
+        provider_factory=fake_provider_factory, init_kind="systemd",
+        competition_mode=True, log=lambda *a: None,
+    )
+    assert result["ok"] is True
+    assert result["ranked"]["competition_mode"] is True
+    assert fake_provider.last_handle.init_start_agent is False
+
+
+def test_install_ranked_starts_the_agent(tmp_path, fake_provider_factory,
+                                         fake_provider, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_ADMIN_TOKEN", "t")
+    monkeypatch.setattr(eng_mod, "upload_scenario", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(eng_mod, "mint_enrollment_token", lambda *a, **k: "tok")
+    cr = _compile_result(tmp_path, "ranked")
+    result = install_box(
+        _spec("ranked"), artifacts_dir=str(tmp_path), compile_result=cr,
+        provider_factory=fake_provider_factory, init_kind="systemd",
+        log=lambda *a: None,
+    )
+    assert result["ok"] is True
+    assert fake_provider.last_handle.init_start_agent is True

@@ -39,9 +39,11 @@ def _board_row(**over):
                hardening_points=100, service_points=20, started_at=now,
                ends_at=now + 3600, remaining_s=7199, last_checkin=now - 30,
                services=[{"id": "web", "display": "Demo web", "check_id": "s1",
-                          "state": "UP", "accrued_points": 3, "last_changed_at": now},
+                          "state": "UP", "accrued_points": 3, "last_changed_at": now,
+                          "history": ["UP", "UP", "DOWN", "UP"]},
                          {"id": "ssh", "display": "SSH", "check_id": "s2",
-                          "state": "DOWN", "accrued_points": 0, "last_changed_at": now}],
+                          "state": "DOWN", "accrued_points": 0, "last_changed_at": now,
+                          "history": ["DOWN"] * 10}],
                box_bound=True, rank=1)
     row.update(over)
     return row
@@ -218,6 +220,21 @@ def test_settings_card_is_a_fact_grid():
     assert 'class="fact-label">Join URL<' in page
 
 
+def test_admin_pages_write_out_the_status_word():
+    # Operator view: the dot AND the word (dashboard column + page title).
+    page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
+    assert 'class="stwdot"' in page and '<span class="word">Live</span>' in page
+    dash = web.admin_dashboard_page([_comp(status="draft")], {"c1": 0}, "csrf")
+    assert 'class="stwdot"' in dash and '<span class="word">Draft</span>' in dash
+
+
+def test_nav_active_underline_cannot_shift_alignment():
+    # Every nav entry reserves the same 4px underline slot; aria-current only
+    # paints the bar, so activating a link moves no baselines.
+    assert "nav a,nav button{color:var(--ink-2);font-weight:600;font-size:.76rem;letter-spacing:.09em;text-transform:uppercase;background:none;border:0;padding:0 0 4px;" in web.CSS
+    assert "nav a[aria-current]{color:var(--ink);box-shadow:inset 0 -2px 0 var(--accent-text)}" in web.CSS
+
+
 def test_copy_buttons_present_on_join_success_and_admin_comp():
     # The terminal fallback (with the copyable code) appears only when the
     # automatic join failed; pending and ready states never need it.
@@ -374,8 +391,17 @@ def test_join_box_reasons():
         return _payload(competition=over)["competition"]
     live = comp(status="live", join_open=True, max_players=4, player_count=1)
     assert "Join this competition" in web._join_box(live)
+    # A player already in this (or another) competition never sees Join.
+    same = web._join_box(live, viewer_comp=_comp())
+    assert "Join this competition" not in same
+    assert "You're in this competition" in same and 'href="/"' in same
+    other = web._join_box(live, viewer_comp=_comp(id="c2", slug="other",
+                                                  name="Other Cup"))
+    assert "Join this competition" not in other
+    assert "Other Cup" in other and 'href="/"' in other
     full = comp(status="live", join_open=True, max_players=4, player_count=4)
-    assert "Competition is full." in web._join_box(full)
+    # Fullness is the one blocking state that gets a loud, tinted note.
+    assert 'class="fullnote">Competition is full<' in web._join_box(full)
     closed = comp(status="live", join_open=False, max_players=4, player_count=1)
     assert "Joins are closed." in web._join_box(closed)
     draft = comp(status="draft", join_open=True, max_players=4, player_count=0)
@@ -384,12 +410,77 @@ def test_join_box_reasons():
     assert "Competition has ended." in web._join_box(ended)
 
 
+def test_leaderboard_meta_flags_full():
+    page = web.competition_page(_payload(competition={"max_players": 1,
+                                                      "player_count": 1}))
+    assert '<span class="fullflag">full</span>' in page
+
+
 def test_join_form_closed_notice_replaces_the_form():
     page = web.join_form_page(_comp(), closed_notice="Joins are closed.")
     assert "<form" not in page
     assert "Joins are closed." in page
     open_page = web.join_form_page(_comp())
     assert 'name="name"' in open_page
+
+
+def test_join_form_blocks_a_second_competition():
+    # A player already in one live competition gets a pointer to that run,
+    # never a form whose POST can only be refused.
+    other = _comp(id="c2", slug="other", name="Other Cup")
+    page = web.join_form_page(_comp(), blocked_comp=other)
+    assert "already in Other Cup" in page
+    assert 'href="/"' in page and "Go to my run" in page
+    assert "<form" not in page
+
+
+def test_main_page_becomes_the_active_run():
+    page = web.home_competition_page(
+        _comp(), _player(), _board_row(), [_board_row()], "http://guac/x",
+        csrf="t", leave_csrf="t", player_count=1)
+    assert "<title>My competition" in page
+    assert "You're in Demo Cup" in page
+    assert "this is your main page" in page
+    assert "You can join another competition once this run ends." in page
+    # The redesigned main page uses a wide two-column dashboard, not one
+    # narrow card floating in empty space.
+    assert 'class="home-grid"' in page and 'class="home-col"' in page
+    assert "Your score" in page and "Run clock" in page
+    assert "Service uptime" in page and "Demo web" in page
+    assert page.count('class="tick ') == 20  # 2 services x 10 ticks
+    assert "Leaderboard" in page and "Your VM" in page
+    # Leaving is an option; the old "permanent status link" is gone.
+    assert "/c/demo/leave" in page and "Leave competition" in page
+    assert "Permanent status link" not in page
+    # The ordinary per-run page stays a compact status card.
+    normal = web.player_page(_comp(), _player(), _board_row(), "http://guac/x")
+    assert "this is your main page" not in normal
+    assert "Leave competition" not in normal
+
+
+def test_service_history_is_ten_ticks_per_service():
+    out = web._service_history([
+        {"display": "IIS web portal", "state": "UP",
+         "history": ["UP", "DOWN", "UP"]},
+        {"display": "FTP vendor drop", "state": "DOWN",
+         "history": ["DOWN"] * 10},
+    ])
+    assert "IIS web portal" in out and "FTP vendor drop" in out
+    assert out.count('class="tick ') == 20
+    # The short history is padded on the left, not guessed at.
+    assert out.count('class="tick void"') == 7
+    assert out.count('class="tick up"') == 2
+    assert out.count('class="tick down"') == 11
+    assert "last 10 ticks" in out
+    assert web._service_history([]).startswith('<p class="empty">No scored services')
+
+
+def test_admin_can_remove_only_ended_competitions():
+    live = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
+    assert "/delete" not in live
+    ended = web.admin_competition_page(_comp(status="ended"),
+                                       {"leaderboard": []}, [], "csrf")
+    assert "/delete" in ended and "Remove competition" in ended
 
 
 def test_index_cards_only_offer_join_when_live_and_open():
@@ -486,10 +577,10 @@ def test_derive_slug():
 
 def test_new_competition_form_dropdown_from_folder():
     page = web.admin_new_competition_page(
-        [("Ranked Demo", 2, "/boxes/ranked-demo"),
-         ("Static Pine Community Radio", 1, "/boxes/static-pine-radio")], "csrf")
+        [("Demo Alpha", 2, "/scenarios/alpha"),
+         ("Demo Beta", 1, "/scenarios/beta")], "csrf")
     assert 'name="name"' in page
-    assert 'name="scenario"' in page and 'value="Ranked Demo|2"' in page
+    assert 'name="scenario"' in page and 'value="Demo Alpha|2"' in page
     assert 'name="max_players"' in page and 'name="duration_min"' in page
     assert 'name="accent"' in page
     for gone in ('name="slug"', 'name="workshop_pool_code"',
@@ -588,6 +679,19 @@ def test_status_dots_render_on_every_competition_card():
     assert 'class="badge' not in out + other
 
 
+def test_index_cards_show_capacity_and_flag_full():
+    counts = {"c1": 3}
+    out = web._comp_cards([_comp(max_players=4)], players_by_comp=counts)
+    assert "3 of 4 joined" in out
+    assert "Full" not in out and "/join" in out  # room left -> Join offered
+    full = web._comp_cards([_comp(max_players=3)], players_by_comp=counts)
+    assert '<span class="fullflag">Full</span>' in full
+    assert "/join" not in full          # a full competition offers no join
+    # No counts supplied -> the old generic meta, no false full claims.
+    plain = web._comp_cards([_comp(max_players=4)])
+    assert "up to 4 players" in plain and "full" not in plain.lower()
+
+
 def test_public_nav_has_admin_login_button():
     page = web.index_page([], admin_view=False)
     assert 'href="/admin">Admin</a>' in page
@@ -611,20 +715,20 @@ def test_ended_competition_has_rerun_button():
 def test_box_scenario_scanner(tmp_path, monkeypatch):
     from engine import scenario
     boxes = tmp_path / "boxes"
-    ranked = boxes / "ranked-demo"
+    ranked = boxes / "alpha"
     ranked.mkdir(parents=True)
     (ranked / "engine_record.json").write_text(json.dumps(
-        {"rubric": {"scenario_name": "Ranked Demo", "scenario_version": 2},
+        {"rubric": {"scenario_name": "Demo Alpha", "scenario_version": 2},
          "adversary": {}, "services": [{"id": "web"}], "mode": "ranked"}))
-    ranked_v3 = boxes / "static-pine"
+    ranked_v3 = boxes / "beta"
     ranked_v3.mkdir()
     (ranked_v3 / "engine_record-r3.json").write_text(json.dumps(
-        {"rubric": {"scenario_name": "Static Pine R3", "scenario_version": 1},
+        {"rubric": {"scenario_name": "Demo Beta R3", "scenario_version": 1},
          "adversary": {"events": []}, "services": [], "mode": "ranked"}))
-    honor = boxes / "chocolate-factory"
+    honor = boxes / "honor-box"
     honor.mkdir()
     (honor / "engine_record.json").write_text(json.dumps(
-        {"rubric": {"scenario_name": "Chocolate Factory", "scenario_version": 1},
+        {"rubric": {"scenario_name": "Demo Honor", "scenario_version": 1},
          "adversary": {}, "services": [], "mode": "honor"}))
     junk = boxes / "broken-box"
     junk.mkdir()
@@ -632,9 +736,9 @@ def test_box_scenario_scanner(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HUITZILOPOCHTLI_BOXES_DIR", str(boxes))
     listed = scenario.list_box_scenarios()
-    assert [("Ranked Demo", 2), ("Static Pine R3", 1)] == [(n, v) for n, v, _ in listed]
-    record = scenario.load_box_scenario("Ranked Demo", 2)
-    assert record[0]["scenario_name"] == "Ranked Demo"
+    assert [("Demo Alpha", 2), ("Demo Beta R3", 1)] == [(n, v) for n, v, _ in listed]
+    record = scenario.load_box_scenario("Demo Alpha", 2)
+    assert record[0]["scenario_name"] == "Demo Alpha"
     assert record[2] == [{"id": "web"}]
     assert scenario.load_box_scenario("Chocolate Factory", 1) is None
     assert scenario.load_box_scenario("Nope", 9) is None

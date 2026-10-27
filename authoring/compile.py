@@ -9,6 +9,7 @@ import yaml
 
 from authoring.readme_lint import lint_readme
 from authoring.sign_scenario import sign_manifest
+from authoring.scenario_modes import base_mode, merge_effective
 from authoring.validate import validate_scenario_yaml
 from common.crypto.signing import public_key_from_private
 from common.schema import (
@@ -243,8 +244,14 @@ def _build_service(service: dict) -> tuple:
     return check, meta
 
 
-def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes) -> dict:
-    """Compile scenario YAML into signed manifest, rubric, and engine record."""
+def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
+                     mode: Optional[str] = None, engine_url: Optional[str] = None) -> dict:
+    """Compile scenario YAML into signed manifest, rubric, and engine record.
+
+    ``mode`` selects the build target (default: the file's ``scenario.mode``).
+    ``ranked`` merges the file's ``ranked:`` block over the base content;
+    ``honor`` never reads it. ``engine_url`` overrides the authored address.
+    """
     with open(yaml_path, "r") as f:
         parsed = yaml.safe_load(f.read())
 
@@ -252,13 +259,16 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
     if errors:
         raise ValueError("\n".join(errors))
 
-    scenario = parsed["scenario"]
-    checks = list(parsed["checks"])
-    forensics = parsed.get("forensics") or []
+    effective = merge_effective(parsed, mode or base_mode(parsed),
+                                engine_url=engine_url, source=yaml_path)
+
+    scenario = effective["scenario"]
+    checks = list(effective["checks"])
+    forensics = effective["forensics"]
 
     service_specs = []
     service_check_ids = {}
-    for service in parsed.get("services") or []:
+    for service in effective["services"]:
         check, meta = _build_service(service)
         checks.append(check)
         service_specs.append(meta)
@@ -266,7 +276,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
 
     # Let an adversary event name a service id (`web`) instead of the
     # generated check id (`svc_web`); the rubric/scheduler needs the latter.
-    adversary_raw = parsed.get("adversary") or {}
+    adversary_raw = effective["adversary"] or {}
     if service_check_ids and isinstance(adversary_raw, dict):
         rewritten = []
         for event in adversary_raw.get("events", []):
@@ -293,7 +303,7 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
             )
         )
 
-    manifest_theme, readme_text = _build_manifest_theme(parsed.get("theme"), yaml_path)
+    manifest_theme, readme_text = _build_manifest_theme(effective["theme"], yaml_path)
 
     # Spoiler lint (HANDBOOK_GUIDE.md): a forensics answer in the handbook
     # blocks the compile; lesser leaks surface as warnings on the outputs.
@@ -329,13 +339,13 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes)
         "services": [dataclasses.asdict(s) for s in service_specs],
         # The engine's box-folder listing filters on this (ranked boxes only);
         # honor records simply carry "honor".
-        "mode": scenario.get("mode", "honor"),
+        "mode": scenario["mode"],
     }
     # Workshop pool provisioning spec (ranked only; validation rejects a pool
     # block on honor scenarios). Passed through to the engine, which provisions
     # one pool per competition from it.
-    if "pool" in parsed:
-        engine_record["pool"] = parsed["pool"]
+    if "pool" in effective:
+        engine_record["pool"] = effective["pool"]
 
     manifest_dict = dataclasses.asdict(manifest)
     rubric_dict = dataclasses.asdict(rubric)

@@ -232,8 +232,8 @@ phase.
      (`PrependPath=1` from the python.org installer during template prep).
      Also upload and run `packaging/huitz-hardening-win.ps1` once: it kills
      the Edge first-run wizard, the Shutdown Event Tracker + Server Manager
-     logon modals, and the python advertised-shortcut MSI self-repair trap
-     (REDEPLOY.md gotchas 25/26). The task script also
+     logon modals, and the python advertised-shortcut MSI self-repair trap.
+     The task script also
      needs the agent run once by hand after placement or the first grade
      waits for the next 5-minute tick.
 

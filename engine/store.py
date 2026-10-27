@@ -6,10 +6,32 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
+from common.schema import SLA_HISTORY_MAX
 from engine.store_schema import SCHEMA as _SCHEMA
+
+
+def _load_sla_history(raw) -> list:
+    """Decode a history_json value into a capped oldest->newest state list."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out = [str(item).upper() for item in data if str(item).upper() in ("UP", "DOWN")]
+    return out[-SLA_HISTORY_MAX:]
+
+
+def _dump_sla_history(history) -> str:
+    values = [str(item).upper() for item in (history or [])
+              if str(item).upper() in ("UP", "DOWN")]
+    return json.dumps(values[-SLA_HISTORY_MAX:])
+
 
 
 @dataclass
@@ -37,6 +59,7 @@ class SlaStateRecord:
     accrued_points: int
     last_observed_at: float = 0.0
     last_changed_at: float = 0.0
+    history: list = field(default_factory=list)  # list[str], oldest -> newest
 
 
 @dataclass
@@ -236,6 +259,7 @@ class Store:
             ("sla_state", (
                 ("last_observed_at", "REAL NOT NULL DEFAULT 0"),
                 ("last_changed_at", "REAL NOT NULL DEFAULT 0"),
+                ("history_json", "TEXT NOT NULL DEFAULT '[]'"),
             )),
             ("enrollment_tokens", (
                 ("competition_id", "TEXT"), ("player_id", "TEXT"),
@@ -501,7 +525,8 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "SELECT box_id, check_id, state, consec_ok, consec_fail, "
-                "last_credited_at, accrued_points, last_observed_at, last_changed_at "
+                "last_credited_at, accrued_points, last_observed_at, "
+                "last_changed_at, history_json "
                 "FROM sla_state WHERE box_id = ? AND check_id = ?",
                 (box_id, check_id),
             )
@@ -515,24 +540,29 @@ class Store:
             accrued_points=row["accrued_points"],
             last_observed_at=row["last_observed_at"],
             last_changed_at=row["last_changed_at"],
+            history=_load_sla_history(row["history_json"]),
         )
 
     def save_sla_state(self, rec: SlaStateRecord) -> None:
+        rec.history = _load_sla_history(_dump_sla_history(rec.history))
         with self._lock:
             self._conn.execute(
                 "INSERT INTO sla_state (box_id, check_id, state, consec_ok, "
                 "consec_fail, last_credited_at, accrued_points, last_observed_at, "
-                "last_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "last_changed_at, history_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(box_id, check_id) DO UPDATE SET "
                 "state = excluded.state, consec_ok = excluded.consec_ok, "
                 "consec_fail = excluded.consec_fail, "
                 "last_credited_at = excluded.last_credited_at, "
                 "accrued_points = excluded.accrued_points, "
                 "last_observed_at = excluded.last_observed_at, "
-                "last_changed_at = excluded.last_changed_at",
+                "last_changed_at = excluded.last_changed_at, "
+                "history_json = excluded.history_json",
                 (rec.box_id, rec.check_id, rec.state, rec.consec_ok,
                  rec.consec_fail, rec.last_credited_at, rec.accrued_points,
-                 rec.last_observed_at, rec.last_changed_at),
+                 rec.last_observed_at, rec.last_changed_at,
+                 _dump_sla_history(rec.history)),
             )
             self._commit()
 
@@ -543,7 +573,8 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "SELECT box_id, check_id, state, consec_ok, consec_fail, "
-                "last_credited_at, accrued_points, last_observed_at, last_changed_at "
+                "last_credited_at, accrued_points, last_observed_at, "
+                "last_changed_at, history_json "
                 "FROM sla_state WHERE box_id = ? AND check_id = ?",
                 (box_id, check_id),
             )
@@ -556,6 +587,7 @@ class Store:
                 accrued_points=row["accrued_points"],
                 last_observed_at=row["last_observed_at"],
                 last_changed_at=row["last_changed_at"],
+                history=_load_sla_history(row["history_json"]),
             )
             new_rec = apply_fn(rec)
             new_rec.last_observed_at = observed
@@ -563,21 +595,28 @@ class Store:
                 new_rec.last_changed_at = observed
             elif not new_rec.last_changed_at:
                 new_rec.last_changed_at = observed
+            # One tick per update: record the post-hysteresis state this
+            # check-in settled on, keeping a bounded oldest->newest ring.
+            history = list(new_rec.history or [])
+            history.append(new_rec.state)
+            new_rec.history = history[-SLA_HISTORY_MAX:]
             self._conn.execute(
                 "INSERT INTO sla_state (box_id, check_id, state, consec_ok, "
                 "consec_fail, last_credited_at, accrued_points, last_observed_at, "
-                "last_changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "last_changed_at, history_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(box_id, check_id) DO UPDATE SET "
                 "state = excluded.state, consec_ok = excluded.consec_ok, "
                 "consec_fail = excluded.consec_fail, "
                 "last_credited_at = excluded.last_credited_at, "
                 "accrued_points = excluded.accrued_points, "
                 "last_observed_at = excluded.last_observed_at, "
-                "last_changed_at = excluded.last_changed_at",
+                "last_changed_at = excluded.last_changed_at, "
+                "history_json = excluded.history_json",
                 (new_rec.box_id, new_rec.check_id, new_rec.state, new_rec.consec_ok,
                  new_rec.consec_fail, new_rec.last_credited_at,
                  new_rec.accrued_points, new_rec.last_observed_at,
-                 new_rec.last_changed_at),
+                 new_rec.last_changed_at, _dump_sla_history(new_rec.history)),
             )
             self._commit()
             return new_rec
@@ -877,6 +916,35 @@ class Store:
             )
             self._commit()
 
+    def delete_competition(self, comp_id: str) -> bool:
+        """Remove an **ended** competition and its player slots.
+
+        Boxes and their scores survive: they are already historical once the
+        run ends, and deleting them would erase that scenario's leaderboard.
+        Player/player_boxes rows go because their competition no longer exists.
+        Returns False if the competition is unknown or still draft/live --
+        callers end it first (releasing its VMs) rather than deleting a run out
+        from under its players.
+        """
+        with self.atomic():
+            row = self._conn.execute(
+                "SELECT status FROM competitions WHERE id = ?", (comp_id,)
+            ).fetchone()
+            if row is None or row["status"] != "ended":
+                return False
+            self._conn.execute(
+                "DELETE FROM player_boxes WHERE player_id IN "
+                "(SELECT player_id FROM players WHERE competition_id = ?)",
+                (comp_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM players WHERE competition_id = ?", (comp_id,)
+            )
+            self._conn.execute(
+                "DELETE FROM competitions WHERE id = ?", (comp_id,)
+            )
+        return True
+
     def count_players(self, comp_id: str, include_removed: bool = False) -> int:
         with self._lock:
             if include_removed:
@@ -931,6 +999,26 @@ class Store:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM players WHERE join_code_hash = ?", (code_hash,)
+            ).fetchone()
+        return None if row is None else self._player_from_row(row)
+
+    def find_active_player_by_name(self,
+                                   display_name_norm: str) -> Optional[PlayerRecord]:
+        """The player currently competing under this normalized name, if any.
+
+        "Competing" means an invited/running slot in a **live** competition.
+        Used to keep one person to one competition at a time even when they
+        clear their player cookie or switch browsers.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT p.* FROM players p JOIN competitions c "
+                "ON c.id = p.competition_id "
+                "WHERE p.display_name_norm = ? "
+                "AND p.status IN ('invited', 'running') "
+                "AND c.status = 'live' "
+                "ORDER BY p.joined_at DESC LIMIT 1",
+                (display_name_norm,),
             ).fetchone()
         return None if row is None else self._player_from_row(row)
 

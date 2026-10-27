@@ -1,6 +1,8 @@
-"""Unit tests for the Windows support added for the pinecrest-hospital round:
-artifacts layout, the win32 check branches (mocked), the new check types, the
-windows theme branch, and the -win seed definitions themselves."""
+"""Windows target support: artifacts layout, win32 check branches (mocked),
+check types, the Windows theme branch, and the -win seed definitions.
+
+Nothing here names a box: the parametrized cases discover whatever Windows
+boxes exist under boxes/."""
 import json
 import os
 import subprocess
@@ -259,24 +261,6 @@ def test_windows_shortcut_pairs_report_target():
     assert exec_cmd == r"%PUBLIC%\Documents\huitzilopochtli\report.html"
 
 
-def test_windows_shortcut_pairs_include_authored_entries():
-    """pinecrest/meridian author a "Hardening Handbook" .lnk (Windows previously
-    had no readme shortcut at all -- just the raw README.html on the Desktop)."""
-    import yaml
-    from boxbuilder.theme import _shortcut_pairs
-
-    for box in ("pinecrest-hospital", "meridian-hq"):
-        sc = yaml.safe_load(open(f"boxes/{box}/scenario.yaml", encoding="utf-8"))
-        pairs = _shortcut_pairs(sc["theme"], windows=True)
-        by_name = dict(pairs)
-        assert "Hardening Handbook" in by_name, box
-        assert by_name["Hardening Handbook"] == \
-            r"%PUBLIC%\Documents\huitzilopochtli\README.html", box
-        assert "Scoring Report" in by_name, box
-
-
-# --- the -win seed definitions themselves ---------------------------------------
-
 SEED_DIRS = [
     "boxbuilder/vulndb_vuln_configs",
     "boxbuilder/vulndb_theme_configs",
@@ -302,67 +286,16 @@ def test_win_seeds_schema():
         assert "$args" not in d["script"], f"{path}: $args is a reserved automatic variable"
 
 
-def test_pinecrest_nakon_config_seeds_exist_locally():
-    cfg = json.load(open("boxes/pinecrest-hospital/nakon.json", encoding="utf-8"))
-    machine = cfg["machines"][0]
-    assert "win" in machine["os"]
-    for entry in machine["configurations"]:
-        name = entry if isinstance(entry, str) else entry["name"]
-        path = f"boxbuilder/vulndb_vuln_configs/{name}.json"
-        assert os.path.isfile(path), f"missing local seed for {name}"
-
-
-def test_pinecrest_scenario_nakon_name_discipline():
-    """Names that must be byte-identical across nakon.json and scenario.yaml."""
-    import yaml as pyyaml
-
-    scenario = pyyaml.safe_load(open("boxes/pinecrest-hospital/scenario.yaml", encoding="utf-8"))
-    nakon = json.load(open("boxes/pinecrest-hospital/nakon.json", encoding="utf-8"))
-    entries = nakon["machines"][0]["configurations"]
-
-    def vars_of(name):
-        for e in entries:
-            if isinstance(e, dict) and e.get("name") == name:
-                return e.get("vars", {})
-        return {}
-
-    collect_by_id = {c["id"]: c.get("collect", {}) for c in scenario["checks"]}
-
-    # service names
-    for cid, svc in [("backupagent_stopped", "PinecrestBackupAgent"),
-                     ("backupagent_disabled", "PinecrestBackupAgent"),
-                     ("hacktool_stopped", "HackToolSvc"),
-                     ("spooler_stopped", "Spooler")]:
-        assert collect_by_id[cid]["service"] == svc
-    # process patterns come from payload basenames
-    assert "pcbackup_sync" in collect_by_id["backupagent_process_killed"]["pattern"]
-    assert vars_of("malicious-service-win")  # at least one planted service present
-    for cid, path in [("runkey_payload_removed", r"C:\ProgramData\Subsystems\hsync.ps1"),
-                      ("task_payload_removed", r"C:\ProgramData\Subsystems\edgecore.ps1"),
-                      ("creds_file_removed", r"C:\HospitalData\scripts\legacy_admin_creds.txt")]:
-        assert collect_by_id[cid]["path"] == path
-    # registry value names
-    assert collect_by_id["no_runkey"]["value"] == "HealthSyncAgent"
-    assert collect_by_id["no_task"]  # task named in the check's script...
-    assert "MicrosoftEdgeUpdateCore" in collect_by_id["no_task"]["script"]
-    assert vars_of("scheduled-task-persistence-win")["TASK_NAME"] == "MicrosoftEdgeUpdateCore"
-    assert vars_of("runkey-persistence-win")["RUN_VALUE_NAME"] == "HealthSyncAgent"
-    # usernames planted == usernames matched
-    planted_users = {e["vars"]["USERNAME"] for e in entries
-                     if isinstance(e, dict) and e.get("name") == "local-user-win"}
-    assert {"mharding", "jweaver", "audit_svc", "records-team"} <= planted_users
-
-
 def test_deploy_config_passthrough_windows():
     from boxbuilder.nakon import derive_deploy_config
 
     cfg = {"machines": [{"id": 1, "name": "records-01", "ip": "REPLACED",
                          "os": "windows-server", "user": "u", "password": "p",
                          "port": 22, "configurations": ["uac-disabled-win"]}]}
-    derived = derive_deploy_config(cfg, "records-01", host="10.0.0.5",
+    derived = derive_deploy_config(cfg, "records-01", host="192.0.2.5",
                                    user="sysadmin", password="pw", port=22)
     assert derived["machines"][0]["os"] == "windows-server"
-    assert derived["machines"][0]["ip"] == "10.0.0.5"
+    assert derived["machines"][0]["ip"] == "192.0.2.5"
 
 
 def test_primary_desktop_dir_windows_uses_public_desktop(monkeypatch, tmp_path):
@@ -395,24 +328,6 @@ def test_primary_desktop_dir_posix_unchanged(monkeypatch):
     assert main_mod._primary_desktop_dir() is None
 
 
-def test_pinecrest_theme_block_wired_for_windows():
-    """The theme block must exist and reference real assets: without it
-    boxbuilder plants no theme configs at all (the 2026-09-13 template went
-    out with no Desktop README because this was missing)."""
-    import yaml
-    from boxbuilder.spec import load_spec
-    from boxbuilder.theme import _target_is_windows
-
-    sc = yaml.safe_load(open("boxes/pinecrest-hospital/scenario.yaml"))
-    theme = sc.get("theme") or {}
-    for key in ("title", "wallpaper", "readme"):
-        assert theme.get(key), f"pinecrest theme missing {key}"
-
-    spec = load_spec("boxes/pinecrest-hospital/box.yaml")
-    assert _target_is_windows(spec), "pinecrest must resolve as a windows target"
-    assert spec.theme.get("wallpaper") and spec.theme.get("readme")
-
-
 def test_honor_interval_s_platform_split(monkeypatch):
     """Windows re-grades every 300s (schtask cadence); POSIX keeps the
     reporter's 70s default. The countdown anchor must match the platform."""
@@ -424,46 +339,23 @@ def test_honor_interval_s_platform_split(monkeypatch):
     assert main_mod._honor_interval_s() is None
 
 
-def test_pinecrest_rogue_accounts_scored_disabled_not_removed():
-    """Hamza's rule: unauthorized accounts must be DISABLED, not deleted --
-    the checks require the account to exist AND be Disabled (CIM), so a team
-    that deletes the account scores nothing for it."""
-    import yaml as pyyaml
-
-    sc = pyyaml.safe_load(open("boxes/pinecrest-hospital/scenario.yaml", encoding="utf-8"))
-    by_id = {c["id"]: c for c in sc["checks"]}
-    for cid, user in (("mharding_disabled", "mharding"),
-                      ("jweaver_disabled", "jweaver")):
-        check = by_id[cid]
-        assert check["type"] == "powershell_json"
-        assert check["expect"] == {"equals": True, "field": "data", "points": 10}
-        script = check["collect"]["script"]
-        assert f"Name='{user}'" in script, f"{cid} must match {user} by name"
-        assert ".Disabled" in script, f"{cid} must key on the Disabled flag"
-        assert "$null -ne $u" in script, f"{cid} must require the account to exist"
-        # old removal-based check ids must be gone
-        assert "no_mharding" not in by_id and "no_jweaver" not in by_id
-
-
-# --- logon/browser hardening (the "scary pop-ups" fixes) -------------------------
-
 def test_windows_hardening_script_kills_the_known_popups():
     """packaging/huitz-hardening-win.ps1 must address every documented popup:
     Edge first-run, the Shutdown Event Tracker modal, Server Manager auto-open
     (in the Default user hive -- SSH HKCU writes don't survive sealing), and
-    the python MSI advertised-shortcut self-repair trap (gotcha 26)."""
+    the python MSI advertised-shortcut self-repair trap."""
     script = open("packaging/huitz-hardening-win.ps1", encoding="utf-8").read()
     # Edge onboarding
     assert "Policies\\Microsoft\\Edge" in script
     assert "HideFirstRunExperience" in script and "AutoImportAtFirstRun" in script
     # software rendering: GPU text compositing smears under remote encoders
     assert "HardwareAccelerationModeEnabled" in script
-    # Shutdown Event Tracker (REDEPLOY.md gotcha 25)
+    # Shutdown Event Tracker
     assert "ShutdownReasonOn" in script and "ShutdownReasonUI" in script
     # Server Manager in C:\Users\Default\NTUSER.DAT via reg load/unload
     assert "NTUSER.DAT" in script and "DoNotOpenAtLogon" in script
     assert "reg load" in script and "reg unload" in script
-    # python advertised shortcuts (gotcha 26): repair + remove the Start-menu
+    # python advertised shortcuts : repair + remove the Start-menu
     # folder, with the repair bounded so a slow msiexec cannot stall a build.
     assert "/faus" in script and "Start Menu\\Programs\\Python" in script
     assert "WaitForExit(120000)" in script and "Stop-Process" in script
@@ -482,7 +374,7 @@ def test_pipeline_installs_hardening_on_windows_only():
     assert "huitz-hardening-win.ps1" in src
     _, _, tail = src.partition("# --- Windows logon/browser hardening")
     block = tail[:tail.find("# --- first-login motd")]
-    assert 'os_name == "windows"' in block
+    assert 'is_windows(os_name)' in block
     assert "harden_remote" in block and "harden_local" in block
 
 
@@ -506,3 +398,81 @@ def test_win_task_script_mirrors_to_public_documents():
     assert "Documents\\huitzilopochtli" in ps1
     assert "Desktop\\report.html" in ps1 and "Desktop\\report.json" in ps1
     assert "icacls $forensics /grant '*S-1-5-32-545:M'" in ps1
+
+# --- generic, box-agnostic Windows contracts --------------------------------
+#
+# These iterate whatever boxes exist; nothing here names a box. A new Windows
+# box gets the coverage automatically, and deleting one needs no test edit.
+
+def _box_dirs():
+    import glob
+    return sorted(d for d in glob.glob("boxes/*/") if os.path.isfile(d + "nakon.json"))
+
+
+def _declared_os(box_dir):
+    cfg = json.load(open(box_dir + "nakon.json", encoding="utf-8"))
+    return cfg["machines"][0].get("os")
+
+
+def _windows_box_dirs():
+    from boxbuilder.os_family import is_windows
+    return [d for d in _box_dirs() if is_windows(_declared_os(d))]
+
+
+def test_there_is_at_least_one_windows_box():
+    assert _windows_box_dirs(), "the Windows contract tests would silently pass"
+
+
+@pytest.mark.parametrize("box_dir", _windows_box_dirs())
+def test_windows_box_theme_is_wired(box_dir):
+    """A Windows box without a theme ships no wallpaper/handbook at all."""
+    import yaml
+    from boxbuilder.spec import load_spec
+    from boxbuilder.theme import _target_is_windows
+
+    scenario = yaml.safe_load(open(box_dir + "scenario.yaml", encoding="utf-8"))
+    theme = scenario.get("theme") or {}
+    for key in ("title", "wallpaper", "readme"):
+        assert theme.get(key), f"{box_dir} theme missing {key}"
+        if key != "title":
+            assert os.path.isfile(box_dir + theme[key]), f"{box_dir}: missing {theme[key]}"
+
+    spec = load_spec(box_dir + "box.yaml")
+    assert _target_is_windows(spec), f"{box_dir} must resolve as a windows target"
+
+
+@pytest.mark.parametrize("box_dir", _windows_box_dirs())
+def test_windows_shortcut_pairs_are_complete(box_dir):
+    import yaml
+    from boxbuilder.theme import _shortcut_pairs
+
+    scenario = yaml.safe_load(open(box_dir + "scenario.yaml", encoding="utf-8"))
+    theme = scenario.get("theme") or {}
+    pairs = _shortcut_pairs(theme, windows=True)
+    names = [name for name, _ in pairs]
+    assert "Scoring Report" in names, box_dir
+    for shortcut in theme.get("desktop_shortcuts") or []:
+        assert shortcut["name"] in names, f"{box_dir}: {shortcut['name']} dropped"
+    report_exec = dict(pairs)["Scoring Report"]
+    assert report_exec.endswith(r"\report.html"), box_dir
+
+
+def test_account_checks_score_the_disabled_flag():
+    """An account check must grade the Disabled flag, not an account's
+    absence: a deleted account can otherwise score nothing while an untouched
+    one scores full points, and evidence a forensics question asks about is
+    destroyed by the fix."""
+    import yaml
+    checked = 0
+    for box_dir in _box_dirs():
+        scenario = yaml.safe_load(open(box_dir + "scenario.yaml", encoding="utf-8"))
+        for check in scenario.get("checks") or []:
+            script = (check.get("collect") or {}).get("script") or ""
+            # Only per-account checks (they name an account); a policy-wide
+            # count of blank-password accounts has no single account to require.
+            if ".Disabled" not in script or "Name='" not in script:
+                continue
+            checked += 1
+            assert check["expect"].get("equals") is True, check["id"]
+            assert check["expect"].get("field") == "data", check["id"]
+    assert checked, "no account checks found -- the rule is no longer enforced"

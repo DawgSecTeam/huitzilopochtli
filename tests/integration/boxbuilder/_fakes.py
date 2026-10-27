@@ -52,9 +52,10 @@ class FakeHandle:
     def put(self, local, remote, mode=None):
         self.puts.append((local, remote, mode))
 
-    def install_init(self, kind, mode="honor"):
+    def install_init(self, kind, mode="honor", start_agent=True):
         self.init_kind = kind
         self.init_mode = mode
+        self.init_start_agent = start_agent
 
     def export(self, out_path, fmt="ova"):
         self.exported = (out_path, fmt)
@@ -77,7 +78,7 @@ class FakeProvider:
         self.started_cfg = dict(cfg)
         self.last_handle = FakeHandle(
             name=cfg.get("name", "box"),
-            addr=cfg.get("host", "10.0.0.99"),
+            addr=cfg.get("host", "192.0.2.99"),
             user=cfg.get("user", "u"),
             password=cfg.get("password", "p"),
             port=cfg.get("port", 22),

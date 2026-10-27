@@ -6,9 +6,9 @@ This is the Windows counterpart to test_all_check_types_live.py. It closes
 the "Windows is only statically mocked" gap by running the real agent zipapp
 under a real Windows Python against real registry/service/WMI state.
 
-The 953 template ships OpenSSH but no Python, so the fixture installs Python
-3.12 from python.org and bootstraps a local admin exactly the way
-boxbuilder/REDEPLOY.md's Windows round describes. Files are pushed over SFTP
+The Windows template ships OpenSSH but no Python, so the fixture installs
+Python 3.12 from python.org and bootstraps a local admin exactly the way
+boxbuilder/DEPLOY.md describes. Files are pushed over SFTP
 (the guest-agent file-write API cannot reassemble the ~270KB agent.pyz:
 its chunked path shells out to /bin/sh, which Windows does not have).
 
@@ -289,7 +289,7 @@ def _start_http_server(client):
 
 @pytest.fixture(scope="module")
 def windows_vm(proxmox):
-    template_vmid = int(os.environ.get("TEST_TEMPLATE_VMID_WINDOWS", "953"))
+    template_vmid = int(os.environ["TEST_TEMPLATE_VMID_WINDOWS"])
     vmid = ph.clone_vm(proxmox, template_vmid, "windows-live")
     client = None
     try:

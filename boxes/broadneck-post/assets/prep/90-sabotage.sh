@@ -70,8 +70,13 @@ systemctl stop dovecot 2>/dev/null || true
 echo "90: postfix + dovecot stopped, disabled, masked"
 
 # --- 5. delete the configuration and the certs ----------------------------------
-rm -rf /etc/postfix /etc/dovecot /etc/ssl/depot-mail
-echo "90: /etc/postfix /etc/dovecot /etc/ssl/depot-mail deleted"
+# The mail CONFIGURATION dies (main.cf, master.cf, any maps); the package's
+# own plumbing under /etc/postfix (postfix-files, postfix-script, post-install)
+# stays -- the rebuild must work OFFLINE, without a package reinstall.
+rm -f /etc/postfix/main.cf /etc/postfix/master.cf /etc/postfix/*.db \
+      /etc/postfix/virtual /etc/postfix/transport 2>/dev/null || true
+rm -rf /etc/dovecot /etc/ssl/depot-mail
+echo "90: mail config (main.cf/master.cf) + /etc/dovecot + /etc/ssl/depot-mail deleted"
 
 # --- 6. truncate the live flat logs (rotation copy + journal untouched) ---------
 truncate -s 0 /var/log/mail.log 2>/dev/null || rm -f /var/log/mail.log
@@ -102,8 +107,9 @@ myorigin = broadneckpost.org
 mydestination = broadneckpost.org, mail.broadneckpost.org, localhost
 inet_interfaces = all
 mynetworks = 0.0.0.0/0 [::]/0
-smtpd_relay_restrictions = permit_mynetworks
-smtpd_recipient_restrictions = permit_mynetworks, permit_auth_destination
+smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, defer_unauth_destination
+# (the modern default, spelled out: with mynetworks = the whole internet,
+#  permit_mynetworks fires first for EVERY client -- an open relay)
 smtpd_banner = $myhostname ESMTP $mail_name $mail_version
 disable_vrfy_command = no
 smtpd_helo_required = no
@@ -122,12 +128,12 @@ chmod 0600 "$KIT/README.txt" "$KIT/main.cf"
 echo "90: restore kit stashed at $KIT"
 
 # --- 8. final post-state verification -------------------------------------------
-[ ! -e /etc/postfix ] && [ ! -e /etc/dovecot ] || { echo "90: config deletion FAILED"; exit 1; }
+[ ! -e /etc/postfix/main.cf ] && [ ! -e /etc/dovecot ] || { echo "90: config deletion FAILED"; exit 1; }
 [ "$(systemctl is-enabled postfix 2>/dev/null)" = "masked" ] || { echo "90: postfix not masked"; exit 1; }
 [ "$(systemctl is-enabled dovecot 2>/dev/null)" = "masked" ] || { echo "90: dovecot not masked"; exit 1; }
 HOLDFILES=$(ls /var/spool/postfix/hold/ 2>/dev/null | wc -l)
 [ "$HOLDFILES" -eq 1 ] || { echo "90: hold queue has $HOLDFILES files, expected 1"; exit 1; }
 [ -f /var/log/mail.log.1 ] || { echo "90: rotation copy missing"; exit 1; }
-grep -c '198.51.100.23' /var/log/mail.log.1 | grep -q '^40$' || { echo "90: blast count wrong"; exit 1; }
+grep -c 'client=unknown\[198.51.100.23\]' /var/log/mail.log.1 | grep -q '^40$' || { echo "90: blast count wrong"; exit 1; }
 
 echo "90: sabotage complete -- box is in handout state"

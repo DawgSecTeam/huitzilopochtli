@@ -1,42 +1,3 @@
-# Saltmarsh Exchange: the IIS + FTP web-tier WINDOWS hardening box.
-# Workgroup member server "swa-web01" (no AD), honor mode, 37 scored
-# hardening checks (EASY 2 x14, MODERATE 4 x15, HARD 8 x8 = 152) + 3
-# penalty guards (-10 each) + 6 forensics questions (6 x 8 = 48) = 200
-# points. It is the web-tier counterpart to harborline-transit: same
-# ledger shape, tier weights, penalty pattern, forensics block, theme and
-# test contract, but the subject is the IIS portal / FTP vendor drop
-# instead of a domain controller.
-#
-# Ledger pinned by tests/unit/test_boxbuilder_saltmarsh_exchange.py:
-#   EASY 14 x2 = 28, MODERATE 15 x4 = 60, HARD 8 x8 = 64, vuls = 152;
-#   forensics 6 x8 = 48; max = 200.
-#
-# Planting is entirely seeds in boxbuilder/vulndb_vuln_configs/:
-#   iis-ftp-base-win builds the business-functional baseline (roles, site,
-#   app pool, /backoffice app, FTP site, group/user, ACLs, FTPS cert,
-#   logging, scoped firewall); iis-hardening-off-win,
-#   iis-backoffice-open-win, iis-admin-console-win and
-#   ftp-hardening-off-win flip the insecure states; the rest are the
-#   generic account/file/firewall helpers. Every scored finding is either
-#   explicitly planted or an explicitly planted absent-good-state (no
-#   HTTPS binding, no redirect) -- nothing is left to image defaults, so
-#   a re-plant reproduces the 0-state.
-#
-# Name discipline: every SITE / APP POOL / FTP SITE / GROUP / USER /
-# RULE_NAME / FILE_PATH in nakon.json matches its paired check's collect
-# params byte-for-byte. Nothing cross-validates them.
-#
-# Forensics-answer hygiene: the six answers (the rogue local
-# admin, the vendor password, the database password, the app-pool
-# identity, the webshell filename, the admin console port) are not in any
-# display string and not in the handbook. fq_webdeploy_account is the
-# documented non-pure answer (its disable check must name the account);
-# fq_admin_port appears in the console check's collect params as the
-# natural selector.
-#
-# Difficulty weighting: EASY 2 / MODERATE 4 / HARD 8 (vermilion/harborline
-# tiers), repeated in the in-box README.
-
 scenario:
   name: "Saltmarsh Exchange"
   version: 1
@@ -44,7 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # --- A. HOST ACCOUNTS, SERVICES & EXPOSURE --------------------------------
   - id: local_admin_roster
     type: powershell_json
     category: vuln
@@ -392,7 +352,6 @@ checks:
       **3. Confirm.** The file shows `debug="false"`; the site keeps
       serving.
 
-  # --- B. IIS: SITE, APPLICATION POOL, CONTENT ------------------------------
   - id: dir_browsing_off
     type: powershell_json
     category: vuln
@@ -1142,7 +1101,6 @@ checks:
       **3. Confirm.** The sweep returns only the three approved pages (or
       none, if the application pages were removed too).
 
-  # --- C. FTP ---------------------------------------------------------------
   - id: ftp_anonymous_off
     type: powershell_json
     category: vuln
@@ -1432,9 +1390,6 @@ checks:
       **3. Confirm.** The file is gone; the old password no longer
       authenticates.
 
-  # --- PENALTY GUARDS -------------------------------------------------------
-  # These award 0 at baseline and -10 if a team "fixes" the box by
-  # breaking the business function. Same mechanics as harborline.
   - id: penalty_w3svc_running
     type: service_state
     category: penalty
@@ -1490,8 +1445,6 @@ checks:
       the site.
 
 forensics:
-  # Answers live only in the rubric / post-event answer key. The handbook
-  # never prints them and no display string contains them.
   - id: fq_webdeploy_account
     question: "One local account was added to Administrators by the intruder. What is that account's username?"
     answer: "svc_webdeploy"
@@ -1561,3 +1514,38 @@ theme:
   desktop_shortcuts:
     - name: "Hardening Handbook"
       exec: "%PUBLIC%\\Documents\\huitzilopochtli\\README.html"
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: iis
+    display: IIS web portal
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 80
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: ftp
+    display: FTP vendor drop
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 21
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: rdp
+    template_vm_username: ${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}
+    vm_count: 2
+    guac_link_ttl_seconds: 14400

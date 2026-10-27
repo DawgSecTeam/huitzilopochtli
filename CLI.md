@@ -1,197 +1,48 @@
-# huitz — the terminal scoring console
+# CLI reference
 
-`huitz` is the native command-line experience for a scored Huitzilopochtli
-box: the terminal twin of the Desktop `report.html`. Same grade, same
-moment, same design language — one theme accent, flat "paper" layout,
-semantic green/red — rendered idiomatically for a terminal instead of
-ported from the web page.
+Two command surfaces: `huitz`, the on-box terminal console, and `boxbuilder`, the author/build tooling.
 
-```console
-$ huitz
-Opochtli Landing
-scenario v3 · honor mode · Harbor Port Authority
-──────────────────────────────────────────────────────────────────────────────
+## `huitz`
 
-  210 pts
-  [██████████████░░░░░░░░░░░░░░]  66%  ·  14 of 19 fixed  ·  5 issue(s) remain
-
-  ✓ VULNERABILITIES FIXED — 14 of 19
-    SSH root login disabled ··············································· +10
-    Guest account removed ·················································· +5
-
-  ! PENALTIES — 1
-    Required firewall re-enabled ·········································· -10
-
-  FORENSICS — 2 of 3
-    ✓ Q1 Which account did the attacker create? ··························· +20
-    · Q2 What was the attacker's IP address? ································ 0
-      answers: /home/player/Desktop/Forensics-Questions.txt
-
-  last graded 14:02:11 UTC  ·  next re-grade ~00:42
-  try: huitz watch · huitz forensics · huitz grade
-```
-
-## Commands
+`huitz` renders the same grade as the Desktop `report.html` from the same `report.json` snapshot. Nothing in `score`, `watch`, `readme`, or `forensics` re-scores the box; only `grade` does (honor mode, as root).
 
 | Command | What it does |
 |---|---|
-| `huitz score` | One-shot scorecard. Pages through `less` when the board is taller than the terminal (flat otherwise). `--json` emits the raw snapshot instead. |
-| `huitz watch` | Live frame: countdown ticks each second, the board redraws the moment a new grade lands, and score changes ring the terminal bell with a session change-log. `q` quits. If a re-grade is more than a couple of minutes late, the frame says so ("re-grade overdue … timer stalled?") instead of sitting on an eternal "checking…". |
-| `huitz readme` | The scenario handbook in the terminal (the theme's `readme`, embedded in the signed manifest by the compiler, carried by the snapshot). Prose re-wraps to the terminal width with inline emphasis, `code`, and links rendered; on a terminal it opens in a pager. `--raw` dumps the markdown flat. |
-| `huitz forensics` | List the scenario's forensics questions with your recorded answers and last-grade verdicts. |
+| `huitz score` | One-shot scorecard. `--json` prints the raw snapshot. Pages through `$PAGER` (then `less -R`, then `more`) only when the board is taller than the terminal; `--no-pager` forbids it. |
+| `huitz watch` | Live frame: 1 s countdown tick, redraw on each new grade, terminal bell plus a session change-log on score changes seen while watching; `q` quits. `--once` renders one frame. A re-grade/check-in more than ~2 minutes late is called overdue instead of waiting silently. |
+| `huitz readme` | The scenario handbook embedded in the signed manifest, typeset to the terminal width and paged by default; errors when the scenario ships none. `--raw` prints the markdown flat; `--no-pager` disables the pager. |
+| `huitz forensics` | List the scenario's questions, your recorded answers, and last-grade verdicts. |
 | `huitz forensics N` | Answer question N interactively (Enter keeps, `-` clears). |
-| `huitz forensics N "text"` | Answer question N directly (scriptable). |
-| `huitz join` | Ranked competitions only: bind this box to a player slot with the one-time code from the competition page, then enable/start the ranked agent. `--code CODE` for scripted joins, `--no-start` to only enroll. |
-| `huitz grade` | Re-grade right now — the re-grade timer's work done on demand — then show the fresh scorecard. Honor boxes, root (`sudo huitz grade`). |
-| `huitz help` | This list. |
+| `huitz forensics N "text"` | Answer question N directly. |
+| `huitz grade` | Re-grade now, then show the scorecard. Privileged, honor only; ranked boxes refuse and point at the engine. `--config PATH` selects a non-default `agent_config.json`; `--quiet` prints one summary line. |
+| `huitz join` | Ranked competition only: sign a `/join` with the box key and bind this box to a player slot. `--code CODE` for scripted joins, `--no-start` to enroll without starting the agent unit, `--config PATH` for a non-default config. |
+| `huitz help` | Usage (also `-h`, `--help`). |
 
-Flags shared by the reading commands: `--report PATH` pins a snapshot
-(accepts a `report.json`, a `report.html`, or a directory), `--color
-auto|always|never` overrides color detection, and `NO_COLOR` is always
-honored. `score`/`readme` take `--no-pager` to print flat even on a
-terminal. Paging engages only on an interactive stream — piped output is
-byte-identical to a plain print, so scripts and portals are unaffected —
-and honors `$PAGER` (falling back to `less -R`, then `more`).
-`join` takes `--config PATH`, `--code CODE`, and `--no-start`; it reads the
-signed manifest's `engine_url`, signs a `/join` request with the box key, and
-then starts `huitzilopochtli-agent.service`. `grade` takes `--config PATH` for
-a non-default `agent_config.json` and `--quiet` for a one-line summary.
+Flags shared by reading commands: `--report PATH` (or `$HUITZ_REPORT`) pins a snapshot; `--color auto|always|never` overrides detection (`NO_COLOR` is always honored). `--answers PATH` (forensics) overrides the answers file the snapshot names. Paging never engages on a non-interactive stream, so piped output is byte-identical to a plain print. `--config PATH` (or `$HUITZ_CONFIG`) pins a config for `grade`/`join`.
 
-### Terminal styling conventions
+### Snapshot discovery
 
-The readme and scorecard share one contrast standard (no dim-gray
-"nearly invisible" text):
+`huitz` reads the first snapshot it finds:
 
-- **SGR 2 (faint) is never used** — it disappears on several dark
-  terminals. Chrome that should recede uses semantic `muted` instead
-  (the report page's `--muted` gray).
-- **`muted` is for chrome only**: rules, dot leaders, bullets, the
-  `try:` hints, the `answers:` label. Anything carrying information —
-  counts, stamps, empty states, check reasons, countdowns — renders in
-  the terminal's default ink, so it stays readable on any background.
-- **Accent marks the actionable**: the theme accent highlights values
-  and paths (total points, progress bar, `answers: <path>`, readme code
-  spans), bold ink carries headers.
-- Verdicts keep the semantic colors: `ok` green / `bad` red / `warn`
-  amber, matching `report.html`.
+1. `--report PATH` or `$HUITZ_REPORT` — authoritative, no fallback. A directory selects `report.json`; an `.html` path selects its sibling.
+2. This box's install-dir `report.json`, resolved through `agent_config.json` (root reaches the sealed dir directly).
+3. Your own `Documents/huitzilopochtli/report.json`, then the legacy `Desktop/report.json`; on Windows the Public profile is searched first.
+4. Another real user's mirror (uid 1000–59999 and a login shell), so an SSH session as root sees the same grade the desktop user sees.
 
-## How it works
+A missing snapshot says how to produce one; a corrupt or newer-version snapshot is reported verbatim, never misrendered.
 
-Nothing in `huitz score`/`watch`/`forensics` re-scores the box. Every grade
-honor mode runs writes two files side by side:
+### Presentation
 
-```
-agent grade ──► report.html   (Desktop-mirrored; the browser view)
-            └─► report.json   (agent/snapshot.py — the machine-readable board)
-                    │ sync-report.sh mirrors both to each user's Desktop
-                    ▼
-        huitz reads the snapshot and renders it in the terminal
-```
+- **Honor** is positive-only: fixed vulnerabilities, incurred penalties, and forensics state are named; failed checks stay anonymous (a count only). The snapshot carries no per-check results list, so `cat`/`jq` on the Desktop copy spoils exactly as little as the HTML.
+- **Ranked** is the engine's diagnostic view: per-check results, SLA state, live rank, and the "engine's authoritative score" label. Check reasons are the box's own evidence reasons — the rubric never shipped here. Before the first engine response, `score`/`watch` say *submitted — awaiting engine*.
 
-The snapshot is a *presentation* of the `ScoreBreakdown` — nothing reads it
-back into the evaluator, so scoring stays a pure function of
-`(evidence, rubric, clock)` (architecture.md §2.1, §13). One derivation
-(`agent/board.py`) feeds all three renderers: HTML, JSON snapshot, terminal.
+`agent/board.py` derives the board once; the HTML report, `report.json`, and the terminal all render from it. `agent/snapshot.py` owns the versioned snapshot format (`snapshot_version` 1, newer majors refused).
 
-That design is also what makes the CLI work for **any account on the box**:
-reading commands never *write* the sealed install dir
-(`/opt/.huitzilopochtli/`, 0700 root). Non-root users read the
-`Documents/huitzilopochtli/report.json` mirror (the same path the browser
-shortcut opens); root may additionally read the install-dir snapshot as a
-fallback.
+### Forensics answers
 
-### Honor vs ranked presentation
+`huitz forensics N "text"` edits only the targeted `Answer:` line of the answers file, preserving ownership and permissions and recreating a missing template without clobbering existing answers. The next timer tick picks the change up; no restart is needed.
 
-- **Honor** renders the CyberPatriot-style board: only fixed vulnerabilities
-  and incurred penalties are named; failed checks stay anonymous (a count
-  only). The snapshot preserves that contract — there is no `results` list
-  in an honor `report.json`, so `cat`/`jq` on the Desktop copy spoils
-  exactly as little as the HTML does.
-- **Ranked** renders the engine's diagnostic view: per-check results with
-  reasons, SLA states, and "the engine's authoritative score" labeling —
-  mirroring the ranked HTML table (safe on-box: the rubric never shipped to
-  the box). Before the first engine response, `score` and `watch` show
-  *submitted — awaiting engine*. `huitz grade` explains that ranked grading
-  happens engine-side and suggests `watch`.
-
-### Score-change behavior
-
-The grade itself (timer or `huitz grade`) plays the box's gain-chime /
-penalty-alarm and raises the desktop toast exactly as before
-(`agent/notify.py`) — alerts belong to the grade, not to whichever terminal
-happens to be open. The CLI adds the terminal-native layer on top: `watch`
-rings the terminal bell (audible over SSH, where PulseAudio isn't) and logs
-the change in its "this session" section; `grade` rings the bell once when
-the grade it just ran changed the score.
-
-## Forensics from the terminal
-
-`huitz forensics` shows each question, your current answer as the answers
-file records it, and the last grade's verdict. Answering writes the same
-`Forensics-Questions.txt` the collector reads — the terminal is just a
-better editor for one line:
-
-```console
-$ huitz forensics 2 "203.0.113.7"
-✓ Q2 answered: "203.0.113.7"
-It scores on the next re-grade (about a minute), or: sudo huitz grade
-```
-
-The file is edited surgically: only the targeted `Answer:` line changes,
-ownership and permissions are preserved, and a missing template is recreated
-from the snapshot (write-if-missing, never clobbering existing answers).
-Answers re-grade automatically on the next timer tick — no restart, same as
-editing the file by hand.
-
-## Installation
-
-**boxbuilder installs the CLI automatically** on POSIX boxes: the install
-step copies the agent zipapp to `/usr/local/bin/huitz` (`install -m 755`).
-A copy, not a symlink — the install dir is sealed 0700 and a symlink would
-be unusable to non-root accounts. If that step warns (e.g. no
-`/usr/local/bin`), the box still grades and reports normally; add the shim
-by hand:
-
-```bash
-sudo install -m 755 /opt/.huitzilopochtli/agent.pyz /usr/local/bin/huitz
-```
-
-The same install step plants a first-login banner
-(`/etc/update-motd.d/90-huitzilopochtli`) that introduces these commands —
-that's how most players meet `huitz`.
-
-(Existing boxes built before this feature: run that one line, and make sure
-the installed `sync-report.sh` is the current one so `report.json` gets
-mirrored — or just run it once by hand after the next grade.)
-
-**Windows** boxes have no shim; run the zipapp directly from PowerShell:
-
-```powershell
-py C:\ProgramData\huitzilopochtli\agent.pyz score
-```
-
-The CLI enables VT processing on Windows consoles automatically and reads
-the Public Desktop `report.json` that the scheduled-task wrapper mirrors.
-
-## Discovery order
-
-`huitz` locates a snapshot to read by trying, in order:
-
-1. `--report PATH` (or `$HUITZ_REPORT`) when given — authoritative, no
-   fallback (a stale value is an error, not a silent fall-through);
-2. this box's install dir via `agent_config.json` (or `$HUITZ_CONFIG`);
-   root reaches the sealed dir directly here;
-3. your own `Documents/huitzilopochtli/report.json` (then the legacy
-   Desktop copy);
-4. any other real user's Documents/Desktop copy (the same uid-1000-59999 +
-   login-shell heuristic `sync-report.sh` uses).
-
-The first readable snapshot wins, so an SSH session as root shows the same
-grade the desktop user's browser shows. A missing snapshot produces a
-message telling you how to produce one; a corrupt or newer-version
-snapshot is reported verbatim instead of misrendered.
-
-## Exit codes
+### Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -199,21 +50,32 @@ snapshot is reported verbatim instead of misrendered.
 | `1` | runtime failure (no snapshot, unreadable manifest, …) |
 | `2` | usage error (unknown command/flag, missing value) |
 | `130` | interrupted (`Ctrl-C`) |
-| `141` | output pipe closed (e.g. `huitz score | head`) |
+| `141` | output pipe closed (`huitz score | head`) |
 
-## For maintainers
+### Installation
 
-- `agent/cli.py` — commands + rendering; reads snapshots, never scores
-  (except `grade`, which delegates to `agent/__main__.honor_grade`).
-- `agent/term.py` — the terminal kit: color-depth detection (NO_COLOR /
-  16 / 256 / truecolor), unicode-vs-ASCII symbols, width handling, the
-  alternate-screen key poller (termios/select on POSIX, `msvcrt` on
-  Windows). No curses: the zipapp must stay curses-free for Windows.
-- `agent/board.py` — the one derivation behind HTML, snapshot, and
-  terminal; change scoring-adjacent display facts there, not in a
-  renderer.
-- `agent/snapshot.py` — the `report.json` format (`snapshot_version` 1).
-  The CLI refuses snapshots from newer majors with an upgrade hint rather
-  than misrendering.
-- `agent/answers.py` — the forensics answers-file format, shared by the
-  collector, the template writer, and the CLI's answer editor.
+boxbuilder's install step copies the zipapp to `/usr/local/bin/huitz` (`install -m 755`; a copy, not a symlink, because the install dir is sealed `0700`) and plants a first-login banner under `/etc/update-motd.d/`. If the copy is skipped, the box still grades; add the shim by hand:
+
+```bash
+sudo install -m 755 /opt/.huitzilopochtli/agent.pyz /usr/local/bin/huitz
+```
+
+Windows boxes have no shim; run the zipapp directly (`py C:\ProgramData\huitzilopochtli\agent.pyz score`). The zipapp enables VT processing and reads the Public Documents snapshot the scheduled task mirrors.
+
+## `boxbuilder`
+
+`python3 -m boxbuilder <command>`. Every command accepts `--json`: one JSON line on stdout, progress/logs on stderr. See [`boxbuilder/README.md`](boxbuilder/README.md) for authoring detail and [`boxbuilder/DEPLOY.md`](boxbuilder/DEPLOY.md) for the deploy/template loop.
+
+| Command | Purpose and flags |
+|---|---|
+| `compile` | Compile the scenario, build `agent.pyz`, and build the nakon bundle. `--no-bundle` skips nakon/vulndb for install-only builds. |
+| `plant` | Deploy the authored vulns over ssh. `--bundle PATH` overrides the bundle recorded by compile. |
+| `install` | Place the agent + manifest (+ honor rubric) and enable the init unit; ranked also uploads the engine record and mints a one-time enrollment token. `--init systemd\|openrc\|none`, `--admin-token`, `--checkin-interval`, `--enrollment-ttl`, `--competition` (no enrollment token; the player binds with `huitz join`). |
+| `package` | Export the box image. `--image-out PATH` (required), `--format ova\|qcow2\|raw`. |
+| `build` | All four steps with resumability. `--from-step compile\|plant\|install\|package`, `--image-out`, `--format`, plus the `compile`/`install` flags above. |
+| `lint` | Cross-check every planted finding against the scored checks (and theme assets). `--all` walks `boxes/*/box.yaml`; or give `--spec` / `--scenario` + `--nakon-config`. `--boxes-dir`, `--mode`. Errors: build inputs that do not validate for either target, missing/duplicate check ids, a primary planted artefact path no check or forensics question reads, a missing theme asset. Warnings: pairings it cannot prove, scored paths under writable data roots that nothing plants, catalog-only configs. |
+| `answer-key` | Render authored `solution:` walkthroughs into a post-event handout. `--scenario`, `--out`, `--html`. |
+
+Shared inputs: `--spec FILE`, or `--scenario FILE` with `--nakon-config FILE`. Build target: `--mode honor\|ranked` (default: the scenario's `scenario.mode`). `--engine-url` overrides the env and the scenario for a ranked build. Provider: `--provider ssh`; `--provider-host`, `--provider-port`, `--provider-user`, `--provider-password` fall back to `$HUITZILOPOCHTLI_PROVIDER_{HOST,PORT,USER,PASSWORD}`. Committed specs carry no host or password, and the password is prompted for `plant`/`install` when absent.
+
+Also accepted by the build steps: `--out DIR` (artifacts, default `./artifacts`), `--authoring-key PATH`, `--nakon-dir DIR`, `--vulndb-url URL`. `lint` never invokes nakon.

@@ -1,378 +1,254 @@
 # Ranked competitions — operator runbook
 
-This is the operator-facing companion to
-[`RANKED_COMPETITION_PLAN.md`](RANKED_COMPETITION_PLAN.md). It describes the
-implemented v1.1 competition surface: engine VM, online join, per-player timed
-runs, self-reported scored services, public leaderboard, and admin console.
+How to put a ranked competition on the engine: upload a scenario, create and
+start the competition, build the ranked template it hands out boxes from, then
+end and release it. The engine contract is `architecture.md`; building and
+sealing a box is `boxbuilder/README.md` + `boxbuilder/DEPLOY.md`.
 
-## Deployed lab instance
+Use placeholders, never committed values: `$HUITZILOPOCHTLI_ENGINE_URL`,
+`$HUITZILOPOCHTLI_ADMIN_TOKEN`, `$HUITZILOPOCHTLI_WORKSHOP_URL`,
+`$HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD`, `$HUITZILOPOCHTLI_WORKSHOP_SECRET`,
+`<box>`, `<clone-address>`, `<template-vmid>`. The engine is HTTP unless
+`$HUITZILOPOCHTLI_TLS_CERT`/`$HUITZILOPOCHTLI_TLS_KEY` are set; put TLS in
+front. Admin auth is a header token or HTTP Basic; public pages are open.
 
-| Item | Value |
-|---|---|
-| Proxmox VM | `huitzilopochtli-engine` (vmid 168), Ubuntu 24.04 |
-| Address | `http://10.0.0.160:8080` |
-| Engine service | `huitzilopochtli-engine.service` (systemd) |
-| Database | `/var/lib/huitzilopochtli/engine.db` (0600) |
-| Env | `/etc/huitzilopochtli/engine.env` (0600) |
-| Admin credentials | `/root/huitz-engine-credentials.txt` on the engine VM (0600) |
-| Workshop portal | `http://10.0.0.102:5000` (`HUITZILOPOCHTLI_WORKSHOP_URL`) |
-| Backups | `/var/backups/huitzilopochtli/` daily at 03:15, 14 kept |
+## 1. Write and upload the scenario
 
-The engine is HTTP-only for now; put Cloudflare Tunnel or a TLS reverse proxy
-in front before exposing it beyond the lab. Admin auth is HTTP Basic at the
-engine (`HUITZILOPOCHTLI_ADMIN_PASSWORD`); the leaderboard/join pages are public.
-
-`HUITZILOPOCHTLI_ADMIN_TOKEN` remains supported for the legacy JSON admin API
-(`/admin/scenarios`, `/admin/tokens`) and for automation.
-
-## 1. Create/upload a scenario
-
-A ranked competition scenario needs `mode: ranked`, an `engine_url`, checks,
-and (for scored services) a `services:` block:
+One authored file per box: `boxes/<box>/scenario.yaml`. Its base content is
+the **honor** box; an optional top-level `ranked:` block holds only what a
+ranked build needs — `engine_url`, extra `checks`, scored `services`, the
+`adversary` schedule, and the workshop `pool`:
 
 ```yaml
 scenario:
   name: "Ranked Demo"
-  version: 2
-  mode: ranked
-  engine_url: "http://10.0.0.160:8080"
+  version: 1
+  mode: honor                 # default build target
   hosts: ["localhost"]
 
 checks:
-  - id: banner
-    type: file_regex
-    category: vuln
-    display: "Status file says hardened"
-    max_points: 10
-    collect: {path: /etc/huitz-demo-status, extract: '(hardened|vulnerable)'}
-    expect: {equals: hardened, points: 10}
+  - {id: banner, type: file_regex, category: vuln, max_points: 10,
+     display: "Status file says hardened",
+     collect: {path: /etc/huitz-demo-status, extract: '(hardened|vulnerable)'},
+     expect: {equals: hardened, points: 10}}
 
-services:
-  - id: web
-    display: "Demo web"
-    type: http_uptime
-    collect: {url: "http://127.0.0.1:8081/health"}
-    expect: {equals: 200, field: status}
-    interval_s: 30
-    points_per_interval: 1
-    max_intervals_per_checkin: 3
-  - id: ssh
-    display: "SSH"
-    type: tcp_port
-    collect: {host: 127.0.0.1, port: 22}
-    expect: {equals: true, field: open}
-    interval_s: 30
-    points_per_interval: 1
-
-adversary:
-  events:
-    - id: kill-demo-web
-      action: kill_service
-      params: {service: "huitz-demo-web"}
-      window_s: [20, 40]
-      affects_check: web          # service id is mapped to svc_web at compile
+ranked:
+  engine_url: "http://127.0.0.1:8080"   # placeholder; overridden at build time
+  services:
+    - {id: web, display: "Demo web", type: http_uptime, interval_s: 30,
+       collect: {url: "http://127.0.0.1:8081/health"},
+       expect: {equals: 200, field: status},
+       points_per_interval: 1, max_intervals_per_checkin: 3}
+  adversary:
+    events:
+      - {id: kill-demo-web, action: kill_service, window_s: [20, 40],
+         params: {service: "huitz-demo-web"}, affects_check: web}
 ```
 
-Compile:
+- **`scenario.mode` is the default target.** `honor` builds the base as an
+  honor box and, with a `ranked:` block, the same file as a ranked box under
+  `--mode ranked`; `ranked` is ranked-only and refuses an honor build. There
+  is no separate ranked fork file.
+- **An honor build never reads `ranked:`**, so ranked checks, services,
+  adversary, and pool cannot leak into an honor manifest or rubric.
+- **Engine address:** `--engine-url` > `$HUITZILOPOCHTLI_ENGINE_URL` >
+  `ranked.engine_url`. The committed loopback URL is the "not configured"
+  placeholder; `install` warns when a build still uses it.
+- **Scored services** compile to `svc_<id>` checks with SLA parameters; the
+  box probes itself, so uptime is self-reported, not independent network
+  verification.
+
+Compile the record and upload it (`--no-bundle` needs neither nakon nor
+vulndb; a scenario carrying a `pool:` block also needs the vars from §3.1):
 
 ```bash
-python3 - <<'PY'
-from common.crypto import signing
-from authoring.compile import compile_scenario
-priv, pub = signing.keypair()
-out = compile_scenario("boxes/ranked-demo/scenario-r2.yaml",
-                       "boxes/ranked-demo/artifacts-r2", priv)
-open("boxes/ranked-demo/artifacts-r2/authoring.key", "wb").write(priv)
-print(out)
-PY
+export HUITZILOPOCHTLI_ENGINE_URL=https://<engine-host>
+python3 -m boxbuilder compile --spec boxes/<box>/box.yaml --mode ranked \
+  --no-bundle --out artifacts/<box>-ranked
+curl -sS -X POST "$HUITZILOPOCHTLI_ENGINE_URL/admin/scenarios" \
+  -H 'Content-Type: application/json' \
+  -H "X-HUITZILOPOCHTLI-Admin-Token: $HUITZILOPOCHTLI_ADMIN_TOKEN" \
+  --data-binary @artifacts/<box>-ranked/engine_record.json
 ```
 
-The admin console's scenario picker lists records uploaded to the engine **and** ranked records found in the box folder (when the engine has one). Selecting a folder build re-imports it; an uploaded record is used as-is.
-
-Upload the resulting `engine_record.json` via the admin console
-(`/admin/scenarios`) or the JSON API:
-
-```bash
-curl -sS -u admin:"$ADMIN_PASSWORD" -H 'Content-Type: application/json' \
-  -d @boxes/ranked-demo/artifacts-r2/engine_record.json \
-  http://10.0.0.160:8080/admin/scenarios
-```
+The admin picker lists uploaded records **and** ranked records found in a box
+folder (`$HUITZILOPOCHTLI_BOXES_DIR`, or `./boxes`, files named
+`engine_record*.json`). The folder scan is a development convenience — the
+deployed engine ships without it — so **upload is the supported path**
+(`POST /admin/scenarios` or the console's paste-and-validate form).
+`engine_record.json` is not committed under `boxes/`.
 
 ## 2. Create and start a competition
 
-Admin console: `/admin/competitions/new`.
-
-Fields:
-
-- **Name / slug** — slug is the public URL `/c/<slug>`.
-- **Scenario** — the uploaded name/version.
-- **Max players** — hard cap; joins are refused when full.
-- **Run duration** — each player's clock starts at join and ends after this.
-- **Workshop pool** — provisioned per competition, not chosen: at the first
-  claim the engine asks the portal for a private dispenser pool cloned from
-  the scenario's `pool:` block (see §3.1) and pins it. There is no pool field
-  in the UI; the competition page only records that a pool was attached — the
-  pool code itself is portal plumbing, kept for debugging to the audit log and
-  journal. Clearing a
-  pin (so the next claim provisions a fresh pool) is the only mutation:
-  `POST /admin/api/competitions/<id>/pool` with an empty `pool_code`.
-  `HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD` authorizes the engine's portal
-  admin calls; `HUITZILOPOCHTLI_WORKSHOP_SECRET` carries the prebind codes.
-- **Join instructions / accent** — optional presentation.
-
-Start the competition from its admin page. It moves `draft → live` and opens
-joins. **End** freezes all runs and the leaderboard. **Close joins** stops new
-players without ending existing runs. There is no pause.
-
-## 3. Build the ranked competition box
-
-Honor boxes are not convertible. Build a ranked box from a clean base:
+Admin console `/admin/competitions/new`, or `POST /admin/api/competitions`:
 
 ```bash
-boxbuilder compile --spec box.yaml --out artifacts/ --json
-boxbuilder plant   --spec box.yaml --out artifacts/ --json
-boxbuilder install --spec box.yaml --out artifacts/ --competition --json
+curl -sS -X POST "$HUITZILOPOCHTLI_ENGINE_URL/admin/api/competitions" \
+  -H 'Content-Type: application/json' \
+  -H "X-HUITZILOPOCHTLI-Admin-Token: $HUITZILOPOCHTLI_ADMIN_TOKEN" \
+  -d '{"name": "Friday Night Ranked", "scenario_name": "Ranked Demo",
+       "scenario_version": 1, "max_players": 32, "duration_s": 7200}'
 ```
 
-`--competition` skips the engine-record upload and enrollment-token mint,
-installs the agent + signed manifest + authoring key, and leaves the agent
-unit **disabled**. The player runs `huitz join` with the code from the join
-page; that binds the box and enables/starts the unit.
+Fields: **name** (slug derived; the API also takes an explicit one — that is
+`/c/<slug>`), **scenario**, **max players** (hard cap), **run duration** (each
+clock starts at join; no pause), **accent**. There is **no pool field**:
+the first claim provisions a private dispenser pool from the scenario's
+`pool:` block (§3.1).
 
-For a manual/lab install, copy `agent.pyz`, `manifest.signed.json`,
-`authoring_public_key.b64`, and an `agent_config.json` with
-`"enrollment_token": null` into `/opt/.huitzilopochtli/`, install the unit,
-then run `/usr/local/bin/huitz join --code <CODE>`.
+**Start** moves `draft → live` and opens joins; **Close joins** stops new
+players without ending runs; **End** freezes every run and the board. An ended
+competition can be **rerun** (fresh, same settings) or **removed** — removal
+releases its VMs, cleans its pool, and deletes the competition and its slots;
+boxes and scores remain as history.
 
-## 3.1 The scenario's `pool:` block (per-competition provisioning)
+## 3. Build the ranked template
+
+Ranked competition boxes are a separate lineage; an honor box is never
+converted. Clone the sealed honor template, deploy the ranked competition
+agent over it, verify, and seal that clone as the ranked template — the full
+rollback/machine-id loop is `boxbuilder/DEPLOY.md`. Nothing is planted on this
+clone:
+
+```bash
+export HUITZILOPOCHTLI_ENGINE_URL=https://<engine-host>
+python3 -m boxbuilder compile --spec boxes/<box>/box.yaml --mode ranked \
+  --no-bundle --out artifacts/<box>-ranked
+python3 -m boxbuilder install --spec boxes/<box>/box.yaml --mode ranked \
+  --competition --out artifacts/<box>-ranked --provider-host <clone-address>
+```
+
+Pass the **same engine URL** to both (or export it once): build state
+fingerprints it and `install` refuses state from different inputs.
+`--competition` mints no enrollment token and does not upload the scenario. It
+places the agent, the signed manifest, the authoring public key, and an
+`agent_config.json` whose `enrollment_token` is null — **no rubric, no engine
+record, no answer key** — and leaves the agent unit (or Windows task)
+disabled. Confirm no `identity.json*` or report artifacts remain, then seal;
+`huitz join` enables and starts the unit on the player's clone.
+
+```bash
+python3 -m boxbuilder lint --all    # plant/check cross-check, every box
+```
+
+### 3.1 The scenario's `pool:` block
 
 Each competition provisions **its own private pool** at the first claim,
 cloned from the ranked template named in the scenario record's `pool:` block.
-The engine never selects among the portal's pre-existing pools — so a ranked
-competition can never be handed an honor-mode box. Author the block in the
-ranked scenario YAML (field names mirror the portal's
-`POST /api/admin/provision` 1:1):
+The engine never selects among the portal's pre-existing pools, so a ranked
+competition can never be handed an honor-mode box. Fields mirror the portal's
+`POST /api/admin/provision` 1:1; deployment values are `${...}` placeholders
+expanded at ranked-build time:
 
 ```yaml
-pool:
-  template_vm_id: 183
-  template_vm_access_method: vnc
-  template_vm_username: sysadmin
-  template_vm_password: asdf
-  vm_count: 2          # pre-provisioned VMs; the dispenser clones more on demand
-  # optional, defaults: dispenser: true, private: true, group: Challenge,
-  #                     guac_link_ttl_seconds: 7200
+ranked:
+  pool:
+    template_vm_id: "${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}"
+    template_vm_access_method: vnc      # ssh | vnc | rdp
+    template_vm_username: "${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}"
+    template_vm_password: "${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}"
+    vm_count: 2      # pre-provisioned; the dispenser clones more on demand
+    # defaults: dispenser: true, private: true, group: Challenge,
+    #           guac_link_ttl_seconds: 7200
 ```
 
-Recompile (`boxbuilder compile`) and upload the engine record to the engine
-(`POST /admin/scenarios` or the box-folder import). A `pool:` block on an
-**honor** scenario is a validation error — pools exist only to hand out ranked
-boxes. What the engine does with it:
+Add the block after the template is sealed (the VM id only exists then), then
+recompile and upload. `compile` fails on an unset variable rather than
+shipping an empty id or password:
 
-- On the first claim (or sweeper retry), it asks the portal to provision a
-  private dispenser pool named `huitz-ranked-<competition-slug>` from that
-  template, pins the new pool code on the competition (audit event
-  `competition_pool`, `source: "provisioned"`), and claims from it. VM
-  provisioning runs asynchronously portal-side; claims work immediately
-  because the dispenser clones on demand.
-- If a portal provisioning job is already running, the request is retried by
-  the sweeper. If a pool with the competition's name already exists (an
-  earlier attempt or engine restart), it is reused — but only if it clones
-  the same template; a template mismatch is refused loudly.
-- **Ending a competition** (the admin End action, or the next sweeper pass)
-  releases the competition's VMs and deletes its pool. Pools this engine did
-  not provision (legacy pins from before per-competition provisioning) are
-  never touched — the pin is simply cleared.
-- The only admin operations left are read-only visibility (the competition
-  page records that a pool is attached; the code itself stays in the audit
-  log/journal) and **clearing** a pinned pool so the next
-  claim provisions a fresh one. A competition can never be pointed at an
+```bash
+export HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID=<template-vmid>
+export HUITZILOPOCHTLI_POOL_TEMPLATE_USER=<template-login-user>
+export HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD='<template-login-password>'
+python3 -m boxbuilder compile --spec boxes/<box>/box.yaml --mode ranked \
+  --no-bundle --out artifacts/<box>-ranked
+```
+
+A `pool:` block on an honor scenario is a validation error. What the engine
+does with it:
+
+- On the first claim (or a sweeper retry) it has the portal provision a private
+  dispenser pool named `huitz-ranked-<competition-slug>` from that template,
+  pins the code (audit `competition_pool`, `source: "provisioned"`), and
+  claims from it. Provisioning is asynchronous portal-side; claims work
+  immediately because the dispenser clones on demand.
+- A same-name pool from an earlier attempt or restart is reused, but only if it
+  clones the same template; a mismatch is refused loudly.
+- **Ending a competition** (admin End or the next sweep) releases its VMs and
+  deletes its pool. Pools this engine did not provision are left alone; only
+  the pin is cleared.
+- The only admin operation is read-only visibility plus **clearing** a pinned
+  pool (`POST /admin/api/competitions/<id>/pool` with an empty `pool_code`) so
+  the next claim provisions afresh. A competition can never be pointed at an
   arbitrary existing pool.
-
-The lab used template `huitz-ranked-template` (vmid 174, full clone of a
-working ranked box, cleaned identity, agent disabled). Keep the template VMs'
-`qemu-guest-agent` installed — the on-open join runs through it.
 
 ### 3.2 Pre-bound joins (no terminal, no code)
 
-The player gets one link and nothing to type. The engine sends the portal the
-player's one-time join code; the portal keeps it and, when the player opens the
-link, re-mints a fresh Guacamole session and runs
-
-```bash
-/usr/local/bin/huitz join --code <code>
-```
-
-inside the guest via qemu-guest-agent. The box binds itself and the run clock
-starts at that moment (the click, not the clone). If the join fails, the player
-is shown the error, the VM link, and a link back to the competition page, where
-the fallback code and "Get a new VM" live.
-
-Both sides need the same shared secret:
+The engine sends the portal the one-time join code; opening the player's link
+re-mints a Guacamole session and runs `huitz join --code <code>` in the guest
+through the QEMU guest agent. The run clock starts at that bind, not at clone.
+A failed join shows the error, the VM link, a link back, and the fallback code.
 
 ```bash
 # engine.env
 HUITZILOPOCHTLI_WORKSHOP_SECRET=<hex>
 # portal .env
 HUITZ_PREBIND_SECRET=<hex>
-# portal .env, when players reach the portal by a name other than the engine does
-PUBLIC_URL=https://portal.example
-# portal .env, only if huitz is not at /usr/local/bin/huitz
-HUITZ_BIN=/usr/local/bin/huitz
+PUBLIC_URL=https://<portal-host>          # if players reach the portal by another name
+HUITZ_BIN=/usr/local/bin/huitz            # if huitz is not there
 ```
 
-`engine/deploy/install.sh` only writes `engine.env` on a fresh install; add
-these lines to an existing `/etc/huitzilopochtli/engine.env` by hand and
-restart the unit (the portal needs a restart too, to reload `.env`).
+`engine/deploy/install.sh` writes `engine.env` only on a fresh install; add
+these by hand and restart the unit (and the portal). With only the engine side
+set, the portal rejects the prebind and the engine falls back to an audited
+plain claim; with only the portal side set, nothing changes.
 
-Set only the engine side and the portal rejects the prebind (403); the engine
-then falls back to a plain claim, so players still get a VM and can run
-`huitz join` by hand. Set only the portal side and nothing changes — claims
-without prebind behave as before.
-
-Two more deployment facts, both found the hard way:
-
-- **The portal's Proxmox token needs `VM.GuestAgent.Unrestricted`.** The token
-  used to provision pools usually has `VM.GuestAgent.Audit` only (enough to
-  read the VM's IP for Guacamole). Without `Unrestricted`, the on-open join
-  fails with `403 ... VM.GuestAgent.Unrestricted` and the portal returns the
-  VM with `joined: false` plus the error. Grant it to the token (a small
-  `HuitzAgentExec` role works) — or add the privilege to the portal's custom
-  role.
+- **The portal's Proxmox token needs `VM.GuestAgent.Unrestricted`** (the
+  provisioning token usually has `Audit` only). Without it the on-open join
+  fails with a 403 and the VM comes back `joined: false`; grant it (a small
+  `HuitzAgentExec` role works) or add it to the portal's custom role.
 - **Windows boxes have no `huitz` shim.** The portal runs
   `python C:\ProgramData\huitzilopochtli\agent.pyz join --code <code>` for
-  `rdp` pools (`HUITZ_WIN_PYTHON` / `HUITZ_WIN_AGENT`), and `huitz join`
-  enables and starts the `HuitzilopochtliAgent` scheduled task (ranked Windows
-  templates ship it registered but disabled).
+  `rdp` pools (`HUITZ_WIN_PYTHON` / `HUITZ_WIN_AGENT`); the join enables the
+  `HuitzilopochtliAgent` task, shipped registered but disabled.
 
 ## 4. Player join flow
 
-1. Player opens `/c/<slug>` and clicks **Join**.
-2. Enters a display name; the engine reserves a slot, mints a one-time code,
-   and claims a VM from the competition's pool (resolving the pool first if
-   needed).
-3. The page shows **Open my VM** (a stable portal link). While the VM clones,
-   it says it is being prepared and updates itself. Failed claims are retried
-   automatically in the background; the page also offers **Get a new VM** for
-   an immediate retry.
-4. Player clicks the link. The portal mints a fresh Guacamole session and runs
-   `huitz join` in the guest before handing over the console.
-5. The engine binds the box, starts that player's run clock, and the agent
-   begins signed check-ins. The page flips to "your box is joined".
-6. Player watches `/c/<slug>` or `huitz watch`.
+**One competition at a time.** A slot is reserved per browser (`huitz_player`
+cookie) and a live display name cannot be reused elsewhere; another join is
+refused with a link back to the run until that competition ends or the slot is
+left. While active, `/` is the run dashboard (score, clock, uptime strip,
+board, VM actions, **Leave competition**); `/c/<slug>/me` is the permanent
+per-competition link.
 
-The link is stable for the life of the claim: reopening it always mints a new
-session, so an idle Guacamole token is not a dead end. If the VM is gone
-(released, expired, competition ended), the portal says so and links back; use
-**Get a new VM** on the competition page.
+1. Open `/c/<slug>`, click **Join**, enter a display name.
+2. The engine reserves the slot, mints a one-time code, claims a VM from the
+   competition's pool (provisioning it first if needed), and redirects to `/`.
+3. The dashboard shows **Open my VM**, a stable portal link; failed claims
+   retry automatically and **Get a new VM** forces an attempt.
+4. Opening the link mints a fresh Guacamole session and runs `huitz join`.
+5. The engine binds the box and starts that player's clock; signed check-ins
+   begin, and the dashboard flips to "your box is joined".
 
-**Fallback.** `huitz join` and the code are still there: open the join page's
-"Join from the terminal" section and run it yourself. An admin can reissue the
-code (and rotate the portal's copy) from the roster; the fresh code is shown
-once in a confirmation banner and never lingers in the page or the URL.
+The link stays valid for the life of the claim: reopening it always mints a
+new session; if the VM is gone, the portal says so and links back.
 
-If the player loses the page, `/c/<slug>/me` uses a player cookie (it shows the
-score, a live countdown, the last check-in age, the VM link, and the same
-**Get a new VM** button).
+**Leaving is a forfeit.** **Leave competition** releases the VM, removes the
+slot and its score from the board, clears the player cookie, and frees the
+player to join another competition. It cannot be undone.
 
-## 5. Scored services
+**Fallback.** The join page's "Join from the terminal" section carries
+`huitz join` and the code; an admin can reissue it (rotating the portal's copy)
+from the roster. The fresh code is shown once in a banner, never in the page
+or URL.
 
-- Each service is a normal check plus SLA parameters, compiled under
-  `svc_<id>`.
-- The box agent probes its own service; the engine accrues
-  `points_per_interval` while the service is UP, using the engine receipt
-  clock, capped per check-in (default 3 intervals), and never back-pays an
-  outage.
-- Hysteresis defaults to 2/2: two consecutive failures go DOWN, two successes
-  go UP.
-- **Ceiling:** this is self-reported. It proves the box observed the service
-  locally, not that it is reachable from another network. Use `http_uptime`,
-  `tcp_port`, `service_state`, or `db_query` and document the perspective.
+## 5. Admin and engine ops
 
-## 6. Admin operations
-
-- `/admin` — competitions, status, player counts, recent audit (auto-updates
-  every 30s).
-- `/admin/competitions/<id>` — start/end/close joins, roster (auto-updates
-  every 15s; score, service dots, check-in age, reissue code,
-  disqualify/remove with confirmations), join-URL copy button, export via API.
-  Join codes are never rendered; a reissue shows the fresh code once.
-- `/admin/scenarios` — paste an `engine_record.json` and validate/upload.
-- `/admin/audit` — admin action log with `?action=` filter chips.
-- API (admin token or Basic):
-  - `GET/POST /admin/api/competitions`
-  - `GET /admin/api/competitions/<id>`
-  - `POST /admin/api/competitions/<id>/start|end|close-join`
-  - `POST /admin/api/competitions/<id>/pool` — optional automation override;
-    pool picking is normally automatic
-  - `POST /admin/players/<id>/reissue|retry-claim|disqualify|remove`
-  - `POST /api/public/join/<player_id>/claim` (player cookie + page CSRF)
-
-A background sweeper (`HUITZILOPOCHTLI_SWEEP_INTERVAL_S`, default 15s; runs
-when `HUITZILOPOCHTLI_WORKSHOP_URL` is set) keeps dispensing automatic: it
-retries claims that never got a VM (per-player exponential backoff up to 5
-minutes, refreshing an expired join code first), advances provisioning
-tickets left behind by closed join pages, and rotates the portal's join code
-on claimed VMs before it expires.
-
-CSRF tokens are required for session-authenticated form posts; header-auth API
-calls are exempt.
-
-### Web UI design notes
-
-The engine UI (public + admin + display board) is server-rendered from
-`engine/web.py` in a cream editorial style — hard 1px espresso frames, sharp
-corners, serif headings, small uppercase sans labels, flat surfaces. Two
-themes share one token set: cream (default; follows `prefers-color-scheme`,
-overridable via the header toggle, persisted in `huitz-theme` localStorage)
-and a warm dark roast. Per-competition accents (set at creation) color links,
-the leader's rank edge, and the big-screen score; unreadable accents are
-clamped to the default. Live pages poll in place via fetch + section swap
-(leaderboard/display 5s, roster 15s, /me 15s, dashboard 30s) with a
-`<noscript>` meta-refresh fallback and ticking countdowns.
-
-## 7. Engine VM operations
-
-```bash
-# status / health
-systemctl status huitzilopochtli-engine
-curl -sS http://127.0.0.1:8080/health
-
-# logs
-journalctl -u huitzilopochtli-engine -f
-
-# backup now
-systemctl start huitzilopochtli-backup.service
-ls -l /var/backups/huitzilopochtli/
-
-# restart
-systemctl restart huitzilopochtli-engine
-```
-
-Engine code is deployed from a tarball built on the dev host:
-
-```bash
-python3 packaging/build_engine_bundle.py dist/huitzilopochtli-engine.tar.gz
-```
-
-On the VM, extract and copy `common/` + `engine/` into
-`/opt/huitzilopochtli/engine/`, then restart the unit. The engine database and
-`engine.env` survive redeploys.
-
-**Backup/restore:** stop the engine, copy a backup over
-`/var/lib/huitzilopochtli/engine.db`, fix ownership (`huitz:huitz`, `0600`),
-start the engine. Restore the matching `HUITZILOPOCHTLI_SERVER_SECRET` from
-`engine.env`; rotating it re-schedules every box's adversary events.
-
-## 8. Troubleshooting
-
-| Symptom | Check |
-|---|---|
-| Join page says "no VM" / shows a red claim error | The roster shows the exact portal error; failed claims retry automatically every sweep. Check `HUITZILOPOCHTLI_WORKSHOP_URL` / `HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD` and the portal's `/api/admin/pools`; use **Retry VM** or **Get a new VM** to force an immediate attempt |
-| VM opens but never joins | Portal log for `Prebind ... failed`; check `HUITZ_PREBIND_SECRET` matches on both sides, `HUITZ_BIN`, and `huitz join --code <code>` by hand in the guest |
-| `huitz join` 403 | code expired/used; reissue from roster; check server clock |
-| Box checks in but score 0 | signed manifest scenario/version matches the competition; `journalctl -u huitzilopochtli-agent` |
-| Service always DOWN | check `collect` URL/port from **inside** the box; evidence reason on `/c/<slug>` or `huitz score` |
-| Admin page 401 | `HUITZILOPOCHTLI_ADMIN_PASSWORD`; credentials file on VM |
-| Engine won't start | `journalctl`; `python3 -m engine.server` manually from `/opt/huitzilopochtli/engine` |
-| Disk filling | backups/retention; DB size; `df -h` |
+Console `/admin` (competitions, counts, audit), `/admin/competitions/<id>`
+(start/end/close joins/rerun, roster, reissue, disqualify/remove, CSV; ended
+competitions add **Remove**), `/admin/scenarios` (paste a record),
+`/admin/audit`. API: `/admin/api/competitions` and `/admin/players/<id>`;
+CSRF applies to session forms only. A sweeper
+(`$HUITZILOPOCHTLI_SWEEP_INTERVAL_S`, 15s) retries failed claims, rotates
+expiring codes, and cleans ended pools. Engine install, upgrade, and
+backup/restore are in `engine/deploy/README.md`.

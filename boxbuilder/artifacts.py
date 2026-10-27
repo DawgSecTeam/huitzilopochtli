@@ -28,6 +28,8 @@ ranked boot (agent/identity.py), so boxbuilder never ships one. We only set
 identity_path in agent_config.json so the agent knows where to create it.
 """
 import os
+
+from boxbuilder.os_family import is_windows
 from dataclasses import dataclass
 from typing import Optional
 
@@ -45,7 +47,7 @@ RUBRIC_BASENAME = ".score.dat"
 
 def install_dir_for(os_name: str) -> str:
     """Install dir on the TARGET box for its OS ("posix" | "windows")."""
-    if os_name == "windows":
+    if is_windows(os_name):
         return INSTALL_DIR_WINDOWS
     return INSTALL_DIR_POSIX
 
@@ -147,7 +149,7 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
     base = install_dir_for(os_name)
     # The BUILD machine is POSIX; path separators for the TARGET box must be
     # chosen explicitly, not via os.path.join.
-    sep = "\\" if os_name == "windows" else "/"
+    sep = "\\" if is_windows(os_name) else "/"
     cfg = {
         "mode": mode,
         "manifest_path": f"{base}{sep}manifest.signed.json",
@@ -188,14 +190,14 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict,
     import json
 
     base = install_dir_for(os_name)
-    sep = "\\" if os_name == "windows" else "/"
+    sep = "\\" if is_windows(os_name) else "/"
     files = [
         OnBoxFile(compile_result["agent_pyz"], f"{base}{sep}agent.pyz"),
         OnBoxFile(compile_result["manifest"], f"{base}{sep}manifest.signed.json"),
         OnBoxFile(compile_result["authoring_public_key"],
                   f"{base}{sep}authoring_public_key.b64"),
     ]
-    if os_name != "windows":
+    if not is_windows(os_name):
         # POSIX only: huitzilopochtli-agent.service's ExecStartPost runs this
         # after every agent run to mirror report.html into each real user's
         # $HOME/Desktop (a snap-confined browser can't see /opt). Windows gets

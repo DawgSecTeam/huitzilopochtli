@@ -600,9 +600,9 @@ def test_plain_http_warning_fires_for_non_loopback_only(capsys):
     def m(url):
         return types.SimpleNamespace(engine_url=url)
 
-    _warn_if_plain_http(m("http://10.0.0.5:8080"))
+    _warn_if_plain_http(m("http://192.0.2.5:8080"))
     err = capsys.readouterr().err
-    assert "plain HTTP" in err and "10.0.0.5:8080" in err
+    assert "plain HTTP" in err and "192.0.2.5:8080" in err
 
     _warn_if_plain_http(m("http://127.0.0.1:8080"))
     _warn_if_plain_http(m("http://localhost:8080"))

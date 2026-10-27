@@ -405,3 +405,55 @@ def test_oversized_bundle_is_shrunk_below_engine_cap(tmp_path):
     from common.canon import canonicalize
     import dataclasses
     assert len(canonicalize(dataclasses.asdict(bundle))) <= transport.MAX_BUNDLE_BYTES
+
+
+# --- extended check-in response fields (rank / event clock / uptime ticks) ---
+
+
+def _response_payload(**over):
+    payload = {
+        "server_time": 500.0,
+        "score": {
+            "scenario_name": "sc", "scenario_version": 1, "total": 13,
+            "results": [],
+            "sla_status": [
+                {"check_id": "web", "state": "UP", "accrued_points": 3,
+                 "history": ["DOWN", "UP"]},
+            ],
+            "computed_at": 500.0,
+        },
+        "directives": [],
+        "next_checkin_s": 60,
+        "last_seq": 7,
+        "rank": 2,
+        "rank_total": 6,
+    }
+    payload.update(over)
+    return payload
+
+
+def test_parse_checkin_response_carries_rank_and_uptime_history():
+    from agent.transport import _parse_checkin_response
+    resp = _parse_checkin_response(_response_payload())
+    assert (resp.rank, resp.rank_total) == (2, 6)
+    assert resp.score.sla_status[0].history == ["DOWN", "UP"]
+
+
+def test_parse_checkin_response_tolerates_legacy_engine_fields():
+    from agent.transport import _parse_checkin_response
+    payload = _response_payload()
+    payload.pop("rank")
+    payload.pop("rank_total")
+    payload["score"]["sla_status"][0].pop("history")
+    resp = _parse_checkin_response(payload)
+    assert resp.rank is None and resp.rank_total is None
+    assert resp.score.sla_status[0].history == []
+
+
+def test_parse_checkin_response_sanitizes_history_and_rank():
+    from agent.transport import _parse_checkin_response
+    payload = _response_payload(rank=True, rank_total="6")
+    payload["score"]["sla_status"][0]["history"] = ["up", "bogus", "DOWN", 7]
+    resp = _parse_checkin_response(payload)
+    assert resp.rank is None and resp.rank_total is None
+    assert resp.score.sla_status[0].history == ["UP", "DOWN"]

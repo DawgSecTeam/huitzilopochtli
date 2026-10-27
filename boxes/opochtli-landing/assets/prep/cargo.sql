@@ -1,8 +1,18 @@
--- Shared port-authority database (workshop-shared-mariadb, 192.168.100.10).
--- User is SELECT-only and reachable only from the workshop guest network.
+-- Shared port-authority database for the cargo-manifest lookup app.
+--
+-- Run this ONCE as root on the database host -- never on a scored practice
+-- box. It creates the `portauthority` database, the SELECT-only
+-- `portauthority` account, and the themed manifest rows the app reads.
+--
+-- PLACEHOLDERS: `192.0.2.%` is an RFC 5737 documentation address standing in
+-- for the practice-network subnet the app connects from, and `change-me` for
+-- the account password. Substitute both at deploy time and keep them in step
+-- with the app's connection settings (see prep-notes.md) and with the egress
+-- rule the scenario scores. The database host listens on 3306 and must accept
+-- connections from that subnet.
 CREATE DATABASE IF NOT EXISTS portauthority;
-CREATE USER IF NOT EXISTS 'portauthority'@'192.168.100.%' IDENTIFIED BY 'manifest-db';
-GRANT SELECT ON portauthority.* TO 'portauthority'@'192.168.100.%';
+CREATE USER IF NOT EXISTS 'portauthority'@'192.0.2.%' IDENTIFIED BY 'change-me';
+GRANT SELECT ON portauthority.* TO 'portauthority'@'192.0.2.%';
 USE portauthority;
 CREATE TABLE IF NOT EXISTS cargo_manifest (
   id INT AUTO_INCREMENT PRIMARY KEY,

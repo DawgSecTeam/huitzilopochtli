@@ -65,7 +65,8 @@ class BoxHandle(ABC):
         """Upload a local file to a remote path. If mode given, chmod it."""
 
     @abstractmethod
-    def install_init(self, kind: str, mode: str = "honor") -> None:
+    def install_init(self, kind: str, mode: str = "honor",
+                     start_agent: bool = True) -> None:
         """Install + enable the huitzilopochtli-agent init unit.
         kind is one of: 'systemd', 'openrc', 'none' (none = skip, the operator
         will wire it up). Copies the template from packaging/ and runs the
@@ -75,7 +76,11 @@ class BoxHandle(ABC):
         comments); on systemd, this also installs+enables the paired
         huitzilopochtli-agent.timer so the report re-checks periodically
         without operator action. Ranked mode's agent already loops forever
-        on its own and does not need the timer."""
+        on its own and does not need the timer.
+
+        start_agent=False installs the unit (or Windows scheduled task) but
+        leaves it stopped/disabled -- a ranked competition box is started by
+        the player's `huitz join`, not at install time."""
 
     @abstractmethod
     def export(self, out_path: str, fmt: str = "ova") -> ExportResult:

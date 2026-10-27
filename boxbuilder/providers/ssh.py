@@ -308,7 +308,7 @@ class SshHandle(BoxHandle):
     def install_init(self, kind: str, mode: str = "honor",
                      start_agent: bool = True) -> None:
         if kind == "windows":
-            return self._install_init_windows()
+            return self._install_init_windows(start_agent=start_agent)
         # The `huitz` console (agent/cli.py): a world-readable copy of the
         # agent zipapp on PATH. The CLI verbs read the report.json mirror
         # (sync-report.sh keeps it in every user's Documents/huitzilopochtli
@@ -404,7 +404,7 @@ class SshHandle(BoxHandle):
             raise ValueError(
                 f"unknown init kind {kind!r}; want systemd|openrc|windows|none")
 
-    def _install_init_windows(self) -> None:
+    def _install_init_windows(self, start_agent: bool = True) -> None:
         """Windows init: a SYSTEM scheduled task is the agent's timer.
 
         The installer .ps1 registers the task (at startup + every 5 minutes,
@@ -436,6 +436,15 @@ class SshHandle(BoxHandle):
             raise RuntimeError(
                 f"failed to register scheduled task: {res.stderr.strip() or res.stdout.strip()}"
             )
+        if not start_agent:
+            # Registered so `huitz join` can start it, but not running yet.
+            res = self.run_ps(
+                "schtasks.exe /Change /TN 'HuitzilopochtliAgent' /DISABLE; "
+                "exit $LASTEXITCODE")
+            if not res.ok:
+                raise RuntimeError(
+                    f"failed to disable the agent task: "
+                    f"{res.stderr.strip() or res.stdout.strip()}")
 
     def export(self, out_path: str, fmt: str = "ova") -> ExportResult:
         # A remote box over SSH can't snapshot itself; the operator must export

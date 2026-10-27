@@ -27,6 +27,7 @@ import tempfile
 from typing import Optional
 
 from boxbuilder import mdhtml, vulndb
+from boxbuilder.os_family import is_windows
 from boxbuilder.spec import BoxSpec, _resolve
 
 # Matches authoring/compile.py's manifest logo cap; the README page skips (rather
@@ -134,7 +135,7 @@ def _target_is_windows(spec: BoxSpec) -> bool:
     value `derive_deploy_config` threads into the deploy config) -- nakon's
     own convention: any os containing "win" is a Windows target."""
     machines = spec.nakon_machines()
-    return bool(machines) and "win" in str(machines[0].get("os", "")).lower()
+    return bool(machines) and is_windows(machines[0].get("os"))
 
 
 def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None) -> list:

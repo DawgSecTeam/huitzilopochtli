@@ -1,55 +1,40 @@
 #!/bin/sh
-# Fix for the "black VNC screen / invisible desktop (incl. scoreboard
-# shortcuts)" failure mode on xubuntu-vnc-derived templates (xubuntu-vnc
-# vmid 119, chocolate-factory-template vmid 129 and its descendants).
+# Fix the "black VNC screen / invisible desktop" failure mode on a headless
+# XFCE image served over x11vnc: the X session is up, but nothing renders.
 #
-# Run this ONCE, as root, on a booted clone of the template before
-# re-sealing it (`qm template`). It is idempotent -- safe to re-run.
-#
-# BACKGROUND (2026-09-05 incident, see boxbuilder/README.md's "VNC desktop
-# caveats" section and boxes/chocolate-factory/box.yaml):
-#
-# A live student box showed a solid-black VNC screen (cursor still moved --
-# x11vnc tracks/draws the pointer separately from the framebuffer capture,
-# so a live cursor is NOT proof the session is actually rendering) and no
-# visible desktop icons, including the huitzilopochtli "Scoring Report"
-# shortcut. Direct `xwd`-based capture of the real X display (bypassing
-# VNC/Guacamole entirely) proved this was genuine -- the X session itself
-# had nothing rendered, not a VNC-layer artifact. NOTE: if you try this
-# yourself to double check, don't reach for ImageMagick's `convert`/
-# `import` for the XWD -> PNG conversion -- it mis-decodes this xwd's
-# color format and renders a false all-black image. Use netpbm instead:
+# SYMPTOM: VNC shows a solid black screen while the cursor still moves --
+# x11vnc tracks/draws the pointer separately from the framebuffer capture, so
+# a live cursor is NOT proof the session is rendering. Direct `xwd` capture of
+# the X display (bypassing VNC entirely) shows the same thing, so this is the
+# X session, not a VNC-layer artifact. If you verify by hand, convert the XWD
+# with netpbm, not ImageMagick -- `convert`/`import` mis-decode this xwd's
+# colour format and produce a false all-black image:
 #   apt-get install -y netpbm && xwdtopnm shot.xwd | pnmtopng > shot.png
 #
-# Root cause, found by process of elimination against a live clone:
+# CAUSE: up to three independent, compounding blanking failures --
+#   1. no lightdm autologin: whoever built the image logged into the greeter
+#      once and never rebooted, so any reboot (or `systemctl restart lightdm`)
+#      drops back to a real login prompt nobody can answer -- a dark screen
+#      with a live cursor, which is what most black-screen reports really are;
+#   2. DPMS screen blanking (`xset q` reports "Monitor is Off") after ~20 min
+#      idle, with xfce4-power-manager independently re-asserting its own
+#      DPMS/blank timers regardless of raw `xset` settings;
+#   3. xfce4-screensaver's own idle activation (a separate subsystem from
+#      DPMS) painting a fullscreen black lock/blank window.
+# Any one of them alone reproduces "solid black, cursor moves".
 #
-#   1. THE BIG ONE: xubuntu-vnc was never actually configured for lightdm
-#      autologin. Whoever built the template originally just typed the
-#      account's password into the greeter once, and it stuck because the
-#      VM was never rebooted again. Any reboot (or `systemctl restart
-#      lightdm`) drops back to a real login greeter that nobody -- not the
-#      student, not the automation -- has credentials to answer, which
-#      sits there indefinitely with a dark/blank background and a live
-#      cursor. This is very likely what the *original* black-screen
-#      reports actually were. Fixed by section 1 below.
-#   2. DPMS screen blanking (`xset q` reporting "Monitor is Off") after
-#      ~20 min idle, compounded by xfce4-power-manager independently
-#      re-asserting its own DPMS/blank timers regardless of raw `xset`
-#      settings. Fixed by section 2 below.
-#   3. xfce4-screensaver's own idle-activation (a separate subsystem from
-#      DPMS) painting a fullscreen black lock/blank window. Fixed by
-#      section 3 below.
+# WHAT IT DOES: truncates /etc/machine-id so every future clone generates its
+# own id at first boot, writes a lightdm autologin drop-in, makes x11vnc and
+# xfce4-power-manager never DPMS-blank, and disables xfce4-screensaver idle
+# activation (deactivating an already-painted instance too).
 #
-# All three are independent and compounding -- fix all three, since any
-# one of them alone reproduces "solid black, cursor moves".
-#
-# Usage: scp this script to the booted clone and run as root, e.g.:
+# Run once as root on a booted clone before sealing it. Idempotent -- safe to
+# re-run. Usage:
 #   ssh <user>@<clone-ip> 'sudo sh -s' < fix-xubuntu-vnc-display.sh -- <login_user>
-# where <login_user> is the account whose desktop is actually shown over
-# VNC (the account lightdm should autologin -- for chocolate-factory this
-# is "sysadmin", NOT the "ubuntu" account boxbuilder provisions over SSH;
-# confirm with `who`/`loginctl list-sessions` on a currently-running clone
-# before assuming the name).
+# <login_user> is the account whose desktop is actually shown over VNC (the
+# one lightdm should autologin) -- not necessarily the account the tooling
+# provisions over SSH. Confirm with `who`/`loginctl list-sessions` on a
+# currently-running clone before assuming the name.
 
 set -e
 
@@ -61,12 +46,12 @@ LOGIN_USER="${1:?usage: $0 <login-user-to-autologin>}"
 # this script runs (true whenever this runs post-boot against an
 # already-autologinned clone, which is the normal case here): the write goes
 # to a disposable xfconfd instance the real, already-running session never
-# sees, and silently vanishes -- confirmed the hard way (2026-09-06 xubuntu-vnc
-# round): belt 3 below reported "disabled" but the property never existed on
-# the live session's bus, and the screensaver's fullscreen window kept
-# painting solid black over the whole desktop. Prefer the REAL per-user bus
-# at /run/user/<uid>/bus (created by an actual login) when it's there; only
-# fall back to a throwaway dbus-launch bus if no session has started yet.
+# sees, and silently vanishes -- it can report "disabled" while the property
+# never existed on the live session's bus, and the screensaver's fullscreen
+# window keeps painting solid black over the whole desktop. Prefer the REAL
+# per-user bus at /run/user/<uid>/bus (created by an actual login) when it's
+# there; only fall back to a throwaway dbus-launch bus if no session has
+# started yet.
 run_as_user_dbus() {
   _u="$1"; shift
   _uid=$(id -u "$_u")
@@ -78,25 +63,19 @@ run_as_user_dbus() {
 }
 
 echo "== 0. machine-id (DHCP-collision hygiene) =="
-# A template built from another template (e.g. chocolate-factory-template
-# from xubuntu-vnc) inherits the source's /etc/machine-id verbatim unless
-# it's explicitly re-wiped after the clone -- confirmed the hard way
-# (2026-09-05): a fresh clone of chocolate-factory-template (vmid 129)
-# grabbed the SAME DHCP IP as an already-running sibling clone because both
-# shared one machine-id. This is the same class of bug already documented
-# in tests/README.md for the plain xubuntu template -- it just hadn't been
-# re-applied after xubuntu-vnc was customized into chocolate-factory-template.
+# A template built from another template inherits the source's /etc/machine-id
+# verbatim unless it's explicitly re-wiped after the clone: two live clones
+# then share one DHCP client id and grab the SAME IP.
 #
 # IMPORTANT: leave the file EMPTY here -- do NOT run
 # systemd-machine-id-setup (which writes a value immediately, derived from
 # THIS VM's current SMBIOS UUID). A value written now is exactly as wrong
 # as the bug this fixes: it becomes the ONE machine-id every future clone
 # of the resulting template inherits, reproducing the same collision the
-# next time two of those clones are live at once (confirmed by making this
-# exact mistake once already: see the first attempt at this fix in git
-# history). Left empty, systemd generates a fresh id itself, very early at
-# boot (before networking), from each clone's OWN vm UUID -- which is what
-# actually needs to be unique per clone, not per template.
+# next time two of those clones are live at once. Left empty, systemd
+# generates a fresh id itself, very early at boot (before networking), from
+# each clone's OWN vm UUID -- which is what actually needs to be unique per
+# clone, not per template.
 rm -f /etc/machine-id
 touch /etc/machine-id
 echo "   /etc/machine-id truncated to empty -- each future clone of the"
@@ -105,15 +84,14 @@ echo "   (If you're applying this fix live, on a VM that must ALSO stay"
 echo "   usable right now rather than be re-sealed immediately, run"
 echo "   'systemd-machine-id-setup' yourself afterward to populate it for"
 echo "   this boot -- just don't do that on the copy you're about to"
-echo "   re-seal with 'qm template'.)"
+echo "   re-seal as a template.)"
 
 echo "== 1. lightdm autologin for '$LOGIN_USER' =="
 mkdir -p /etc/lightdm/lightdm.conf.d
 # Session id is the .desktop file's basename WITHOUT the .desktop suffix
 # (see /usr/share/xsessions/*.desktop) -- using the full filename here is
 # a silent no-op ("Failed to find session configuration", falls back to
-# the greeter) and is the mistake that cost the most time to catch during
-# the incident above.
+# the greeter).
 SESSION_ID=$(basename "$(ls /usr/share/xsessions/*.desktop 2>/dev/null | grep -i xubuntu | head -1)" .desktop)
 SESSION_ID="${SESSION_ID:-xubuntu}"
 cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf <<EOF
@@ -189,4 +167,4 @@ echo "== done =="
 echo "Reboot (or restart lightdm) and confirm via 'xset q' (DPMS disabled,"
 echo "Monitor stays On) and 'loginctl list-sessions' (a real desktop"
 echo "session for $LOGIN_USER on seat0, not just a stuck greeter) before"
-echo "re-sealing this VM with 'qm template'."
+echo "re-sealing this VM as a template."

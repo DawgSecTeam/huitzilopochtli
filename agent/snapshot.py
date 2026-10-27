@@ -51,7 +51,10 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                    honor_interval_s: int = 70,
                    server_time: float | None = None,
                    next_checkin_s: int | None = None,
-                   awaiting_engine: bool = False) -> dict:
+                   awaiting_engine: bool = False,
+                   rank: int | None = None,
+                   rank_total: int | None = None,
+                   run_ends_at: float | None = None) -> dict:
     """Assemble the snapshot dict. Pure; `write` serializes it.
 
     `mode` is "honor" | "ranked" (str, so callers need not import schema).
@@ -62,6 +65,10 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
     re-fires 60s after the previous ACTIVATION, and a grade takes ~2s plus
     dispatch, so observed fires land ~70s apart — a 60s estimate spends the
     last stretch of every cycle pinned at "00:00 — checking…".
+
+    ``rank``/``rank_total``/``run_ends_at`` are the engine's live scoreboard
+    position and run clock (ranked only). Like the countdown they are
+    presentation facts, never scoring inputs; honor mode leaves them null.
     """
     b = board_mod.build_board(score, manifest)
     theme = getattr(manifest, "theme", None)
@@ -115,6 +122,12 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         "last_confirmed_at": None,
         "next_checkin_s": None,
         "sla_status": [],
+        # Ranked only: live scoreboard position + the event's end clock, as
+        # reported by the engine on this check-in. None in honor mode / for
+        # a legacy engine.
+        "rank": None,
+        "rank_total": None,
+        "run_ends_at": None,
     }
 
     if mode == "ranked":
@@ -136,9 +149,13 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "check_id": s.check_id,
                 "state": s.state,
                 "accrued_points": s.accrued_points,
+                "history": list(getattr(s, "history", None) or []),
             }
             for s in (score.sla_status or [])
         ]
+        snap["rank"] = rank
+        snap["rank_total"] = rank_total
+        snap["run_ends_at"] = run_ends_at
         snap["last_confirmed_at"] = server_time
         snap["next_checkin_s"] = next_checkin_s
         if server_time is not None and isinstance(next_checkin_s, (int, float)) \
@@ -208,7 +225,8 @@ def _validate_snapshot(data: dict, path: str) -> None:
         isinstance(pct, bool) or not isinstance(pct, int) or not 0 <= pct <= 100
     ):
         bad("progress_pct must be an integer in 0..100")
-    for key in ("computed_at", "next_event_at", "last_confirmed_at"):
+    for key in ("computed_at", "next_event_at", "last_confirmed_at",
+                "run_ends_at"):
         if data.get(key) is not None and not _is_number(data.get(key)):
             bad(f"{key} must be a finite number or null")
     if data.get("next_checkin_s") is not None and (
@@ -216,6 +234,11 @@ def _validate_snapshot(data: dict, path: str) -> None:
         or not isinstance(data.get("next_checkin_s"), int)
     ):
         bad("next_checkin_s must be an integer or null")
+    for key in ("rank", "rank_total"):
+        if data.get(key) is not None and (
+            isinstance(data.get(key), bool) or not isinstance(data.get(key), int)
+        ):
+            bad(f"{key} must be an integer or null")
     if data.get("delta") is not None and (
         isinstance(data.get("delta"), bool) or not isinstance(data.get("delta"), int)
     ):
@@ -244,6 +267,10 @@ def _validate_snapshot(data: dict, path: str) -> None:
                     bad(f"{key}[{i}].{field} must be an integer")
                 elif kind == "bool" and not isinstance(value, bool):
                     bad(f"{key}[{i}].{field} must be a boolean")
+                elif kind == "strlist" and value is not None and (
+                        not isinstance(value, list)
+                        or any(not isinstance(item, str) for item in value)):
+                    bad(f"{key}[{i}].{field} must be a list of strings")
 
     check_list("fixed", [("title", "str"), ("points", "int")])
     check_list("penalties", [("title", "str"), ("points", "int")])
@@ -258,6 +285,7 @@ def _validate_snapshot(data: dict, path: str) -> None:
     ])
     check_list("sla_status", [
         ("check_id", "str"), ("state", "str"), ("accrued_points", "int"),
+        ("history", "strlist"),
     ])
     for key in ("snapshot_version", "scenario_version", "vulns_fixed",
                 "vulns_total", "remaining", "max_possible", "forensics_earned"):

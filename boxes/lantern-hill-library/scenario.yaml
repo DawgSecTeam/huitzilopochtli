@@ -1,80 +1,3 @@
-# Lantern Hill Community Library: an incident-response workshop box
-# (huitz terminal console -- NO desktop, NO VNC; players connect over SSH
-# and use `huitz score`, `huitz readme`, `huitz watch`, `huitz forensics`).
-# The story: the library's public catalog server was broken into days ago.
-# The intruder (signs itself "inkmoth") came in over SSH with a guessed
-# password, used the catalog app's unauthenticated admin hook to tamper
-# with holds and copy the patron list, then wired OS-level persistence
-# across cron, systemd, sudo, and the loader. Two things are still true on
-# this box: the data keeps re-breaking, and every move the intruder made
-# was recorded -- the login journal, the catalog app's service journal,
-# MariaDB's general query log, and auditd (rules loaded BEFORE the plants)
-# all tell the same story from four directions. That correlation IS the
-# material under test.
-#
-# Scoring ledger (tests/unit/test_boxbuilder_lantern_hill_library.py
-# asserts it). Twenty-five findings, difficulty-weighted:
-#   EASY     5 pts x 10 checks =  50   sshd_root_login_closed,
-#                                      sshd_password_auth_off,
-#                                      authorized_keys_clean,
-#                                      nightdesk_removed,
-#                                      rogue_module_removed,
-#                                      exfil_dump_removed,
-#                                      hosts_redirect_removed,
-#                                      firewall_rule_removed,
-#                                      tamper_cron_removed,
-#                                      motd_script_gone
-#   MODERATE 10 pts x 10 checks = 100  sshd_empty_passwords_off,
-#                                      timer_neutralized,
-#                                      rogue_service_removed,
-#                                      system_bashrc_clean,
-#                                      ld_preload_removed,
-#                                      tools_uninstalled,
-#                                      plugins_dir_perms_fixed,
-#                                      app_secrets_perms_fixed,
-#                                      auditd_rules_intact,
-#                                      db_general_log_on
-#   HARD     20 pts x 5 checks  = 100  backdoor_sshd_removed,
-#                                      beacon_neutralized,
-#                                      log_truncator_removed,
-#                                      timezone_restored,
-#                                      sudoers_rule_removed
-#   vuln checks total            = 250
-#   penalties (app + DB must stay up) = -20 floor (only subtract)
-#   forensics (13 x 10)          = 130
-#   GRAND TOTAL                  = 380
-#
-# Forensics questions walk the investigation in order: each names the
-# evidence CLASS or a narrative hook and asks for one short specific value,
-# never the artifact's name itself. Every answer sits in an artifact the
-# players must open anyway -- and several fixes (deleting the tamper cron,
-# the truncator, the exfil dump) destroy evidence the questions ask about:
-# READ BEFORE YOU DELETE.
-#
-# Design rules this file obeys (checked in the unit test where practical):
-#   - Every planted artifact has exactly one paired check; planted names
-#     and paths are byte-identical to boxes/lantern-hill-library/nakon.json
-#     vars (nothing cross-checks them at build time).
-#   - Any artifact where DELETING the file is legitimate hardening is
-#     graded by a command_json compound or permission exists:false -- never
-#     file_regex on a deletable path (missing file = ERROR = fail-closed).
-#   - Mode checks (plugins dir, .env) fail closed on a missing file by
-#     design: chmod is the fix, deletion breaks the app and costs the
-#     site-up penalty on top.
-#   - is-enabled is matched on the exact "^enabled$" output (disabled,
-#     masked, not-found all count as hardened).
-#   - Every command_json script is read-only, guards every command so it
-#     ALWAYS emits exactly one JSON scalar, and exits 0. Privileged probes
-#     (sshd -T, auditctl, mysql) emit the hardened value from an
-#     unprivileged context so the unit test can run them on a dev host;
-#     on the box the agent runs as root and grades for real.
-#   - The weak sshd config, the root password the brute force finds, the
-#     audit rules, the query log, and the whole attacker REPLAY are
-#     PREP-BAKED (assets/prep/), not planted here: the replay needs
-#     password root login live so the journal records real evidence, and
-#     the audit rules must load BEFORE the plants so the intrusion
-#     artifacts write their own audit trail.
-
 scenario:
   name: "Lantern Hill Community Library"
   version: 1
@@ -82,7 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # --- the way in: sshd (prep-baked root cause) -----------------------------
   - id: sshd_root_login_closed
     type: command_json
     category: vuln
@@ -204,7 +126,6 @@ checks:
       **3. Confirm.** `sshd -T | grep -i permitemptypasswords` reports
       `no`.
 
-  # --- accounts and keys ------------------------------------------------------
   - id: nightdesk_removed
     type: user_group
     category: vuln
@@ -279,7 +200,6 @@ checks:
       the forensics file asks for that key's comment tag -- read it before
       you delete it.
 
-  # --- the catalog app: the compromised front door ----------------------------
   - id: rogue_module_removed
     type: permission
     category: vuln
@@ -421,7 +341,6 @@ checks:
       the question about the staged export wants the filename -- you just
       read it.)
 
-  # --- data tampering: the scheduled jobs -------------------------------------
   - id: tamper_cron_removed
     type: command_json
     category: vuln
@@ -549,7 +468,6 @@ checks:
       **4. Confirm both graded conditions:** is-enabled no longer says
       `enabled`, and the payload is gone from disk.
 
-  # --- stealth, staging, and the way back in ----------------------------------
   - id: ld_preload_removed
     type: command_json
     category: vuln
@@ -772,7 +690,6 @@ checks:
       **3. Confirm.** `which hydra` prints nothing; `dpkg -l` no longer
       lists them.
 
-  # --- login-time hooks ---------------------------------------------------------
   - id: system_bashrc_clean
     type: command_json
     category: vuln
@@ -840,7 +757,6 @@ checks:
       **3. Confirm.** `ls /etc/update-motd.d/` shows only the stock
       entries, and your next login banner is clean.
 
-  # --- escalation ---------------------------------------------------------------
   - id: sudoers_rule_removed
     type: command_json
     category: vuln
@@ -879,7 +795,6 @@ checks:
       longer lists any grant (the account itself should already be
       removed -- that is its own check).
 
-  # --- anti-forensics -------------------------------------------------------------
   - id: log_truncator_removed
     type: command_json
     category: vuln
@@ -960,7 +875,6 @@ checks:
       grades that the attacker's zone is gone, so any honest zone passes
       -- but the library's real one is America/New_York.
 
-  # --- protective: keep the flight recorders running -------------------------------
   - id: auditd_rules_intact
     type: command_json
     category: vuln
@@ -1033,7 +947,6 @@ checks:
       **3. Confirm.** `SELECT @@global.general_log` returns 1. This check
       starts true and stays true unless YOU break it.
 
-  # --- penalties -----------------------------------------------------------------
   - id: catalog_app_healthy
     type: service_state
     category: penalty
@@ -1076,11 +989,6 @@ theme:
   organization: "Lantern Hill Community Library — Board of Trustees"
   accent: "#2F5D62"
   readme: assets/README.md
-  # Two graded answers collide with unavoidable story vocabulary, by
-  # static-pine precedent: "inkmoth" (the intruder signs everything) and
-  # "librarian" (Q1's answer is the account whose password fell -- which is
-  # also the player's own login, printed on page 1 as the creds-briefing
-  # rule requires). The full answers never appear in the handbook.
   readme_lint_allow: ["inkmoth", "librarian"]
   motd: |
     Welcome to the Lantern Hill Community Library catalog server.
@@ -1090,15 +998,6 @@ theme:
     Lantern Hill Community Library catalog server.
     Unauthorized access will be reported to the Board of Trustees.
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt (pinned to librarian's Desktop; edit with
-# `huitz forensics`); the agent re-grades the file each pass. Correct =
-# full points; wrong or blank = nothing, never negative. The thirteen
-# questions walk the investigation chronologically: each names the
-# evidence CLASS and asks for one short specific value, never the answer
-# itself, and each answer sits in an artifact the hunt opens anyway.
-# READ BEFORE YOU DELETE: Q3, Q5, Q6, Q7, Q10 and Q12 ask about files
-# whose removal is itself scored.
 forensics:
   - id: fq-compromised-account
     path: /home/librarian/Desktop/Forensics-Questions.txt
@@ -1248,3 +1147,74 @@ forensics:
       furthest-ahead timezone on Earth, UTC+14. The audit trail saw the
       change (`ausearch --input /var/log/audit/audit.log -k time-change -i`). Restoring the library's
       real zone (America/New_York) is the paired hardening check.
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: catalog
+    display: Catalog app (library-app)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1:8080/
+    expect:
+      equals: 200
+      field: status
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: mariadb
+    display: Catalog database (MariaDB)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 3306
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: ssh
+    display: Responder access (SSH)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: lhl-drop-marker
+      action: drop_inert_artifact
+      params:
+        path: library-marker.txt
+      window_s:
+      - 1800
+      - 2700
+    - id: lhl-kill-catalog
+      action: kill_service
+      params:
+        service: library-app
+      window_s:
+      - 2700
+      - 3600
+      affects_check: catalog
+    - id: lhl-kill-db
+      action: kill_service
+      params:
+        service: mariadb
+      window_s:
+      - 3600
+      - 5400
+      affects_check: mariadb
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: ssh
+    template_vm_username: ${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}
+    vm_count: 3
+    guac_link_ttl_seconds: 14400

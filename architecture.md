@@ -1,31 +1,29 @@
 # Huitzilopochtli — Architecture & Implementation Specification
 
-**Status:** decision-complete design spec. Every architectural fork in this document is resolved; sections marked *Non-goal* or *Open* are intentionally out of scope.
-**Audience:** the engineer/agent implementing the tool. This document is the source of truth for component contracts and their interactions. Where this document and intuition disagree, follow this document or raise the conflict.
-**One-line mental model:** *identical collector everywhere; the only two knobs are where the evaluator runs and where the rubric (answer key) lives.*
-
----
+**Status:** decision-complete design spec; every architectural fork is resolved. *Non-goal* and *Open* sections are intentionally out of scope.
+**Audience:** the engineer/agent implementing the tool. This is the source of truth for component contracts; where it and intuition disagree, follow this document or raise the conflict.
+**Mental model:** identical collector everywhere; the only two knobs are where the evaluator runs and where the rubric (answer key) lives.
 
 ## 1. Purpose & Scope
 
-Huitzilopochtli is a self-contained security-hardening scoring engine in the lineage of CyberPatriot (point-in-time hardening checks) and eCitadel/CCDC (continuous SLA + live adversary). It serves two distinct use cases:
+Huitzilopochtli is a self-contained security-hardening scoring engine in the lineage of CyberPatriot (point-in-time hardening) and eCitadel/CCDC (continuous SLA + live adversary). It serves two use cases:
 
-- **Take-home / honor mode** — offline, self-paced boxes distributed after workshops. No network required. The person being scored is trusted (cheating only cheats themselves).
-- **Ranked / live mode** — an always-on external engine aggregates scores from boxes during intensive individual practices, supports timed scenarios and a live adversary, and keeps the answer key off the box.
+- **Honor** — offline, self-paced boxes distributed after workshops. No network; the person scored is trusted (cheating only cheats themselves).
+- **Ranked** — an always-on external engine aggregates scores during timed practice, supports a live adversary, and keeps the answer key off the box.
 
-The engine must be **portable**: it assumes no specific infrastructure (no mesh VPN, no particular reverse proxy, no orchestration platform). Its only ranked-mode assumption is outbound network reachability from box to a single engine endpoint.
+The engine is portable: no mesh VPN, reverse proxy, or orchestration platform is assumed. Ranked mode's only infrastructure assumption is outbound reachability from box to one engine endpoint.
 
 ## 2. Design Principles (Invariants)
 
-These are load-bearing. Violating one breaks the architecture.
+These are load-bearing.
 
-1. **Collect/evaluate split.** The on-box collector gathers *facts* and makes **no scoring decisions**. Scoring is a pure function of `(evidence, rubric, clock)`. This is what lets the same code run offline and online by relocating the evaluator.
-2. **Checks emit structured evidence + a human reason, never a bare boolean.** The verdict is computed by the evaluator from evidence, not asserted by the collector. This is what makes ranked mode possible and reports explanatory.
-3. **Offline is untimed.** All temporal scoring (SLA drip, adversary schedule) exists **only** in ranked mode, where the engine supplies a trusted clock. The box's claimed wall-clock time is diagnostic only and never a scoring input.
-4. **The box is never trusted to hold the answer key in ranked mode.** The rubric (expected values + points) lives only on the engine. The box receives a manifest that says *what to collect*, never *what is correct*.
-5. **The box is stdlib-only, pure-Python.** No third-party dependency runs on target. Shared crypto is vendored. This is what makes the zipapp portable.
-6. **Signing protects identity and transit integrity, not fact-honesty.** In ranked mode a root user can lie about facts; nothing in this design prevents that (see §3). The signature proves *which* box sent a bundle and that it was not altered in flight.
-7. **The adversary is structurally incapable of arbitrary outbound network activity.** Its action API is a closed allowlist. No scenario can author a real callback.
+1. **Collect/evaluate split.** The on-box collector gathers *facts* and makes **no scoring decisions**; scoring is a pure function of `(evidence, rubric, clock)`. That is what lets the same code run offline and online by relocating the evaluator.
+2. **Checks emit structured evidence + a human reason, never a bare boolean.** The evaluator computes the verdict; the collector never asserts it.
+3. **Offline is untimed.** Temporal scoring (SLA drip, adversary schedule) exists only in ranked mode, where the engine supplies the trusted clock. The box's wall clock is diagnostic only and never a scoring input.
+4. **The box never holds the answer key in ranked mode.** The rubric (expected values + points) lives only on the engine; the manifest says *what to collect*, never *what is correct*.
+5. **The box is stdlib-only, pure Python.** No third-party dependency runs on target; shared crypto is vendored. This is what makes the zipapp portable.
+6. **Signing protects identity and transit integrity, not fact-honesty.** A root user can lie about facts; the signature proves *which* box sent a bundle and that it was not altered in flight (§3).
+7. **The adversary cannot perform arbitrary outbound network activity.** Its action API is a closed allowlist; no scenario can author a callback.
 
 ## 3. Trust Model & The Honest Ceiling
 
@@ -36,376 +34,150 @@ State this in user-facing docs; do not let it be implied.
 | **Honor** | box | box (ships with manifest) | none | no | no | Self-verified. Cheating is self-harm. No anti-tamper. |
 | **Ranked** | engine | engine only | engine (authoritative) | yes | yes | **Signed self-report scored against a hidden rubric.** Attributable and tamper-evident *in transit*. NOT cheat-proof. |
 
-**Ranked-mode ceiling, stated plainly:** because transport is push-only (§14), the engine never reaches the box and therefore cannot independently probe anything. Every fact — file permissions, user lists, *and* service uptime — is self-reported by an agent the operator has root over. The per-box signature does not prove truthfulness. A determined operator with root can make the agent report anything.
+**The ranked ceiling, plainly:** transport is push-only (§14), so the engine never reaches the box and cannot independently probe anything. Every fact — permissions, user lists, *and* service uptime — is self-reported by an agent the operator has root over. The per-box signature does not prove truthfulness.
 
-**What ranked still buys** over pure offline honor mode, and why it is worth building:
-1. The **rubric never touches the box** — the operator cannot read the answers and cannot fake a perfect score without reverse-engineering the agent and forging internally-consistent evidence. This is the primary anti-casual-cheat lever.
-2. **Trusted clock** — timed scoring cannot be farmed by rolling the box clock.
+**What ranked still buys** over offline honor mode:
+
+1. **The rubric never touches the box.** The operator cannot read the answers and cannot fake a perfect score without reverse-engineering the agent and forging internally consistent evidence — the primary anti-casual-cheat lever.
+2. **A trusted clock**, so timed scoring cannot be farmed by rolling the box clock.
 3. **Central aggregation / leaderboard** across many boxes.
 4. **Clean attribution** via per-box identity.
 
-**Do not** stake consequential outcomes (grades, prizes with real value) on ranked scores. It is designed for practice, workshops, and friendly leaderboards.
+**Do not** stake consequential outcomes (grades, prizes with real value) on ranked scores. It is built for practice, workshops, and friendly leaderboards.
 
 ## 4. Terminology
 
-- **Agent / Collector** — the on-box program (`.pyz`) that collects facts, and in honor mode also scores and reports.
-- **Engine** — the always-on ranked-mode server.
-- **Fact / Evidence** — a structured record of observed system state from one check. Contains no verdict.
-- **Manifest** — signed JSON shipped to the box: which facts to collect + display metadata. Contains no expected values.
-- **Rubric** — JSON of expected values + point values + SLA parameters. Engine-only in ranked; ships with the box in honor.
-- **Scenario** — author-written YAML that compiles into a (manifest, rubric) pair.
-- **Bundle** — a signed set of evidence the agent transmits (ranked) or evaluates locally (honor).
-- **Check-in** — one ranked-mode request/response cycle: box pushes a bundle, engine returns the authoritative score + directives.
-- **Directive** — an instruction the engine returns to the box (currently: adversary actions to execute now).
-- **T0** — the engine's receipt time of a box's *first* check-in; the anchor for all timed scoring for that box.
+- **Agent / Collector** — the on-box `.pyz` that collects facts and, in honor mode, scores and reports.
+- **Engine** — the always-on ranked server.
+- **Evidence** — a structured record of observed state from one check; no verdict.
+- **Manifest** — signed JSON shipped to the box: what to collect + display metadata; no expected values.
+- **Rubric** — expected values, points, and SLA parameters; engine-only in ranked, on-box in honor.
+- **Scenario** — authored YAML compiling to a manifest, a rubric, and an engine record.
+- **Bundle / check-in** — a signed evidence set the agent pushes (ranked) or evaluates locally (honor); one check-in is one push/response cycle.
+- **Directive** — an engine instruction to the box (currently: adversary actions to run).
+- **T0** — engine receipt time of a box's first check-in (or its competition run start); the timed-scoring anchor.
 
 ## 5. System Overview
 
 ### 5.1 Components
 
-- **Authoring toolchain** (author's machine; may use non-stdlib libs like PyYAML). Compiles + signs scenarios.
-- **Common library** (`common/`, pure stdlib, imported by both agent and engine). Holds the schema, canonical serialization, vendored crypto, and **the evaluator** — so scoring logic is byte-identical wherever it runs.
-- **Agent** (`.pyz`, on box): check plugin runtime, platform abstraction, evidence assembly, identity, transport client (ranked), local reporter, adversary executor (ranked).
-- **Engine** (server): enrollment endpoint, check-in endpoint, SLA ledger, adversary scheduler, storage (SQLite), leaderboard.
+- **Authoring toolchain** (author's machine; may use PyYAML): compile, validate, sign.
+- **Common library** (`common/`, stdlib, imported by agent and engine): schema, canonical serialization, vendored crypto, and the evaluator — so scoring is byte-identical wherever it runs.
+- **Agent** (`.pyz` on box): check runtime, platform layer, evidence assembly, identity, transport (ranked), reporter, adversary executor (ranked).
+- **Engine** (server): enroll/join/check-in endpoints, SLA ledger, adversary scheduler, SQLite storage, competitions, leaderboard.
 
 ### 5.2 The two-knob model
 
 ```
-                 HONOR MODE                          RANKED MODE
-   +-------------------------------+     +-----------------------------------+
-   |  BOX                          |     |  BOX                 ENGINE       |
-   |  collector --> evidence       |     |  collector --> evidence           |
-   |  evaluator (rubric on box)    |     |  sign+push  -------->  evaluator   |
-   |     |                         |     |                       (rubric here)|
-   |     v                         |     |             <-------  score+       |
-   |  local HTML report            |     |  cache+HTML           directives   |
-   +-------------------------------+     +-----------------------------------+
+HONOR:  collector -> evidence -> evaluator (rubric on box) -> local HTML report
+RANKED: collector -> evidence -> sign+push -> engine evaluator (rubric here)
+                                  <- authoritative score + directives <- cached HTML
 ```
 
-The collector code path is identical in both. Only the evaluator's location and the rubric's location change.
+The collector path is identical; only the evaluator's and rubric's location change.
 
 ## 6. Data Model
 
-All types live in `common/schema.py` as stdlib `@dataclass`. No Pydantic (native core, breaks the pure-Python/zipapp constraint). Validation is explicit (see §6.7). All schema objects are serialized as JSON; on-box parsing is stdlib `json` only. `Enum` is `enum.Enum`.
-
-```python
-# common/schema.py
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
-
-SCHEMA_VERSION = 1
-
-class Mode(str, Enum):
-    HONOR = "honor"
-    RANKED = "ranked"
-
-class Category(str, Enum):
-    VULN = "vuln"           # positive points for correct hardening
-    PENALTY = "penalty"     # negative points for breaking required state
-    PROHIBITED = "prohibited"  # negative points for a forbidden state existing
-
-class CollectorStatus(str, Enum):
-    OK = "ok"
-    ERROR = "error"         # check ran but could not gather (e.g. file missing)
-    TIMEOUT = "timeout"     # exceeded per-check timeout
-```
+All types live in `common/schema.py` as stdlib `@dataclass`; serialization is JSON (no Pydantic; validation is explicit, §6.7). `SCHEMA_VERSION = 1`; enums are `Mode` (`honor`, `ranked`), `Category` (`vuln`, `penalty`, `prohibited`), and `CollectorStatus` (`ok`, `error`, `timeout`).
 
 ### 6.1 CheckSpec (in Manifest — safe to ship to box)
 
-```python
-@dataclass
-class CheckSpec:
-    id: str                     # unique within scenario, e.g. "ssh_no_root"
-    type: str                   # registered check-type key, e.g. "file_regex"
-    category: Category
-    host_id: str                # "localhost" for single-host; supports multi-host
-    collect_params: dict        # type-specific: WHAT to read. No expected values.
-    display_title: str          # human label for the report
-    display_max_points: int     # for UI only; the real points live in the rubric
-    timeout_s: float = 5.0
-    is_sla: bool = False        # if true, evaluated continuously in ranked mode
-```
-
-**Invariant:** `collect_params` must be sufficient to perform collection but must never contain the expected/correct value. Example: a `file_regex` spec carries the target path and the regex *pattern to extract*, but not whether the extracted line is "correct".
+`id`, `type`, `category`, `host_id` (`localhost` for single-host), `collect_params` (type-specific: **what to read**), `display_title`, `display_max_points` (UI only; points are rubric-side), `timeout_s` (5.0), `is_sla`. **Invariant:** `collect_params` must be sufficient to collect but never contain the expected/correct value — a `file_regex` spec carries the path and extraction pattern, not whether the extracted value is correct.
 
 ### 6.2 Evidence (collector output — no verdict, no points)
 
-```python
-@dataclass
-class Evidence:
-    check_id: str
-    check_type: str
-    host_id: str
-    status: CollectorStatus
-    raw: dict                   # collected values, type-specific
-    reason: str                 # human-readable description of what was observed
-    collected_monotonic: float  # time.monotonic() on box, for local ordering
-    collected_wall_claim: float # box wall clock (epoch); DIAGNOSTIC ONLY
-```
+`check_id`, `check_type`, `host_id`, `status`, `raw` (type-specific collected values), `reason` (what was observed), `collected_monotonic` (local ordering), `collected_wall_claim` (**diagnostic only**).
 
 ### 6.3 RubricEntry (engine-only in ranked; on-box in honor)
 
-```python
-@dataclass
-class SlaParams:
-    interval_s: int             # engine-observed accrual interval
-    points_per_interval: int
-    hysteresis_fail_n: int = 2  # consecutive fails before entering DOWN
-    hysteresis_ok_n: int = 2    # consecutive oks before returning to UP
-    max_intervals_per_checkin: int = 3  # cap: silence cannot be back-claimed
-
-@dataclass
-class RubricEntry:
-    check_id: str
-    matcher: dict               # type-specific expected-value matcher (§10.2)
-    points: int                 # SIGNED; negative for penalty/prohibited
-    sla: Optional[SlaParams] = None
-```
+`SlaParams`: `interval_s`, `points_per_interval`, `hysteresis_fail_n` (2), `hysteresis_ok_n` (2), `max_intervals_per_checkin` (3). `RubricEntry`: `check_id`, `category`, `matcher` (§10.2), `points` (signed; negative for penalty/prohibited), `sla` (`SlaParams | None`).
 
 ### 6.4 Manifest (signed, shipped to box)
 
-```python
-@dataclass
-class Manifest:
-    schema_version: int
-    scenario_name: str
-    scenario_version: int
-    mode: Mode
-    engine_url: Optional[str]   # ranked only; where the box pushes
-    hosts: list[str]            # host_ids present in this scenario
-    checks: list[CheckSpec]
-    # NOTE: no rubric, no adversary schedule, no seed.
+`schema_version`, `scenario_name`, `scenario_version`, `mode`, `engine_url` (ranked only), `hosts`, `checks`, optional `theme`, `forensics` (`ForensicsQuestion`: `id`, `question`, `max_points`), `services` (`ServiceSpec`: `id`, `check_id`, `display`, `type`, `interval_s`, `points_per_interval`). It carries **no rubric, no adversary schedule, no seed**; forensics and service metadata are public only.
 
-@dataclass
-class ForensicsQuestion:
-    id: str                     # unique; must not collide with a check id
-    question: str               # rendered on-box (report card, answers template)
-    max_points: int
-    # forensics: Optional[list[ForensicsQuestion]] on Manifest.
-    # Question text is public; the answer key NEVER ships in the manifest —
-    # it lives only in the corresponding RubricEntry matcher (`answer_equals`).
-```
-
-**Forensics questions (§8 authoring):** the scenario's top-level `forensics:` block
-compiles 1:1 into a public `CheckSpec(type="forensics_answer")` per question (carrying
-question text, points, and the on-box answers-file path) plus a rubric entry with the
-answer key. The agent writes a `Forensics-Questions.txt` template to the primary
-desktop user's Desktop on first boot (write-if-missing — team answers are never
-clobbered); teams type answers over the blank lines; the collector reads the file each
-pass as ordinary evidence and the shared evaluator scores it with the `answer_equals`
-matcher (normalized comparison; blank/wrong earns nothing, never deducts). Ranked mode
-needs no engine changes: answers ride the bundle as evidence, keys stay in the
-engine-side rubric.
+**Forensics:** the `forensics:` block compiles 1:1 into a public `CheckSpec(type="forensics_answer")` (question, points, answers-file path) plus an answer-key rubric entry. The agent writes `Forensics-Questions.txt` to the primary desktop user on first boot (write-if-missing — answers are never clobbered); the collector reads it each pass, and `answer_equals` scores it (normalized; blank/wrong earns nothing, never deducts). Ranked needs no engine changes: answers ride the bundle, keys stay engine-side.
 
 ### 6.5 Rubric (JSON; engine-held in ranked, ships with box in honor)
 
-```python
-@dataclass
-class Rubric:
-    schema_version: int
-    scenario_name: str
-    scenario_version: int
-    entries: list[RubricEntry]
-    # Adversary schedule + seed live in the ENGINE's scenario record only (§12),
-    # never in the manifest, never on a ranked box.
-```
+`schema_version`, `scenario_name`, `scenario_version`, `entries`. The adversary schedule, seed, and workshop pool live only in the engine record (§12, §21) — never in the manifest or on a ranked box.
 
 ### 6.6 Scoring result types (evaluator output)
 
-```python
-@dataclass
-class CheckResult:
-    check_id: str
-    category: Category
-    awarded_points: int
-    passed: bool
-    reason: str                 # copied/derived from Evidence.reason + matcher outcome
-
-@dataclass
-class ScoreBreakdown:
-    scenario_name: str
-    scenario_version: int
-    total: int
-    results: list[CheckResult]
-    sla_status: list["SlaStatus"]  # empty in honor mode
-    computed_at: float          # engine wall time (ranked) or box time (honor)
-```
+`CheckResult`: `check_id`, `category`, `awarded_points`, `passed`, `reason`. `SlaStatus`: `check_id`, `state` (`UP`/`DOWN`), `accrued_points`, `history` (oldest → newest post-hysteresis states, ≤ `SLA_HISTORY_MAX = 10`). `ScoreBreakdown`: `scenario_name`, `scenario_version`, `total`, `results`, `sla_status` (empty in honor), `computed_at`.
 
 ### 6.7 Validation
 
-`common/schema.py` exposes `validate_manifest(obj) -> list[str]` and `validate_rubric(obj) -> list[str]` returning human-readable errors (empty list = valid). Called by the authoring toolchain (fail the build) and by the agent on load (refuse to run on invalid/unsigned input). No silent coercion.
+`validate_manifest(obj)` and `validate_rubric(obj)` return human-readable errors (empty = valid). The authoring toolchain fails the build on errors; the agent refuses invalid or unsigned input. No silent coercion.
 
 ## 7. Canonical Serialization & Signing
 
 Signatures must be computed over identical bytes on both sides.
 
-- **Canonical form** (`common/canon.py`): `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`. No trailing newline. All signed payloads pass through `canonicalize()`. String values (and dict keys) are additionally NFC-normalized before serialization, so decomposed vs composed Unicode forms of the same text sign identically. String values (and dict keys) are additionally NFC-normalized before serialization, so decomposed vs composed Unicode forms of the same text sign identically.
-- **Crypto** (`common/crypto/`): vendored pure-Python **Ed25519** (`ed25519.py`), pinned to a well-known reference implementation, plus a thin `signing.py` wrapper: `keypair()`, `sign(priv, msg_bytes) -> sig`, `verify(pub, msg_bytes, sig) -> bool`.
-- **What is signed:**
-  - **Scenario manifest** — signed by the *authoring key* (team key). The agent verifies before running.
-  - **Every bundle/check-in** — signed by the *box key*. The engine verifies against the enrolled public key.
-- **Do not hand-roll field arithmetic.** Pin the vendored implementation and gate CI against published Ed25519 test vectors (§19).
-
-**Transport confidentiality/authenticity** is provided by TLS (stdlib `ssl`) on top of signing, so the box also gets assurance it is talking to the real engine.
+- **Canonical form** (`common/canon.py`): `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`, no trailing newline. String values and dict keys are NFC-normalized before serialization, so composed and decomposed Unicode sign identically; keys that normalize to the same string are rejected.
+- **Crypto** (`common/crypto/`): vendored pure-Python **Ed25519** pinned to a known reference implementation, plus `signing.py` (`keypair`, `sign`, `verify`). Do not hand-roll field arithmetic; pin the implementation and gate CI against published vectors (§19).
+- **What is signed:** every scenario manifest by the authoring key (the agent verifies before running); every bundle/check-in by the box key (the engine verifies against the enrolled public key).
+- **Transport:** TLS (stdlib `ssl`) on top of signing, so the box also knows it is talking to the real engine.
 
 ## 8. Scenario Authoring & Build Pipeline
 
-Authors write readable YAML; a build step compiles it. The YAML/PyYAML dependency lives *only* here, on the author's machine — never on the box or in the shipped artifact.
+Authors write readable YAML; PyYAML lives only here, on the author's machine.
 
-**Pipeline (`authoring/compile.py`):**
-1. Parse scenario YAML.
-2. Validate against schema (`validate_*`). Fail loudly with line-referenced errors.
-3. Split into:
-   - **Manifest** (public collection instructions + display metadata).
-   - **Rubric** (expected values + points + SLA params).
-   - **Engine scenario record** (rubric + adversary event pool + RNG seed) — for ranked, uploaded to the engine out of band; never distributed to boxes.
-4. Sign the manifest with the authoring private key.
-5. Emit artifacts: `manifest.signed.json`, and for honor mode bundle the rubric into the box image; for ranked keep the rubric + engine record engine-side.
+### 8.1 One file, two targets
 
-**Author-facing scenario YAML (illustrative):**
-```yaml
-scenario:
-  name: "HUITZILOPOCHTLI Linux Fundamentals"
-  version: 3
-  mode: ranked            # or honor
-  engine_url: "https://scoring.example.org"   # ranked only
-  hosts: ["localhost"]
+`boxes/<box>/scenario.yaml` holds the mode-independent base (`scenario`, `checks`, `theme`, `forensics`) — the honor box. An optional top-level `ranked:` block holds everything ranked-only: `engine_url`, extra `checks` (appended), scored `services`, the `adversary` schedule, and the workshop `pool`. `scenario.mode` is the *default build target*: `honor` means both targets are buildable, `ranked` means ranked-only (an honor build is refused). `--mode ranked` selects the ranked target. An honor build never reads the `ranked:` block, so ranked content cannot leak into an honor manifest or rubric structurally. There are no `scenario.ranked.yaml` / `box.ranked.yaml` files.
 
-checks:
-  - id: ssh_no_root
-    type: file_regex
-    category: vuln
-    display: "Disabled SSH root login"
-    max_points: 5
-    collect:
-      path: /etc/ssh/sshd_config
-      extract: '^\s*PermitRootLogin\s+(\S+)'
-    expect:                # -> rubric only; stripped from manifest
-      equals: "no"
-      points: 5
+The authored field list (every key the block accepts, with examples) is
+canonical in [`boxbuilder/README.md`](boxbuilder/README.md#the-inputs-you-author);
+this section pins the behaviour it must have.
 
-  - id: web_sla
-    type: http_uptime
-    category: vuln
-    is_sla: true
-    display: "Web service SLA"
-    max_points: 60
-    collect:
-      url: http://127.0.0.1:80
-    expect:                # -> rubric only
-      status: 200
-      body_contains: "HUITZILOPOCHTLI Default Page"
-      sla: { interval_s: 60, points_per_interval: 1 }
+`authoring/scenario_modes.py` is the single implementation of the merge (`merge_effective`), shared by `authoring/compile.py`, `boxbuilder/spec.py`, and `boxbuilder/lint.py`. `compile_scenario(..., mode=, engine_url=)` defaults to the file's `scenario.mode`. Engine address precedence: `--engine-url` > `$HUITZILOPOCHTLI_ENGINE_URL` > `ranked.engine_url` (a legacy top-level `scenario.engine_url` is also accepted); `http://127.0.0.1:8080` is the explicit "not configured" placeholder.
 
-adversary:                 # -> engine scenario record only; NEVER shipped to box
-  # No seed in the scenario: the engine derives each fire time from
-  # (server_secret, box_id, event_id). Explicit stable ids are required.
-  events:
-    - id: flush-fw                    # stable identity across re-uploads
-      action: flush_firewall
-      window_s: [600, 1200]           # fire at a seeded time within this window
-    - id: kill-auditd
-      action: kill_service
-      params: { service: auditd }
-      window_s: [1500, 2100]
-      affects_check: auditd_sla       # optional: force this SLA DOWN until restored
-```
+### 8.2 Build pipeline
+
+`authoring/compile.py`: (1) parse and validate with actionable, path/index-referenced errors; (2) merge the target — honor strips ranked content, ranked appends `ranked.checks` and resolves the engine URL; (3) split into **manifest** (public collection instructions + display metadata), **rubric** (expected values + points + SLA params), and **engine record** (rubric + adversary + services + optional pool; never distributed to boxes); (4) sign the manifest with the authoring key; (5) emit `manifest.signed.json`, `rubric.json` (honor only, `0600`), `engine_record.json` (`0600`), and `authoring_public_key.b64`, surfacing `readme_warnings` from the spoiler lint.
+
+### 8.3 Deployment facts
+
+`boxes/<box>/box.yaml` is minimal: `scenario`, `nakon_config`, and `provider: {name, user[, port]}`. Provider host and password come from `--provider-*` or `$HUITZILOPOCHTLI_PROVIDER_*` at deploy time, never the committed file. The build workflow (compile/plant/install/package, `boxbuilder lint`) is in [`boxbuilder/README.md`](boxbuilder/README.md); promoting a build to a template is in [`boxbuilder/DEPLOY.md`](boxbuilder/DEPLOY.md).
 
 ## 9. The Collector (Agent)
 
-Ships as a `.pyz` zipapp. Entry point `agent/__main__.py`. Reads a local config (§9.7) telling it the mode, manifest path, and (ranked) identity store path.
+Ships as a `.pyz` zipapp; entry point `agent/__main__.py`. Reads a local config (§9.7) giving the mode, manifest path, and (ranked) identity store path.
 
 ### 9.1 Check plugin system (`agent/checks/base.py`)
 
-```python
-class Check(ABC):
-    type_key: str                       # e.g. "file_regex"; unique registry key
-    @abstractmethod
-    def collect(self, spec: CheckSpec, ctx: "PlatformContext") -> Evidence: ...
-```
+- A **registry** maps `type_key -> Check` subclass; `@register` makes a new type one self-contained file.
+- `Check.collect(spec, ctx) -> Evidence`. Checks run **concurrently** (thread pool), each wrapped in its `timeout_s`; a hung check yields `Evidence(status=TIMEOUT)` and never stalls the run.
+- Collection is **read-only** with respect to the scored system; the adversary is the only component allowed to mutate state (§12).
 
-- A **registry** maps `type_key -> Check subclass`. Registration is decorator-based (`@register`) so a new check type is one self-contained file.
-- The collector runs all checks **concurrently** (thread pool), each wrapped with its `timeout_s`. A hung check yields `Evidence(status=TIMEOUT)`; it never stalls the run.
-- Collect is **read-only** and side-effect-free with respect to the scored system (the adversary is the only component permitted to mutate system state, §12).
+### 9.2 Concrete check types
 
-### 9.2 Concrete check types (initial set)
-
-| type_key | collects | raw fields | notes |
-|---|---|---|---|
-| `file_regex` | reads a text file, applies extract regex | `{matched: str\|null, present: bool}` | for sshd_config, app config, etc. |
-| `permission` | stat of a path | `{mode: "0640", uid, gid, exists}` | e.g. `/etc/shadow` restrictiveness |
-| `user_group` | parses `/etc/passwd`, `/etc/group` | `{users: [...], group_members: {...}}` | backdoor users, `wheel`/`sudo` membership |
-| `service_state` | queries init system via platform layer | `{active: bool, enabled: bool}` | see §9.3 |
-| `package` | queries package manager via platform layer | `{installed: bool, version: str\|null}` | dpkg/rpm/apk |
-| `process_state` | scans `/proc` for a process whose cmdline (falling back to comm) matches a regex | `{running: bool, count: int, pids: [int], sample_cmdline: str\|null}` | detects a live rogue process (e.g. malware/C2) independent of how it was launched; pure stdlib, bypasses the platform layer like `file_regex`/`permission`; excludes the collector's own pid; a pid vanishing mid-scan or a per-pid permission error is skipped, not surfaced as a check-level error |
-| `http_uptime` | GET against localhost (stdlib `http.client`) | `{status: int\|null, body_match: bool, error: str\|null}` | SLA-capable |
-| `db_query` | runs a fixed test query on a local socket | `{ok: bool, error: str\|null}` | SLA-capable; DB driver must remain optional/stdlib-friendly — if a pure-Python driver is unavailable for a given DB, this check degrades to a socket-connect probe |
-| `forensics_answer` | reads the team-editable answers file, extracts one question's `Answer:` line | `{answer: str}` | empty string = unanswered/blank; scored via the `answer_equals` matcher (§6.4) |
-| `command_json` | runs a read-only POSIX `/bin/sh -c` script that must emit one JSON document on stdout | `{data: <parsed JSON\|null>, text: str}` | POSIX counterpart to `powershell_json`: live firewall state, listening sockets, sysctl; non-JSON/empty/failed output is ERROR evidence (fails closed) |
-
-Each check type's evidence schema is fixed and documented alongside its module. Two further types are Windows-only and documented in their modules: `powershell_json` (read-only script → one JSON document) and `registry_value` (winreg read).
+`common/check_types.py` is the authoritative registry, and each check module documents its fixed `raw` shape. The architectural distinctions: `service_state`/`package` use the platform layer (§9.3); `http_uptime`/`db_query`/`tcp_port` are SLA-capable; `command_json`/`powershell_json` fail closed on bad output; `forensics_answer` is scored by `answer_equals` (§6.4).
 
 ### 9.3 Platform Abstraction Layer (`agent/platform/`)
 
-Only the parts that actually differ across Fedora/Debian/Alpine are abstracted; file/permission/user checks are already distro-agnostic and bypass this layer.
-
-**Detection** (`detect.py`): presence of `/run/systemd/system` → systemd; else presence of `/sbin/openrc` or `rc-status` → OpenRC. Cache the result in a `PlatformContext` passed to every `collect()`.
-
-| Operation | systemd | OpenRC |
-|---|---|---|
-| service active | `systemctl is-active <svc>` | `rc-service <svc> status` |
-| service enabled | `systemctl is-enabled <svc>` | `rc-update show \| grep <svc>` |
-
-| Package query | command |
-|---|---|
-| dpkg | `dpkg -s <pkg>` |
-| rpm/dnf | `rpm -q <pkg>` |
-| apk | `apk info -e <pkg>` |
-
-The layer exposes `service_active(name)`, `service_enabled(name)`, `package_installed(name)`. Adding a distro = adding one strategy class; no check code changes.
+Only distribution-specific operations are abstracted: init detection (`/run/systemd/system` → systemd; else `/sbin/openrc` or `rc-status` → OpenRC; else Windows), service state, and package presence. The result is a `PlatformContext` passed to every `collect()`; adding a distro is one strategy class with no check-code changes.
 
 ### 9.4 Evidence bundle assembly
 
-After all checks return, the collector assembles a `Bundle`:
-
-```python
-@dataclass
-class Bundle:
-    box_id: str
-    seq: int                    # monotonic per box; replay/dedup key
-    boot_id: str                # from /proc/sys/kernel/random/boot_id; detects reboot
-    agent_version: str
-    scenario_name: str
-    scenario_version: int
-    evidence: list[Evidence]
-    created_wall_claim: float    # DIAGNOSTIC ONLY
-```
-
-`seq` is persisted in the identity store and strictly incremented per bundle. `boot_id` is stored as diagnostic/reboot evidence; the engine does not currently reset uptime or SLA state on a boot change (a reboot is observed through the box's next evidence, exactly like any other gap).
+`Bundle`: `box_id`, `seq` (monotonic per box, persisted in the identity store — the replay/dedup key), `boot_id` (`/proc/sys/kernel/random/boot_id`), `agent_version`, `scenario_name`, `scenario_version`, `evidence`, `created_wall_claim` (**diagnostic only**), `schema_version`. `boot_id` is reboot evidence; the engine does not reset SLA or uptime on a boot change — a reboot is observed through the next evidence, like any other gap.
 
 ### 9.5 Transport client — push-only, queue-and-forward (`agent/transport.py`)
 
-**Ranked mode only.** The box always initiates; the engine never connects inward.
+**Ranked only.** The box always initiates; the engine never connects inward.
 
-- On each cycle the agent builds a bundle, signs its canonical form, and `POST`s to `<engine_url>/checkin` over TLS.
-- If the network is unavailable, the signed bundle is **queued to a local append-only file** and retried on the next cycle. The engine deduplicates by `(box_id, seq)` and rejects `seq <= last_seen_seq` (replay protection).
-- Queued bundles preserve their original `seq` and evidence; they are flushed in order on reconnect. Because offline windows earn no SLA credit (§11.3), queueing is for correctness/attribution, not for reclaiming lost time.
-- The response (§14.2) is applied: cache the authoritative score, update the local report, and execute any adversary directives (§12).
+- Each cycle the agent builds a bundle, signs its canonical form, and `POST`s it to `<engine_url>/checkin` over TLS.
+- If the network is unavailable, the signed bundle is queued to a local append-only file and retried. The engine deduplicates by `(box_id, seq)` and rejects `seq <= last_seq`; queued bundles keep their original `seq` and flush in order.
+- Offline windows earn no SLA credit (§11.3): queueing is for correctness/attribution, not for reclaiming lost time. The response updates the cached score/report and executes any directives (§12).
 
 ### 9.6 Identity & enrollment (`agent/identity.py`)
 
-**Ranked mode only.**
-1. On first boot, generate an Ed25519 keypair. The **private key never leaves the box**; store it in a local identity file (mode `0600`).
-2. Read a one-time **enrollment token** provisioned into the box (single-use, short-TTL, engine-generated; low value if leaked because it only authorizes a pubkey binding).
-3. `POST <engine_url>/enroll {enrollment_token, box_id, public_key, agent_version, scenario_name, scenario_version}` over TLS.
-4. The engine binds `token -> box_id -> public_key`, marks the token consumed, and returns confirmation. Subsequent check-ins are authenticated by the box signature against this public key.
-
-`box_id` is generated at provisioning (UUID) and stored alongside the key.
+**Ranked only.** On first boot, generate an Ed25519 keypair; the **private key never leaves the box** (identity file, `0600`). Read a one-time enrollment token (single-use, short TTL, low value: it only authorizes a pubkey binding), then `POST <engine_url>/enroll` over TLS with `{enrollment_token, box_id, public_key, agent_version, scenario_name, scenario_version}`. The engine binds `token -> box_id -> public_key`, consumes the token, and confirms; later check-ins authenticate against that key. `box_id` is generated at provisioning (UUID) and stored beside the key.
 
 ### 9.7 Local config
 
-A small on-box file (JSON) read at startup: `{ mode, manifest_path, rubric_path (honor only), identity_path (ranked only), report_path, checkin_interval_s (ranked only), authoring_public_key_path, enrollment_token (ranked, consumed once on first boot), allow_unsigned_manifest (test fixture escape hatch — fails closed without it when no verification key is configured), notifications }`. No secrets beyond the identity file (which is separate and `0600`); the enrollment token is a one-time bootstrap credential, useless after enrollment.
+On-box JSON read at startup: `{mode, manifest_path, rubric_path (honor only), identity_path (ranked only), report_path, checkin_interval_s (ranked only), authoring_public_key_path, enrollment_token (ranked, consumed once), allow_unsigned_manifest (development escape hatch that fails closed without it), notifications}`. The only secret is the identity file (separate, `0600`); the enrollment token is useless after enrollment.
 
 ### 9.8 Local reporter
 
@@ -413,366 +185,217 @@ See §13.
 
 ## 10. The Evaluator (Pure Scorer)
 
-Lives in `common/evaluator.py` so honor-agent and engine run **identical** logic. Pure function, no I/O:
+Lives in `common/evaluator.py`, so honor agent and engine run **identical** logic. Pure function, no I/O:
 
 ```python
-def evaluate(evidence: list[Evidence],
-             rubric: Rubric,
-             clock: "Clock") -> ScoreBreakdown: ...
+def evaluate(evidence: list[Evidence], rubric: Rubric, clock: "Clock") -> ScoreBreakdown: ...
 ```
 
 ### 10.1 Point-in-time scoring
 
-For each non-SLA rubric entry, match the corresponding evidence's `raw` against the entry's `matcher`, then award `points` per category:
+For each non-SLA entry, match the corresponding evidence's `raw` against the entry's `matcher`, then award `points`:
+
 - `VULN`: award `points` (positive) if matched, else 0.
 - `PENALTY`: award `points` (negative) if the required state is **broken** (match fails), else 0.
 - `PROHIBITED`: award `points` (negative) if the forbidden state **is present** (match succeeds), else 0.
 
-`passed` and a `reason` are recorded per check. Missing/`ERROR`/`TIMEOUT` evidence is scored as "not satisfied" for VULN, and handled explicitly per matcher for PENALTY/PROHIBITED (documented per matcher).
+`passed` and a `reason` are recorded per check. Missing/`ERROR`/`TIMEOUT` evidence scores as "not satisfied" for every category (VULN 0, PENALTY/PROHIBITED no negatives): a collector fault is never a confirmed observation.
 
 ### 10.2 Matchers
 
-Matcher is a small tagged dict evaluated against a check type's `raw`. Initial matchers: `equals`, `not_equals`, `contains`, `regex`, `mode_at_most` (permission bits no looser than X), `user_absent`, `user_present`, `group_members_subset_of`. Each matcher is a pure predicate `(raw: dict) -> (bool, reason: str)` in a matcher registry, keyed and documented.
+A matcher is a tagged dict evaluated against a check type's `raw`; each is a pure `(matcher, raw) -> (bool, reason)` in a registry. Tags: `equals`, `not_equals`, `contains`, `regex`, `mode_at_most`, `user_absent`, `user_present`, `group_members_subset_of`, `answer_equals`. The YAML shorthand (`expect: {equals: "no"}`) is tagged by the compiler without rewriting its keys.
 
 ### 10.3 SLA scoring
 
-SLA entries are **not** scored by the pure point-in-time pass; they are scored statefully by the engine's SLA ledger (§11), which calls into the matcher to decide up/down per check-in. In honor mode there is no SLA (offline is untimed), so SLA entries are ignored by the on-box evaluator.
+SLA entries are not scored in the point-in-time pass. The engine's SLA ledger (§11) scores them statefully, calling the matcher per check-in. Honor mode has no SLA (offline is untimed), so the on-box evaluator ignores them.
 
 ## 11. The Engine (Server)
 
-Always-on, portable (a plain HTTP service behind TLS; no orchestration assumed). Stdlib-first.
+Always-on and portable: a plain HTTP service behind TLS, stdlib-first.
 
 ### 11.1 Endpoints
 
 - `POST /enroll` — §9.6/§14.1.
+- `POST /join` — bind a competition box to a player slot (§21.2).
 - `POST /checkin` — the core loop (§14.2).
-- `GET /leaderboard?scenario=...` — aggregated scores (§11.4); `400` without the param, `200 []` for an unknown scenario.
+- `GET /leaderboard?scenario=...` — aggregated scores (§11.4); `400` without the parameter, `200 []` for an unknown scenario.
 - `GET /health` — liveness.
-- `POST /admin/scenarios` — upload (or replace) a scenario's engine-side record: `{rubric, adversary}` (the compiled `engine_record.json`). Validates the rubric and the adversary pool; `400` on invalid input.
-- `POST /admin/tokens` — mint a one-time enrollment token bound to a scenario: `{scenario_name, ttl_s?}` (ttl must be a positive finite number).
+- `POST /admin/scenarios` — upload or replace an engine record (`{rubric, adversary, services?, pool?}`); `400` on invalid input.
+- `POST /admin/tokens` — mint a one-time enrollment token (`{scenario_name, ttl_s?}`).
+- Competition pages plus `/admin/*` CRUD and `/api/public/*` (§21.4).
 
-Admin endpoints are gated by the `X-HUITZILOPOCHTLI-Admin-Token` header compared against `HUITZILOPOCHTLI_ADMIN_TOKEN`: `403` on mismatch, and the whole admin surface returns `503 disabled` when the env var is unset. The engine is configured purely by environment: `HUITZILOPOCHTLI_DB_PATH`, `_PORT` (8080), `_BIND` (default `127.0.0.1` — set `0.0.0.0` for real boxes), `_ADMIN_TOKEN`, `_TLS_CERT`/`_TLS_KEY` (plain HTTP with a loud warning otherwise), `_MAX_CONNS` (connection cap; beyond it connections are closed immediately), `_CHECKIN_INTERVAL_S` (the poll cadence handed to boxes as `next_checkin_s`, default 60), `_MAX_VERIFY` (signature-verify concurrency; saturation answers `503 engine busy` so agents retry), and `_ENGINE_RECORD_PATH` (optional single-scenario bootstrap instead of the admin upload). Request bodies are capped at 1 MiB; oversized or non-JSON bodies get a clean `400`. `/enroll` and `/checkin` also have a per-source token-bucket rate limit (`HUITZILOPOCHTLI_RATE_LIMIT_PER_MIN`, default 600; `HUITZILOPOCHTLI_RATE_BURST`, default 100; `0` disables), answered `429` when exhausted. The SQLite database is created/opened `0600` because it holds the engine-only rubric, the server secret, and live enrollment tokens.
-
-Implementation may use stdlib `http.server` or a thin WSGI server; no heavyweight framework is required. Concurrency via a thread pool. Keep handlers small; push logic into `checkin.py`, `enrollment.py`, `sla.py`.
+Admin requests use the `X-HUITZILOPOCHTLI-Admin-Token` header compared against `HUITZILOPOCHTLI_ADMIN_TOKEN`, or an admin Basic/session login; the admin surface answers `503 disabled` when no credential is configured. Configuration is environmental: `HUITZILOPOCHTLI_DB_PATH`, `_PORT` (8080), `_BIND` (default `127.0.0.1`; `0.0.0.0` for real boxes), `_ADMIN_TOKEN`, `_TLS_CERT`/`_TLS_KEY` (plain HTTP with a loud warning otherwise), `_MAX_CONNS`, `_CHECKIN_INTERVAL_S` (poll cadence handed to boxes, default 60), `_MAX_VERIFY` (verify concurrency; saturation answers `503 engine busy`), `_RATE_LIMIT_PER_MIN`/`_RATE_BURST` (`/enroll` and `/checkin`, `429` when exhausted), `_SERVER_SECRET`, and `_ENGINE_RECORD_PATH` (single-scenario bootstrap). Request bodies are capped at 1 MiB and evidence nesting at 64 levels; oversized or non-JSON bodies get a clean `400`. The SQLite database is created `0600` because it holds the engine-only rubric, server secret, and live tokens.
 
 ### 11.2 Storage (`engine/store.py`)
 
-Stdlib `sqlite3` (default, zero-dependency, portable). Optional Postgres backend behind the same interface if scale demands it later (*Open*, not required for v1). Tables:
-- `boxes(box_id PK, public_key, scenario_name, scenario_version, enrolled_at, last_seq, last_boot_id, t0)`
-- `enrollment_tokens(token PK, scenario_name, expires_at, consumed_at)`
-- `checkins(box_id, seq, received_at, bundle_json)` — audit log; `UNIQUE(box_id, seq)`.
-- `sla_state(box_id, check_id, state, consec_ok, consec_fail, last_credited_at, accrued_points)`
-- `scores(box_id PK, scenario_name, total, updated_at)` — one scenario per box (multi-scenario boxes would need a composite key).
-- `adversary_log(box_id, event_id, action, issued_at, params_json)` — `UNIQUE(box_id, event_id)` gives at-most-once issuance.
-- `scenarios(scenario_name PK, rubric_json, adversary_json, uploaded_at)` — engine-held rubrics + adversary pools, uploaded via `/admin/scenarios`.
-- `engine_meta(key PK, value)` — persisted server secret and other engine state.
+Stdlib `sqlite3` by default; an optional Postgres backend behind the same interface remains *Open*. `engine/store_schema.py` is the authoritative table/column list: boxes, enrollment tokens, check-in audit, SLA state (including the tick-history ring), scores (with the hardening/service split), adversary log, versioned scenario records keyed by `(scenario_name, scenario_version)`, engine metadata, and the competition tables (§21). The database is created `0600`.
 
 ### 11.3 SLA ledger & hysteresis (`engine/sla.py`)
 
-Per `(box_id, check_id)` the engine maintains a state machine. On each check-in it reads the SLA evidence's up/down (computed by the matcher), then:
+Per `(box_id, check_id)` the engine keeps a state machine. Each check-in reads the SLA evidence's up/down (via the matcher), then applies:
 
-**Hysteresis state machine** (parameters from `SlaParams`):
 ```
 UP    --(consec_fail >= fail_n)-->  DOWN
 DOWN  --(consec_ok   >= ok_n)  -->  UP
 ```
-Consecutive counters reset on the opposite observation. A single flap does not change state.
 
-**Accrual (engine clock only):**
-- On entering/continuing `UP`, credit points for the elapsed engine-observed interval since `last_credited_at`, computed as `floor(elapsed / interval_s)` intervals, **capped at `max_intervals_per_checkin`**. If the elapsed count exceeds the cap, the excess is **forfeited** (the anchor moves to `received_at` minus only the sub-interval remainder), so a long silence or queued backlog cannot be drained over subsequent check-ins. Only the fractional remainder is carried normally.
-- No credit accrues while `DOWN` or during gaps where the box did not check in.
-- `T0` (first check-in receipt) anchors the box's timeline. All timing uses the engine's `received_at`, never the box's `created_wall_claim`.
+Counters reset on the opposite observation; a single flap does not change state. Missing or failed SLA evidence counts as **DOWN**, so a broken collector cannot hold a prior UP indefinitely.
 
-**Invariant:** the box's self-reported clock never influences accrual. The engine's receipt time is the sole temporal authority.
+**Accrual (engine clock only):** while `UP`, credit `floor(elapsed / interval_s)` intervals since `last_credited_at`, capped at `max_intervals_per_checkin`. Any excess is **forfeited** — the anchor moves to `received_at` minus only the sub-interval remainder — so a long silence or queued backlog cannot be drained later. No credit accrues while `DOWN` or during gaps. `T0` (first check-in; for a competition, run start) anchors the timeline, and all timing uses the engine's `received_at`, never the box clock.
+
+**Invariant:** the box's self-reported clock never influences accrual; engine receipt time is the sole temporal authority.
 
 ### 11.4 Leaderboard / aggregation
 
-`GET /leaderboard` returns ranked `scores` rows for a scenario. Point-in-time totals + accrued SLA points + adversary penalties are summed into `scores.total` on each check-in.
+`GET /leaderboard` returns ranked rows per scenario. On each check-in `scores.total` is the point-in-time total plus accrued SLA points (split into `hardening_points`/`service_points`). An adversary outage costs points only through the SLA it forces down; there is no separate penalty channel. Live rank is derived after the score write.
 
 ## 12. The Adversary
 
-Ranked/live only (offline is untimed, so no adversary offline). **Refinement over earlier drafts:** the box does **not** hold the seed or the schedule. The engine schedules; the box merely executes directives delivered in check-in responses. This keeps future events unknowable to the operator and is the only box-influencing channel consistent with push-only transport.
+Ranked/live only (offline is untimed and has no adversary). The box does **not** hold the seed or schedule: the engine schedules and the box executes directives in check-in responses. Future events stay unknowable to the operator, and this is the only box-influencing channel consistent with push-only transport.
 
 ### 12.1 Engine-side scheduler (`engine/adversary_oracle.py`)
 
-- Per box, derive a deterministic RNG per event from `(server_secret, box_id, event_id)` — reproducible for audit, unguessable to the operator, and stable when a re-upload adds, drops or reorders other events.
-- From the scenario's event pool, pick a concrete fire time for each event within its `window_s`, anchored to `T0`.
-- On each check-in, if `received_at >= event.fire_time` and the event has not been issued, include it as a **directive** in the response and log it in `adversary_log`.
-- **Delivery is at-least-once.** Every response also re-sends all directives already issued to the box (`issued_directives`, §14.2), so a response lost after the engine commits can't lose one. The agent records each `event_id` it has run in `<identity_path>.directives` and skips repeats, so each event runs at most once per `box_id`. A re-sent directive can run late (after an outage) rather than at its fire time. Agents that ignore `issued_directives` fall back to at-most-once.
-- The engine **caused** the outage, so it knows the outage floor. An event may name `affects_check: <sla-check-id>`; the compiler/runtime validates that it names an SLA entry. The engine persists `fire_time` at issuance and forces that SLA **DOWN** from the check-in that issues the directive until a *later* check-in's evidence shows the check healthy again. The same check-in that issues the directive cannot count as restoration (its evidence predates execution). Recovery then follows the normal `hysteresis_ok_n` path. Events without `affects_check` cost only what their normal SLA evidence shows. (Honest-ceiling caveat from §3 still applies: a root operator can falsely report instant restoration; the engine can only guarantee the outage did not end *before* it was caused.)
+- Per box, derive a deterministic RNG per event from `(server_secret, box_id, event_id)` — reproducible for audit, unguessable to the operator, stable when a re-upload changes other events.
+- Pick a concrete fire time within the event's `window_s`, anchored to `T0`.
+- On each check-in, include due, unissued events in `directives` and persist them. **Delivery is at-least-once:** every response re-sends all issued directives (`issued_directives`), so a lost response cannot lose one. The agent records executed `event_id`s in `<identity_path>.directives` and skips repeats; a re-sent directive can run late.
+- An event may name `affects_check: <sla-check-id or service id>`. The engine persists the fire time and forces that SLA **DOWN** from the issuing check-in until a *later* check-in's evidence shows health; the issuing check-in cannot count as restoration (its evidence predates execution). Recovery then follows `hysteresis_ok_n`. An event without `affects_check` costs only what its normal SLA evidence shows. The §3 caveat still applies: a root operator can falsely report instant restoration.
 
 ### 12.2 Box-side executor (`agent/adversary/`)
 
-- Parses directives from the check-in response and executes them via a **closed action vocabulary** (`actions.py`). The executor can run *only* actions in this allowlist; there is no generic "run command" primitive exposed to scenarios.
-- Initial action allowlist (all local, all reversible-by-the-student-as-the-challenge):
-  - `flush_firewall` — flush the local packet filter rules.
-  - `kill_service <service>` — stop a named service via the platform layer.
-  - `drop_inert_artifact <path>` — write a **benign, inert** marker file (never an executable payload, never a callback).
-- **Hard constraint (§2.7):** no action may open an outbound connection to any host other than the engine. The action API has no network egress primitive at all. This is enforced structurally (there is no code path for it), not by policy.
+- Directives are parsed from the response and run through a **closed action vocabulary** (`actions.py`); there is no generic "run command" primitive.
+- The allowlist (local, reversible by the student as the challenge): `flush_firewall`; `kill_service <service>` via the platform layer; `drop_inert_artifact <path>` — a benign inert marker inside a confined directory, never an executable payload or callback.
+- **Hard constraint (§2.7):** no action may open an outbound connection to any host other than the engine. The action API has no network-egress primitive at all — enforced structurally, not by policy.
 
 ## 13. Reporting
 
-Static HTML generated from the machine-readable `ScoreBreakdown` JSON, so report and protocol share one payload. Includes a `<meta http-equiv="refresh" content="N">` so the browser auto-updates. **The refresh interval is display cadence only; it is never a scoring input.**
+Static HTML generated from the machine-readable `ScoreBreakdown`, so report and protocol share one payload. The page carries a `<meta http-equiv="refresh">`; **the refresh interval is display cadence only, never a scoring input.**
 
-- **Honor box:** has the rubric, runs the evaluator locally, renders the real score on demand / each refresh.
-- **Ranked box:** has no rubric and cannot compute anything. Its dashboard is a **cache of the engine's last response** (persisted in `report.json`, so an agent restart does not blank it). Before the first response it shows "submitted — awaiting engine". It clearly labels the number as the engine's authoritative score. Countdowns are anchored to the box's receipt time so box/engine clock skew cannot make a fresh report read `00:00`.
+- **Honor box:** has the rubric, runs the evaluator locally, renders the real score on demand and each refresh.
+- **Ranked box:** has no rubric and cannot compute anything. Its dashboard is a **cache of the engine's last response** (persisted in `report.json`, so an agent restart does not blank it). Before the first response it shows "submitted — awaiting engine" and labels the number as the engine's authoritative score. Countdowns anchor to the box's receipt time, so clock skew cannot make a fresh report read `00:00`.
 
-Dashboard elements: cumulative total; table of point-in-time results (category, awarded, reason); SLA status table (state UP/DOWN, accrued); and (ranked) a "last confirmed by engine at <time>" stamp.
+Elements: cumulative total; point-in-time results (category, awarded, reason); SLA status (UP/DOWN, accrued); ranked, a "last confirmed by engine at <time>" stamp. Ranked opens with an **event bar** (time remaining, current position, both from the engine response), then two tabs: **Configuration & forensics** (point-in-time results) and **Service uptime** (current state plus the last ~10 engine-scored ticks per service). Tick history is engine-authoritative: a bounded per-service ring in `sla_state` ships in every response, so a box restart cannot rewrite it.
 
 ### 13.1 Derived board (`agent/board.py`)
 
-The player-facing *derived* facts — which vulnerabilities are fixed, which penalties are active, forensics state, progress — are computed once from `(ScoreBreakdown, manifest)` and consumed by every renderer (HTML report, `report.json` snapshot, `huitz` terminal UI). Honor presentation is CyberPatriot positive-only in every medium: failed checks are never identified, only counted. Ranked presentation is the full diagnostic (safe: the rubric is off-box).
+Player-facing derived facts — fixed vulnerabilities, active penalties, forensics state, progress — are computed once from `(ScoreBreakdown, manifest)` and consumed by every renderer (HTML, `report.json`, `huitz`). Honor is positive-only in every medium: failed checks are never identified, only counted. Ranked is the full diagnostic (safe: the rubric is off-box).
 
 ### 13.2 Report snapshot (`agent/snapshot.py`, `report.json`)
 
-Every grade also writes a versioned snapshot (`snapshot_version: 1`) next to the HTML report; `sync-report.sh` (or the Windows task wrapper) mirrors both to each user's `~/Documents/huitzilopochtli/` — off the Desktop (which stays at the forensics answers file + launchers) but still a plain `$HOME` path a snap-confined browser can read — and removes the legacy Desktop copies. The snapshot is a *presentation* of the score — nothing feeds it back into the evaluator. Honor snapshots carry the derived board only (no per-check results, no reasons), matching the HTML's spoiler contract; ranked snapshots add the diagnostic results + SLA, matching the ranked HTML table.
+Every grade writes a versioned snapshot (`snapshot_version: 1`) beside the HTML report; `sync-report.sh` (or the Windows task wrapper) mirrors both to each user's `~/Documents/huitzilopochtli/` and removes legacy Desktop copies. The snapshot is a *presentation* of the score — nothing feeds it back into the evaluator. Honor snapshots carry the derived board only (no per-check results or reasons), matching the HTML spoiler contract. Ranked snapshots add diagnostic results and SLA history, live `rank`/`rank_total`, and the run's `run_ends_at`.
 
-### 13.3 Terminal report (`agent/cli.py` — the `huitz` command)
+### 13.3 Terminal report (`agent/cli.py` — `huitz`)
 
-The agent zipapp doubles as a terminal console via verb dispatch (`huitz score|watch|forensics|grade`; a bare config path keeps the classic one-shot behavior). `score`/`watch`/`forensics` render the **snapshot**, so they work as any user on the box — the sealed install dir is never touched (the Documents/huitzilopochtli mirror is the source, exactly as for the browser). `watch` is a live frame (1 s tick, alternate screen, terminal bell on changes seen while watching). `forensics` reads/edits the team's answers file in place (`agent/answers.py` is the one implementation of that file format, shared with the collector and template writer). `grade` re-runs the honor pipeline as root (§15 honor flow) and is refused, with explanation, on ranked boxes — grading there is the engine's job. Terminal behavior (color-depth detection honoring `NO_COLOR`, unicode-vs-ASCII, width, key polling without curses for Windows portability) lives in `agent/term.py`.
+The zipapp doubles as a terminal console via verb dispatch (`huitz score|watch|readme|forensics|join|grade`; a bare config path keeps the classic one-shot run). `score`/`watch`/`readme`/`forensics` render the **snapshot**, so they work as any user — the sealed install dir is never touched (the Documents mirror is the source, as for the browser). `watch` is a live frame (1 s tick, alternate screen, a bell on changes seen while watching). `forensics` reads/edits the answers file in place (`agent/answers.py`, shared with the collector and template writer). `grade` re-runs the honor pipeline as root and is refused on ranked boxes; `join` is the ranked binding path. Terminal behavior (color depth honoring `NO_COLOR`, unicode, width, key polling without curses) lives in `agent/term.py`.
 
 ## 14. Protocol Specification
 
-All requests over TLS (stdlib `ssl`). All bodies are canonical JSON (§7). All box→engine bodies are signed by the box key; the signature travels in an `X-HUITZILOPOCHTLI-Sig` header (base64) alongside `X-HUITZILOPOCHTLI-Box` (box_id).
+All requests use canonical JSON (§7) and TLS. Box→engine bodies are signed by the box key; the signature travels in `X-HUITZILOPOCHTLI-Sig` (base64) alongside `X-HUITZILOPOCHTLI-Box` (box_id). A `Box` header naming a different box than the body's `box_id` is rejected `400` before verification (the signed body is authoritative).
 
 ### 14.1 Enrollment
 
-Request `POST /enroll`:
-```json
-{ "enrollment_token": "<one-time>", "box_id": "<uuid>",
-  "public_key": "<base64>", "agent_version": "1.0.0",
-  "scenario_name": "HUITZILOPOCHTLI Linux Fundamentals",
-  "scenario_version": 1 }
-```
-Response `200`:
-```json
-{ "ok": true, "box_id": "<uuid>", "checkin_interval_s": 60 }
-```
-Errors: `409` token already consumed (or box_id already enrolled); `410` token expired; `400` malformed (non-object body, missing/wrong-typed/out-of-range fields — `scenario_version` is a required 64-bit non-negative integer and is bound at enrollment). This request is signed by the box key; the engine verifies the signature matches the `public_key` in the body (proof of private-key possession). Cheap token-state checks (unknown `400` / consumed `409` / expired `410`) run **before** the seconds-costing signature verification, so an unauthenticated caller can never burn verify capacity. A token enrolls exactly one box: token validation + consume + box creation are one atomic step under the store lock (`Store.enroll_box_atomic`), so a race on one token yields exactly one winner.
+`POST /enroll` body: `{enrollment_token, box_id, public_key, agent_version, scenario_name, scenario_version}`. Response `200`: `{ok, box_id, checkin_interval_s}`. Errors: `400` malformed (non-object body; missing, wrong-typed, or out-of-range fields — `scenario_version` is a required 64-bit non-negative integer bound at enrollment) or unknown token; `409` token consumed or box already enrolled; `410` token expired. The request is signed with the key in the body (proof of possession), and cheap token-state checks run **before** signature verification, so an unauthenticated caller cannot burn verify capacity. Token validation, consumption, and box creation are one atomic store operation, so a race yields exactly one winner.
 
 ### 14.2 Check-in
 
-Request `POST /checkin` (body = canonical `Bundle`, §9.4). Headers carry `box_id` + signature. A `X-HUITZILOPOCHTLI-Box` header naming a box other than the body's `box_id` is rejected `400` before any verification work (the body is authoritative — the signature covers it).
+`POST /checkin` takes the canonical `Bundle` (§9.4). The handler fails closed at each step:
 
-Engine handler order (fail closed at each step):
-1. Look up `box_id` → public key. Unknown box → `403`.
-2. Cheap protocol gates: `schema_version` mismatch and agent **major**-version mismatch → `400` (before signature work — they leak no enrollment info).
-3. Verify signature over the canonical body. Bad signature → `403`. (Signature verification is pure-Python and holds the GIL for ~seconds; a bounded verify gate answers `503 engine busy; retry` when saturated — agents retry, nothing is lost.)
-4. `scenario_name` mismatch → `400`; `scenario_version` mismatch → `409` (re-provision). Both run after signature verification so they leak nothing to unauthenticated callers. The stored rubric is loaded **after** signature verification and selected by the enrolled `(scenario_name, scenario_version)`; a missing record is `409` with `last_seq`, never a pre-auth existence oracle.
-5. Reject `seq <= last_seq` (replay/dedup) → `409` with `last_seq` so the agent can resync.
-6. Steps T0-stamp through score-update run as **one transaction** (`Store.atomic`): a failure part-way rolls back the seq advance, audit row, SLA ledger and adversary log together, so the agent's retry of the same bundle is scored rather than 409-rejected as a replay.
-   - Stamp `received_at = engine_now()`. If this is the first check-in, set `T0`.
-   - Persist the check-in (audit log).
-   - Evaluate point-in-time evidence against the engine-held rubric (`common.evaluate`).
-   - Update SLA ledger (§11.3).
-   - Run adversary scheduler; collect any due directives (§12.1).
-   - Update `scores.total`; return the response.
+1. Look up `box_id` → public key; unknown box → `403`.
+2. `schema_version` or agent **major**-version mismatch → `400`, before signature work (leaks no enrollment info).
+3. Verify the signature over the canonical body; bad signature → `403`. Verification is pure Python and holds the GIL for seconds, so a bounded verify gate answers `503 engine busy; retry` when saturated.
+4. `scenario_name` mismatch → `400`; `scenario_version` mismatch → `409` (re-provision). Both run after verification, so they leak nothing unauthenticated. The rubric is loaded after verification by the enrolled `(scenario_name, scenario_version)`; a missing record is `409` with `last_seq`, never a pre-auth oracle.
+5. `seq <= last_seq` → `409` with `last_seq` so the agent can resync.
+6. T0-stamp through score-update runs as **one transaction** (`Store.atomic`): failure rolls back the seq advance, audit row, SLA ledger, and adversary log together, so retrying the bundle is scored rather than 409-rejected. Stamp `received_at = engine_now()` (the first check-in, or competition run start, sets `T0`); persist the audit row; evaluate point-in-time evidence against the engine rubric (`common.evaluate`); update the SLA ledger (§11.3) and adversary scheduler (§12.1); update `scores.total` and reply. Before sending, replace matcher reasons with the box's own evidence reasons: matcher reasons embed expected values (the answer key), and the box gets only its own evidence plus pass/points.
 
-Response `200`:
-```json
-{
-  "server_time": 1730000000.0,
-  "score": { "total": 42, "results": [ ... ], "sla_status": [ ... ] },
-  "directives": [ { "action": "kill_service", "params": { "service": "auditd" }, "event_id": "e2" } ],
-  "issued_directives": [ { "action": "kill_service", "params": { "service": "auditd" }, "event_id": "e2" } ],
-  "next_checkin_s": 60,
-  "last_seq": 17
-}
-```
+Response `200`: `server_time`, `score` (`total`, `results`, `sla_status[]` with `check_id`, `state`, `accrued_points`, `history`), `directives` (newly issued only), `issued_directives` (everything ever issued, for at-least-once delivery), `next_checkin_s`, `last_seq`, `run_status`, `run_ends_at`, `rank`, and `rank_total`. The `history` ring is oldest → newest (~10 observations); rank is the live position at scoring time. All are presentation facts, additive for older agents, never fed back into scoring.
 
-`directives` holds only what this check-in newly issued. `issued_directives` re-sends every directive ever issued to the box (§12.1 delivery).
-
-`next_checkin_s` is the **engine's poll cadence** — how often the box should collect and report (env `HUITZILOPOCHTLI_CHECKIN_INTERVAL_S`, default 60). It is deliberately *not* derived from rubric SLA intervals: SLA accrual is elapsed-based and capped per check-in (`max_intervals_per_checkin`), so it is correct at any cadence, while a cadence derived from `min(interval_s)` made fast rubrics spin boxes and slow rubrics freeze scoreboard updates. Error mapping: `400` client/verification errors (with `last_seq: null`), `403` unknown box or bad signature, `409` replay/stale seq or scenario_version mismatch (with the authoritative `last_seq`), `500` internal failures (body is generic — exception text can carry rubric content, §2.4).
+`next_checkin_s` is the **engine's poll cadence** (`HUITZILOPOCHTLI_CHECKIN_INTERVAL_S`, default 60), deliberately not derived from rubric SLA intervals: accrual is elapsed-based and capped per check-in, so any cadence is correct, whereas a `min(interval_s)` cadence made fast rubrics spin boxes and slow rubrics freeze scoreboard updates. Errors: `400` client/verification (with `last_seq: null`), `403` unknown box/bad signature, `409` replay/stale seq or scenario-version mismatch (with authoritative `last_seq`), `500` internal (generic body — exception text can carry rubric content, §2.4).
 
 ### 14.3 Versioning
 
-Every bundle and manifest carries `schema_version`, `agent_version`, and `scenario_version`. The engine rejects incompatible `schema_version` with a clear error. Scenario records are stored per `(scenario_name, scenario_version)`; the engine scores a box against the version bound at enrollment and returns `409` (with `last_seq`) when that version has no engine record. Uploading a newer rubric version does not retroactively rescore enrolled boxes.
+Every bundle and manifest carries `schema_version`, `agent_version`, and `scenario_version`. The engine rejects an incompatible `schema_version` and a mismatched agent major version. Scenario records are stored per `(scenario_name, scenario_version)`; the engine scores a box against the version bound at enrollment and returns `409` (with `last_seq`) when that version has no record. Uploading a newer rubric does not retroactively rescore enrolled boxes.
 
 ## 15. Interaction Flows
 
-**Honor-mode run (offline):** agent loads signed manifest → verifies authoring signature → runs all checks concurrently → assembles evidence → loads local rubric → `common.evaluate(evidence, rubric, no-clock)` → writes HTML. No network, no time axis, no adversary.
-
-**Ranked enrollment:** first boot → generate keypair (private key stays) → read one-time token → `POST /enroll` (signed) → engine binds pubkey, consumes token.
-
-**Ranked check-in loop:** every `checkin_interval_s` → collect evidence → assemble+sign bundle (seq++) → `POST /checkin` (TLS) → on success apply score to cache/report and execute directives; on network failure queue bundle and retry next cycle.
-
-**SLA accrual:** each check-in updates the per-check hysteresis state on the engine; while `UP`, capped drip accrues against engine-observed elapsed time; gaps and `DOWN` earn nothing.
-
-**Adversary event lifecycle:** engine derives per-box schedule from `(server_secret, box_id, event_id)` → when a fire time is reached at check-in, engine returns a directive and begins docking from that moment → box executes the local action via the closed vocabulary → student remediates → subsequent self-reports show restoration → engine resumes credit.
-
-**Offline queue flush:** box offline for several intervals → bundles queued with preserved seq → on reconnect flushed in order → engine dedups, scores each, but SLA cap prevents the backlog from being cashed as continuous uptime.
+- **Honor run:** verify signed manifest → collect concurrently → assemble evidence → load local rubric → `common.evaluate(evidence, rubric, no-clock)` → write HTML + snapshot. No network, time axis, or adversary.
+- **Ranked enrollment:** first boot → keypair (private key stays) → read one-time token → signed `POST /enroll` → engine binds pubkey and consumes token.
+- **Ranked check-in loop:** every `checkin_interval_s` → collect → sign bundle (`seq++`) → `POST /checkin` → apply score/directives; on network failure queue and retry next cycle.
+- **SLA accrual:** each check-in advances per-check hysteresis; while `UP`, capped drip accrues against engine-observed elapsed time; gaps and `DOWN` earn nothing.
+- **Adversary lifecycle:** engine derives the schedule from `(server_secret, box_id, event_id)` → a due check-in returns a directive and starts docking → box executes locally → student remediates → later evidence shows restoration → credit resumes.
+- **Offline queue flush:** bundles queue with preserved seq → reconnect flushes in order → engine dedups and scores each, but the SLA cap prevents cashing the backlog as continuous uptime.
 
 ## 16. Trust Boundaries & Security Requirements
 
 | Boundary | Guarantee | Non-guarantee |
 |---|---|---|
-| Box → Engine transit | TLS confidentiality + box-signature integrity | — |
-| Box identity | Signature proves which enrolled box sent the bundle | Does not prove the box's facts are true |
-| Rubric secrecy (ranked) | Answers never on the box; operator can't read expected values | A root operator can still forge internally-consistent evidence |
-| Clock (ranked) | Engine clock authoritative; time cannot be farmed by box | — |
-| Adversary egress | Structurally no outbound except to engine | — |
-| Enrollment token | Single-use, short-TTL, low value | Should still be delivered over the provisioning channel, not embedded in a shared image |
+| Box → engine transit | TLS confidentiality + box-signature integrity | — |
+| Box identity | Proves which enrolled box sent the bundle | Does not prove the box's facts are true |
+| Rubric secrecy (ranked) | Answers never on the box; operator cannot read expected values | A root operator can forge internally consistent evidence |
+| Clock (ranked) | Engine clock authoritative; time cannot be farmed | — |
+| Adversary egress | Structurally no outbound connection except to the engine | — |
+| Enrollment token | Single-use, short TTL, low value | Deliver over the provisioning channel, not in a shared image |
 
-Requirements:
-- Private box key file mode `0600`; never transmitted.
-- Engine DB stores only public keys — its compromise does not enable box impersonation.
-- Fail closed on every verification step in §14.2.
-- The authoring private key is offline/held by the team; only the public authoring key ships (for manifest verification).
+Requirements: the private box key is `0600` and never transmitted; the engine DB stores only public keys, so its compromise does not enable impersonation; every verification step in §14.2 fails closed; the authoring private key stays offline, and only the public authoring key ships.
 
 ## 17. Packaging & Deployment
 
-- **Agent artifact:** Python **zipapp** (`.pyz`), pure-Python/stdlib + vendored crypto. Assumes a Python interpreter is present. **Alpine caveat:** minimal Alpine ships without Python — provisioning must `apk add python3`.
-- **Compilation** (PyInstaller/Nuitka) is optional and for packaging convenience only; it is **irrelevant to security** because ranked mode never trusts the box regardless. Note glibc vs musl: a binary built on glibc will not run on Alpine/musl, so prefer the zipapp for portability and only compile per-target if a Python-free box is required.
-- **Install:** systemd unit or OpenRC init script that starts the agent at boot. Restricted install dir (e.g. `/opt/.huitzilopochtli/`) holding the `.pyz`, signed manifest, config, and (honor) rubric; identity file separate at `0600`. The dir is dot-hidden and sealed `0700 root:root`, and the honor rubric lands obfuscated + `0600` (`common/rubric_codec.py`) — friction against casual discovery on honor boxes, not a security boundary; ranked mode remains the actual answer for rubric secrecy. Provisioning also places the player-facing conveniences: a world-readable copy of the `.pyz` at `/usr/local/bin/huitz` (the §13.3 terminal console; a copy, not a symlink — the sealed dir would block non-root traversal) and an `/etc/update-motd.d/` first-login banner introducing it. Windows targets additionally get a build-time logon/browser hardening pass (`packaging/huitz-hardening-win.ps1`, run by boxbuilder's install step: Edge first-run experience off, Shutdown Event Tracker + Server Manager logon modals off, python MSI advertised-shortcut repair).
-- **Distribution:** export configured VM as `.ova`/`.qcow2`.
-- **Re-arm/reset:** a documented reset path resets local state (seq, identity optional, cached score, report, per-user report mirrors, and — with `--reset-identity` — queue/directive/enrollment state) so a take-home box can be replayed without a full redeploy.
-- **Version stamping:** engine and scenario versions on every payload (§14.3).
+- **Agent artifact:** Python **zipapp** (`.pyz`), stdlib plus vendored crypto; assumes `python3`. Minimal Alpine needs `apk add python3`. Native compilation is optional packaging convenience, irrelevant to security (ranked never trusts the box); glibc binaries do not run on musl, so prefer the zipapp.
+- **Install:** systemd unit or OpenRC script starting at boot, plus an install dir (default `/opt/.huitzilopochtli/`) holding the `.pyz`, signed manifest, config, and (honor) rubric. The dir is dot-hidden and sealed `0700 root:root`; the honor rubric is obfuscated and `0600` (`common/rubric_codec.py`) — friction against casual discovery, not a security boundary. Windows uses `C:\ProgramData\huitzilopochtli\` with a SYSTEM scheduled task.
+- **Player conveniences:** a world-readable copy of the `.pyz` at `/usr/local/bin/huitz` (a copy, not a symlink — the sealed dir blocks non-root traversal) and an `/etc/update-motd.d/` first-login banner. Windows gets a build-time hardening pass (`packaging/huitz-hardening-win.ps1`): Edge first-run off, logon modals off, Python MSI advertised-shortcut repair.
+- **Distribution:** export the configured VM as `.ova`/`.qcow2`; the engine ships as a versioned tarball (`packaging/build_engine_bundle.py`) installed by `engine/deploy/install.sh` as a hardened systemd unit with a daily SQLite backup.
+- **Re-arm/reset:** resets local state (seq, cached score, report, per-user mirrors, and — with `--reset-identity` — queue/directive/enrollment state) so a take-home box can be replayed without redeploy.
+- **Version stamping:** engine, agent, scenario, and schema versions on every payload (§14.3).
 
 ## 18. Suggested Module Layout
 
-```
-huitzilopochtli/
-  common/                # pure stdlib; imported by agent AND engine
-    schema.py            # dataclasses (§6)
-    canon.py             # canonical serialization (§7)
-    evaluator.py         # pure scorer (§10) — identical everywhere
-    matchers.py          # matcher registry (§10.2)
-    check_types.py       # shared registered check-type keys
-    adversary.py         # closed action vocabulary + pool validation
-    crypto/
-      ed25519.py         # vendored, pinned
-      signing.py         # sign/verify wrapper
-    version.py
-  agent/                 # ships as .pyz
-    __main__.py
-    config.py
-    collector.py
-    checks/ { base.py, file_regex.py, permission.py, user_group.py,
-              service_state.py, package.py, process_state.py, http_uptime.py,
-              db_query.py }
-    platform/ { detect.py, base.py, systemd.py, openrc.py, pkg.py }
-    adversary/ { executor.py, actions.py }   # closed vocabulary
-    identity.py
-    transport.py         # push client + queue-and-forward
-    reporter.py          # HTML report (§13)
-    report_page.py       # shared HTML shell (report + README pages)
-    board.py             # derived score board — one derivation, all renderers (§13.1)
-    snapshot.py          # report.json publication (§13.2)
-    cli.py               # huitz terminal console (§13.3)
-    term.py              # terminal kit: color/unicode/width/key polling
-    answers.py           # forensics answers-file format (collector + CLI)
-    runlock.py           # inter-process grade/report publication lock
-    notify.py            # score-change sound + toast
-  engine/
-    server.py            # endpoints
-    enrollment.py
-    checkin.py
-    scenario.py          # stored record parse/validate/versioned lookup
-    sla.py               # ledger + hysteresis
-    adversary_oracle.py  # scheduler
-    leaderboard.py
-    store.py             # sqlite3
-  authoring/             # author machine; may use PyYAML (NOT shipped)
-    compile.py           # YAML -> signed manifest + rubric + engine record
-    validate.py
-    sign_scenario.py
-  tests/
-    vectors/             # Ed25519 known-answer vectors
-```
+| Path | Contents |
+|---|---|
+| `common/` | schema, canon, evaluator, matchers, check types, adversary vocabulary, crypto, rubric codec |
+| `agent/` | entrypoint, collector, checks, platform, adversary executor, transport, identity, reporter/board/snapshot, `cli.py` |
+| `engine/` | server, enrollment/check-in, scenario records, SLA, adversary oracle, store, competitions, web |
+| `authoring/` | compile, validate, sign, readme lint, scenario modes |
+| `boxbuilder/` | practice-box factory (own README and DEPLOY) |
+| `packaging/` | zipapp and engine bundles, units, re-arm/reset |
+| `tests/` | unit, integration, crypto vectors |
 
 ## 19. Build, Test & CI Requirements
 
-- **Crypto correctness:** CI must run the vendored Ed25519 against published known-answer test vectors on every commit. Pin the implementation's version/hash.
-- **Canonical serialization:** round-trip and cross-language-stable byte tests; sign on one process, verify on another.
-- **Evaluator determinism:** golden tests mapping `(evidence, rubric) -> ScoreBreakdown`, including PENALTY/PROHIBITED and missing/ERROR/TIMEOUT evidence.
-- **Hysteresis + SLA cap:** state-machine unit tests covering flap suppression and the silence/backlog cap.
-- **Platform layer:** table-driven tests for systemd vs OpenRC command mapping and package-manager mapping.
-- **Zipapp portability:** build the `.pyz` and smoke-run it under the interpreter versions on Debian, Fedora, and Alpine (with `python3` added).
-- **Adversary egress:** a test asserting the action API exposes no network-egress primitive.
-- **Protocol fail-closed:** tests for each `403/409/410/400` path in §14.
+The suite pins this document's contracts:
+
+- Ed25519 known-answer vectors every commit; canonical-serialization byte tests across processes.
+- Evaluator golden tests for every category and missing/`ERROR`/`TIMEOUT` evidence.
+- Hysteresis and SLA-cap forfeit state-machine tests.
+- Table-driven systemd/OpenRC/Windows mappings; a zipapp smoke-run across interpreter versions.
+- An assertion that the action API exposes no network-egress primitive.
+- Fail-closed tests for every `400/403/409/410/503` path in §14.
 
 ## 20. Non-goals & Open Items
 
-**Non-goals (v1):**
-- Cheat-proof ranked scoring (impossible under push-only + root; see §3).
-- Engine-initiated probing of boxes (transport is push-only by decision).
-- Multi-host *implementation* (schema supports `host_id` now; first build scores single-host).
-- Mode conversion (a box's mode is fixed at provisioning; an offline run cannot be promoted to ranked).
+**Non-goals:** cheat-proof ranked scoring (impossible under push-only + root, §3); engine-initiated probing (transport is push-only by decision); multi-host *implementation* (schema supports `host_id`; the first build is single-host); mode conversion (a box's mode is fixed at provisioning; an offline run cannot be promoted).
 
-**Open items (deferred, not blocking):**
-- Optional Postgres storage backend behind the `store.py` interface.
-- Additional check types (e.g. sysctl, cron, scheduled-task) and matchers, added via the registries with no core changes.
-- Multi-host scenario execution once single-host is proven.
-```
+**Open (deferred, not blocking):** optional Postgres storage behind the `store.py` interface; additional check types (sysctl, cron, scheduled tasks) and matchers via the registries; multi-host execution once single-host is proven.
 
-## 21. Ranked competition mode (v1.1)
+## 21. Ranked competition mode
 
-This section extends §11/§14 with the competition layer. It does not change
-the collect/evaluate split, the engine-authored rubric rule, or the engine
-receipt clock.
+Extends §11/§14 with the competition layer. It does not change the collect/evaluate split, the engine-authored rubric rule, or the engine receipt clock.
 
 ### 21.1 Model
 
-A **competition** binds one `(scenario_name, scenario_version)`, a maximum
-player count, a per-player run duration, and an optional
-`workshop-vm-distribution` pool code. Status is `draft → live → ended`; there is
-no pause. A **player** is one display name, at most one active box, and one run:
-`started_at` at join, `ends_at = started_at + duration_s`, both engine-stamped.
-`T0` for that box is `started_at` (not its first check-in). The admin can end
-the competition early, which freezes every run.
+A **competition** binds one `(scenario_name, scenario_version)`, a max player count, a per-player run duration, and the private workshop pool provisioned for it (§21.2). Status is `draft → live → ended`; there is no pause. A **player** is one display name, at most one active box, and one run: `started_at` at join and `ends_at = started_at + duration_s`, both engine-stamped; `T0` for that box is `started_at` (not its first check-in), and all scoring timestamps remain engine receipt time (§11.3). The admin can end early, freezing every run. A competition is provisioned from a ranked scenario with scored services and red-team exposure; its boxes are a separate lineage from honor boxes.
 
-### 21.2 Join
+### 21.2 Join and provisioning
 
-`POST /join` remains the only binding operation: it is signed by the box key
-and consumes a one-time join code (stored as an HMAC hash), so a box still
-proves possession of its own key. What changed is who types the code.
+`POST /join` is the only binding operation: signed by the box key, consuming a one-time join code stored as an HMAC hash, so the box proves possession of its own key. The engine reserves a slot, mints the code, and claims a VM from the competition's own workshop pool. The claim carries the code and a shared prebind secret to the portal, which returns a **stable open link** (each open re-mints the console session) and, before the console appears, runs `huitz join --code <code>` in the guest through qemu-guest-agent. The box binds itself, and `started_at` — hence `T0` — is stamped at that bind (the player's click, not clone time). Without a prebind secret the page falls back to a terminal `huitz join`. Claim state and failures are tracked per player and shown on the join page, with a retry action.
 
-The engine reserves a slot, mints the one-time code, and claims a VM from the
-competition's workshop pool. The claim carries the code and a shared prebind
-secret to the portal, which returns a **stable open link** (`/r/<uid>`) rather
-than a short-lived Guacamole token. When the player opens that link, the portal
-mints a fresh session and, still before the console appears, runs
-`huitz join --code <code>` inside the guest through qemu-guest-agent. The box
-binds itself; `started_at` — and therefore `T0` — is stamped by the engine at
-that bind, i.e. at the player's click, not at clone time.
-
-The link is stable for the life of the claim, so a stale Guacamole token is
-never a dead end: every open re-mints the session. The engine tracks the claim
-(portal uid, ticket, expiry, last error) and exposes a player-triggered
-`POST /api/public/join/<player_id>/claim` (cookie + page CSRF) that releases
-the old VM and claims a new one. Failures are recorded per player and shown on
-the join page; nothing is silently swallowed. If the portal has no prebind
-secret, the engine falls back to a plain claim and the page shows the terminal
-fallback (`huitz join` plus the code), so the flow degrades instead of dying.
-A box with no player row keeps the pre-competition behavior, and `/enroll`
-remains for pre-provisioned boxes.
+**Each competition provisions its own workshop pool**, cloned on demand from the ranked template named in the scenario record's `pool:` block. The engine never selects among the portal's pre-existing pools, so a competition can never be handed an honor-mode box; a `pool:` block on an honor scenario is a validation error. Existing pins are honored, a template mismatch is refused, and ending a competition releases its VMs and deletes only the pool this engine provisioned.
 
 ### 21.3 Scoring and run end
 
-Point-in-time scoring is unchanged. Self-reported **scored services** are
-declared in a top-level `services:` scenario block; the compiler expands each
-into a check `id = svc_<id>` with `is_sla: true` and an SLA rubric entry, plus
-public label metadata in the manifest. `tcp_port` is a generic service probe.
-The engine splits `scores.total` into `hardening_points` + `service_points`.
-After `ends_at` (or admin End) check-ins are still accepted for seq continuity
-but return `run_status: finished|ended` and a frozen score; no SLA or adversary
-work runs.
+Point-in-time scoring is unchanged. Self-reported **scored services** are declared in the ranked block's `services:` list; the compiler expands each into a check `id = svc_<id>` with `is_sla: true` and an SLA rubric entry, plus public `ServiceSpec` metadata in the manifest. `tcp_port` is a generic service probe. The engine splits `scores.total` into `hardening_points` + `service_points`. Self-reported service checks are explicitly **not** independent uptime verification (root-controlled evidence, §3). After `ends_at` (or admin End), check-ins are still accepted for seq continuity but return `run_status: finished|ended` and a frozen score; no SLA or adversary work runs.
 
 ### 21.4 Web surface
 
-Public: `/`, `/c/<slug>`, `/c/<slug>/join`, `/c/<slug>/join/success`,
-`/c/<slug>/me`, `/c/<slug>/display`, `/api/public/*`.
-Admin: `/admin` (HTTP Basic → server-side session + CSRF), competition CRUD,
-start/end/close-joins, roster, join-code reissue, DQ/remove, scenario upload,
-audit, CSV export. Admin API under `/admin/api/*` accepts the legacy
-`X-HUITZILOPOCHTLI-Admin-Token` or Basic/session auth. The engine remains
-stdlib-only (`http.server`, `sqlite3`); HTML is server-rendered and escaped.
+Public competition pages (`/`, `/c/<slug>`, join/join-success/me/display) and JSON under `/api/public/*`. Admin `/admin` (HTTP Basic → server-side session + CSRF) covers competition CRUD, start/end/close-joins, roster, join-code reissue, disqualify/remove, scenario upload, audit, and CSV export; `/admin/api/*` also accepts the legacy `X-HUITZILOPOCHTLI-Admin-Token`. The engine stays stdlib-only (`http.server`, `sqlite3`); HTML is server-rendered and escaped.
 
 ### 21.5 Deployment and boxes
 
-The engine ships as a tarball (`packaging/build_engine_bundle.py`) installed by
-`engine/deploy/install.sh` as a hardened systemd unit with a daily SQLite
-backup. Ranked competition boxes are a separate lineage from honor boxes:
-`boxbuilder install --competition` installs the agent + signed manifest but no
-token, leaves the agent unit disabled, and the player runs `huitz join`.
-Honor boxes are not convertible.
+The engine ships as the tarball in §17. Ranked competition boxes are a **separate lineage**: a ranked template is built by installing the ranked variant over a clone of the sealed honor template (agent + signed manifest, no enrollment token); the build uses `compile --no-bundle`, so it needs neither nakon nor vulndb, and `install` only places files. The player binds with `huitz join`; the box carries no rubric and no token. An honor box cannot be converted, and there is no honor→ranked shortcut. The deploy/template loop is [`boxbuilder/DEPLOY.md`](boxbuilder/DEPLOY.md).

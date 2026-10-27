@@ -1,111 +1,3 @@
-# Broadneck Post: a regional parcel courier's mail server (huitz terminal
-# console -- NO desktop, NO VNC; players connect over SSH and use
-# `huitz score`, `huitz readme`, `huitz watch`, `huitz forensics`).
-#
-# The story: Broadneck Post ran its own mail stack (postfix + dovecot) for
-# years under a night contractor who left the box an OPEN RELAY. An
-# intruder signing itself "redtag" (documentation IP 198.51.100.23)
-# brute-forced the password of `routeaudit`, an ex-contractor account that
-# should have been disabled when the contract ended, then worked the box
-# in three phases: (1) RELAY ABUSE -- blasted a 40-message phishing run
-# through the open relay and left one message stuck in the queue; (2)
-# INTERCEPTION -- planted a .forward on the postmaster copying every
-# inbound message to an outside drop, planted a mail-triggered backdoor
-# (an /etc/aliases entry piping to a script), and exported an employee
-# mailbox as a tarball; (3) SABOTAGE-AND-EXIT -- stopped + masked postfix
-# and dovecot, DELETED /etc/postfix, /etc/dovecot and the depot TLS certs,
-# truncated the live logs and left a cron that keeps wiping the mail log,
-# and stashed a "restore kit" in /root whose config quietly re-opens the
-# relay for anyone who restores from it.
-#
-# The BLUE work is the box: the mail stack must be rebuilt essentially
-# from scratch (packages remain installed; only the configuration, the
-# certs, and the service state were destroyed -- no apt download needed)
-# AND hardened: relay closed, TLS everywhere, plaintext auth off, the
-# TLS-only service matrix (25 in, 587 submission with auth, 993/995 only),
-# every persistence plant evicted, and the evidence read along the way.
-#
-# Scoring ledger (tests/unit/test_boxbuilder_broadneck_post.py asserts
-# it). Thirty-eight findings, difficulty-weighted at 2/4/6:
-#   EASY     2 pts x 16 checks =  32   postfix_config_restored,
-#                                      dovecot_config_restored,
-#                                      imap_tls_listener_up,
-#                                      pop3_tls_listener_up,
-#                                      submission_listener_up,
-#                                      vrfy_disabled, helo_required,
-#                                      banner_no_version,
-#                                      postfix_key_perms,
-#                                      mailboxes_deliverable,
-#                                      routeaudit_disabled,
-#                                      mailsync_removed,
-#                                      authorized_keys_clean,
-#                                      firewall_rule_removed,
-#                                      swaks_uninstalled,
-#                                      mailroom_export_removed
-#   MODERATE 4 pts x 15 checks =  60   postfix_service_up,
-#                                      dovecot_service_up,
-#                                      smtp_listener_answers,
-#                                      mynetworks_tightened,
-#                                      tls_auth_only,
-#                                      postfix_tls_cert_configured,
-#                                      postfix_config_perms,
-#                                      forward_interception_removed,
-#                                      dovecot_plaintext_auth_off,
-#                                      dovecot_plain_listeners_off,
-#                                      dovecot_tls_cert_configured,
-#                                      maildir_perms_fixed,
-#                                      local_domain_configured,
-#                                      harvest_timer_neutralized,
-#                                      metrics_service_removed
-#   HARD     6 pts x  7 checks =  42   submission_auth_required,
-#                                      open_relay_closed,
-#                                      aliases_pipe_backdoor_removed,
-#                                      dovecot_ssl_required,
-#                                      queue_tidy_cron_removed,
-#                                      sudoers_dropin_removed,
-#                                      restore_kit_removed
-#   vuln checks total            = 134
-#   forensics (6x2 + 10x4 + 4x6) =  76
-#   GRAND TOTAL                  = 210
-#
-# No penalties this time: the stack starts DOWN, so the bring-up checks
-# themselves are the drift guard -- break the mail service later and its
-# up-checks simply stop scoring. (The lantern-hill penalty pattern exists
-# to stop "fix by destruction"; here destruction starts at zero.)
-#
-# Forensics questions walk the red path chronologically. Every answer sits
-# in an artifact the hunt opens anyway -- and several fixes destroy the
-# evidence (deleting the wiper cron, the tarball, the restore kit, the
-# .forward, the alias): READ BEFORE YOU DELETE.
-#
-# Design rules this file obeys (checked in the unit test where practical):
-#   - Checks grade EFFECTIVE state (postconf -h / doveconf -h / live
-#     probes), never file text, wherever a runtime answer exists -- the
-#     mail-world twin of lantern-hill's `sshd -T` pattern.
-#   - Any artifact where DELETING it is the legitimate fix is graded by a
-#     permission exists:false or an existence-tolerant command_json --
-#     never file_regex on a deletable path (missing file = ERROR =
-#     fail-closed).
-#   - command_json scripts are read-only, guard every command, and ALWAYS
-#     emit exactly one JSON scalar. Tools the box may lack (postconf,
-#     doveconf, doveadm, python3) short-circuit to the hardened value so
-#     the unit test can run every script on a clean dev host; on the box
-#     the agent runs as root with the real tools and grades for real.
-#   - The bring-up/liveness checks (postfix_config_restored,
-#     dovecot_config_restored, postfix_service_up, dovecot_service_up,
-#     smtp_listener_answers, submission_auth_required,
-#     mailboxes_deliverable, local_domain_configured) legitimately read
-#     FALSE on a clean dev host (no mail stack there); the unit test pins
-#     the rest to the hardened branch.
-#   - The weak configs, the seeded mailboxes, the depot certs, the whole
-#     redtag REPLAY (ssh brute force, relay blast, .forward, tarball,
-#     aliases pipe, held queue message) and the SABOTAGE (mask + delete
-#     configs + truncate logs + restore kit) are PREP-BAKED
-#     (assets/prep/), not planted here. The generic persistence plants
-#     (authorized key, wiper cron, harvest timer, metrics service,
-#     sudoers drop-in, firewall rule, mailsync account, swaks) go through
-#     nakon.
-
 scenario:
   name: "Broadneck Post"
   version: 1
@@ -113,7 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # === the rebuild: bring the mail stack back from scratch ===================
   - id: postfix_config_restored
     type: command_json
     category: vuln
@@ -522,7 +413,6 @@ checks:
       the check grades (it also wants STARTTLS offered: submission without
       TLS is just plaintext credential collection).
 
-  # === postfix hardening: never again the door it was =========================
   - id: open_relay_closed
     type: command_json
     category: vuln
@@ -547,10 +437,11 @@ checks:
       postconf mynetworks smtpd_relay_restrictions
       ```
 
-      `mynetworks = 0.0.0.0/0` makes EVERY client "trusted", and with
-      nothing rejecting unauthenticated relay destinations, the box spent
-      years forwarding anything from anyone. This is the hole the whole
-      phishing run walked through -- the mail log remembers it.
+      `mynetworks = 0.0.0.0/0` makes EVERY client "trusted", so the
+      relay restrictions' `permit_mynetworks` fired first for the whole
+      internet -- the box spent years forwarding anything from anyone.
+      This is the hole the whole phishing run walked through; the mail
+      log remembers it.
 
       **2. Close it.** Trust only the depot's own loopback and LAN, and
       make relay refusal explicit:
@@ -804,7 +695,7 @@ checks:
         KEY=$(postconf -h smtpd_tls_key_file 2>/dev/null) || { echo false; exit 0; }
         [ -n "$KEY" ] && [ -f "$KEY" ] || { echo false; exit 0; }
         M=$(stat -c '%a' "$KEY" 2>/dev/null) || { echo false; exit 0; }
-        [ $(( 8#$M & 8#077 )) -eq 0 ] && echo true || echo false
+        [ $(( 0$M & 0077 )) -eq 0 ] && echo true || echo false
     expect:
       equals: true
       field: data
@@ -834,7 +725,6 @@ checks:
     max_points: 4
     collect:
       script: |
-        [ -d /etc/postfix ] || { echo true; exit 0; }
         [ -f /etc/postfix/main.cf ] || { echo false; exit 0; }
         find /etc/postfix -type f -perm -o+w 2>/dev/null | grep -q . && { echo false; exit 0; }
         find /etc/postfix -type d -perm -o+w 2>/dev/null | grep -q . && { echo false; exit 0; }
@@ -876,7 +766,7 @@ checks:
           grep -Eq 'routesupport|queue-flush' /etc/aliases && { echo false; exit 0; }
         fi
         if command -v postmap >/dev/null 2>&1 && [ -f /etc/aliases.db ]; then
-          out=$(postmap -q routesupport hash:/etc/aliases.db 2>/dev/null) || out=
+          out=$(postmap -q routesupport hash:/etc/aliases 2>/dev/null) || out=
           [ -n "$out" ] && { echo false; exit 0; }
         fi
         if [ -e /usr/local/libexec/.queue-flush ]; then echo false; exit 0; fi
@@ -891,7 +781,7 @@ checks:
 
       ```
       cat /etc/aliases
-      postmap -q routesupport hash:/etc/aliases.db
+      postmap -q routesupport hash:/etc/aliases
       ```
 
       `routesupport` feeds every message addressed to it straight into a
@@ -905,8 +795,10 @@ checks:
 
       ```
       nano /etc/aliases        # delete the routesupport line
-      newaliases               # regenerate /etc/aliases.db -- an edited
+      postalias /etc/aliases   # regenerate /etc/aliases.db -- an edited
                                # file with a stale db still routes!
+                               # (newaliases works too, but only after
+                               # main.cf exists again)
       rm -f /usr/local/libexec/.queue-flush
       systemctl restart postfix
       ```
@@ -953,7 +845,6 @@ checks:
       **3. Confirm.** The file is gone -- its absence is exactly what
       the check grades.
 
-  # === dovecot hardening ======================================================
   - id: dovecot_plaintext_auth_off
     type: command_json
     category: vuln
@@ -1035,6 +926,7 @@ checks:
     max_points: 4
     collect:
       script: |
+        [ "$(systemctl is-active dovecot 2>/dev/null)" = "active" ] || { echo false; exit 0; }
         command -v python3 >/dev/null 2>&1 || { echo true; exit 0; }
         python3 -c '
         import socket
@@ -1079,8 +971,10 @@ checks:
 
       then `systemctl restart dovecot`.
 
-      **3. Confirm.** Nothing answers on 143 or 110 any more -- the
-      check probes both ports live and grades them closed.
+      **3. Confirm.** Nothing answers on 143 or 110 any more while
+      dovecot itself is running -- the check grades the live ports of a
+      RUNNING stack (a stopped service scores nothing: that is not
+      hardening, that is the outage the intruder left).
 
   - id: dovecot_tls_cert_configured
     type: command_json
@@ -1090,10 +984,8 @@ checks:
     collect:
       script: |
         command -v doveconf >/dev/null 2>&1 || { echo true; exit 0; }
-        C=$(doveconf -h ssl_server_cert_file 2>/dev/null) || { echo false; exit 0; }
-        K=$(doveconf -h ssl_server_key_file 2>/dev/null) || { echo false; exit 0; }
-        C=${C#<}
-        K=${K#<}
+        C=$(doveconf -h "ssl_server/cert_file" 2>/dev/null) || { echo false; exit 0; }
+        K=$(doveconf -h "ssl_server/key_file" 2>/dev/null) || { echo false; exit 0; }
         [ -n "$C" ] && [ -f "$C" ] || { echo false; exit 0; }
         [ -n "$K" ] && [ -f "$K" ] || { echo false; exit 0; }
         echo true
@@ -1106,7 +998,7 @@ checks:
       postfix uses (one identity, one cert):
 
       ```
-      doveconf ssl_server_cert_file ssl_server_key_file
+      doveconf "ssl_server/cert_file" "ssl_server/key_file"
       ```
 
       **2. Point it at the minted pair** (see postfix_tls_cert_configured
@@ -1124,7 +1016,7 @@ checks:
 
       then `systemctl restart dovecot`.
 
-      **3. Confirm.** `doveconf -h ssl_server_cert_file` names a file
+      **3. Confirm.** `doveconf -h "ssl_server/cert_file"` names a file
       that exists, same for the key -- that is what the check grades.
 
   - id: maildir_perms_fixed
@@ -1215,6 +1107,7 @@ checks:
     max_points: 2
     collect:
       script: |
+        [ "$(systemctl is-active postfix 2>/dev/null)" = "active" ] || { echo false; exit 0; }
         for u in dispatch freight routes; do
           [ -d "/home/$u/Maildir/new" ] && [ -d "/home/$u/Maildir/cur" ] && [ -d "/home/$u/Maildir/tmp" ] || { echo false; exit 0; }
         done
@@ -1247,11 +1140,11 @@ checks:
       (repeat for freight and routes; then mail a smoke test to one of
       them once postfix is up and watch the file land in Maildir/new).
 
-      **3. Confirm.** All three employees have new/, cur/ and tmp/ --
-      the check grades those directories' existence for dispatch,
-      freight AND routes.
+      **3. Confirm.** All three employees have new/, cur/ and tmp/
+      while postfix is running -- the check grades those directories'
+      existence for dispatch, freight AND routes on a live stack (a
+      stopped mailer is not deliverability).
 
-  # === the red path: evict everything redtag left behind ======================
   - id: routeaudit_disabled
     type: command_json
     category: vuln
@@ -1695,10 +1588,6 @@ theme:
   organization: "Broadneck Post — Mail & Dispatch Services"
   accent: "#8C2F39"
   readme: assets/README.md
-  # Three graded answers collide with unavoidable story vocabulary: the
-  # player's own account (postmaster) and two authorized employees
-  # (dispatch, freight) are on the roster the handbook must print, and are
-  # also forensics answers. The full answers never appear in the handbook.
   readme_lint_allow: ["postmaster", "dispatch", "freight"]
   motd: |
     Welcome to the Broadneck Post depot mailer.
@@ -1708,16 +1597,6 @@ theme:
     Broadneck Post depot mailer.
     Unauthorized access will be reported to Mail & Dispatch Services.
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt (pinned to postmaster's Desktop; edit with
-# `huitz forensics`); the agent re-grades the file each pass. Correct =
-# full points; wrong or blank = nothing, never negative. The twenty
-# questions walk the red path chronologically: each names the evidence
-# CLASS and asks for one short specific value, never the answer itself,
-# and each answer sits in an artifact the hunt opens anyway.
-# READ BEFORE YOU DELETE: Q9/Q10 (the export), Q11 (.forward), Q12/Q13
-# (the alias), Q14/Q15 (the wiper cron), Q17/Q18 (the restore kit) and
-# Q19 (the timer) all concern files whose removal is itself scored.
 forensics:
   - id: fq-entry-account
     path: /home/postmaster/Desktop/Forensics-Questions.txt
@@ -1732,15 +1611,15 @@ forensics:
       account itself is the entry-point finding: remove or lock it.
   - id: fq-first-probe
     path: /home/postmaster/Desktop/Forensics-Questions.txt
-    question: "Before the guessing run found a working password, it tripped against a different account and failed. Which account did it fail against FIRST? (The failed-login ledger remembers.)"
+    question: "Before the guessing run found a working password, it tripped against a different account and failed. Which account did it fail against FIRST? (The login journal remembers the order.)"
     answer: "postmaster"
     points: 4
     solution: |
-      `lastb` (reads /var/log/btmp) lists failed logins oldest-first from
-      the top. The earliest failures name the account the intruder
-      wanted most -- the mail administrator -- before settling for the
-      ex-contractor's weaker password. Compare the timestamps with the
-      journal to see the whole guessing run in order.
+      `journalctl -u ssh` (read it with --no-pager and scroll to the
+      guessing run, or grep "Failed password") lists the failures in
+      order. The earliest failures name the account the intruder wanted
+      most -- the mail administrator -- before settling for the
+      ex-contractor's weaker password.
   - id: fq-source-ip
     path: /home/postmaster/Desktop/Forensics-Questions.txt
     question: "Every move the intruder made came from one address. Type the IP address they connected from."
@@ -1760,11 +1639,12 @@ forensics:
     points: 6
     solution: |
       The live /var/log/mail.log was wiped, but rotation saved the run:
-      `grep -c '198.51.100.23' /var/log/mail.log.1` counts the client
-      connection lines -- one per relayed message, forty in total. Each
-      line reads `client=glittercrate... [<the address>]`; the
-      `status=deferred` lines that follow never carry the address, so
-      the count is exact. This is why the log-wiper cron missed its
+      `grep -c 'client=unknown' /var/log/mail.log.1` counts the queue
+      lines -- one per relayed message, forty in total. Each reads
+      `client=unknown [<the address>]` (the intruder's host has no
+      reverse DNS, so postfix logs it as unknown); the surrounding
+      connect/disconnect lines carry the address too but are not
+      message records. This is why the log-wiper cron missed its
       target: it only ever truncated the live file.
   - id: fq-relay-domain
     path: /home/postmaster/Desktop/Forensics-Questions.txt
@@ -1933,15 +1813,80 @@ forensics:
       section: OnBootSec starts it, OnUnitActiveSec=20min is the re-fire
       cadence the question asks for. Read the unit BEFORE deleting it --
       the answer leaves with the file.
-  - id: fq-btmp-attempts
+  - id: fq-guess-count
     path: /home/postmaster/Desktop/Forensics-Questions.txt
-    question: "The failed-login ledger survived the wipe. How many failed password attempts did the guessing run log IN TOTAL? (Type the number.)"
-    answer: "5"
+    question: "The login journal survived the wipe. How many failed password attempts did the guessing run log IN TOTAL? (Type the number.)"
+    answer: "4"
     points: 4
     solution: |
-      `lastb` reads /var/log/btmp, which the flat-log wiping never
-      touched: two failures against the administrator account, then
-      three against the ex-contractor account before the one that
-      worked -- five failed attempts in total (`lastb | grep -c <the
-      intruder's address>`). Guessing five passwords is all it took;
-      that is what an unretired contractor account is worth.
+      The flat auth.log was truncated, but the binary journal kept
+      everything: `journalctl -u ssh | grep -c 'Failed password'`
+      counts them -- two failures against the administrator account,
+      then two against the ex-contractor account before the one that
+      worked. Guessing four passwords is all it took; that is what an
+      unretired contractor account is worth.
+
+# Ranked target. The four scored services are the mail doors the sabotage
+# left DOWN (90-sabotage.sh masks postfix/dovecot and deletes their configs):
+# they report DOWN on the first check-in and accrue only while the player has
+# rebuilt and kept them UP.
+ranked:
+  engine_url: "http://127.0.0.1:8080"
+  services:
+    - id: smtp
+      display: "Depot mailer (SMTP, port 25)"
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 25
+      expect:
+        equals: true
+        field: open
+      interval_s: 60
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+    - id: submission
+      display: "Authenticated submission (port 587)"
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 587
+      expect:
+        equals: true
+        field: open
+      interval_s: 60
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+    - id: imaps
+      display: "IMAPS mailbox access (port 993)"
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 993
+      expect:
+        equals: true
+        field: open
+      interval_s: 60
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+    - id: pop3s
+      display: "POP3S mailbox retrieval (port 995)"
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 995
+      expect:
+        equals: true
+        field: open
+      interval_s: 60
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+  adversary:
+    events: []
+  pool:
+    template_vm_id: "${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}"
+    template_vm_access_method: ssh
+    template_vm_username: "${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}"
+    template_vm_password: "${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}"
+    vm_count: 4
+    guac_link_ttl_seconds: 14400

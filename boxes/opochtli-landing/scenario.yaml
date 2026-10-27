@@ -1,49 +1,3 @@
-# Opochtli Landing Port Authority, v2: the CLI-era rebuild of the v1 xubuntu
-# VNC box. Same harbor theme, same difficulty-weighted scoring (EASY 5 /
-# MODERATE 10 / HARD 20), but the box is now HEADLESS DEBIAN 13 running the
-# huitz terminal console (no XFCE, no VNC -- the terminal IS the interface),
-# and the firewall material is deliberately RAW IPTABLES (the CCDC style this
-# challenge drills): checks read `iptables-save` signatures only, so ufw's
-# chain-per-table layout does not satisfy them. The box's legitimate service
-# is a small cargo-manifest web app (apache2 + PHP on port 80) backed by a
-# SHARED MariaDB on the workshop network (workshop-shared-mariadb,
-# 192.168.100.10:3306, SELECT-only user) -- NOT a local database. That makes
-# the OUTPUT 3306 task genuinely load-bearing: under OUTPUT default-deny the
-# web app loses its database until students open the egress path. The shared
-# DB is outside the box: if the DB VM is down, the DB probe (and the web
-# app's data) fail through no fault of the student -- see the template's
-# Proxmox description and box.yaml.
-#
-# Scoring ledger (tests/unit/test_boxbuilder_opochtli_landing.py asserts it):
-#   EASY     5 pts x 2 checks =  10   web_input_80_allowed,
-#                                     beacon_binary_removed
-#   MODERATE 10 pts x 3 checks =  30   db_output_3306_allowed, cockpit_removed,
-#                                     beacon_service_removed
-#   HARD     20 pts x 3 checks =  60   default_deny_all, beacon_process_gone,
-#                                     bind_shell_removed
-#   vuln checks total             = 100
-#   penalty (console_reachable)   = -10 floor (only subtracts)
-#   forensics (20 + 20)           =  40
-#   GRAND TOTAL                   = 140
-#
-# Two attacker artifacts anchor the malicious angle, and they teach opposite
-# hunt techniques:
-#   - system-update.service ("System Update Check"): the catalog's
-#     ncat-listener-autostart -- a root bind shell on 0.0.0.0:4444. It IS
-#     port-visible (`ss -tlnp`), so finding it is a listener-review exercise;
-#     it respawns after reboot while the unit stays enabled, so the scored
-#     state requires kill AND disable.
-#   - tide-sync.service (realm-beacon seed): the DISASTEROUS_PHARMACY
-#     raw-socket beacon installed under /opt/tide-sync. It LISTENS ON NO
-#     PORT and its journal is silenced -- finding it is a process/unit-review
-#     exercise (ps aux, systemctl list-units, /opt). Its C2 destination
-#     (10.233.0.66:8443, RFC 1918 and unreachable from the box's network) is
-#     leaked by its own cmdline/unit file: reading what a process actually
-#     does is the skill.
-# Every command_json script is read-only, guards every command so it ALWAYS
-# emits exactly one JSON scalar (even where iptables is missing or
-# unprivileged, which is what the unit tests rely on), and exits 0.
-
 scenario:
   name: "Opochtli Landing Port Authority"
   version: 3
@@ -51,7 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # --- firewall: open only what the port authority needs -------------------
   - id: web_input_80_allowed
     type: command_json
     category: vuln
@@ -111,7 +64,7 @@ checks:
     solution: |
       **1. Know why this port is load-bearing.** The web app's database is
       NOT on this box -- it is the harbor's shared MariaDB at
-      192.168.100.10:3306 on the workshop network. Under the default-deny
+      192.0.2.10:3306 on the workshop network. Under the default-deny
       OUTPUT policy of the next challenge, the app loses its data unless you
       open exactly this egress path. That is the lesson: default-deny is
       only safe when you can name every flow you must allow.
@@ -119,7 +72,7 @@ checks:
       **2. Add the egress rule** before flipping any policy:
 
       ```
-      iptables -A OUTPUT -d 192.168.100.10 -p tcp --dport 3306 -j ACCEPT
+      iptables -A OUTPUT -d 192.0.2.10 -p tcp --dport 3306 -j ACCEPT
       ```
 
       The un-scoped `iptables -A OUTPUT -p tcp --dport 3306 -j ACCEPT`
@@ -129,7 +82,7 @@ checks:
       test the path the way the box's own probe does:
 
       ```
-      timeout 3 bash -c '</dev/tcp/192.168.100.10/3306' && echo db-reachable
+      timeout 3 bash -c '</dev/tcp/192.0.2.10/3306' && echo db-reachable
       ```
 
   - id: default_deny_all
@@ -155,7 +108,7 @@ checks:
         # egress path the OUTPUT 3306 rule exists to protect.
         python3 -c 'import socket,sys
         s=socket.socket(); s.settimeout(3)
-        sys.exit(0 if s.connect_ex(("192.168.100.10",3306))==0 else 1)' 2>/dev/null || ok=false
+        sys.exit(0 if s.connect_ex(("192.0.2.10",3306))==0 else 1)' 2>/dev/null || ok=false
         [ "$ok" = true ] && echo true || echo false
     expect:
       equals: true
@@ -200,7 +153,7 @@ checks:
 
       ```
       curl -s http://127.0.0.1/ | grep -i cargo
-      timeout 3 bash -c '</dev/tcp/192.168.100.10/3306' && echo db-ok
+      timeout 3 bash -c '</dev/tcp/192.0.2.10/3306' && echo db-ok
       ```
 
       If curl fails, your loopback rules are missing; if the DB probe fails,
@@ -240,7 +193,6 @@ checks:
       `-A OUTPUT -o lo -j ACCEPT`) before anything else touches the
       firewall.
 
-  # --- remove the unnecessary management listener ---------------------------
   - id: cockpit_removed
     type: command_json
     category: vuln
@@ -289,7 +241,6 @@ checks:
       `systemctl is-enabled cockpit.socket cockpit.service` does not say
       `enabled` (disabled, masked, static, or not-found all count).
 
-  # --- the DISASTEROUS_PHARMACY beacon: find it, kill it, purge it ----------
   - id: beacon_service_removed
     type: service_state
     category: vuln
@@ -407,7 +358,6 @@ checks:
       **3. Confirm.** `ls /opt/tide-sync` errors with "No such file or
       directory" -- the scored state is exactly that: gone from disk.
 
-  # --- the bind shell: port-visible, respawn-prone --------------------------
   - id: bind_shell_removed
     type: command_json
     category: vuln
@@ -485,11 +435,6 @@ theme:
     Opochtli Landing Port Authority System
     Disconnect if you are unauthorized.
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt (created in the player's ~/Desktop; edit with
-# `huitz forensics`); the agent re-grades the file each pass. Correct answer
-# = full points; wrong or blank = nothing, no penalty. Both questions are
-# answerable from evidence on the box.
 forensics:
   - id: fq-beacon-destination
     question: "A rogue beacon process (codename DISASTEROUS_PHARMACY) sends forged packets to an outside C2 address. Type that destination address AND port. (It listens on no port -- find the process, then read what it dials: ps aux, systemctl cat on its unit, or a packet capture.)"

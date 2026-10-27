@@ -8,11 +8,11 @@
 #   1. Microsoft Edge first-run onboarding -- the "welcome to Edge" wizard every fresh
 #      profile walks through -- via machine-wide Edge policies.
 #   2. The Shutdown Event Tracker modal at logon ("Why did the computer shut down
-#      unexpectedly?"; REDEPLOY.md gotcha 25 -- previously a manual pre-seal step only).
+#      unexpectedly?").
 #   3. Server Manager auto-open at logon and its Windows Admin Center promo, set in
 #      C:\Users\Default\NTUSER.DAT so every profile created from now on inherits it.
-#      An HKCU write over SSH does not survive sealing (gotcha 25's TODO, now closed).
-#   4. The python.org MSI advertised-shortcut trap (gotcha 26): the Start-menu entries
+#      An HKCU write over SSH does not survive template sealing.
+#   4. The python.org MSI advertised-shortcut trap: the Start-menu entries
 #      are MSI entry points; on a clone they fire MSI self-repair, which pops
 #      "Another program called 'C:\Program' ... Would you like to rename it?" /
 #      "Windows cannot find 'C:\Program\python.exe'" -- clicking Rename renames the
@@ -97,7 +97,7 @@ try {
         if (-not (Test-Path $root)) { continue }
         foreach ($k in Get-ChildItem $root -ErrorAction SilentlyContinue) {
             $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
-            # GUID-shaped keys only (MSI products); DisplayName 'Python 3*' per gotcha 26.
+            # GUID-shaped keys only (MSI products); DisplayName 'Python 3*'.
             if ($p.DisplayName -like 'Python 3*' -and $k.PSChildName -match '^\{[0-9A-F-]+\}$') {
                 $codes += $k.PSChildName
             }

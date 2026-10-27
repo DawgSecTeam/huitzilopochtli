@@ -8,12 +8,13 @@ from typing import Optional
 
 import engine.sla as sla
 import engine.adversary_oracle as adversary_oracle
+import engine.competition as competition
 from common import canon
 from common.evaluator import evaluate
 from common.matchers import evaluate_matcher
 from common.schema import (
     Bundle, CheckinResponse, CollectorStatus, Directive, Rubric, SCHEMA_VERSION,
-    ScoreBreakdown, SlaStatus,
+    SLA_HISTORY_MAX, ScoreBreakdown, SlaStatus,
 )
 from common.version import AGENT_VERSION
 from engine import scenario as scenario_mod
@@ -72,6 +73,38 @@ class _Clock:
         return self._received_at
 
 
+def _stored_sla_status(data: dict) -> list:
+    """Rehydrate the safe part of a stored score for a finished run.
+
+    The stored score_json still contains matcher reasons (the answer key), so
+    point-in-time results must not be replayed to the box. Service state,
+    accrual and the tick history carry no expected values, and keeping them
+    means the ranked report's uptime tab stays populated after the run ends.
+    """
+    out = []
+    for entry in data.get("sla_status") or []:
+        if not isinstance(entry, dict):
+            continue
+        check_id = entry.get("check_id")
+        if not isinstance(check_id, str) or not check_id:
+            continue
+        try:
+            accrued = int(entry.get("accrued_points", 0) or 0)
+        except (TypeError, ValueError):
+            accrued = 0
+        history = [
+            str(state).upper() for state in (entry.get("history") or [])
+            if str(state).upper() in ("UP", "DOWN")
+        ][-SLA_HISTORY_MAX:]
+        out.append(SlaStatus(
+            check_id=check_id,
+            state=str(entry.get("state", "") or "").upper(),
+            accrued_points=accrued,
+            history=history,
+        ))
+    return out
+
+
 def _frozen_score(store: Store, box_id: str, scenario_name: str,
                   scenario_version: int, received_at: float) -> ScoreBreakdown:
     """Return the last stored authoritative score, or a zero placeholder."""
@@ -83,7 +116,7 @@ def _frozen_score(store: Store, box_id: str, scenario_name: str,
                 scenario_name=data.get("scenario_name", scenario_name),
                 scenario_version=data.get("scenario_version", scenario_version),
                 total=int(data.get("total", stored["total"])),
-                results=[], sla_status=[],
+                results=[], sla_status=_stored_sla_status(data),
                 computed_at=float(data.get("computed_at", received_at)),
             )
         except (ValueError, TypeError, KeyError):
@@ -215,6 +248,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             )
         frozen = _frozen_score(store, bundle.box_id, box.scenario_name,
                                box.scenario_version, now_for_run)
+        rank, rank_total = competition.rank_for_player(
+            store, comp, player, now_for_run)
         return CheckinResponse(
             server_time=now_for_run,
             score=frozen,
@@ -226,6 +261,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             run_ends_at=run_ends_at,
             player_name=player.display_name if player is not None else None,
             competition_name=comp.name if comp is not None else None,
+            rank=rank,
+            rank_total=rank_total,
         )
 
     # Steps 4-9 are one transaction (§14.2): a failure part-way (e.g. a
@@ -315,6 +352,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
                     check_id=sla_rec.check_id,
                     state=sla_rec.state,
                     accrued_points=sla_rec.accrued_points,
+                    history=list(sla_rec.history),
                 )
             )
             sla_accrued_total += sla_rec.accrued_points
@@ -343,6 +381,11 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     # only gets its own evidence reason alongside pass/points.
     _redact_for_box(score, evidence_by_check_id)
 
+    # Scoreboard position is a presentation fact, not a scoring input: derive
+    # it after the score write so it reflects this check-in, including ties.
+    rank, rank_total = competition.rank_for_player(
+        store, comp, player, received_at)
+
     # The check-in cadence is the engine's poll interval (how often the box
     # should collect + report), NOT the SLA granularity: SLA accrual is
     # elapsed-based and capped per check-in, so it works at any cadence.
@@ -360,4 +403,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         run_ends_at=run_ends_at,
         player_name=player.display_name if player is not None else None,
         competition_name=comp.name if comp is not None else None,
+        rank=rank,
+        rank_total=rank_total,
     )

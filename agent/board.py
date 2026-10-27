@@ -15,6 +15,7 @@ failed checks are never identified, only counted ("N issue(s) remain").
 from dataclasses import dataclass, field
 
 from agent.report_page import ACCENT_RE
+from common.schema import SLA_HISTORY_MAX
 
 
 @dataclass
@@ -41,6 +42,15 @@ class ForensicsEntry:
 
 
 @dataclass
+class ServiceEntry:
+    check_id: str
+    title: str
+    state: str                      # "UP" | "DOWN" | "" (pre-first-tick)
+    accrued_points: int
+    history: list = field(default_factory=list)  # list[str], oldest -> newest
+
+
+@dataclass
 class Board:
     title: str
     organization: str | None
@@ -56,6 +66,11 @@ class Board:
     penalties: list = field(default_factory=list)   # list[ActivePenalty]
     forensics: list = field(default_factory=list)   # list[ForensicsEntry]
     forensics_earned: int = 0
+    # Ranked only: scored services with their current state + recent tick
+    # history, derived once from the engine's SlaStatus list.
+    services: list = field(default_factory=list)    # list[ServiceEntry]
+    services_total: int = 0
+    services_clean: int = 0
     # Ranked only (None in honor mode): the engine scores
     # total = point-in-time hardening + SLA accrual (engine/checkin.py), so a
     # long run's total can far exceed max_possible. The split keeps the
@@ -93,6 +108,21 @@ def _check_field(check, name, default=None):
     if isinstance(check, dict):
         return check.get(name, default)
     return getattr(check, name, default)
+
+
+def _sla_field(entry, name, default=None):
+    if isinstance(entry, dict):
+        return entry.get(name, default)
+    return getattr(entry, name, default)
+
+
+def _sla_history(entry) -> list:
+    """Normalized oldest->newest UP/DOWN ring (legacy engines: [])."""
+    raw = _sla_field(entry, "history", []) or []
+    if not isinstance(raw, list):
+        return []
+    states = [str(item).upper() for item in raw]
+    return [state for state in states if state in ("UP", "DOWN")][-SLA_HISTORY_MAX:]
 
 
 def _category_str(value) -> str:
@@ -236,6 +266,22 @@ def build_board(score, manifest) -> Board:
     if sla_status:
         hardening_points, service_points = ranked_split(score.total, sla_status)
 
+    services = []
+    for s in sla_status:
+        check_id = str(_sla_field(s, "check_id", "") or "")
+        try:
+            accrued = int(_sla_field(s, "accrued_points", 0) or 0)
+        except (TypeError, ValueError):
+            accrued = 0
+        services.append(ServiceEntry(
+            check_id=check_id,
+            title=(lookup.get(check_id, {}) or {}).get("display_title") or check_id,
+            state=str(_sla_field(s, "state", "") or "").upper(),
+            accrued_points=accrued,
+            history=_sla_history(s),
+        ))
+    services_clean = sum(1 for s in services if s.state == "UP")
+
     return Board(
         title=theme.get("title") or getattr(score, "scenario_name", None)
         or (manifest.get("scenario_name") if isinstance(manifest, dict) else None)
@@ -253,6 +299,9 @@ def build_board(score, manifest) -> Board:
         penalties=penalties,
         forensics=forensics,
         forensics_earned=forensics_earned,
+        services=services,
+        services_total=len(services),
+        services_clean=services_clean,
         hardening_points=hardening_points,
         service_points=service_points,
     )

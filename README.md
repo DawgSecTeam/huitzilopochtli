@@ -1,73 +1,54 @@
 # Huitzilopochtli
 
-A security-hardening scoring engine for practice and competitions. Teams harden target systems against a checklist of security controls, and Huitzilopochtli collects evidence and produces a scored report. In the lineage of CyberPatriot (point-in-time hardening) and eCitadel/CCDC (continuous SLA + live adversary).
+A security-hardening scoring engine. Teams harden a target against security controls; Huitzilopochtli collects structured evidence and produces a scored report. It scores *correct hardening* — it does not deploy vulnerabilities. Both modes share one on-box collector; only the evaluator's location and the rubric's location change.
 
-## Overview
+## Modes
 
-Huitzilopochtli scores boxes in two modes:
+- **Honor** — offline, self-paced. The box scores itself against a rubric that ships with it. Untimed, no adversary.
+- **Ranked** — an always-on engine aggregates signed check-ins from many boxes: timed scenarios, a live adversary, a central leaderboard, and the rubric never lives on the box.
+- **Ranked competitions** — a public join page, per-player timed runs, self-reported scored services, and an admin console. See [`RANKED_COMPETITION.md`](RANKED_COMPETITION.md).
 
-- **Honor mode** — offline, self-paced. Ideal for take-home assignments, workshops, and solo practice. No network required; the box scores itself against a rubric it ships with. Untimed, no adversary.
-- **Ranked mode** — an always-on engine that aggregates signed check-ins from multiple boxes. Supports timed scenarios, a live adversary, and a shared leaderboard. Keeps the answer key off the box. Built for team competitions and structured exercises.
-- **Ranked competitions (v1.1)** — a public join page, per-player timed runs, self-reported scored services, a live per-competition leaderboard, and an admin console. Players join online and get one VM link: the box joins itself from the workshop portal, so there is no terminal step. The admin starts and ends the competition. See [`RANKED_COMPETITION.md`](RANKED_COMPETITION.md) for the operator runbook.
-
-Both modes share the same on-box collector: it gathers structured evidence and makes no scoring decisions. Only the evaluator's location (box vs. engine) and the rubric's location change between modes. See [`architecture.md`](architecture.md) for the full design spec.
-
-**Trust model:** ranked mode is signed and tamper-evident *in transit*, but it is not cheat-proof — a box's facts are self-reported by an agent the operator has root over. It is intended for practice, workshops, and friendly leaderboards rather than graded assessments. See `architecture.md` §3 for the full trust discussion.
+**Trust model:** ranked mode is signed and tamper-evident *in transit*, not cheat-proof — the facts are self-reported by an agent the box operator has root over. It is built for practice, workshops, and friendly leaderboards, not graded assessments. See [`architecture.md`](architecture.md) §3.
 
 ## Quick start
 
-```bash
-python3 --version        # 3.10+ required; built/tested on 3.14
-pip install --user -r requirements-dev.txt
-pytest                    # runs the full unit + integration suite
-```
+Requires Python 3.10+ (`pip install -r requirements-dev.txt`). boxbuilder also needs the vendored submodules and the gitignored `vendor/nakon/.env`; see [AGENTS.md](AGENTS.md).
 
-> **boxbuilder** (the practice-box workflow) needs two submodules — `git submodule update
-> --init --recursive` — which vendor **nakon** (`vendor/nakon`, currently v0.1.7) and **vulndb-cli**
-> (`vendor/vulndb-cli`, currently v0.1.1), the tools it shells out to for planting vulns and theming. The core
-> scoring engine + agent don't need them. Submodule init alone isn't enough to run boxbuilder, though:
-> `vendor/nakon/.env` (vulndb DB creds + `VULNDB_UI_URL`) is gitignored and not carried by the submodule, so
-> it must be created separately (nakon runs with cwd set there so it can read it), and `VULNDB_UI_URL` must
-> also be exported in the shell that runs boxbuilder so `vulndb-cli` can find the catalog. See [AGENTS.md](AGENTS.md).
+Each box is a directory under `boxes/` with one `scenario.yaml` (the honor base
+plus an optional `ranked:` block), the `nakon.json` it plants from, and a
+minimal `box.yaml`. The authoring contract — every key, both build targets,
+theming, forensics — lives in
+[`boxbuilder/README.md`](boxbuilder/README.md#the-inputs-you-author).
 
-To run the agent on a box and generate a score report:
+Cross-check the pairing and build:
 
 ```bash
-python3 packaging/build_zipapp.py             # builds dist/agent.pyz
-python3 dist/agent.pyz agent_config.json      # §9.7 on-box config selects the mode
+python3 -m boxbuilder lint --spec boxes/<box>/box.yaml
+python3 -m boxbuilder build --spec boxes/<box>/box.yaml --image-out <box>.ova
 ```
 
-The agent zipapp is also the box's **terminal console** — `huitz score`,
-`huitz watch`, `huitz forensics`, `huitz grade` render the grade natively in
-the terminal (see [`CLI.md`](CLI.md)).
+`--mode ranked` builds the ranked target from the same scenario file; honor and ranked are separate box lineages. Provider address and password come from `--provider-*` or `$HUITZILOPOCHTLI_PROVIDER_*`, never from the committed spec. Promoting a build to a template: [`boxbuilder/DEPLOY.md`](boxbuilder/DEPLOY.md).
 
-For a guided, hands-on walkthrough that exercises honor mode, ranked mode, and the report output, see [`TESTING_GUIDE.md`](TESTING_GUIDE.md) in this repo. For the ranked-mode test matrix, round reports (what was tested on real VMs, bugs found and fixed), and the next-round backlog, see [`RANKED_TESTING.md`](RANKED_TESTING.md).
+On the box the agent zipapp collects and reports; the same zipapp is the `huitz` terminal console:
+
+```bash
+python3 packaging/build_zipapp.py            # dist/agent.pyz
+python3 dist/agent.pyz /path/to/agent_config.json
+huitz score        # or: huitz watch / huitz forensics / huitz grade
+```
 
 ## Repo layout
 
 | Path | Role |
 |---|---|
-| `common/` | Pure-stdlib shared schema, canonical serialization, vendored Ed25519 crypto, and the evaluator — scoring logic is byte-identical wherever it runs. |
+| `common/` | Shared schema, canonical serialization, vendored Ed25519 crypto, and the evaluator — byte-identical scoring logic wherever it runs. |
 | `agent/` | On-box collector/reporter; builds into the `.pyz` deployed to a box. |
-| `engine/` | Ranked-mode server: enrollment, check-in, SLA ledger, adversary scheduler, leaderboard. |
+| `engine/` | Ranked-mode server: enrollment, check-in, SLA ledger, adversary scheduler, competitions, leaderboard. |
 | `authoring/` | Scenario compile + sign toolchain, run on the author's machine. |
 | `boxbuilder/` | Practice-box factory: pairs nakon-planted vulns with huitz scoring checks. |
-| `packaging/` | Zipapp build, install, and re-arm/reset tooling for deploying the agent to a box. |
-| `tests/` | Unit, integration, and Proxmox (live-infrastructure) test tiers. |
-
-## Building & deploying the agent
-
-```bash
-python3 packaging/build_zipapp.py     # writes dist/agent.pyz
-```
-
-The zipapp bundles only `agent/` + `common/` (pure stdlib, runs anywhere `python3` is present — including musl/Alpine). See [`packaging/README.md`](packaging/README.md) for the full install layout, systemd/OpenRC unit files, and the take-home re-arm/reset flow.
+| `packaging/` | Zipapp and engine bundles, init units, and re-arm/reset tooling. |
+| `tests/` | Unit, integration, and live-infrastructure test tiers. |
 
 ## Documentation
 
-- [`architecture.md`](architecture.md) — full architecture & implementation spec; source of truth for component contracts.
-- [`CLI.md`](CLI.md) — the `huitz` terminal console: score / watch / forensics / grade.
-- [`RANKED_COMPETITION.md`](RANKED_COMPETITION.md) — ranked-competition operator runbook (engine VM, join flow, services, admin/leaderboard).
-- [`TESTING_GUIDE.md`](TESTING_GUIDE.md) — hands-on manual walkthrough end to end.
-- [`tests/README.md`](tests/README.md) — test suite tiers, including the Proxmox live-infrastructure tier.
-- [`packaging/README.md`](packaging/README.md) — build, install, and re-arm/reset details.
+[`architecture.md`](architecture.md) — source of truth for component contracts. [`CLI.md`](CLI.md) — `huitz` and `boxbuilder` command reference. [`boxbuilder/README.md`](boxbuilder/README.md) — authoring, modes, build workflow. [`boxbuilder/DEPLOY.md`](boxbuilder/DEPLOY.md) — clone → snapshot → deploy → verify → seal. [`RANKED_COMPETITION.md`](RANKED_COMPETITION.md) — operator runbook. [`packaging/README.md`](packaging/README.md) — install layout, units, re-arm/reset. [`tests/README.md`](tests/README.md) — test tiers, including live infrastructure.

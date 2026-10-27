@@ -286,3 +286,108 @@ def test_delta_banner_renders_in_ranked_mode_too():
                         next_checkin_s=60, score_delta=7)
     assert 'class="delta-banner up"' in out
     assert "+7 pts since the last grading pass" in out
+
+
+# --- Ranked event bar + tabbed detail (rank / clock / uptime history) -------
+
+
+def _ranked_services_score(histories, states=None, total=40):
+    """Score with two SLA services, each carrying a recent tick history."""
+    states = states or ["UP"] * len(histories)
+    return ScoreBreakdown(
+        scenario_name="Saltmarsh Exchange", scenario_version=1, total=total,
+        results=[CheckResult(check_id="ssh-root", category=Category.VULN,
+                             awarded_points=10, passed=True, reason="ok")],
+        sla_status=[
+            SlaStatus(check_id=f"svc_{i}", state=states[i], accrued_points=10,
+                      history=list(hist))
+            for i, hist in enumerate(histories)
+        ],
+        computed_at=1700000000.0,
+    )
+
+
+def _ranked_manifest():
+    return {"checks": [
+        {"id": "svc_0", "category": "vuln", "display_title": "Web service",
+         "display_max_points": 0, "is_sla": True},
+        {"id": "svc_1", "category": "vuln", "display_title": "DNS service",
+         "display_max_points": 0, "is_sla": True},
+    ], "theme": {"title": "Saltmarsh Exchange"}}
+
+
+def test_ranked_event_bar_has_time_remaining_and_position():
+    score = _ranked_services_score([["UP"], ["DOWN"]], states=["UP", "DOWN"])
+    out = render_report(
+        score, Mode.RANKED, 1700000000.0, manifest=_ranked_manifest(),
+        rank=2, rank_total=6, run_ends_at=1700003725.0)
+    assert 'class="event-bar"' in out
+    assert "Time remaining" in out and 'id="event-countdown"' in out
+    assert "Scoreboard position" in out and "2" in out and "of 6" in out
+    # The event bar is the ranked report's first content after any banner.
+    assert out.index('class="event-bar"') < out.index('class="score-header"')
+
+
+def test_ranked_event_countdown_uses_engine_relative_remainder(monkeypatch):
+    """The engine's run clock is authoritative: bake `run_ends_at - server_time`
+    into the render anchor instead of trusting the (possibly skewed) box clock."""
+    monkeypatch.setattr("agent.reporter.time.time", lambda: 1700000007.0)
+    out = render_report(
+        _score(), Mode.RANKED, 1700000000.0,
+        rank=1, rank_total=3, run_ends_at=1700003725.0)
+    assert "endMs=1700000007000+3725*1000" in out
+
+
+def test_ranked_detail_is_two_tabs_with_uptime_history():
+    score = _ranked_services_score([
+        ["UP", "UP", "DOWN", "UP"],
+        ["DOWN", "DOWN"],
+    ], states=["UP", "DOWN"])
+    out = render_report(
+        score, Mode.RANKED, 1700000000.0, manifest=_ranked_manifest(),
+        rank=2, rank_total=6, run_ends_at=1700003725.0)
+    assert 'class="tabs" data-tabs' in out
+    assert "Configuration &amp; forensics" in out
+    assert "Service uptime" in out
+    assert 'id="panel-config"' in out and 'id="panel-uptime"' in out
+    # First tab is selected/visible; the uptime panel is hidden until clicked.
+    assert 'aria-selected="true"' in out
+    assert 'id="panel-uptime" role="tabpanel"' in out and "hidden" in out
+    # Current status + a fixed 10-slot tick history for each service.
+    assert "Degraded" in out
+    assert 'class="tick up"' in out and 'class="tick down"' in out
+    assert out.count('class="tick void"') == 14  # 6 + 8 unfilled leading slots
+    assert "last 10" in out
+    assert "Web service" in out and "DNS service" in out
+
+
+def test_ranked_uptime_all_clean_shows_clean_pill():
+    score = _ranked_services_score([["UP", "UP"], ["UP"]])
+    out = render_report(
+        score, Mode.RANKED, 1700000000.0, manifest=_ranked_manifest(),
+        rank=1, rank_total=2, run_ends_at=1700003725.0)
+    assert '<span class="status-pill up">Clean</span>' in out
+    assert "All 2 scored services are up." in out
+
+
+def test_ranked_uptime_without_services_says_so():
+    score = ScoreBreakdown(
+        scenario_name="S", scenario_version=1, total=10, results=[],
+        sla_status=[], computed_at=1700000000.0)
+    out = render_report(score, Mode.RANKED, 1700000000.0)
+    assert "No scored services in this scenario." in out
+
+
+def test_ranked_event_bar_omitted_when_engine_sends_no_facts():
+    """Legacy engines send neither rank nor run_ends_at: no empty bar."""
+    out = render_report(_score(), Mode.RANKED, 1700000000.0)
+    assert 'class="event-bar"' not in out
+
+
+def test_honor_report_has_no_event_bar_or_tabs():
+    out = render_report(_score(), Mode.HONOR, None)
+    body = out.split("</style>", 1)[-1]
+    assert 'class="event-bar"' not in body
+    assert "data-tabs" not in body
+    assert "Service uptime" not in body
+    assert "Configuration &amp; forensics" not in body

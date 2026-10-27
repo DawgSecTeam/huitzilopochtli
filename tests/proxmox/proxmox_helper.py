@@ -168,9 +168,9 @@ def wait_for_agent(proxmox, vmid: int, timeout_s: float = 120) -> None:
 
 def regen_machine_id(proxmox, vmid: int, timeout_s: float = 180) -> None:
     """Give a clone its own /etc/machine-id, then reboot so DHCP leases a
-    distinct IP. Templates sealed without wiping machine-id (base-ubuntu24.04,
-    vmid 106) hand every clone the same DHCP client id, so two clones -- or a
-    clone and any other live clone of that template -- collide on one IP."""
+    distinct IP. A template sealed without wiping machine-id hands every
+    clone the same DHCP client id, so two clones -- or a clone and any other
+    live clone of that template -- collide on one IP."""
     guest_exec(proxmox, vmid, ["/bin/sh", "-c",
                                "rm -f /etc/machine-id /var/lib/dbus/machine-id"
                                " && systemd-machine-id-setup"])
@@ -190,9 +190,9 @@ def _retry_transport(fn, attempts: int = 3, delay_s: float = 3):
     Transport-level failures ONLY. Guest-agent errors arrive as HTTP error
     statuses (proxmoxer ResourceException) and are usually DETERMINISTIC --
     exec on a broken agent fails identically every attempt -- so blind
-    retries just multiply failed spawns. That multiplication was the
-    2026-09-12 "exec storm" after which the Windows qga process wedged until
-    a full VM reboot; never retry an answer the API actually gave us."""
+    retries just multiply failed spawns. That multiplication is the "exec
+    storm" after which the Windows qga process wedges until a full VM
+    reboot; never retry an answer the API actually gave us."""
     import requests
 
     last_exc = None
@@ -337,7 +337,9 @@ def guest_exec(proxmox, vmid: int, command: list, timeout_s: float = 60) -> dict
 # Both helpers below bootstrap SSH on a disposable clone; they never touch a
 # template.
 
-TEST_VM_PASSWORD = "DawgTest2026!"
+# Live-test password for throwaway clones. Set $TEST_VM_PASSWORD in
+# tests/proxmox/.env (gitignored); nothing real is committed here.
+TEST_VM_PASSWORD = os.environ.get("TEST_VM_PASSWORD", "")
 
 
 def _agent_set_password(proxmox, vmid: int, username: str,
@@ -581,7 +583,7 @@ def _windows_reboot_and_wait(proxmox, vmid: int, timeout_s: float = 600) -> None
 def _windows_recover_agent(proxmox, vmid: int, timeout_s: float = 600) -> None:
     """Wait for qemu-ga, rebooting the Windows guest if it stays dead.
 
-    The 953 image's qemu-ga sometimes exits under load (the standalone
+    The Windows image's qemu-ga sometimes exits under load (the standalone
     installer is the usual trigger); a full reboot is the documented
     recovery, and Windows clones lose nothing from it.
     """
@@ -694,7 +696,7 @@ def ensure_windows_ssh(proxmox, vmid: int, host: str,
     """Create the local admin and its sshd firewall rule, then return a live
     SSH session.
 
-    The 953 image ships sshd running, but no admin password and no inbound
+    The Windows image ships sshd running, but no admin password and no inbound
     firewall rule. This is deliberately ONE short `cmd /c` command (netsh +
     net user), not a PowerShell script: guest-exec on this image is a
     one-shot and qemu-ga can die after (or while) the spawn, so the command

@@ -666,7 +666,8 @@ def _cached_ranked_response(config, manifest):
         ]
         sla = [
             SlaStatus(check_id=s["check_id"], state=s["state"],
-                      accrued_points=s["accrued_points"])
+                      accrued_points=s["accrued_points"],
+                      history=list(s.get("history") or []))
             for s in snap.get("sla_status") or []
         ]
         score = ScoreBreakdown(
@@ -685,6 +686,9 @@ def _cached_ranked_response(config, manifest):
             next_checkin_s=int(next_s),
             last_seq=0,
             issued_directives=[],
+            run_ends_at=snap.get("run_ends_at"),
+            rank=snap.get("rank"),
+            rank_total=snap.get("rank_total"),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -784,6 +788,9 @@ def _run_ranked(config, manifest, ctx) -> None:
                     theme=manifest.theme, manifest=manifest,
                     next_checkin_s=last_response.next_checkin_s,
                     score_delta=delta,
+                    rank=getattr(last_response, "rank", None),
+                    rank_total=getattr(last_response, "rank_total", None),
+                    run_ends_at=getattr(last_response, "run_ends_at", None),
                 )
                 snap = agent.snapshot.build_snapshot(
                     last_response.score, manifest, mode="ranked",
@@ -791,6 +798,9 @@ def _run_ranked(config, manifest, ctx) -> None:
                     computed_at=last_response.score.computed_at,
                     server_time=last_response.server_time,
                     next_checkin_s=last_response.next_checkin_s,
+                    rank=getattr(last_response, "rank", None),
+                    rank_total=getattr(last_response, "rank_total", None),
+                    run_ends_at=getattr(last_response, "run_ends_at", None),
                 )
             else:
                 placeholder = ScoreBreakdown(

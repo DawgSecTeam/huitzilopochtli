@@ -148,7 +148,7 @@ def test_deploy_bundle_handles_pretty_multiline_json(tmp_path, monkeypatch):
                 "error": None,
                 "exit_status": 0,
                 "failures": [],
-                "ip": "10.0.0.138",
+                "ip": "192.0.2.138",
                 "name": "web01",
                 "plan_id": "e6fbf0c7dfba3f480f5d11a61f250d483a2f0ca81254219616dea7f38eb9d6fb",
                 "steps": [
@@ -205,7 +205,7 @@ def test_deploy_bundle_strict_failure_raises(tmp_path, monkeypatch):
 # --- address reconciliation -----------------------------------------------
 AGENT_CONFIG = {
     "machines": [
-        {"id": 1, "name": "web01", "ip": "10.0.0.5", "os": "linux",
+        {"id": 1, "name": "web01", "ip": "192.0.2.5", "os": "linux",
          "user": "agentuser", "password": "agentpass",
          "configurations": ["nginx", "ssh-root-login"]},
     ]
@@ -214,12 +214,12 @@ AGENT_CONFIG = {
 
 def test_derive_deploy_config_uses_provider_address(tmp_path):
     derived = nakon.derive_deploy_config(
-        AGENT_CONFIG, "web01", host="192.168.99.99",
+        AGENT_CONFIG, "web01", host="198.51.100.99",
         user="provideruser", password="providerpass", port=2222,
     )
     m = derived["machines"][0]
     # Address comes from the PROVIDER, not the agent config.
-    assert m["ip"] == "192.168.99.99"
+    assert m["ip"] == "198.51.100.99"
     assert m["user"] == "provideruser"
     assert m["password"] == "providerpass"
     assert m["port"] == 2222

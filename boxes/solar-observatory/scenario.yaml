@@ -1,11 +1,3 @@
-# Coyolxauhqui Ridge Solar Observatory: a light, recognizable observatory-themed
-# hardening box. The theme is flavor only; every task is solvable from ordinary
-# Linux evidence. Each selected nakon configuration plants the insecure state
-# described by its paired check. Companion to the two-part Linux workshop
-# (blue-team fundamentals + the malicious angle) -- the box makes students DO
-# what the talk showed: read /etc/passwd in vim, `systemctl cat`/`stop`/`disable`
-# a rogue unit, fix an Apache misconfig, and audit processes with `ps aux`.
-
 scenario:
   name: "Coyolxauhqui Ridge Solar Observatory"
   version: 1
@@ -13,29 +5,7 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # Difficulty spread, called out explicitly here (and in the in-box README) so
-  # a self-paced beginner can tell what to try first:
-  #   EASY (10):    no_uid0_user, apache_not_root, service_account_no_shell,
-  #                 skiddie_inactive, skiddie_disabled, no_red, no_kalipatriot,
-  #                 no_dipa, telescope_keys_private, obs_sole_admin
-  #   MODERATE (10): shadow_not_world_writable, passwd_not_world_writable,
-  #                 no_blank_password, no_hidden_unit_flag, apache_no_dir_traversal,
-  #                 uplink_process_killed, uplink_disabled, deploy_key_private,
-  #                 ssh_no_root, mirror_fan_process_killed
-  #   HARD (3):     mirror_fan_disabled, no_passwordless_sudo, no_passwordless_login
-  #
-  # The three malicious services (SkiddiePwner3000, uplink-relay, mirror-fan)
-  # are real, running processes -- visible in `ps aux` and `systemctl status`.
-  # SkiddiePwner3000 is scored purely on unit state (a "just stop the service"
-  # finding, the obvious/EASY tier). uplink-relay and mirror-fan are each
-  # scored on BOTH a `process_state` check (rewards actually finding and
-  # killing the live process via `ps aux` -- Restart=always respawns it until
-  # the unit is disabled/stopped for good, not just killed once) and a
-  # `service_state ... enabled` check (rewards disabling the launcher).
-  # mirror-fan is deliberately named like a legitimate instrument service, so
-  # it must be READ (`systemctl cat`), not pattern-matched.
 
-  # --- passwd / shadow (the auth-file segment of the talk) ---------------
   - id: no_uid0_user
     type: file_regex
     category: vuln
@@ -164,7 +134,6 @@ checks:
 
       **3. Confirm.** The awk one-liner prints nothing.
 
-  # --- unauthorized accounts and administration -------------------------
   - id: no_red
     type: user_group
     category: vuln
@@ -250,7 +219,6 @@ checks:
     expect:
       group_members_subset_of: true
       group: sudo
-      # obsadmin is the only authorized administrator on this box.
       allowed: [obsadmin]
       points: 10
     solution: |
@@ -310,7 +278,6 @@ checks:
       /usr/sbin/nologin (or /sbin/nologin). The account still runs its
       services -- it just can't log in interactively.
 
-  # --- sudo / login hardening (hard) ------------------------------------
   - id: no_passwordless_sudo
     type: permission
     category: vuln
@@ -353,14 +320,6 @@ checks:
     max_points: 10
     collect:
       path: /etc/pam.d/common-auth
-      # Specifically the "sufficient" line, not a bare mention of the module --
-      # stock Ubuntu's common-auth already references pam_permit.so in its own
-      # benign "prime the stack" line ("auth required ... pam_permit.so", a
-      # no-op safety net after pam_deny.so), so a bare `pam_permit\.so` pattern
-      # would never reach the hardened (null) state on any box. The whole
-      # match is wrapped in a capturing group: the file_regex collector
-      # REQUIRES one (it reports the group text as evidence) -- an ungrouped
-      # pattern errors on every run and the check can never pass.
       extract: '(?mi)^\s*(auth\s+sufficient\s+pam_permit\.so)'
     expect:
       equals: null
@@ -425,7 +384,6 @@ checks:
       sshd -T | grep -i permitrootlogin     # -> permitrootlogin no
       ```
 
-  # --- file permissions -------------------------------------------------
   - id: telescope_keys_private
     type: permission
     category: vuln
@@ -495,7 +453,6 @@ checks:
       /home/obsadmin/.ssh/authorized_keys` -- the whole directory should
       be private to its owner.
 
-  # --- Apache (the web-service segment of the talk) ---------------------
   - id: apache_not_root
     type: file_regex
     category: vuln
@@ -536,10 +493,6 @@ checks:
     display: "MODERATE: Apache filesystem-exposing Alias/traversal block is removed from apache2.conf"
     max_points: 10
     collect:
-      # Planted in the always-present main config so hardening is an edit, not a
-      # delete (a file_regex check errors on a missing file). The unique
-      # signature is the `Alias /archive /` that exposes the whole filesystem;
-      # `Options Indexes` alone is a stock Ubuntu default and must NOT be the tell.
       path: /etc/apache2/apache2.conf
       extract: '(?m)^\s*(Alias\s+/archive)\b'
     expect:
@@ -578,7 +531,6 @@ checks:
       **4. Confirm.** `curl -sI http://localhost/archive/` no longer
       returns a listing (404 is the healthy answer).
 
-  # --- systemd services (the ps aux / systemctl segment) ----------------
   - id: skiddie_inactive
     type: service_state
     category: vuln
@@ -818,17 +770,9 @@ theme:
     Coyolxauhqui Ridge Solar Observatory System
     Disconnect if you are unauthorized.
   desktop_shortcuts:
-    # sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
-    # .desktop Exec= line is not guaranteed to be shell-expanded by whatever
-    # launches it (GLib's desktop-entry parsing does quote-removal, not
-    # tilde/variable expansion).
     - name: "Observatory Hardening Handbook"
       exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt on the Desktop; the agent re-grades the file each
-# pass. Correct answer = full points; wrong or blank = nothing, no penalty.
-# Each question is answerable from the evidence on the box.
 forensics:
   - id: fq-uid0-user
     question: "One non-root account was given UID 0 (full root power). Type that account's username."

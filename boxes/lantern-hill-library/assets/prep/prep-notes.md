@@ -1,7 +1,7 @@
 # Template prep artifacts (headless Debian 13 IR box)
 
-What TEMPLATE PREP bakes in before any nakon plant (see box.yaml header for
-the full build loop). These files are deployed, not scored — they are the
+What TEMPLATE PREP bakes in before any nakon plant (see `boxbuilder/DEPLOY.md`
+for the full build loop). These files are deployed, not scored — they are the
 box's legitimate service stack plus its flight recorders. The IR premise of
 the box depends on ORDER: the evidence sources exist and the attacker
 replay runs BEFORE `plant`, so the intrusion reads as something that

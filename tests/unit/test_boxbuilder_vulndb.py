@@ -37,8 +37,8 @@ _DEFINITION = {
 def test_resolve_vulndb_url_precedence(monkeypatch):
     monkeypatch.delenv("VULNDB_UI_URL", raising=False)
     assert vulndb.resolve_vulndb_url() == "http://127.0.0.1:3000"
-    monkeypatch.setenv("VULNDB_UI_URL", "http://10.0.0.5:3000")
-    assert vulndb.resolve_vulndb_url() == "http://10.0.0.5:3000"
+    monkeypatch.setenv("VULNDB_UI_URL", "http://192.0.2.5:3000")
+    assert vulndb.resolve_vulndb_url() == "http://192.0.2.5:3000"
     assert vulndb.resolve_vulndb_url("http://explicit:9000") == "http://explicit:9000"
 
 

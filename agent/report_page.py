@@ -17,6 +17,7 @@ The body HTML is inserted verbatim -- fragments built in reporter.py escape
 their own dynamic pieces.
 """
 import html
+import json
 import re
 
 # Defensive accent validation: only a 6-digit hex may reach the <style> block.
@@ -43,7 +44,10 @@ def masthead_html(title: str, organization=None, logo_b64=None) -> str:
     )
 
 
-def countdown_script(target_epoch_s: float, render_epoch_s: float) -> str:
+def countdown_script(target_epoch_s: float, render_epoch_s: float,
+                      element_id: str = "countdown",
+                      done_text: str = "00:00 \u2014 checking\u2026",
+                      show_hours: bool = False) -> str:
     """Inline JS counting down to target_epoch_s. No deps.
 
     The report is a static file that outlives its render instant: it is
@@ -53,28 +57,84 @@ def countdown_script(target_epoch_s: float, render_epoch_s: float) -> str:
     render instant, not the raw epoch target: the box's browser and the
     render-time clock() are the same clock, so engine/box skew stays absorbed
     in (target - render) exactly as it would be in a pre-computed remainder,
-    and a file rendered after its deadline simply reads 00:00 at load.
+    and a file rendered after its deadline simply reads the done text at load.
+
+    ``element_id`` lets one report carry two independent clocks (the ranked
+    event clock and the next check-in). ``show_hours`` switches the format to
+    H:MM:SS for a multi-hour event rather than growing the minute field.
     """
     # integer seconds, clamped at 0: a render that already past its deadline
     # (stale file) must read 00:00 at load, never a negative countdown.
     remaining_int = max(0, int(target_epoch_s - render_epoch_s))
     render_ms = int(render_epoch_s * 1000)
+    el_id_js = json.dumps(str(element_id))
+    done_js = json.dumps(str(done_text))
+    if show_hours:
+        format_js = (
+            "var h=Math.floor(rem/3600), m=Math.floor((rem%3600)/60), s=rem%60;"
+            "text=(h>0? h+':'+pad(m) : pad(m))+':'+pad(s);"
+        )
+    else:
+        format_js = "var m=Math.floor(rem/60), s=rem%60; text=pad(m)+':'+pad(s);"
     return f"""
 <script>
 (function(){{
-  var el=document.getElementById('countdown');
+  var el=document.getElementById({el_id_js});
   if(!el) return;
   var endMs={render_ms}+{remaining_int}*1000;
   function pad(n){{return n<10?'0'+n:''+n;}}
   function tick(){{
     var rem=Math.max(0, Math.floor((endMs-Date.now())/1000));
-    var m=Math.floor(rem/60), s=rem%60;
-    if(rem<=0){{ el.textContent='00:00 \\u2014 checking\\u2026'; return; }}
-    el.textContent=pad(m)+':'+pad(s);
+    var text;
+    if(rem<=0){{ el.textContent={done_js}; return; }}
+    {format_js}
+    el.textContent=text;
   }}
   tick();
   setInterval(tick,1000);
 }})();
+</script>
+"""
+
+
+def tabs_script() -> str:
+    """Progressive-enhancement tabs: click + arrow/Home/End keyboard support.
+
+    The report is a single file with no framework, so this is the whole tab
+    implementation. Panels are already correct in the static HTML (first
+    visible, rest ``hidden``); the script only switches which one is shown.
+    """
+    return """
+<script>
+(function(){
+  var root=document.querySelector('[data-tabs]');
+  if(!root) return;
+  var tabs=Array.prototype.slice.call(root.querySelectorAll('[role=tab]'));
+  if(!tabs.length) return;
+  function select(tab){
+    tabs.forEach(function(t){
+      var on=(t===tab);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex=on ? 0 : -1;
+      var panel=document.getElementById(t.getAttribute('aria-controls'));
+      if(panel) panel.hidden=!on;
+    });
+  }
+  tabs.forEach(function(tab){
+    tab.addEventListener('click', function(){ select(tab); });
+    tab.addEventListener('keydown', function(e){
+      var i=tabs.indexOf(tab), n;
+      if(e.key==='ArrowRight') n=(i+1)%tabs.length;
+      else if(e.key==='ArrowLeft') n=(i-1+tabs.length)%tabs.length;
+      else if(e.key==='Home') n=0;
+      else if(e.key==='End') n=tabs.length-1;
+      else return;
+      e.preventDefault();
+      tabs[n].focus();
+      select(tabs[n]);
+    });
+  });
+})();
 </script>
 """
 
@@ -189,6 +249,58 @@ th { border-bottom: 2px solid var(--ink); font-size: 0.72rem; text-transform: up
 .delta-banner.down { color: #cf222e; border-color: #cf222e; }
 .pending { font-size: 1rem; padding: 3rem 2rem; border: 1px dashed #c9c9c2; text-align: center;
            margin: 2rem 0 0; color: var(--muted); }
+
+/* Ranked event bar: run clock + live scoreboard position, above everything
+   else. Two independent columns so either fact can be absent on a legacy
+   engine without leaving a hole. */
+.event-bar { display: flex; gap: 2rem; flex-wrap: wrap; align-items: center;
+             margin: 2rem 0 0; padding: 0.9rem 1.15rem; background: #f0f0ec;
+             border: 1px solid var(--rule); border-left: 3px solid var(--accent, var(--ink)); }
+.event-metric { min-width: 8rem; }
+.event-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+               letter-spacing: 0.09em; color: var(--muted); }
+.event-value { font-size: 1.55rem; font-weight: 800; line-height: 1.25;
+               font-variant-numeric: tabular-nums; color: var(--ink); }
+.event-of { font-size: 0.95rem; font-weight: 600; color: var(--muted); }
+.small { font-size: 0.8rem; }
+
+/* Ranked detail tabs. The static HTML is already correct without JS: the
+   first panel is visible and the rest carry [hidden]; tabs_script() switches
+   them. */
+.tabs { margin-top: 2rem; }
+.tablist { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--rule); }
+.tab { appearance: none; background: none; border: none; border-bottom: 2px solid transparent;
+       margin-bottom: -1px; padding: 0.55rem 0.85rem; font: inherit; font-size: 0.76rem;
+       font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
+       color: var(--muted); cursor: pointer; }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { color: var(--ink);
+                             border-bottom-color: var(--accent, var(--ink)); }
+.tab:focus-visible { outline: 2px solid var(--accent, var(--ink)); outline-offset: 2px; }
+.tabpanel { padding-top: 0.5rem; }
+.tabpanel[hidden] { display: none; }
+.tabpanel table { margin-top: 0.75rem; }
+
+/* Service uptime panel */
+.uptime-summary { display: flex; align-items: center; gap: 0.6rem;
+                  margin: 0.35rem 0 0.25rem; flex-wrap: wrap; }
+.status-pill { display: inline-block; padding: 0.1rem 0.5rem; border: 1px solid;
+               font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+               letter-spacing: 0.08em; }
+.status-pill.up { color: #1a7f37; border-color: #1a7f37; }
+.status-pill.down { color: #cf222e; border-color: #cf222e; }
+.status-pill.unknown { color: var(--muted); border-color: var(--rule); }
+.state { font-weight: 700; font-size: 0.85rem; }
+.state.up { color: #1a7f37; }
+.state.down { color: #cf222e; }
+.state.unknown { color: var(--muted); }
+.ticks { display: inline-flex; gap: 3px; align-items: center; }
+.tick { width: 10px; height: 10px; border-radius: 2px; background: #e2e2dc;
+        display: inline-block; }
+.tick.up { background: #1a7f37; }
+.tick.down { background: #cf222e; }
+.tick.void { background: transparent; border: 1px dashed #c9c9c2; }
+.ticks-label { color: var(--muted); font-size: 0.78rem; margin-left: 0.4rem; }
 
 /* README prose (Markdown-rendered body) */
 .prose { margin-top: 1.75rem; }

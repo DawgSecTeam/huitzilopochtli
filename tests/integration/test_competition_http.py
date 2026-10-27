@@ -215,8 +215,9 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
                              {}, auth)
         assert status in (200, 303), body
 
-        # PRG: the join POST redirects (303) to the success page and sets the
-        # player cookie on the redirect, so a browser refresh never re-submits.
+        # PRG: the join POST redirects (303) to the main page -- which, while
+        # the run is active, is the dashboard itself -- and sets the player
+        # cookie on the redirect, so a browser refresh never re-submits.
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         conn.request("POST", "/c/http-comp/join",
                      body=urllib.parse.urlencode({"name": "Ada"}),
@@ -224,10 +225,11 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         resp = conn.getresponse()
         resp.read()
         assert resp.status == 303, resp.status
-        assert resp.getheader("Location") == "/c/http-comp/join/success"
+        assert resp.getheader("Location") == "/"
         cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
         assert cookie.startswith("huitz_player=")
         conn.close()
+        # The success URL remains the pending/fallback page while unbound.
         status, page = _http("GET", base + "/c/http-comp/join/success",
                              headers={"Cookie": cookie})
         assert status == 200, page
@@ -236,6 +238,54 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         # A working VM link never pairs with a "get a new one" button.
         assert "Get a new VM" not in page
         assert "clock starts when you open" in page
+
+        # One competition at a time: the main page becomes the active run ...
+        status, page = _http("GET", base + "/", headers={"Cookie": cookie})
+        assert status == 200, page
+        assert "You're in HTTP Comp" in page
+        assert "this is your main page" in page
+        assert 'class="home-grid"' in page
+        assert "Leave competition" in page
+        assert "/c/http-comp/leave" in page
+        assert "Permanent status link" not in page
+        # Service names are present before the box joins, with ten tick slots.
+        assert "Service uptime" in page and "Web" in page
+        assert page.count('class="tick ') == 10
+        # ... and the competition page no longer offers Join.
+        status, page = _http("GET", base + "/c/http-comp",
+                             headers={"Cookie": cookie})
+        assert status == 200
+        assert "Join this competition" not in page
+        assert "You're in this competition" in page
+
+        # ... and a second live competition refuses the same browser.
+        status, body = _http("POST", base + "/admin/api/competitions", {
+            "slug": "other-comp", "name": "Other Comp", "scenario_name": "HTTPComp",
+            "scenario_version": 1, "max_players": 4, "duration_s": 3600,
+        }, auth)
+        assert status == 200, body
+        other = json.loads(body)
+        status, body = _http("POST", base + f"/admin/api/competitions/{other['id']}/start",
+                             {}, auth)
+        assert status in (200, 303), body
+        status, page = _http("GET", base + "/c/other-comp/join",
+                             headers={"Cookie": cookie})
+        assert status == 409 and "already in HTTP Comp" in page
+        form = {"Content-Type": "application/x-www-form-urlencoded"}
+        status, page = _http("POST", base + "/c/other-comp/join",
+                             urllib.parse.urlencode({"name": "Ada"}),
+                             {**form, "Cookie": cookie})
+        assert status == 409 and "already in HTTP Comp" in page
+        # Clearing the cookie does not turn one person into two competitors:
+        # the live display name is the second handle the engine has.
+        status, page = _http("POST", base + "/c/other-comp/join",
+                             urllib.parse.urlencode({"name": "Ada"}), form)
+        assert status == 409 and "already competing in HTTP Comp" in page
+        conn = sqlite3.connect(db)
+        n = conn.execute("SELECT COUNT(*) FROM players WHERE competition_id = ?",
+                         (other["id"],)).fetchone()[0]
+        conn.close()
+        assert n == 0  # no second slot, no second VM
 
         conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
         player = conn.execute("SELECT * FROM players WHERE display_name='Ada'").fetchone()
@@ -316,6 +366,15 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         })
         assert status == 200, body
 
+        # Once the box is joined, the old success URL hands off to the run.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/c/http-comp/join/success", headers={"Cookie": cookie})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        assert resp.getheader("Location") == "/"
+        conn.close()
+
         ev = [
             Evidence(check_id="banner", check_type="file_regex", host_id="localhost",
                      status=CollectorStatus.OK, raw={"matched": "ok", "present": True},
@@ -335,7 +394,16 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
             "X-HUITZILOPOCHTLI-Box": "box-http-1",
         })
         assert status == 200, body
-        assert json.loads(body)["score"]["total"] == 10
+        checkin = json.loads(body)
+        assert checkin["score"]["total"] == 10
+        # The ranked report's new top bar + uptime tab read these fields, so
+        # they must survive the real HTTP JSON serialization.
+        assert checkin["rank"] == 1 and checkin["rank_total"] == 1
+        assert checkin["run_ends_at"] is not None
+        services = {s["check_id"]: s
+                    for s in checkin["score"]["sla_status"]}
+        assert services["svc_web"]["state"] == "UP"
+        assert services["svc_web"]["history"] == ["UP"]
 
         status, body = _http("GET", base + "/api/public/competitions/http-comp/leaderboard")
         assert status == 200
@@ -353,6 +421,30 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         status, body = _http("GET", base + "/definitely-not-a-page")
         assert status == 404 and json.loads(body)["error"] == "not found"
 
+        # Leaving is a forfeit: the cookie is cleared, the VM is released, the
+        # slot is removed, and the board no longer lists the player.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("POST", "/c/http-comp/leave",
+                     body=urllib.parse.urlencode({"csrf": csrf}),
+                     headers={"Content-Type": "application/x-www-form-urlencoded",
+                              "Cookie": cookie})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        assert resp.getheader("Location") == "/"
+        cleared = (resp.getheader("Set-Cookie") or "")
+        assert cleared.startswith("huitz_player=;") and "Max-Age=0" in cleared
+        conn.close()
+        conn = sqlite3.connect(db)
+        row = conn.execute("SELECT status FROM players WHERE player_id = ?",
+                           (player["player_id"],)).fetchone()
+        conn.close()
+        assert row is not None and row[0] == "removed"
+        status, body = _http("GET", base + "/api/public/competitions/http-comp/leaderboard")
+        assert json.loads(body)["leaderboard"] == []
+        status, page = _http("GET", base + "/", headers={"Cookie": cookie})
+        assert status == 200 and "You're in HTTP Comp" not in page
+
         status, body = _http("POST", base + f"/admin/api/competitions/{comp_id}/end", {}, auth)
         assert status in (200, 303), body
         status, body = _http("GET", base + "/api/public/competitions/http-comp")
@@ -361,6 +453,22 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         assert any(r[0] == "/api/admin/pools/PROV1" for r in _Workshop.requests)
         assert any(r[0] == "/api/release" for r in _Workshop.requests)
         assert _Workshop.pools == []
+
+        # A live competition cannot be removed; once ended, deletion drops the
+        # competition and its player slots (the box/score history stays).
+        status, body = _http("POST", base + f"/admin/api/competitions/{other['id']}/delete",
+                             {}, auth)
+        assert status == 409, body
+        status, body = _http("POST", base + f"/admin/api/competitions/{comp_id}/delete",
+                             {}, auth)
+        assert status == 200, body
+        assert json.loads(body)["deleted"] == comp_id
+        conn = sqlite3.connect(db)
+        assert conn.execute("SELECT COUNT(*) FROM competitions WHERE id = ?",
+                            (comp_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM players WHERE competition_id = ?",
+                            (comp_id,)).fetchone()[0] == 0
+        conn.close()
     finally:
         proc.terminate()
         try:

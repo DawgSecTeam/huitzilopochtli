@@ -92,6 +92,16 @@ def load_vuln_seed_definition(name: str) -> dict:
     return load_seed_definition(name, seed_dir=_VULN_SEED_DIR)
 
 
+def has_vuln_seed(name: str) -> bool:
+    """True when boxbuilder ships a planting seed for this configuration."""
+    return os.path.isfile(os.path.join(_VULN_SEED_DIR, f"{name}.json"))
+
+
+def has_theme_seed(name: str) -> bool:
+    """True when boxbuilder ships a theming seed for this configuration."""
+    return os.path.isfile(os.path.join(_THEME_SEED_DIR, f"{name}.json"))
+
+
 def ensure_vuln_seeds(base_url: str, configurations: list, timeout: int = 60) -> list:
     """Ensure bundled planting seeds selected by a nakon configuration exist in vulndb.
 

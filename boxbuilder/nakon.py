@@ -84,6 +84,30 @@ def _run_nakon(args: list, nakon_dir: str, timeout: int) -> subprocess.Completed
     return result
 
 
+def catalog_check(nakon_dir: str, config_path: str, timeout: int = 300) -> dict:
+    """Run `nakon catalog check --config ... --json` (read-only).
+
+    Validates that every configuration in the file exists in the catalog and
+    that its required vars are satisfied -- the one check boxbuilder cannot do
+    offline. Returns the parsed result; raises NakonError on a non-zero exit.
+    """
+    result = _run_nakon(["catalog", "check", "--config", str(config_path), "--json"],
+                        nakon_dir, timeout)
+    stdout = result.stdout.strip()
+    if not stdout:
+        return {}
+    # catalog check pretty-prints one document; build/deploy print one line.
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(stdout.splitlines()[-1])
+        except json.JSONDecodeError as e:
+            raise NakonError(f"nakon catalog check emitted unparseable JSON: {e}",
+                             stderr=result.stderr) from e
+    return parsed if isinstance(parsed, dict) else {"result": parsed}
+
+
 def build_bundle(
     nakon_dir: str,
     config_path: str,

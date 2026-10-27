@@ -27,6 +27,22 @@ _NAME_MAX = 40
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _WS_RE = re.compile(r"\s+")
 
+#: A player occupies exactly one competition slot until their run ends.
+ACTIVE_PLAYER_STATUSES = ("invited", "running")
+
+
+def is_active_player(player: Optional[PlayerRecord],
+                     comp: Optional[CompetitionRecord]) -> bool:
+    """True while ``player`` is competing in a live competition.
+
+    "Competing" covers both the reserved-but-not-yet-bound slot (invited) and
+    the running clock. A player whose competition has ended (or whose slot was
+    removed/disqualified/finished) is free to join another competition.
+    """
+    return (player is not None and comp is not None
+            and comp.status == "live"
+            and player.status in ACTIVE_PLAYER_STATUSES)
+
 
 def normalize_name(name: str) -> str:
     return _WS_RE.sub(" ", name.strip()).lower()
@@ -90,31 +106,78 @@ def _service_rows(store: Store, comp: CompetitionRecord,
             "state": rec.state if rec is not None else "PENDING",
             "accrued_points": rec.accrued_points if rec is not None else 0,
             "last_changed_at": rec.last_changed_at if rec is not None else None,
+            # Oldest -> newest post-hysteresis observations (bounded by
+            # common.schema.SLA_HISTORY_MAX). Both the portal and the on-box
+            # report render this as the service's "last 10 ticks" strip.
+            "history": list(rec.history) if rec is not None else [],
         })
     return out
 
 
-def leaderboard_payload(store: Store, comp: CompetitionRecord,
-                        now: Optional[float] = None) -> dict:
-    now = time.time() if now is None else now
+def service_rows(store: Store, comp: CompetitionRecord,
+                 box_id: Optional[str] = None) -> list:
+    """Public service rows for a player, including before their box joins.
+
+    An unbound slot still shows every scored service (state PENDING, empty
+    history) so the dashboard's uptime strip has real names from the start.
+    """
+    return _service_rows(store, comp, box_id)
+
+
+def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
+    """(player, effective status, score, total) in scoreboard order.
+
+    One ordering function for the public board and the per-box rank shown in
+    the ranked report: totals first, then the stable started_at/player_id
+    tie-breaks. A player whose clock has run out is treated as finished even
+    if no check-in has persisted that status yet.
+    """
     players = [p for p in store.list_players(comp.id)
                if p.status in ("running", "finished")]
-    rows = []
+    scored = []
     for p in players:
         status = p.status
         if status == "running" and p.ends_at is not None and now >= p.ends_at:
             status = "finished"
         score = store.get_score(p.box_id) if p.box_id else None
         total = score["total"] if score else 0
-        hardening = score["hardening_points"] if score else 0
-        service_pts = score["service_points"] if score else 0
+        scored.append((p, status, score, total))
+    scored.sort(key=lambda item: (
+        -item[3], item[0].started_at or 0, item[0].player_id))
+    return scored
+
+
+def rank_for_player(store: Store, comp: Optional[CompetitionRecord],
+                    player: Optional[PlayerRecord],
+                    now: Optional[float] = None) -> "tuple[Optional[int], Optional[int]]":
+    """(position, total players) for ``player`` on the live scoreboard.
+
+    Returns (None, None) for a box that is not attached to a competition, and
+    (None, total) if the player is no longer on the board (e.g. removed).
+    The identity comparison is by player_id, not object identity.
+    """
+    if comp is None or player is None:
+        return None, None
+    now = time.time() if now is None else now
+    scored = _scored_players(store, comp, now)
+    for idx, (row_player, _status, _score, _total) in enumerate(scored, start=1):
+        if row_player.player_id == player.player_id:
+            return idx, len(scored)
+    return None, len(scored)
+
+
+def leaderboard_payload(store: Store, comp: CompetitionRecord,
+                        now: Optional[float] = None) -> dict:
+    now = time.time() if now is None else now
+    rows = []
+    for p, status, score, total in _scored_players(store, comp, now):
         rows.append({
             "player_id": p.player_id,
             "name": p.display_name,
             "status": status,
             "total": total,
-            "hardening_points": hardening,
-            "service_points": service_pts,
+            "hardening_points": score["hardening_points"] if score else 0,
+            "service_points": score["service_points"] if score else 0,
             "started_at": p.started_at,
             "ends_at": p.ends_at,
             "remaining_s": _remaining(p, now) if status == "running" else 0,
@@ -122,7 +185,6 @@ def leaderboard_payload(store: Store, comp: CompetitionRecord,
             "services": _service_rows(store, comp, p.box_id),
             "box_bound": bool(p.box_id),
         })
-    rows.sort(key=lambda r: (-r["total"], r["started_at"] or 0, r["player_id"]))
     for idx, row in enumerate(rows, start=1):
         row["rank"] = idx
     return {

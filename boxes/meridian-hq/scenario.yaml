@@ -1,40 +1,3 @@
-# Meridian Logistics: an ACTIVE DIRECTORY hardening practice box -- the
-# second Windows round, built for the dawgsec AD workshop (2026-09-24).
-# Domain controller "dc01" for meridian.local; the theme is flavor only,
-# every task is solvable from ordinary AD evidence (ADUC, Group Policy
-# Management, net accounts, auditpol, registry, Task Scheduler,
-# Get-NetFirewall*, Get-ADUser/Get-ADGroupMember/Get-Acl).
-#
-# Scope (Hamza, 2026-09-21): AD-native only -- securing USERS, COMPUTERS,
-# the DC itself, GPOs, and the firewall -- plus attacker PERSISTENCE
-# mechanisms. No pinecrest-style local host checks (no shares/file
-# ACLs/autologin/UAC/RDP). Forensics questions are the extra content.
-#
-# Structurally parallel to the pinecrest-hospital round: generic var-driven
-# catalog seeds (the ad-*/gpp-*/gpo-*/ldap-*/firewall-allow family plus the
-# reused -win locals in boxbuilder/vulndb_vuln_configs/), every planted
-# vulnerability paired with a check. The Print Spooler pair plants nothing --
-# the insecure state (spooler running on a DC) is the Windows default; the
-# finding is scoring that it must be stopped/disabled (PrintNightmare). Same
-# for the weak domain password policy and auditing: planted weak via
-# weak-password-policy-win / audit-policy-off-win, hardened via the tools
-# the workshop teaches (Default Domain Policy, auditpol).
-#
-# Name discipline: every USERNAME / GROUP / ACCOUNT / SPN / RUN_VALUE_NAME /
-# TASK_NAME / SERVICE_NAME / PAYLOAD_PATH / RULE_NAME / GPO_NAME / PASSWORD
-# in nakon.json MUST match its paired check's collect params byte-for-byte
-# -- nothing cross-validates them (see pinecrest/solar header notes).
-#
-# Forensics-answer hygiene: the six forensics answers (AS-REP account, GPP
-# cleartext password, attacker GPO name, scheduled-task name, Run-key value
-# name, DCSync trustee) are deliberately NOT named in any check's display
-# string -- a team must investigate, not read the report. Check ids are
-# neutral for the same reason (preauth_required, not svc_legacy_preauth).
-#
-# Difficulty weighting (Hamza's standing preference, as shipped on
-# opochtli-landing): EASY 5 / MODERATE 10 / HARD 20, called out in the
-# in-box README too.
-
 scenario:
   name: "Meridian Logistics"
   version: 2
@@ -42,12 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # --- USERS -----------------------------------------------------------------
-  # Scored as DISABLED / SCRUBBED, not deleted, wherever deletion would
-  # destroy the evidence the forensics questions need (rreyes, the DCSync
-  # trustee): the disable-don't-destroy incident-response habit. Rotation,
-  # re-enabling preauth, and lifting DES restrictions are the fixes that
-  # keep the account (the roster needs it; that is the point).
   - id: domain_admins_subset
     type: powershell_json
     category: vuln
@@ -428,7 +385,6 @@ checks:
 
       **3. Confirm.** The sweep prints nothing.
 
-  # --- COMPUTERS -------------------------------------------------------------
   - id: app01_delegation_cleared
     type: powershell_json
     category: vuln
@@ -510,7 +466,6 @@ checks:
 
       **3. Confirm.** `Enabled : False`.
 
-  # --- DOMAIN CONTROLLER -----------------------------------------------------
   - id: ldap_signing_required
     type: registry_value
     category: vuln
@@ -767,7 +722,6 @@ checks:
       **3. Confirm.** The Format-Table above no longer lists the
       account against either replication GUID.
 
-  # --- GROUP POLICY ----------------------------------------------------------
   - id: gpp_cpassword_purged
     type: powershell_json
     category: vuln
@@ -875,7 +829,6 @@ checks:
       GPO's exact display name before deleting -- it is a forensics
       answer.
 
-  # --- FIREWALL --------------------------------------------------------------
   - id: firewall_profiles_on
     type: powershell_json
     category: vuln
@@ -954,7 +907,6 @@ checks:
       **3. Confirm.** `Get-NetFirewallRule -Name 'MeridianSync'`
       returns nothing.
 
-  # --- PERSISTENCE (post-exploitation, on the DC) ----------------------------
   - id: rogue_svc_killed
     type: process_state
     category: vuln
@@ -1184,10 +1136,6 @@ checks:
       **3. Confirm.** `Test-Path C:\ProgramData\Subsystems\odsync.ps1`
       is False.
 
-  # --- penalty guard ---------------------------------------------------------
-  # Anti-scorched-earth: disabling/deleting legitimate business accounts
-  # "fixes" nothing and destroys the roster. The finance user must survive
-  # the exercise -- existing AND enabled. (This only ever subtracts.)
   - id: legit_user_intact
     type: powershell_json
     category: penalty
@@ -1225,13 +1173,6 @@ checks:
       Enable-ADAccount -Identity mchen
       ```
 
-# --- scored forensics -------------------------------------------------------
-# The answer keys live ONLY in the rubric (compiled from this file's
-# answers). None of the six answers is named by any check display: they
-# require investigating the planted artifacts, not reading the report.
-# Investigate FIRST, harden second -- several fixes (deleting the GPP
-# file, unregistering the task, removing the GPO) destroy the evidence
-# the questions ask about.
 forensics:
   - id: fq_asrep_user
     question: "One domain account was left WITHOUT Kerberos preauthentication, making it an AS-REP roasting target. What is that account's username?"
@@ -1376,12 +1317,6 @@ forensics:
       replicating. Answer: `svc_replication` (lowercase, with the
       underscore).
 
-# --- theme -------------------------------------------------------------------
-# Windows target: boxbuilder/theme.py resolves this through the theme-*-win
-# seeds (wallpaper + README.html to every profile's Public Desktop, .lnk
-# shortcuts including the auto-added "Scoring Report" launcher). motd/issue
-# are POSIX-only and skipped; title/organization/accent/logo flow through the
-# signed manifest into the report masthead.
 theme:
   title: "Meridian Logistics"
   organization: "Meridian Logistics, Inc."
@@ -1389,10 +1324,83 @@ theme:
   logo: assets/logo.png
   wallpaper: assets/wallpaper.png
   readme: assets/README.md
-  # Windows .lnk shortcuts: exec is the TARGET path (%VAR% expanded by the
-  # theme-shortcuts-win seed). The handbook points at the Public Documents copy
-  # theme-readme-win plants -- the Public Desktop itself stays at exactly the
-  # forensics answers file + shortcuts.
   desktop_shortcuts:
     - name: "Hardening Handbook"
       exec: "%PUBLIC%\\Documents\\huitzilopochtli\\README.html"
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: dns
+    display: Domain name service (DNS)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 53
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: ldap
+    display: Active Directory directory (LDAP)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 389
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: smb
+    display: SYSVOL / file sharing (SMB)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 445
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: rdp
+    display: Operator console (RDP)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 3389
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: mhq-drop-marker
+      action: drop_inert_artifact
+      params:
+        path: hq-marker.txt
+      window_s:
+      - 1800
+      - 2700
+    - id: mhq-kill-dns
+      action: kill_service
+      params:
+        service: DNS
+      window_s:
+      - 2700
+      - 3600
+      affects_check: dns
+    - id: mhq-kill-smb
+      action: kill_service
+      params:
+        service: lanmanserver
+      window_s:
+      - 3600
+      - 5400
+      affects_check: smb

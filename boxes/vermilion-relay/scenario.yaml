@@ -1,12 +1,3 @@
-# Vermilion Deep-Space Relay: the pre-CDE capstone Linux hardening box.
-# The theme is flavor only; every task is solvable from ordinary Linux evidence.
-# Each selected nakon configuration plants the insecure state described by its
-# paired check. 80 scored hardening checks + 3 penalty guards + 8 forensics.
-#
-# Difficulty weighting (called out in each display: and in the README ledger):
-#   EASY = 2 pts, MODERATE = 4 pts, HARD = 8 pts. Forensics = 8 pts each.
-# The point total is pinned by tests/unit/test_boxbuilder_vermilion_relay.py.
-
 scenario:
   name: "Vermilion Deep-Space Relay"
   version: 1
@@ -14,9 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # ====================================================================
-  # A. Authentication and password policy
-  # ====================================================================
   - id: no_uid0_user
     type: file_regex
     category: vuln
@@ -272,9 +260,6 @@ checks:
       **3. Confirm** `awk -F: '{print $3}' /etc/passwd | sort | uniq -d`
       prints nothing.
 
-  # ====================================================================
-  # B. Unauthorized accounts and privilege
-  # ====================================================================
   - id: no_vega
     type: user_group
     category: vuln
@@ -565,9 +550,6 @@ checks:
       **3. Confirm** the grep returns nothing and `sudo -k; sudo id` now
       prompts for a password.
 
-  # ====================================================================
-  # C. SSH hardening
-  # ====================================================================
   - id: ssh_root_login_disabled
     type: command_json
     category: vuln
@@ -765,9 +747,6 @@ checks:
       **3. Confirm** `stat -c %a` reads `600`. (SSH itself refuses a
       group/world-readable private key, so this also keeps the client happy.)
 
-  # ====================================================================
-  # D. File permissions and sensitive data
-  # ====================================================================
   - id: relay_keys_not_world_writable
     type: permission
     category: vuln
@@ -1025,9 +1004,6 @@ checks:
 
       **3. Confirm** `stat -c %U /etc/vermilion/relay.conf` reads `root`.
 
-  # ====================================================================
-  # E. Kernel and network hardening
-  # ====================================================================
   - id: ip_forward_off
     type: command_json
     category: vuln
@@ -1230,9 +1206,6 @@ checks:
 
       **3. Confirm** `ufw show added` no longer mentions 31337.
 
-  # ====================================================================
-  # F. Insecure and unwanted services
-  # ====================================================================
   - id: no_telnet_server
     type: command_json
     category: vuln
@@ -1443,9 +1416,6 @@ checks:
 
       **3. Confirm** `systemctl is-enabled cups` reads `disabled` (or masked).
 
-  # ====================================================================
-  # G. Apache and the relay telemetry web app
-  # ====================================================================
   - id: apache_not_root_workers
     type: file_regex
     category: vuln
@@ -1671,9 +1641,6 @@ checks:
       **3. Confirm** `stat -c %a` reads `640` or stricter and the site still
       loads.
 
-  # ====================================================================
-  # H. Attacker services and beacons
-  # ====================================================================
   - id: voidcaster_inactive
     type: service_state
     category: vuln
@@ -1982,9 +1949,6 @@ checks:
       **3. Confirm** the timer is neither active nor enabled and neither unit
       file remains.
 
-  # ====================================================================
-  # I. Persistence sweep (it keeps coming back)
-  # ====================================================================
   - id: cron_d_persistence_gone
     type: command_json
     category: vuln
@@ -2330,9 +2294,6 @@ checks:
       **3. Confirm** the loader config no longer names the library and the
       `.so` is gone.
 
-  # ====================================================================
-  # J. Desktop and user-level persistence (Xubuntu)
-  # ====================================================================
   - id: malicious_autostart_gone
     type: command_json
     category: vuln
@@ -2493,9 +2454,6 @@ checks:
 
       **3. Confirm** the file is gone or no longer names `voidkey@relay`.
 
-  # ====================================================================
-  # K. Baseline hygiene
-  # ====================================================================
   - id: relay_log_not_world_writable
     type: permission
     category: vuln
@@ -2592,9 +2550,6 @@ checks:
 
       **3. Confirm** none of those files remain.
 
-  # ====================================================================
-  # Penalty guards (downside only -- surgical removal, not scorched earth)
-  # ====================================================================
   - id: penalty_cron_healthy
     type: service_state
     category: penalty
@@ -2668,10 +2623,6 @@ theme:
     - name: "Relay Hardening Handbook"
       exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt on the Desktop; the agent re-grades each pass. Each
-# question is a breadcrumb -- the investigation that answers it also surfaces a
-# scored hardening finding, so note the answer BEFORE you clean.
 forensics:
   - id: fq-hidden-root
     question: "One non-root account was given UID 0 (full root power). Type that account's username."
@@ -2797,3 +2748,77 @@ forensics:
       ```
 
       Answer: `10.66.6.6`. Deleting that line clears the /etc/hosts finding.
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: web
+    display: Relay telemetry portal (apache2)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1/
+    expect:
+      equals: 200
+      field: status
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: ssh
+    display: SSH management path
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: mariadb
+    display: Telemetry database (MariaDB)
+    type: db_query
+    collect:
+      host: 127.0.0.1
+      port: 3306
+    expect:
+      equals: true
+      field: ok
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: desktop
+    display: Operator console (VNC)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 5900
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: vrm-drop-marker
+      action: drop_inert_artifact
+      params:
+        path: relay-marker.txt
+      window_s:
+      - 1800
+      - 2700
+    - id: vrm-kill-web
+      action: kill_service
+      params:
+        service: apache2
+      window_s:
+      - 2700
+      - 3600
+      affects_check: web
+    - id: vrm-flush-fw
+      action: flush_firewall
+      params: {}
+      window_s:
+      - 3600
+      - 5400

@@ -11,11 +11,22 @@ import os
 from typing import Optional
 
 from boxbuilder import keys, nakon
+from boxbuilder.os_family import is_windows
 from boxbuilder.providers.base import stage_path
 from boxbuilder.spec import BoxSpec
 from boxbuilder.theme import resolve_theme_configurations
 
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _sha256_file(path: str) -> Optional[str]:
+    """Content hash of a build artifact, recorded so an install can prove the
+    box is running the build that was verified locally."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
 
 
 def _sha256_json(value) -> str:
@@ -73,9 +84,15 @@ def _load_build_zipapp():
 
 
 def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = None,
-                vulndb_url: Optional[str] = None,
+                vulndb_url: Optional[str] = None, skip_bundle: bool = False,
                 log=print) -> dict:
-    """Step 1: compile scenario, build agent.pyz, and build nakon bundle."""
+    """Step 1: compile scenario, build agent.pyz, and build the nakon bundle.
+
+    ``skip_bundle`` produces the install-time artefacts without touching nakon
+    or vulndb. A ranked template is built by installing the ranked agent over
+    an already-planted honor seal, so that path never plants and never needs
+    either dependency.
+    """
     artifacts_dir = os.path.abspath(artifacts_dir)
     os.makedirs(artifacts_dir, mode=0o700, exist_ok=True)
     try:
@@ -88,7 +105,8 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
 
     from authoring.compile import compile_scenario
 
-    outputs = compile_scenario(spec.scenario_path, artifacts_dir, priv_key)
+    outputs = compile_scenario(spec.scenario_path, artifacts_dir, priv_key,
+                               mode=spec.mode, engine_url=spec.engine_url_override)
     log(f"[boxbuilder] compiled {spec.mode} scenario -> {outputs['manifest']}")
     readme_warnings = outputs.get("readme_warnings") or []
     for warning in readme_warnings:
@@ -99,6 +117,40 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
     build_zipapp(agent_pyz)
     log(f"[boxbuilder] built agent -> {agent_pyz}")
 
+    if skip_bundle:
+        log("[boxbuilder] --no-bundle: skipping nakon bundle (nothing to plant)")
+        bundle = None
+        nakon_cfg_path = None
+    else:
+        bundle = _build_nakon_bundle(spec, artifacts_dir, nakon_dir, vulndb_url, log)
+        nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
+
+    result = {
+        "mode": spec.mode,
+        "scenario_name": spec.scenario["scenario"]["name"],
+        "engine_url": spec.engine_url,
+        "authoring_key": key_path,
+        "manifest": outputs["manifest"],
+        "rubric": outputs.get("rubric"),
+        "engine_record": outputs["engine_record"],
+        "authoring_public_key": outputs["authoring_public_key"],
+        "readme_warnings": readme_warnings,
+        "agent_pyz": agent_pyz,
+        "manifest_sha256": _sha256_file(outputs["manifest"]),
+        "authoring_public_key_sha256": _sha256_file(outputs["authoring_public_key"]),
+        "bundle": bundle,
+        "bundle_path": (bundle or {}).get("path"),
+        "nakon_config": nakon_cfg_path,
+        "input_fingerprint": _input_fingerprint(spec),
+    }
+    _save_state(artifacts_dir, result)
+    return result
+
+
+def _build_nakon_bundle(spec: BoxSpec, artifacts_dir: str,
+                        nakon_dir: Optional[str], vulndb_url: Optional[str],
+                        log=print) -> dict:
+    """Expand theme entries into the authored config, then let nakon build it."""
     ndir = nakon.resolve_nakon_dir(nakon_dir)
     nakon_cfg = dict(spec.nakon_config)
     from boxbuilder import vulndb
@@ -121,24 +173,7 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
     bid = bundle.get("bundle_id")
     log(f"[boxbuilder] nakon bundle {bid[:12] if bid else '?'} "
         f"({bundle.get('plans', '?')} plan(s), {bundle.get('machines', '?')} machine(s))")
-
-    result = {
-        "mode": spec.mode,
-        "scenario_name": spec.scenario["scenario"]["name"],
-        "engine_url": spec.engine_url,
-        "authoring_key": key_path,
-        "manifest": outputs["manifest"],
-        "rubric": outputs.get("rubric"),
-        "engine_record": outputs["engine_record"],
-        "authoring_public_key": outputs["authoring_public_key"],
-        "readme_warnings": readme_warnings,
-        "agent_pyz": agent_pyz,
-        "bundle": bundle,
-        "bundle_path": bundle["path"],
-        "input_fingerprint": _input_fingerprint(spec),
-    }
-    _save_state(artifacts_dir, result)
-    return result
+    return bundle
 
 
 def _save_state(artifacts_dir: str, state: dict) -> None:
@@ -166,7 +201,7 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
         if not bundle_path:
             raise ValueError(
                 "no bundle path given and none recorded in build-state.json; "
-                "run `compile` first or pass --bundle"
+                "run `compile` (without --no-bundle) first, or pass --bundle"
             )
 
     if not spec.provider.get("name"):
@@ -287,6 +322,11 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # on-box agent_config so they can never diverge.
         resolved_engine_url = compile_result.get("engine_url") or spec.engine_url
         if mode == "ranked" and not competition_mode:
+            from authoring.scenario_modes import LOOPBACK_ENGINE_URL
+            if resolved_engine_url == LOOPBACK_ENGINE_URL:
+                log("[boxbuilder] WARNING: engine_url is the loopback placeholder; "
+                    "pass --engine-url or set $HUITZILOPOCHTLI_ENGINE_URL for a real "
+                    "deployment (rewrite with `compile` before installing)")
             from boxbuilder import engine
             token = engine.resolve_admin_token(admin_token)
             if not resolved_engine_url:
@@ -332,7 +372,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # dir to them so the SFTP puts below succeed (SFTP runs as the SSH
         # user, not via sudo). On Windows the dir is created directly (an SSH
         # admin session carries the elevated token) and inherits usable ACLs.
-        if os_name == "windows":
+        if is_windows(os_name):
             # run_ps (EncodedCommand) rather than a raw `powershell -Command`
             # string: Windows OpenSSH execs through cmd.exe, which strips the
             # inner double quotes and turns the payload into cmd syntax.
@@ -411,7 +451,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # runs as SYSTEM, so nothing at runtime needs looser ACLs; the seal
         # keeps the answer key (.score.dat) and, in ranked mode,
         # identity.json invisible to ordinary accounts on the box.
-        if os_name == "windows":
+        if is_windows(os_name):
             # Also via run_ps: the /grant tokens contain parens cmd.exe could
             # mangle, and running inside PowerShell keeps the quoting native.
             seal = handle.run_ps(
@@ -429,14 +469,14 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # --- Windows logon/browser hardening (best-effort) ---
         # Kills the Edge first-run wizard, the Shutdown Event Tracker and
         # Server Manager logon modals, and the python advertised-shortcut
-        # MSI self-repair trap (REDEPLOY.md gotchas 25/26) -- the pop-ups a
-        # player would otherwise meet on first logon. Runs once over the
+        # MSI self-repair trap -- the pop-ups a player would otherwise meet
+        # on first logon. Runs once over the
         # elevated SSH session; the script guards every section and always
         # exits 0, so this warns instead of failing the install. Reported
         # via result["hardening"], not result["files"] (that list stays
         # "everything under the install dir" placed via SFTP).
         hardening = None
-        if os_name == "windows":
+        if is_windows(os_name):
             harden_local = os.path.join(_REPO_ROOT, "packaging", "huitz-hardening-win.ps1")
             harden_remote = f"{install_dir}\\huitz-hardening-win.ps1"
             handle.put(harden_local, harden_remote)
@@ -497,7 +537,11 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                     f"no supported init system detected on {handle.addr}; "
                     f"the agent would never auto-start. Pass --init none only "
                     f"if you intend to run it manually.")
-        handle.install_init(init_kind, mode)
+        # A ranked-competition box ships its unit installed but not started:
+        # the player's `huitz join` binds the box and starts it. Starting it at
+        # install time would make the agent poll an engine it is not enrolled
+        # with yet.
+        handle.install_init(init_kind, mode, start_agent=not competition_mode)
         log(f"[boxbuilder] init unit: {init_kind}")
 
         return {
@@ -562,7 +606,7 @@ _BUILD_STEPS = ("compile", "plant", "install", "package")
 def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None,
               fmt: str = "ova", from_step: str = "compile",
               nakon_dir: Optional[str] = None,
-              vulndb_url: Optional[str] = None,
+              vulndb_url: Optional[str] = None, skip_bundle: bool = False,
               provider_factory=None, init_kind: Optional[str] = None,
               admin_token: Optional[str] = None, checkin_interval_s: int = 60,
               enrollment_ttl_s: int = 86400, competition_mode: bool = False,
@@ -599,7 +643,7 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
         log("[boxbuilder] === step 1/4: compile ===")
         results["compile"] = _run_step("compile", lambda: compile_box(
             spec, artifacts_dir, nakon_dir=nakon_dir,
-            vulndb_url=vulndb_url, log=log,
+            vulndb_url=vulndb_url, skip_bundle=skip_bundle, log=log,
         ))
     else:
         state = _load_state(artifacts_dir)

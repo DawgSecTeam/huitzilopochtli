@@ -383,7 +383,7 @@ def test_run_ranked_retries_enrollment_instead_of_exiting(tmp_path, monkeypatch)
 # --- 10. boxbuilder stages root installs privately ------------------------------------
 
 class _StageHandle:
-    addr = "10.0.0.1"
+    addr = "192.0.2.1"
 
     def __init__(self, stdout, rc=0):
         self.stdout, self.rc, self.runs = stdout, rc, []

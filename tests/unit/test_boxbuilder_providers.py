@@ -40,7 +40,7 @@ def test_register_and_load():
                 def put(self, local, remote, mode=None):
                     pass
 
-                def install_init(self, kind, mode="honor"):
+                def install_init(self, kind, mode="honor", start_agent=True):
                     pass
 
                 def export(self, out_path, fmt="ova"):
@@ -136,7 +136,7 @@ class _RecordingSshHandle:
         from boxbuilder.providers.base import RunResult
         self._ok = RunResult(0, "/tmp/huitzilopochtli-stage.abc\n", "")
         self.cmds = []
-        self.addr = "10.0.0.1"
+        self.addr = "192.0.2.1"
 
     def run(self, cmd, **_kw):
         self.cmds.append(cmd)

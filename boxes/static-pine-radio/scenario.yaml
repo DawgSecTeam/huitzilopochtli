@@ -1,54 +1,3 @@
-# Static Pine Community Radio: a persistence-hunting box for the "how
-# services get persistence" workshop (init.d, cron, at, systemd timers, and
-# all the other ways an intruder comes back). HEADLESS DEBIAN 13 running the
-# huitz terminal console -- the terminal IS the interface, same shape as the
-# opochtli-landing v2 box. The story: someone wired the little community
-# station to secretly rebroadcast a pirate show ("the Nightcast") and every
-# crude fix so far pulled ONE plug; the station keeps coming back because it
-# is persistent in six different ways at once. Students get the box AFTER the
-# presentation, so the mechanics (crontab -l, atq, systemctl list-timers,
-# update-rc.d, /etc/rc.local, profile.d, ld.so.preload ...) are the material
-# under test, not the story.
-#
-# Scoring ledger (tests/unit/test_boxbuilder_static_pine_radio.py asserts
-# it). Sixteen artifacts, compressed weighting because there are so many:
-#   EASY     5 pts x 8 checks  =  40   cron_sync_removed, root_crontab_clean,
-#                                      profile_d_gone, stationlead_bashrc_clean,
-#                                      system_bashrc_clean, motd_script_gone,
-#                                      rogue_account_removed, authorized_keys_clean
-#   MODERATE 10 pts x 5 checks =  50   nightcast_service_removed,
-#                                      at_queue_emptied, initd_boot_script_gone,
-#                                      rc_local_clean, ld_preload_removed
-#   HARD     20 pts x 3 checks =  60   timer_neutralized,
-#                                      tapeops_crontab_cleared,
-#                                      tapeops_unit_linger_gone
-#   vuln checks total            = 150
-#   penalties (cron/atd health)  = -20 floor (only subtract)
-#   forensics (4 x 10)           =  40
-#   GRAND TOTAL                  = 190
-#
-# Forensics questions test the discovery skills themselves: each answer is
-# sitting in an artifact the students must open anyway (at -c, the key
-# comment, a payload's log path, the timer's OnUnitActiveSec).
-#
-# Design rules this file obeys (checked in the unit test where practical):
-#   - Every planted artifact has exactly one paired check; planted names and
-#     paths are byte-identical to boxes/static-pine-radio/nakon.json vars
-#     (nothing cross-checks them at build time).
-#   - Any artifact where DELETING the file is legitimate hardening is graded
-#     by a command_json compound (pass if file absent OR marker gone) --
-#     never by file_regex on a deletable path (missing file = ERROR evidence
-#     = fail-closed = unpassable check).
-#   - is-enabled is matched on the exact "^enabled$" output (it exits 0 for
-#     "static" units too); disabled, masked, not-found all count as hardened.
-#   - Every command_json script is read-only, guards every command so it
-#     ALWAYS emits exactly one JSON scalar, and exits 0.
-#
-# The tapeops account (transmitter automation) is story-legitimate: the
-# README tells students to KEEP it. It exists to carry the hidden tapeops
-# crontab, user unit, and linger flag -- removing tapeops itself is neither
-# required nor scored.
-
 scenario:
   name: "Static Pine Community Radio"
   version: 1
@@ -56,7 +5,6 @@ scenario:
   hosts: ["localhost"]
 
 checks:
-  # --- cron family ----------------------------------------------------------
   - id: cron_sync_removed
     type: command_json
     category: vuln
@@ -166,7 +114,6 @@ checks:
       comments. Note `tapeops` itself must REMAIN on the box: only its
       crontab is scored.
 
-  # --- login-time persistence: profile.d, bashrc, motd -----------------------
   - id: profile_d_gone
     type: permission
     category: vuln
@@ -300,7 +247,6 @@ checks:
       **3. Confirm.** `ls /etc/update-motd.d/` shows only the stock 10-uname
       style entries, and your next login banner is clean.
 
-  # --- accounts and keys ------------------------------------------------------
   - id: rogue_account_removed
     type: user_group
     category: vuln
@@ -370,7 +316,6 @@ checks:
       **3. Confirm.** `grep nightcast ~/.ssh/authorized_keys` prints
       nothing (the check also accepts the file being gone entirely).
 
-  # --- systemd system-level ----------------------------------------------------
   - id: nightcast_service_removed
     type: command_json
     category: vuln
@@ -463,7 +408,6 @@ checks:
       `enabled`, the .timer file is gone, and /opt/nightcast/rebroadcast is
       gone. `systemctl list-timers` shows nothing nightcast-shaped.
 
-  # --- at ----------------------------------------------------------------------
   - id: at_queue_emptied
     type: command_json
     category: vuln
@@ -504,7 +448,6 @@ checks:
       state. (Leave the `atd` DAEMON alone: it is scored as a penalty below,
       same as cron.)
 
-  # --- init.d ------------------------------------------------------------------
   - id: initd_boot_script_gone
     type: command_json
     category: vuln
@@ -550,7 +493,6 @@ checks:
       (dangling S-links count as still-present, so do the update-rc.d
       remove, not just rm).
 
-  # --- rc.local ----------------------------------------------------------------
   - id: rc_local_clean
     type: command_json
     category: vuln
@@ -592,7 +534,6 @@ checks:
       check passes if the file is gone OR no longer mentions sign-on). Also
       remove the payload: `rm /opt/nightcast/sign-on`.
 
-  # --- ld.so.preload -------------------------------------------------------------
   - id: ld_preload_removed
     type: command_json
     category: vuln
@@ -635,7 +576,6 @@ checks:
       check grades exactly that: no active preload entries, and the .so
       gone from disk.
 
-  # --- tapeops: user-level systemd ------------------------------------------------
   - id: tapeops_unit_linger_gone
     type: command_json
     category: vuln
@@ -678,7 +618,6 @@ checks:
       ~/.config/systemd/user/ is gone, and
       `ls /var/lib/systemd/linger/` no longer lists tapeops.
 
-  # --- penalties ------------------------------------------------------------------
   - id: cron_service_healthy
     type: service_state
     category: penalty
@@ -723,9 +662,6 @@ theme:
   organization: "Static Pine Community Radio — Board of Directors"
   accent: "#1F6E43"
   readme: assets/README.md
-  # The graded fq-key-comment answer is `nightcast@88.3`; the lenient alias
-  # "nightcast" collides with the story name the handbook cannot avoid. The
-  # full answer never appears in the handbook.
   readme_lint_allow: ["nightcast"]
   motd: |
     Welcome to Static Pine Community Radio, 88.3 FM -- transmitter host.
@@ -735,11 +671,6 @@ theme:
     Static Pine Community Radio transmitter host (88.3 FM).
     Unauthorized access will be reported to the Board.
 
-# Scored forensics questions (CyberPatriot-style): teams type answers into
-# Forensics-Questions.txt (created in the player's ~/Desktop; edit with
-# `huitz forensics`); the agent re-grades the file each pass. Correct answer
-# = full points; wrong or blank = nothing, no penalty. Each answer is
-# evidence the students open while hunting the sixteen artifacts.
 forensics:
   - id: fq-key-comment
     path: /home/stationlead/Desktop/Forensics-Questions.txt
@@ -786,3 +717,44 @@ forensics:
       `atq` lists the queued job id, then `at -c <id>` prints the job -- the
       last lines are the command it will run: /opt/nightcast/late-shift.
       `at -c` BEFORE `atrm`: evicting the job destroys the evidence.
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  checks:
+  - id: atd_sla
+    type: service_state
+    category: vuln
+    display: 'SLA: the atd daemon stays up'
+    max_points: 10
+    collect:
+      service: atd
+    expect:
+      equals: true
+      field: active
+      points: 0
+      sla:
+        interval_s: 60
+        points_per_interval: 1
+        max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: r3-drop-marker
+      action: drop_inert_artifact
+      params:
+        path: r3-marker.txt
+      window_s:
+      - 600
+      - 900
+    - id: r3-kill-atd
+      action: kill_service
+      params:
+        service: atd
+      window_s:
+      - 900
+      - 1200
+    - id: r3-flush-fw
+      action: flush_firewall
+      params: {}
+      window_s:
+      - 1200
+      - 1500

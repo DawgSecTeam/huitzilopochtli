@@ -1,65 +1,51 @@
-# Manual verification guide
+# Testing guide — prove it works on your machine
 
-A hands-on walkthrough to confirm Huitzilopochtli actually works, end to end, on your own machine. Everything here runs locally — no Proxmox, no other machines. Expect the whole thing to take 15-20 minutes, most of it waiting on the automated test suite and the (deliberately slow — see below) crypto.
-
-Run every command from the repo root unless noted otherwise.
+A hands-on walkthrough that runs on one host: no Proxmox, no second machine.
+Budget ~15 minutes, most of it waiting on crypto. Run commands from the repo
+root; in each shell you use, start with the two variables under Prerequisites.
 
 ## 0. Prerequisites
 
 ```bash
-cd /home/hna/dev/dawgsec/huitzilopochtli
-python3 --version        # 3.10+ recommended; this was built/tested on 3.14
-pip install --user -r requirements-dev.txt
+python3 --version          # 3.10+ (built/tested on 3.14)
+pip install -r requirements-dev.txt
+REPO="$PWD"                          # run this from the repo root
+MANUAL=/tmp/huitzilopochtli-manual
 ```
 
-`requirements-dev.txt` covers the default tier (pytest, PyYAML, requests,
-python-dotenv for the Proxmox conftest, plus optional paramiko/proxmoxer for
-those tiers). The shipped agent/core remain stdlib-only.
+Default tier plus optional paramiko/proxmoxer; the shipped code stays stdlib-only.
 
-## 1. Automated suite — fastest confidence check
+## 1. Automated tiers
 
 ```bash
-pytest
+pytest                     # unit + integration (the default)
+pytest -m proxmox          # opt-in live tier; needs tests/proxmox/.env
 ```
 
-Expected: the whole default tier passes. The suite has grown well past the
-old fixed count; rely on pytest's own summary rather than a hard-coded number.
-Most of the runtime is still claimed by Ed25519 sign/verify (the reference
-arithmetic is pure Python), but the modular exponentiation now uses the
-built-in `pow()`, which made it several times faster than the original
-recursive reference version.
-
-What this covers:
-- **`tests/unit/`**: schema/type validation, canonical serialization, every
-  registered matcher, category-based scoring, Ed25519 RFC 8032 + small-order
-  vectors, the SLA ledger (including the outage-cap drain), the adversary
-  oracle and outage floor, every `Store` method and migration, all registered
-  check plugins (mock where appropriate), the platform layer, and the closed
+- **`tests/unit/`** — schema/type validation, canonicalization, matchers and
+  check plugins, category scoring, Ed25519 vectors, the SLA ledger, the
+  adversary oracle, the store, competition/claim logic, and the closed
   adversary action vocabulary.
-- **`tests/integration/`**: the honor pipeline end-to-end, ranked loopback
-  (enrollment, restart, crash recovery), admin/protocol errors, TLS + secret
-  persistence, and zipapp/source-tree equivalence.
-- **`tests/proxmox/`**: excluded by default (`pytest -m proxmox` to opt in;
-  skips with a reason when `.env` is absent). `test_local_honor_distribution.py`
-  and `test_ranked_two_machines.py` cover real clones;
-  `test_all_check_types_live.py` is 70/70 on both Ubuntu and Fedora (Fedora
-  runs over root SSH because its guest agent is SELinux-confined), and
-  `test_windows_live.py` is 90/90 on Windows Server 2022 plus a real
-  boxbuilder install (SYSTEM scheduled task, ACL seal, first report).
+- **`tests/integration/`** — real `engine.server` and `agent` subprocesses over
+  loopback with real sqlite and signing: honor pipeline, ranked enroll/
+  restart/crash recovery, protocol errors, admin endpoints, adversary + SLA,
+  competition HTTP, zipapp equivalence.
+- **`tests/proxmox/`** — real disposable clones, excluded unless you ask for
+  it; it skips with a reason when `tests/proxmox/.env` is absent. See
+  `tests/README.md`.
 
-If this step passes, you already have strong evidence everything works. Steps 2-4 below let you *see* it happen rather than trust a green checkmark.
+**Why it is slow: Ed25519, not a hang.** Every check-in pays a client sign
+plus a server verify of the vendored pure-Python implementation, so the ranked
+suite takes minutes even though each test is short (`test_ranked_loopback.py`
+alone is ~70s). Leave it running. One unit test (the root-write symlink guard)
+skips unless you run as root.
 
 ## 2. Honor mode, by hand
 
-This mirrors `tests/integration/test_honor_pipeline.py`, but you drive it yourself.
-
 ```bash
-mkdir -p /tmp/huitzilopochtli-manual/honor
-cd /tmp/huitzilopochtli-manual/honor
-
+mkdir -p "$MANUAL/honor" && cd "$MANUAL/honor"
 echo "SECURE_BANNER" > banner.txt
-
-cat > scenario.yaml << 'EOF'
+cat > scenario.yaml <<EOF
 scenario:
   name: "Manual Test Scenario"
   version: 1
@@ -72,174 +58,120 @@ checks:
     category: vuln
     display: "Banner present"
     max_points: 10
-    collect:
-      path: /tmp/huitzilopochtli-manual/honor/banner.txt
-      extract: '(SECURE_BANNER)'
-    expect:
-      equals: "SECURE_BANNER"
-      points: 10
+    collect: {path: $MANUAL/honor/banner.txt, extract: '(SECURE_BANNER)'}
+    expect: {equals: "SECURE_BANNER", points: 10}
 EOF
 ```
 
-Compile it (there's no CLI wrapper for `authoring/compile.py` — it's a library function — so this is a short inline Python snippet):
+There is no CLI wrapper for compiling a scenario, so drive the library:
 
 ```bash
-cd /home/hna/dev/dawgsec/huitzilopochtli
+cd "$REPO"
 python3 -c "
 import sys, json
 sys.path.insert(0, '.')
 from authoring.compile import compile_scenario
 from common.crypto import signing
-
 priv, pub = signing.keypair()
-outputs = compile_scenario(
-    '/tmp/huitzilopochtli-manual/honor/scenario.yaml',
-    '/tmp/huitzilopochtli-manual/honor',
-    priv,
-)
+outputs = compile_scenario('$MANUAL/honor/scenario.yaml', '$MANUAL/honor', priv)
 print(json.dumps(outputs, indent=2))
 "
 ```
 
-You should see paths printed for `manifest`, `rubric`, `engine_record`, and `authoring_public_key`. Now write the agent config:
+You should see paths for `manifest`, `rubric`, `engine_record`, and
+`authoring_public_key`. Write the agent config and run the agent:
 
 ```bash
-cat > /tmp/huitzilopochtli-manual/honor/agent_config.json << 'EOF'
-{
-  "mode": "honor",
-  "manifest_path": "/tmp/huitzilopochtli-manual/honor/manifest.signed.json",
-  "authoring_public_key_path": "/tmp/huitzilopochtli-manual/honor/authoring_public_key.b64",
-  "rubric_path": "/tmp/huitzilopochtli-manual/honor/rubric.json",
-  "identity_path": null,
-  "report_path": "/tmp/huitzilopochtli-manual/honor/report.html",
-  "checkin_interval_s": null
-}
+cat > "$MANUAL/honor/agent_config.json" <<EOF
+{"mode": "honor",
+ "manifest_path": "$MANUAL/honor/manifest.signed.json",
+ "authoring_public_key_path": "$MANUAL/honor/authoring_public_key.b64",
+ "rubric_path": "$MANUAL/honor/rubric.json",
+ "identity_path": null,
+ "report_path": "$MANUAL/honor/report.html",
+ "checkin_interval_s": null}
 EOF
+python3 -m agent "$MANUAL/honor/agent_config.json"; echo "exit code: $?"
+grep -o "Total: [0-9]*" "$MANUAL/honor/report.html"
 ```
 
-Run the agent:
+Expected: exit code `0`, no output (silence is success), and `Total: 10`.
 
-```bash
-cd /home/hna/dev/dawgsec/huitzilopochtli
-python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json
-echo "exit code: $?"
-```
-
-Expected: exit code `0`, no output (silence = success). Now look at the report:
-
-```bash
-open /tmp/huitzilopochtli-manual/honor/report.html   # macOS
-# or: xdg-open /tmp/huitzilopochtli-manual/honor/report.html   # Linux
-# or just: grep -o "Total: [0-9]*" /tmp/huitzilopochtli-manual/honor/report.html
-```
-
-Expected: `Total: 10`.
-
-**Now break it on purpose** to confirm signature verification actually fails closed:
+**Break it on purpose.** Tamper with the signed manifest and confirm the agent
+fails closed:
 
 ```bash
 python3 -c "
 import json
-p = '/tmp/huitzilopochtli-manual/honor/manifest.signed.json'
-m = json.load(open(p))
-m['scenario_version'] = 999  # tamper without re-signing
+p = '$MANUAL/honor/manifest.signed.json'
+m = json.load(open(p)); m['scenario_version'] = 999
 json.dump(m, open(p, 'w'))
 "
-rm /tmp/huitzilopochtli-manual/honor/report.html
-python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json
-echo "exit code: $?"
+rm "$MANUAL/honor/report.html"
+python3 -m agent "$MANUAL/honor/agent_config.json"; echo "exit code: $?"
 ```
 
-Expected: **non-zero exit code**, an error mentioning `FAILED signature verification`, and `report.html` is **not** recreated. This confirms the agent genuinely refuses to run on a tampered manifest rather than silently trusting it.
+Expected: a **non-zero** exit, an error naming `FAILED signature verification`,
+and no new `report.html`.
 
-**Re-arm** (recompile fresh first, since the manifest above is now permanently tampered):
+**Re-arm** (the manifest is now permanently tampered; recompile first):
 
 ```bash
 python3 -c "
-import sys, json
+import sys
 sys.path.insert(0, '.')
 from authoring.compile import compile_scenario
 from common.crypto import signing
 priv, pub = signing.keypair()
-compile_scenario('/tmp/huitzilopochtli-manual/honor/scenario.yaml', '/tmp/huitzilopochtli-manual/honor', priv)
+compile_scenario('$MANUAL/honor/scenario.yaml', '$MANUAL/honor', priv)
 "
-python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json
-python3 packaging/rearm.py --config /tmp/huitzilopochtli-manual/honor/agent_config.json
-ls /tmp/huitzilopochtli-manual/honor/report.html 2>&1   # should say "No such file"
+python3 -m agent "$MANUAL/honor/agent_config.json"
+python3 packaging/rearm.py --config "$MANUAL/honor/agent_config.json"
+ls "$MANUAL/honor/report.html"          # expect: No such file
 ```
 
-Expected: `rearm.py` prints `removed cached report: ...` and the report file is gone.
+## 3. The `huitz` terminal console
 
-### 2.5 The huitz terminal console
-
-The agent zipapp doubles as the box's terminal scoring console. Using the same honor-mode dir from step 2 (re-compile + run the agent first if you just re-armed):
+The agent zipapp doubles as the box console. With a fresh honor grade in place:
 
 ```bash
-python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json   # a grade exists
-python3 -m agent score --report /tmp/huitzilopochtli-manual/honor/report.html
-python3 -m agent score --report /tmp/huitzilopochtli-manual/honor/report.html --json | head -20
+python3 -m agent score --report "$MANUAL/honor/report.html"
+python3 -m agent score --report "$MANUAL/honor/report.html" --json | head -20
+python3 -m agent forensics --report "$MANUAL/honor/report.html"
+python3 -m agent watch --once --report "$MANUAL/honor/report.html"
 ```
 
-Expected: a scorecard (total, progress bar, fixed vulns, hints line) rendered with plain text through a pipe; `--json` prints the `report.json` snapshot the CLI reads. Every grade also publishes `report.json` next to `report.html` — on a real box, `sync-report.sh` mirrors both to each user's Desktop so the console works for any account (on a real install, boxbuilder also puts the zipapp on PATH as `huitz` and plants a first-login motd introducing it).
+Expected: a scorecard through a pipe; `--json` prints the `report.json`
+snapshot the CLI reads. `huitz grade` re-runs the pipeline as root (it exits 1
+with a `sudo huitz grade` hint otherwise); `huitz watch` wants a TTY.
 
-Re-grade to seed a baseline, then change something:
+## 4. Ranked mode, by hand
+
+Two shells: the engine in one, everything else in the other.
+
+**Shell 1 — start the engine:**
 
 ```bash
-python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json    # baseline grade
-# break the check (e.g. delete the flag file), then re-grade:
-python3 -m agent /tmp/huitzilopochtli-manual/honor/agent_config.json
-python3 -m agent score --report /tmp/huitzilopochtli-manual/honor/report.html
+HUITZILOPOCHTLI_DB_PATH="$MANUAL/ranked/engine.db" \
+HUITZILOPOCHTLI_PORT=8080 HUITZILOPOCHTLI_ADMIN_TOKEN=devtoken \
+HUITZILOPOCHTLI_CHECKIN_INTERVAL_S=5 python3 -m engine.server
 ```
 
-Expected: the second grade's scorecard carries a `▼ -N pts` penalty banner (the terminal twin of the HTML banner + desktop alarm).
+(mkdir `$MANUAL/ranked` first.) Expected: `huitzilopochtli engine listening on
+http://127.0.0.1:8080 (...)` plus a no-TLS warning (fine locally). The default
+bind is loopback; set `HUITZILOPOCHTLI_BIND=0.0.0.0` for boxes on a network.
 
-Forensics, end to end (use a scenario with a `forensics:` block, or just verify the commands behave):
-
-```bash
-python3 -m agent forensics --report /tmp/huitzilopochtli-manual/honor/report.html
-python3 -m agent forensics 1 "my answer" --report /tmp/huitzilopochtli-manual/honor/report.html
-```
-
-Expected: the listing shows each question with your recorded answer and last-grade verdict; answering writes `Answer: my answer` into the answers file, and it scores on the next grade. Re-run the agent to see the points land.
-
-`watch --once` renders one live frame without a terminal; `watch` itself (alternate screen, countdown, change bell, `q` to quit) wants a real TTY. `grade` re-runs the pipeline as root — it exits 1 with a `sudo huitz grade` hint when run as a non-root user, and explains engine-side grading on ranked boxes.
-
-## 3. Ranked mode, by hand
-
-This mirrors `tests/integration/test_ranked_loopback.py` and `test_admin_endpoints.py`. You'll need two terminals (or background the engine).
-
-**Terminal 1 — start the engine:**
+**Shell 2 — compile a ranked scenario.** The base is the honor box; the
+`ranked:` block adds the engine and any ranked-only content.
 
 ```bash
-cd /home/hna/dev/dawgsec/huitzilopochtli
-mkdir -p /tmp/huitzilopochtli-manual/ranked
-HUITZILOPOCHTLI_DB_PATH=/tmp/huitzilopochtli-manual/ranked/engine.db \
-HUITZILOPOCHTLI_PORT=8080 \
-HUITZILOPOCHTLI_ADMIN_TOKEN=devtoken \
-python3 -m engine.server
-```
-
-Expected output: `huitzilopochtli engine listening on http://127.0.0.1:8080 (db=/tmp/huitzilopochtli-manual/ranked/engine.db)` plus a warning about running without TLS (expected/fine for local testing). The default bind is loopback; set `HUITZILOPOCHTLI_BIND=0.0.0.0` when boxes must check in over the network (e.g. a Proxmox VM round). `HUITZILOPOCHTLI_CHECKIN_INTERVAL_S` (default 60) sets the engine-authoritative check-in cadence the agents sleep between cycles — it is deliberately independent of rubric SLA intervals.
-
-**Terminal 2 — everything else:**
-
-```bash
-curl -s localhost:8080/health
-```
-Expected: `{"ok": true}`.
-
-Compile a ranked-mode scenario:
-
-```bash
-mkdir -p /tmp/huitzilopochtli-manual/ranked/box
-echo "SECURE_BANNER" > /tmp/huitzilopochtli-manual/ranked/box/banner.txt
-
-cat > /tmp/huitzilopochtli-manual/ranked/scenario.yaml << 'EOF'
+mkdir -p "$MANUAL/ranked/box"
+echo "SECURE_BANNER" > "$MANUAL/ranked/box/banner.txt"
+cat > "$MANUAL/ranked/scenario.yaml" <<EOF
 scenario:
   name: "ManualRankedTest"
   version: 1
-  mode: ranked
-  engine_url: "http://127.0.0.1:8080"
+  mode: honor
   hosts: ["localhost"]
 
 checks:
@@ -248,114 +180,89 @@ checks:
     category: vuln
     display: "Banner present"
     max_points: 10
-    collect:
-      path: /tmp/huitzilopochtli-manual/ranked/box/banner.txt
-      extract: '(SECURE_BANNER)'
-    expect:
-      equals: "SECURE_BANNER"
-      points: 10
+    collect: {path: $MANUAL/ranked/box/banner.txt, extract: '(SECURE_BANNER)'}
+    expect: {equals: "SECURE_BANNER", points: 10}
+
+ranked:
+  engine_url: "http://127.0.0.1:8080"
 EOF
 
-cd /home/hna/dev/dawgsec/huitzilopochtli
+cd "$REPO"
 python3 -c "
-import sys, json
+import sys
 sys.path.insert(0, '.')
 from authoring.compile import compile_scenario
 from common.crypto import signing
 priv, pub = signing.keypair()
-outputs = compile_scenario(
-    '/tmp/huitzilopochtli-manual/ranked/scenario.yaml',
-    '/tmp/huitzilopochtli-manual/ranked/box',
-    priv,
-)
-print(json.dumps(outputs, indent=2))
+compile_scenario('$MANUAL/ranked/scenario.yaml', '$MANUAL/ranked/box', priv,
+                 mode='ranked')
 "
 ```
 
-Upload the scenario to the engine and mint an enrollment token:
+Upload the record and mint an enrollment token:
 
 ```bash
 curl -s -X POST localhost:8080/admin/scenarios \
   -H "Content-Type: application/json" \
   -H "X-HUITZILOPOCHTLI-Admin-Token: devtoken" \
-  -d @/tmp/huitzilopochtli-manual/ranked/box/engine_record.json
-
-echo   # newline
+  -d @"$MANUAL/ranked/box/engine_record.json"; echo
 curl -s -X POST localhost:8080/admin/tokens \
   -H "Content-Type: application/json" \
   -H "X-HUITZILOPOCHTLI-Admin-Token: devtoken" \
   -d '{"scenario_name": "ManualRankedTest", "ttl_s": 3600}'
 ```
 
-Expected: `{"ok": true, "scenario_name": "ManualRankedTest"}` then a JSON blob with a `"token"` field — **copy that token value** for the next step.
-
-Write the ranked agent config, pasting your token in:
+Expected: `{"ok": true, ...}`, then a JSON blob with a `"token"` — paste it
+below. Write the ranked config and run the agent (it loops until stopped):
 
 ```bash
-cat > /tmp/huitzilopochtli-manual/ranked/box/agent_config.json << EOF
-{
-  "mode": "ranked",
-  "manifest_path": "/tmp/huitzilopochtli-manual/ranked/box/manifest.signed.json",
-  "authoring_public_key_path": "/tmp/huitzilopochtli-manual/ranked/box/authoring_public_key.b64",
-  "rubric_path": null,
-  "identity_path": "/tmp/huitzilopochtli-manual/ranked/box/identity.json",
-  "report_path": "/tmp/huitzilopochtli-manual/ranked/box/report.html",
-  "checkin_interval_s": 5,
-  "enrollment_token": "PASTE_YOUR_TOKEN_HERE"
-}
+cat > "$MANUAL/ranked/box/agent_config.json" <<EOF
+{"mode": "ranked",
+ "manifest_path": "$MANUAL/ranked/box/manifest.signed.json",
+ "authoring_public_key_path": "$MANUAL/ranked/box/authoring_public_key.b64",
+ "rubric_path": null,
+ "identity_path": "$MANUAL/ranked/box/identity.json",
+ "report_path": "$MANUAL/ranked/box/report.html",
+ "checkin_interval_s": 5,
+ "enrollment_token": "PASTE_YOUR_TOKEN_HERE"}
 EOF
+python3 -m agent "$MANUAL/ranked/box/agent_config.json"
 ```
 
-Run the agent (it loops forever in ranked mode — that's expected, leave it running):
-
-```bash
-cd /home/hna/dev/dawgsec/huitzilopochtli
-python3 -m agent /tmp/huitzilopochtli-manual/ranked/box/agent_config.json
-```
-
-In a **third terminal**, watch the leaderboard update:
+In a **third** shell, watch the board:
 
 ```bash
 watch -n 2 'curl -s "localhost:8080/leaderboard?scenario=ManualRankedTest"'
 ```
 
-Expected: within ~10-15 seconds, a row appears with `"total": 10`. This confirms enroll → sign → check-in → score all worked over real HTTP.
+Expected: within a few seconds a row with `"total": 10` — enroll → sign →
+check-in → score over real HTTP.
 
-**Confirm restart doesn't re-enroll**: `Ctrl-C` the agent (terminal 2), then run the exact same `python3 -m agent ...` command again. It should immediately resume checking in (no enrollment error, no crash) — because `identity.json` already exists, so the agent skips straight to the check-in loop per §9.6.
+**Restart does not re-enroll.** `Ctrl-C` the agent and run the same command
+again: it resumes checking in immediately because `identity.json` already
+exists. Stop the engine and the agent when done.
 
-When done, stop the engine (`Ctrl-C` in terminal 1) and the agent (`Ctrl-C`).
-
-## 4. Zipapp packaging
-
-Confirm the actual distributable artifact behaves identically to running from source:
-
-```bash
-cd /home/hna/dev/dawgsec/huitzilopochtli
-python3 packaging/build_zipapp.py /tmp/huitzilopochtli-manual/agent.pyz
-
-# rerun the honor-mode config from step 2 through the real .pyz
-rm -f /tmp/huitzilopochtli-manual/honor/report.html
-python3 /tmp/huitzilopochtli-manual/agent.pyz /tmp/huitzilopochtli-manual/honor/agent_config.json
-grep -o "Total: [0-9]*" /tmp/huitzilopochtli-manual/honor/report.html
-```
-
-Expected: `Total: 10`, identical to step 2 — proving the zipapp genuinely bundles `agent/`+`common/` correctly and nothing outside those two packages leaked in or was missed.
-
-## 5. Cleanup
+## 5. Zipapp packaging
 
 ```bash
-rm -rf /tmp/huitzilopochtli-manual
+python3 packaging/build_zipapp.py "$MANUAL/agent.pyz"
+rm -f "$MANUAL/honor/report.html"
+python3 "$MANUAL/agent.pyz" "$MANUAL/honor/agent_config.json"
+grep -o "Total: [0-9]*" "$MANUAL/honor/report.html"
 ```
 
-(Nothing was written outside `/tmp` and the repo's own `dist/`/`.pytest_cache` — both already gitignored.)
+Expected: `Total: 10`, identical to step 2 — the `.pyz` bundles `agent/` +
+`common/` and nothing else.
+
+## 6. Cleanup
+
+```bash
+rm -rf "$MANUAL"
+```
 
 ## Going further
 
-`tests/README.md` documents the `tests/proxmox/` tier — real cloned VMs on
-Proxmox. `test_local_honor_distribution.py` and `test_ranked_two_machines.py`
-are the real-network checks; the latter now sets its own bind address and
-regenerates clone machine-ids. `test_all_check_types_live.py` passes 70/70 on
-Ubuntu and Fedora (Fedora over root SSH, since its guest agent is
-SELinux-confined), and `test_windows_live.py` passes 90/90 on Windows Server
-2022 and exercises the real boxbuilder install path. This tier is optional for
-the local verification above; configure `tests/proxmox/.env` to run it.
+`tests/README.md` covers the Proxmox tier (live check types, Windows, honor
+distribution, ranked) and its env vars; `RANKED_TESTING.md` maps ranked
+coverage to suites and lists what is still open; `RANKED_COMPETITION.md` is
+the operator side.

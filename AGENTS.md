@@ -55,10 +55,27 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
 nakon vuln selection → **(2) plant** vulns via nakon → **(3) install** the
 huitz agent + manifest on the box → **(4) package** the box image.
 
+Each box is one directory `boxes/<box>/` with exactly one authored
+`scenario.yaml` (the honor base plus an optional top-level `ranked:` block),
+its `nakon.json`, and a minimal `box.yaml`. Build it with `--mode ranked` for
+the ranked target; an honor build never reads the `ranked:` block, so ranked
+content cannot leak into an honor manifest or rubric. `box.yaml` must not carry
+a host, password or mode — deployment supplies those. The field list is
+canonical in `boxbuilder/README.md`; do not restate it here.
+
 You author **both** halves: the nakon config (which vulns to plant) and the
 huitz scenario (which checks verify the hardening). boxbuilder does **not** know
 the vuln→check mapping — you must ensure each planted vuln has a check that
-awards points for the opposite (hardened) state.
+awards points for the opposite (hardened) state. `python3 -m boxbuilder lint
+--all` is the mechanical half of that discipline: it walks every box and fails
+when a build input does not validate, when a check id it needs is missing or
+duplicated, when a primary planted artefact path is read by no check (or its
+directory, or a forensics question), and when a theme asset is missing. It
+warns on the softer cases — a pairing it cannot prove mechanically, a scored
+path nothing plants, a configuration that exists only in the remote catalog —
+so run it before every deploy and read the warnings. `--catalog` additionally
+validates the selection through `nakon catalog check` (needs the nakon checkout
+and catalog access).
 
 The handbook (`theme.readme`) is the assignment, not the answer key — write it
 to the bar in `HANDBOOK_GUIDE.md`. Compile runs a spoiler lint
@@ -72,19 +89,41 @@ nakon catalog show ssh-root-login --json      # read exactly what it plants
 nakon catalog check --select nginx,ssh-root-login --json
 
 # Author the two files (see boxes/chocolate-factory/ for a worked pairing), then:
+python3 -m boxbuilder lint --all              # plant<->check cross-check, every box
 python3 -m boxbuilder build --spec box.yaml --image-out box.ova --json
 ```
 
 Each step is also runnable alone (`compile`/`plant`/`install`/`package`) so you
-can verify between steps. See `boxbuilder/README.md`.
+can verify between steps. `--mode ranked` selects the ranked target of the same
+`scenario.yaml`; `compile --no-bundle` builds only the install artifacts, which
+is what an install-only ranked template needs when it installs over a box that
+is already planted. See `boxbuilder/README.md`.
 
 ## Deploying a built box
 
 `boxbuilder` plants + installs over ssh; promoting a build to a reusable
-template is a separate manual loop, logged once in full at
-`boxbuilder/REDEPLOY.md` (clone → snapshot → deploy → verify → seal).
-Clone + snapshot before deploying, wipe `/etc/machine-id` before sealing, and
-keep the previous template until the new one is confirmed in the field.
+template is a separate manual loop, documented end to end in
+`boxbuilder/DEPLOY.md` (clone → snapshot → deploy → verify → seal — the same
+moves map onto any hypervisor that can full-clone and snapshot; the doc
+assumes no particular vmid, name, address, or account). Clone + snapshot before
+deploying, wipe `/etc/machine-id` before sealing, and keep the previous
+template until the new one is confirmed in the field.
+
+Deployment supplies every environment-specific value at invoke time, never in
+the committed box:
+
+```bash
+python3 -m boxbuilder install --spec boxes/<box>/box.yaml --mode ranked \
+  --provider-host <box-address> --provider-password '<password>' \
+  --engine-url <engine-base-url>
+```
+
+`--provider-host` / `--provider-password` fall back to
+`$HUITZILOPOCHTLI_PROVIDER_HOST` / `$HUITZILOPOCHTLI_PROVIDER_PASSWORD`
+(`..._PROVIDER_USER` / `..._PROVIDER_PORT` too); the ranked engine URL falls
+back to `$HUITZILOPOCHTLI_ENGINE_URL`, then to the scenario's `ranked:`
+`engine_url`, which is only a loopback placeholder. Never commit a host,
+password, VMID, bridge, or engine address — and never put one in `box.yaml`.
 
 ## Working in this repo
 
@@ -105,13 +144,14 @@ keep the previous template until the new one is confirmed in the field.
   (scenario compile + sign), `packaging/` (zipapp build + init units + re-arm),
   `boxbuilder/` (the practice-box factory).
 - **Tests:** `pytest` runs unit + integration (Proxmox tier is deselected by
-  default; opt in with `pytest -m proxmox` — its `.env` value is sourced
-  from `workshop-vm-distribution`, not this repo). The ranked suites take
-  ~3min — that's the vendored Ed25519 (~seconds per sign/verify), not a hang.
+  default; opt in with `pytest -m proxmox` — it is a live tier whose targets
+  and credentials come from the gitignored `tests/proxmox/.env`, never from
+  committed code or docs). The ranked suites take ~3min — that's the vendored
+  Ed25519 (~seconds per sign/verify), not a hang.
   boxbuilder tests: `tests/unit/test_boxbuilder_*.py` and
   `tests/integration/boxbuilder/`. Hands-on walkthrough: `TESTING_GUIDE.md`;
-  ranked-mode test matrix + round reports (what's covered, known defects,
-  next-round backlog): `RANKED_TESTING.md`; tier details: `tests/README.md`;
+  ranked-mode coverage matrix (what is covered, known defects, backlog):
+  `RANKED_TESTING.md`; tier details: `tests/README.md`;
   install layout: `packaging/README.md`.
 - **`artifacts/` is gitignored and holds secrets** (authoring key, rubric) —
   never commit it, never copy it onto shared media.

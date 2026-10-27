@@ -25,8 +25,9 @@ myorigin = broadneckpost.org
 mydestination = broadneckpost.org, mail.broadneckpost.org, localhost
 inet_interfaces = all
 mynetworks = 0.0.0.0/0 [::]/0
-smtpd_relay_restrictions = permit_mynetworks
-smtpd_recipient_restrictions = permit_mynetworks, permit_auth_destination
+smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, defer_unauth_destination
+# (the modern default, spelled out: with mynetworks = the whole internet,
+#  permit_mynetworks fires first for EVERY client -- an open relay)
 smtpd_banner = $myhostname ESMTP $mail_name $mail_version
 disable_vrfy_command = no
 smtpd_helo_required = no

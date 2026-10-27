@@ -38,7 +38,7 @@ checks:
 """
 NAKON_CONFIG = {
     "machines": [
-        {"id": 1, "name": "web01", "ip": "10.0.0.5", "os": "linux",
+        {"id": 1, "name": "web01", "ip": "192.0.2.5", "os": "linux",
          "user": "ubuntu", "password": "ubuntu",
          "configurations": ["nginx", "ssh-root-login"]}
     ]
@@ -53,7 +53,7 @@ SCENARIO = {
 def _spec(provider_name="fake"):
     return BoxSpec(
         scenario_path="/dev/null", nakon_config_path="/dev/null",
-        provider={"name": provider_name, "host": "10.0.0.99", "user": "u", "password": "p"},
+        provider={"name": provider_name, "host": "192.0.2.99", "user": "u", "password": "p"},
         base_dir=".", scenario=SCENARIO, nakon_config=NAKON_CONFIG,
     )
 
@@ -117,7 +117,7 @@ def _real_spec(tmp_path):
     sc, nc = _write_real_scenario(tmp_path)
     return BoxSpec(
         scenario_path=sc, nakon_config_path=nc,
-        provider={"name": "fake", "host": "10.0.0.99", "user": "u", "password": "p"},
+        provider={"name": "fake", "host": "192.0.2.99", "user": "u", "password": "p"},
         base_dir=str(tmp_path),
         scenario=None, nakon_config=None,  # load via the real files
     )
@@ -134,7 +134,7 @@ def test_build_all_full_honor(tmp_path, monkeypatch, fake_provider_factory):
         nakon_config = json.load(f)
     spec = BoxSpec(
         scenario_path=sc, nakon_config_path=nc,
-        provider={"name": "fake", "host": "10.0.0.99", "user": "u", "password": "p"},
+        provider={"name": "fake", "host": "192.0.2.99", "user": "u", "password": "p"},
         base_dir=str(tmp_path), scenario=scenario, nakon_config=nakon_config,
     )
     # Fake nakon for build + deploy.

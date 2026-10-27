@@ -248,10 +248,13 @@ def load_pool_spec(store: Store, scenario_name: str,
 
 # --- repo box-folder source ---------------------------------------------------
 #
-# Ranked scenarios live in the repo: each box folder carries its compiled
-# ``engine_record.json`` (rubric + adversary + services, produced by
-# authoring compile). The engine never reads YAML (stdlib-only); the folder is
-# the source of truth and the DB is the serving cache.
+# An engine with a local box folder can read compiled ``engine_record*.json``
+# files (rubric + adversary + services, produced by `boxbuilder compile`)
+# directly from it. Those records are build artefacts, not committed source:
+# a deployed engine normally has no such folder and is fed the record through
+# POST /admin/scenarios instead. The engine never reads YAML (stdlib-only);
+# the folder, when present, is the source of truth and the DB is the
+# serving cache.
 
 import os
 

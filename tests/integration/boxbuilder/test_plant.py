@@ -19,7 +19,7 @@ SCENARIO = {
 }
 NAKON_CONFIG = {
     "machines": [
-        {"id": 1, "name": "web01", "ip": "10.0.0.5", "os": "linux",
+        {"id": 1, "name": "web01", "ip": "192.0.2.5", "os": "linux",
          "user": "agentuser", "password": "agentpass",
          "configurations": ["nginx", "ssh-root-login"]}
     ]
@@ -36,7 +36,7 @@ def _spec(provider_cfg):
 
 def test_plant_uses_provider_address(tmp_path, monkeypatch, fake_provider_factory):
     # The provider will report this address; it must override the agent config's.
-    cfg = {"name": "fake", "host": "192.168.50.10", "user": "provuser",
+    cfg = {"name": "fake", "host": "192.0.2.50", "user": "provuser",
            "password": "provpass", "port": 2222}
     deploy_json = {"bundle_id": "bid", "machines": [], "failures": 0, "ok": True, "log_dir": None}
     nakon_dir = install_fake_nakon(
@@ -53,7 +53,7 @@ def test_plant_uses_provider_address(tmp_path, monkeypatch, fake_provider_factor
         nakon_dir=nakon_dir, provider_factory=fake_provider_factory, log=lambda *a: None,
     )
     assert result["ok"] is True
-    assert result["machine"]["addr"] == "192.168.50.10"
+    assert result["machine"]["addr"] == "192.0.2.50"
     assert result["machine"]["user"] == "provuser"
     assert result["machine"]["port"] == 2222
 
@@ -63,7 +63,7 @@ def test_plant_uses_provider_address(tmp_path, monkeypatch, fake_provider_factor
     assert not (tmp_path / "nakon-deploy-config.json").exists()
     derived = json.loads(capture.read_text())
     m = derived["machines"][0]
-    assert m["ip"] == "192.168.50.10"
+    assert m["ip"] == "192.0.2.50"
     assert m["user"] == "provuser"
     assert m["password"] == "provpass"
     assert m["port"] == 2222

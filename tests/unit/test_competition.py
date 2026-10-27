@@ -107,8 +107,14 @@ def test_join_score_services_and_end(store, monkeypatch):
     r1 = _checkin(store, priv, _bundle(box_id, 1), 1000.0)
     assert r1.score.total == 10
     assert r1.run_status == "running"
+    # The ranked report's top bar gets a live position + the event's end.
+    assert (r1.rank, r1.rank_total) == (1, 1)
+    assert r1.run_ends_at is not None
+    # One tick of uptime history rides along with every service status.
+    assert r1.score.sla_status[0].history == ["UP"]
     r2 = _checkin(store, priv, _bundle(box_id, 2), 1062.0)
     assert r2.score.total == 13  # 10 hardening + 3 capped service intervals
+    assert r2.score.sla_status[0].history == ["UP", "UP"]
 
     board = competition.leaderboard_payload(store, comp, now=1062.0)
     row = board["leaderboard"][0]
@@ -121,7 +127,32 @@ def test_join_score_services_and_end(store, monkeypatch):
     r3 = _checkin(store, priv, _bundle(box_id, 3), 1063.0)
     assert r3.run_status == "ended"
     assert r3.score.total == 13  # frozen
+    # The frozen score keeps the safe SLA state/history (so the report's
+    # uptime tab survives the end) but never replays point-in-time results,
+    # whose reasons are the answer key.
+    assert r3.score.results == []
+    assert r3.score.sla_status[0].state == "UP"
+    assert r3.score.sla_status[0].history == ["UP", "UP"]
     assert store.get_player_by_box(box_id).status == "finished"
+
+
+def test_checkin_reports_live_scoreboard_position(store):
+    comp = _comp(store)
+    priv_a, box_a, _ = _join(store, comp, "Ada")
+    priv_b, box_b, _ = _join(store, comp, "Grace")
+
+    # First check-ins: Ada has the banner point, Grace does not. Ada's service
+    # is down, so she cannot accrue uptime points and Grace can overtake.
+    ra = _checkin(store, priv_a, _bundle(box_a, 1, banner="ok", web=False), 1000.0)
+    rb = _checkin(store, priv_b, _bundle(box_b, 1, banner="bad"), 1001.0)
+    assert (ra.rank, ra.rank_total) == (1, 2)
+    assert (rb.rank, rb.rank_total) == (2, 2)
+
+    # Grace overtakes on a later tick; each response's rank follows the board.
+    rb2 = _checkin(store, priv_b, _bundle(box_b, 2, banner="ok"), 1062.0)
+    ra2 = _checkin(store, priv_a, _bundle(box_a, 2, banner="ok", web=False), 1063.0)
+    assert rb2.rank == 1 and ra2.rank == 2
+    assert rb2.rank_total == ra2.rank_total == 2
 
 
 def test_run_expiry_freezes_and_marks_finished(store):
@@ -166,3 +197,35 @@ def test_join_rejects_bad_and_expired_code(store):
     sig = signing.sign(priv, canon.canonicalize(body))
     status, payload = competition.handle_join(store, body, sig, b"s")
     assert status == 410
+
+
+def test_active_player_lookup_only_sees_live_competitions(store):
+    comp = _comp(store)
+    player, _code, err = competition.create_player_with_code(store, comp, "Ada", b"s")
+    assert err is None
+    found = store.find_active_player_by_name("ada")
+    assert found is not None and found.player_id == player.player_id
+    assert competition.is_active_player(found, comp)
+
+    store.end_competition(comp.id)
+    assert store.find_active_player_by_name("ada") is None
+    ended = store.get_player(player.player_id)
+    assert not competition.is_active_player(ended, store.get_competition(comp.id))
+
+
+def test_delete_competition_is_ended_only_and_keeps_boxes(store):
+    comp = _comp(store)
+    _priv, box_id, _payload = _join(store, comp)
+    player = store.get_player_by_box(box_id)
+    assert player is not None
+
+    # A live competition cannot be deleted out from under its players.
+    assert store.delete_competition(comp.id) is False
+    assert store.get_competition(comp.id) is not None
+
+    store.end_competition(comp.id)
+    assert store.delete_competition(comp.id) is True
+    assert store.get_competition(comp.id) is None
+    assert store.get_player(player.player_id) is None
+    # Boxes/scores are history and survive a competition removal.
+    assert store.get_box(box_id) is not None

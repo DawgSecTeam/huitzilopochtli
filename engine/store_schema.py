@@ -35,9 +35,9 @@ CREATE TABLE IF NOT EXISTS sla_state (
     consec_fail INTEGER NOT NULL,
     last_credited_at REAL NOT NULL,
     accrued_points INTEGER NOT NULL,
+    history_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (box_id, check_id)
 );
-
 CREATE TABLE IF NOT EXISTS scores (
     box_id TEXT PRIMARY KEY,
     scenario_name TEXT NOT NULL,

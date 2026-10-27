@@ -13,9 +13,16 @@ set -eu
 mv /var/log/mail.log /var/log/mail.log.1
 systemctl kill -s HUP rsyslog 2>/dev/null || kill -HUP "$(pidof rsyslogd)" 2>/dev/null || true
 sleep 2
-[ -f /var/log/mail.log ] || { echo "85-rotate: rsyslog did not recreate mail.log"; ls -l /var/log/mail*; exit 1; }
+# rsyslog recreates the live file on its next write; seed it with the
+# stock perms so nothing races (wiper cron, first inbound mail).
+if [ ! -f /var/log/mail.log ]; then
+    touch /var/log/mail.log
+    chown root:adm /var/log/mail.log
+    chmod 0640 /var/log/mail.log
+    systemctl kill -s HUP rsyslog 2>/dev/null || true
+fi
 
-COUNT=$(grep -c '198.51.100.23' /var/log/mail.log.1)
+COUNT=$(grep -c 'client=unknown\[198.51.100.23\]' /var/log/mail.log.1)
 if [ "$COUNT" -ne 40 ]; then
     echo "85-rotate: expected 40 alias-address lines in mail.log.1, got $COUNT"
     exit 1

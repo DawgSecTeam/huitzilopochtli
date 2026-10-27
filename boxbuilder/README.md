@@ -1,508 +1,496 @@
 # boxbuilder
 
-A practice-box factory that pairs **nakon**-planted vulnerabilities with
-**huitzilopochtli** hardening scoring, automating the four-step workflow for
-creating CyberPatriot / eCitadel-style boxes and competitions.
+A practice-box factory: it pairs **nakon**-planted vulnerabilities with
+**huitzilopochtli** hardening scoring, turning one authored scenario and one
+nakon config into a buildable box in four steps.
 
-boxbuilder is **author/build-machine tooling** (like `authoring/` and
-`packaging/`) — it is excluded from the agent zipapp and may use third-party
-deps (PyYAML, paramiko). It is invoked via `python3 -m boxbuilder ...`.
+It is **author/build-machine tooling** (like `authoring/` and `packaging/`) —
+not part of the agent zipapp, free to use PyYAML/paramiko, invoked as
+`python3 -m boxbuilder …` — and never touches a box directly: every remote step
+goes through a provider (v1: `ssh`).
 
-## The workflow
+## The four-step workflow
 
 ```
-  ┌─ you author ──────────────────────────────┐    ┌─ boxbuilder runs ───────────────────────────┐
-  │  box spec YAML   (scenario + nakon config)│    │                                              │
-  │  scenario YAML   (huitz checks)           │ ─► │  1. compile   scenario+key ─► manifest,     │
-  │  nakon config    (which vulns to plant)   │    │                            rubric, agent.pyz│
-  └───────────────────────────────────────────┘    │                            + nakon bundle    │
-                                                   │  2. plant     nakon deploy ─► vulns on box   │
-                                                   │  3. install   agent.pyz+manifest ─► on box   │
-                                                   │                            (+engine if ranked)│
-                                                   │  4. package   export box image for distro    │
-                                                   └──────────────────────────────────────────────┘
+   you author                          boxbuilder runs
+   boxes/<box>/scenario.yaml  ──►  1. compile   scenario → signed manifest,
+   boxes/<box>/nakon.json                         rubric, engine record,
+   boxes/<box>/box.yaml                           agent.pyz, nakon bundle
+                                   2. plant     nakon deploy → vulns on the box
+                                   3. install   agent + manifest (+ rubric in honor)
+                                   4. package   export the box image
 ```
 
 The key idea: **nakon plants a vulnerability; huitzilopochtli scores whether a
-team hardened it.** You author *both* halves — the vuln selection (nakon config)
-and the checks that verify the hardening (scenario YAML). boxbuilder does **not**
-know the vuln→check mapping; it orchestrates. This keeps the vulndb
-consumer-agnostic and avoids a mirrored registry of an unfinished catalog.
+team hardened it.** You author both halves — the vuln selection (nakon config)
+and the checks that verify the hardening (scenario). boxbuilder does not know
+the vuln→check mapping; it orchestrates. That keeps the vulndb consumer-agnostic
+and avoids a mirrored registry of an unfinished catalog.
 
-## Quick start
+Each step is also runnable alone; `build --from-step` resumes, refusing when the
+scenario or nakon config changed since `compile` (the `build-state.json`
+fingerprint).
+
+### Quick start
 
 ```bash
-# 1. Browse the vulndb catalog and pick vulns (agent-facing, read-only):
+# Browse and validate vulns (read-only, agent-safe):
 nakon catalog list --json
-nakon catalog check --select nginx,ssh-root-login,suid-find --json
+nakon catalog show ssh-root-login --json
+nakon catalog check --select nginx,ssh-root-login --json
 
-# 2. Author a nakon config (which vulns) + a huitz scenario (which checks).
-#    See boxes/chocolate-factory/ for a worked pairing.
-
-# 3. Author a box spec tying them together:
-#    boxes/chocolate-factory/box.yaml
-
-# 4. Build the box (all four steps, resumable):
-python3 -m boxbuilder build \
-  --spec boxes/chocolate-factory/box.yaml \
-  --image-out /tmp/chocolate-factory.ova --json
+# Author the two inputs (see the worked example below), cross-check them, then
+# build (build ends at package, so --image-out is required):
+python3 -m boxbuilder lint --all
+python3 -m boxbuilder build --spec boxes/<box>/box.yaml --image-out <path>.ova --json
 ```
 
-Each box lives in its own directory (`boxes/<name>/box.yaml`,
-`scenario.yaml`, `nakon.json`, plus `assets/`). The worked example is the
-**Cocoa Falls Chocolate Works** scenario:
-`boxes/chocolate-factory/box.yaml` pairs with `scenario.yaml` and `nakon.json`
-in the same directory.
-It targets an Ubuntu/Xubuntu XFCE VM in honor mode and pairs ordinary cyPAT-style
-access-control findings (root SSH login, passwordless sudo, unauthorized users,
-unwanted admin membership, and loose permissions) with cron, malicious media,
-autostart, and system-service persistence findings. Its bundled planting seeds
-are ensured into vulndb idempotently when selected; point `VULNDB_UI_URL` at the
-shared catalog before compiling.
+### The `--json` contract
 
-Each step is also runnable on its own (see CLI below) so you can pause/verify
-between steps.
+Every subcommand takes `--json`. With it, **the result is exactly one JSON line
+on stdout** (parseable like nakon's `--json`), so `… --json | jq` works and an
+orchestrator can take `stdout.splitlines()[-1]`. Everything else — progress,
+`[boxbuilder] …` log lines, warnings, and the human summary printed without
+`--json` — goes to **stderr**. A failed `--json` call still prints one line
+(`{"ok": false, "error": …}`) and exits non-zero.
 
-### VNC desktop caveats (xubuntu-vnc-derived templates)
+## The inputs you author
 
-If a VNC-viewed box (like chocolate-factory) shows a solid-black screen with
-no desktop -- theme shortcuts (e.g. the "Scoring Report" icon) included --
-this is very unlikely to be a boxbuilder/theme/agent bug even though it
-looks like one from the shortcut's perspective. It's a live-cursor-but-black
-X session underneath, and boxbuilder has no visibility into or control over
-VNC/X11/lightdm at all (that setup lives entirely on the box's own template
-image, outside this repo). Three independent, compounding causes were found
-by direct `xwd`-based capture of a real X display (bypassing VNC/Guacamole
-entirely -- a moving cursor is NOT proof the session is rendering; x11vnc
-tracks/draws the pointer separately from the framebuffer capture):
+```
+boxes/<box>/
+  scenario.yaml     # scenario + checks; also the ranked: block when applicable
+  nakon.json        # which vulns to plant
+  box.yaml          # the spec tying the two together
+  assets/           # theme files (wallpaper, logo, handbook)
+```
 
-1. **No real lightdm autologin.** A template built by manually typing a
-   password into the greeter once (so it "stays logged in" as long as the
-   VM is never rebooted) breaks on the first reboot or `systemctl restart
-   lightdm` -- it drops back to a real login greeter nobody has credentials
-   for, which sits there indefinitely with a dark background and a live
-   cursor. This was the actual root cause the one time this was chased down
-   in full (2026-09-05); the other two below are real but secondary.
-2. **DPMS screen blanking** after an idle timeout, independently
-   re-asserted by `xfce4-power-manager` regardless of raw `xset` settings.
-3. **`xfce4-screensaver`'s own idle-activation** (separate from DPMS)
-   painting a fullscreen black lock/blank window.
+Worked example: [`boxes/chocolate-factory/`](../boxes/chocolate-factory/) —
+[box.yaml](../boxes/chocolate-factory/box.yaml),
+[scenario.yaml](../boxes/chocolate-factory/scenario.yaml),
+[nakon.json](../boxes/chocolate-factory/nakon.json) side by side.
 
-`boxes/shared/fix-xubuntu-vnc-display.sh` fixes all three (plus
-a related machine-id/DHCP-collision issue -- see the script's own header) on
-a booted (not yet re-templated) clone -- see its header comment for the full
-incident writeup, exact commands, and the `xwdtopnm`-not-ImageMagick
-diagnostic note. Run it once against any new xubuntu-vnc-derived template
-before re-sealing with `qm template`.
+### 1. nakon config — which vulns to plant
 
-**Updating an already-sealed Proxmox template**: `qm template` on LVM/LVM-thin
-storage doesn't just flip a config flag -- it converts the backing volume
-itself to a read-only "base" LV. Setting `template: 0` back via the config
-API looks like it works (the flag flips) but the disk stays read-only and
-the VM fails to start ("device is not writable"). There is no supported way
-to edit a template in place: full-clone it to a fresh vmid, boot and edit
-the clone, shut it down, and re-seal *that* (`qm template`) as the new
-template, retiring the old vmid.
+A nakon machine list. Each machine's `configurations` names vulndb catalog
+entries (with `vars`) that, once deployed, make the box insecure in specific
+ways. Browse with `nakon catalog list --json`; validate a selection with
+`nakon catalog check --config <file> --json`. Three rules:
 
-### Desktop shortcut/report caveats (any theme-enabled, snap-browser image)
+- Exactly **one machine** per config (v1 targets a single box), and it must set
+  `os`.
+- `ip` / `user` / `password` are **placeholders**: at deploy time boxbuilder
+  rewrites them from the provider handle, so this file is never the source of
+  truth for where the box is.
+- Plain JSON only — no comments, no `_comment` field.
 
-Unlike the black-screen issue above, these three showed up even with the
-display itself rendering correctly -- shortcuts that just quietly do the
-wrong thing when clicked. Found the same way: live SSH diagnosis against a
-booted clone, not a code read, since none of them are visible from
-boxbuilder's side of the fence.
+### 2. scenario — which checks score the hardening
 
-1. **Content-addressed filenames must never reach a Desktop icon.**
-   `vulndb.ensure_attachment()`'s `<sha256[:16]>-<basename>` naming exists so
-   identical attachment bytes are reused across builds -- it's an internal
-   vulndb storage convention. `theme-readme.json` used to `cp` the
-   attachment to each user's Desktop *under that same name*, so the icon
-   read as e.g. `158f3cbb4e51da58-chocolate-factory-README.md` instead of
-   `README.html`, and any shortcut assuming the clean name (like a scenario's
-   own `desktop_shortcuts` entry pointing at the handbook copy) never
-   resolved. Fixed by always copying out under a fixed `README.html` (authored
-   Markdown is rendered to that themed page at build time by
-   `boxbuilder/mdhtml.py`).
-2. **A bare `~`/`$HOME` in a `.desktop` `Exec=` line is not guaranteed to be
-   shell-expanded.** GLib's desktop-entry launcher does quote-removal, not
-   tilde/variable expansion, so `Exec=xdg-open ~/Documents/x.html` can
-   silently fail to resolve regardless of whether the target file exists.
-   Wrap any such Exec in `sh -c '...'` (e.g. `sh -c 'xdg-open
-   $HOME/Documents/huitzilopochtli/README.html'`) so the shell -- not the
-   launcher -- does the expansion.
-3. **A strictly-confined snap browser (Ubuntu's default Firefox) can't see
-   `/opt`.** `snap connections firefox` shows only the `home` interface
-   connected -- no access outside `$HOME`. The auto-appended "Scoring
-   Report" shortcut used to point straight at
-   `/opt/.huitzilopochtli/report.html`; Firefox would actually launch (so
-   this doesn't look like caveat #2) but show "File not found", because the
-   file is genuinely invisible to the sandboxed process, not because it's
-   missing. Fixed by `packaging/sync-report.sh` (run via
-   `huitzilopochtli-agent.service`'s `ExecStartPost`, which is why that
-   unit's `ProtectHome` is `false` rather than `read-only`) mirroring
-   `report.html` into each real user's `$HOME/Documents/huitzilopochtli/`,
-   and pointing the shortcut there instead. Honor mode's re-grade timer
-   keeps that copy fresh; a ranked-mode box's single long-running process
-   only gets the very first snapshot synced (`ExecStartPost` fires once, at
-   service start) -- a known, currently-unaddressed limitation for that
-   mode. The mirror lives off the Desktop on purpose: the desktop stays at
-   exactly three items per user -- `Forensics-Questions.txt`, the handbook
-   launcher, and the Scoring Report launcher (anything a scenario plants as
-   challenge content, like chocolate-factory's `vault-code.txt`, is exempt).
-   `sync-report.sh` also deletes the legacy `$HOME/Desktop/report.html|.json`
-   copies older builds used to make, and the `huitz` CLI searches both
-   locations (Documents first). The Windows mirror is
-   `C:\Users\Public\Documents\huitzilopochtli\` (same rules).
-4. **A `.desktop` launcher's "trusted" flag is stored per-user.** gio's
-   `metadata::trusted` lives in each user's gvfs-metadata store, so setting
-   it as root at plant time does nothing for the player: double-clicking
-   still popped the "Untrusted application launcher" dialog.
-   `theme-shortcuts.json` now re-runs the `gio set` **as the desktop user**
-   (`runuser`/`su` + `dbus-launch`, which provides a session bus with no X
-   session up), keeping the `chmod 755`. `/etc/skel` copies cannot be
-   pre-trusted (metadata is per-user); team accounts exist at plant time and
-   are handled directly.
-
-### Score-change notifications (sounds + toasts)
-
-Like the real CyberPatriot engine, boxes announce score movement: the
-agent diffs each run's total against the previous one and plays the
-points-gained chime or penalty alarm plus a desktop toast, with a
-matching transient banner on the report page. The first run after a
-(re)install has no baseline and is always silent; `install` clears any
-stale baseline and `rearm.py` removes it too. Sound is console-only
-over VNC (see `packaging/README.md` § "Score-change notifications" for
-behavior, the off switch, and `agent/sounds.CREDIT.md` for sound
-provenance).
-
-## The two inputs you author
-
-### 1. nakon config (which vulns to plant)
-
-A nakon machine list. Each entry's `configurations` names vulndb catalog entries
-that, when deployed, make the box insecure in specific ways. Browse with
-`nakon catalog list --json`; validate a selection with
-`nakon catalog check --config <file> --json`. See
-`boxes/chocolate-factory/nakon.json`.
-
-The `ip`/`user`/`password` are **placeholders** — at deploy time boxbuilder
-overwrites them with the provider's address (so the box spec is the single source
-of truth for where the box is). v1 is single-box; the first machine is targeted.
-
-### 2. huitz scenario (which checks score the hardening)
-
-A standard huitzilopochtli scenario YAML (same shape `authoring/compile.py`
-consumes). Each check awards points for correctly hardening what a planted vuln
-broke. Mode (`honor`/`ranked`) and `engine_url` live here. See
-`boxes/chocolate-factory/scenario.yaml` and `architecture.md` §8.
-
-### The box spec (ties them together)
+One standard huitzilopochtli scenario YAML, authored to the same shape
+`authoring/compile.py` consumes — and the same file serves both build targets:
 
 ```yaml
-scenario: ./scenario.yaml
-nakon_config: ./nakon.json
+scenario:
+  name: "Example"
+  version: 1
+  mode: honor            # default build target; 'ranked' means ranked-only
+  hosts: ["localhost"]
+
+ranked:                  # optional; only read by a ranked build
+  engine_url: "http://127.0.0.1:8080"   # loopback placeholder; override at build time
+  checks: [...]          # ranked-only extra checks, appended
+  services: [...]        # scored services (self-reported uptime)
+  adversary: {...}       # engine-side red-team schedule
+  pool: {...}            # workshop pool provisioning (env-placeholder friendly)
+
+checks: [...]
+theme: {...}
+forensics: [...]
+```
+
+`scenario.mode` names the default target. `honor` means the file can build
+either target; `ranked` means it is ranked-only, and an honor build is an error.
+An honor build never reads the `ranked:` block, so ranked-only content cannot
+leak into an honor manifest or rubric — structurally.
+
+- `ranked.engine_url` is a **loopback placeholder** meaning "not configured
+  yet"; the real address comes from `--engine-url` or
+  `$HUITZILOPOCHTLI_ENGINE_URL` (see *Build targets*).
+- `ranked.pool` fields may be `${VAR}` strings, expanded only on a ranked build:
+  `${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}`, `..._TEMPLATE_USER`,
+  `..._TEMPLATE_PASSWORD`. An unset variable is an error, so a committed
+  scenario names no deployment specifics.
+- `services` / `adversary` / `pool` belong under `ranked:`; a ranked-only file
+  (`scenario.mode: ranked`) may also carry them at top level.
+
+### The spec that ties them
+
+```yaml
+scenario: scenario.yaml
+nakon_config: nakon.json
 provider:
   name: ssh
-  host: 192.168.50.10
-  user: ubuntu
-  password: ubuntu
-  known_hosts: ~/.ssh/known_hosts   # required unless you opt into insecure host keys
-authoring_key: ./authoring.key      # optional; auto-generated+persisted (0600) if absent
+  user: sysadmin
 ```
 
-The SSH provider refuses to connect without a pinned host key by default
-(`HUITZILOPOCHTLI_INSECURE_HOST_KEYS=1` is a loud, throwaway-lab-only opt-out).
-Ranked installs refuse to send the admin token or rubric over plain HTTP to a
-non-loopback engine unless `HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE=1`; prefer
-`https://`. The artifacts directory is created `0700`, rubrics/engine
-records/configs are `0600`, and the transient nakon deploy config (which holds
-the SSH password) is deleted immediately after deploy.
+That is the whole committed spec; paths resolve relative to it. It carries **no
+deployment facts** — no host, no password (a cloned box's DHCP address changes
+every rebuild); deployment supplies those at invoke time. An optional
+`authoring_key: ./authoring.key` and `provider.known_hosts` are read from the
+spec when you want them pinned.
 
-Mode is read from the scenario, not duplicated here.
+## Build targets and modes
 
-## Modes
+The target is `--mode honor|ranked` (default: `scenario.mode`). There are no
+separate ranked scenario or spec files: `--mode ranked` merges the same file's
+`ranked:` block, and `--mode honor` ignores it.
 
-boxbuilder supports both huitzilopochtli modes in v1:
+| | **honor** | **ranked** | **ranked competition** |
+|---|---|---|---|
+| engine needed | no | yes — a running engine on its own host | yes — at join time |
+| rubric | on the box (`.score.dat`, obfuscated) | engine-side only | engine-side only |
+| step 3 also | — | uploads the scenario record, mints an enrollment token | nothing; the admin uploads the record |
+| enrollment | — | token in `agent_config.json`, consumed on first boot | player runs `huitz join` with the one-time code |
+| `ranked:` block read | no | yes | yes |
 
-| | **honor** (take-home) | **ranked** (live) |
-|---|---|---|
-| Step 3 places | agent.pyz + manifest + **rubric.json** (on-box scoring) | agent.pyz + manifest (rubric stays off-box) |
-| Engine needed? | No | **Yes** — a running engine the box checks in to |
-| Step 3 also | — | uploads the scenario record + mints an enrollment token |
-| `agent_config.json` | mode=honor, rubric set | mode=ranked, identity_path + checkin_interval_s + enrollment_token set |
+Step 3 places the **agent** (`agent.pyz`) plus the signed manifest and public
+key, `agent_config.json`, the motd fragment (POSIX) and an init unit in every
+mode; honor adds the obfuscated rubric and (on systemd) a re-grade timer. Ranked
+adds `identity_path` / `checkin_interval_s`, the agent creates `identity.json` on
+first boot, and any inherited honor timer is removed; the engine never lives on a
+practice box.
 
-For ranked mode, set `HUITZILOPOCHTLI_ADMIN_TOKEN` (the engine's admin token)
-or pass `--admin-token`; boxbuilder uses the engine's `/admin/scenarios` and
-`/admin/tokens` endpoints (engine/server.py).
+- **Ranked** needs the engine's admin token: `--admin-token` or, preferably,
+  `$HUITZILOPOCHTLI_ADMIN_TOKEN` (the flag shows up in process lists and shell
+  history). boxbuilder posts the engine record to `/admin/scenarios` and mints a
+  token from `/admin/tokens`; `--enrollment-ttl` (default 86400 s) bounds its
+  life and `--checkin-interval` (default 60 s) sets the check-in cadence.
+- **Ranked competition** (`install`/`build --competition`): no upload and no
+  token. The box cannot check in until the player runs `huitz join` with the code
+  from the competition page, which binds the box and starts the agent.
+  Competition boxes are a separate lineage — an honor build cannot be turned
+  into one by flipping a flag, and each competition provisions its own pool.
 
-**Ranked competition mode** (`install`/`build --competition`): the scenario
-record is uploaded by the competition admin, not by boxbuilder. Boxbuilder
-installs the agent + signed manifest + authoring key with no enrollment token
-and leaves the agent unit disabled. The player runs `huitz join` with the
-one-time code from the competition page; that binds the box and starts the
-unit. Use this for a box that will be handed out by a workshop pool. Honor
-boxes cannot be converted to this lineage.
+### Where the addresses come from
 
-> **Note:** what lands *on the box* is the **agent** (`.pyz`) + manifest in both
-> modes. The **engine** (server) only exists in ranked mode and runs on a
-> *separate* host — there is no engine on a practice box. (architecture.md §5.2)
+- **Engine:** `--engine-url` > `$HUITZILOPOCHTLI_ENGINE_URL` >
+  `ranked.engine_url` (then a legacy `scenario.engine_url`). A ranked install
+  warns when the value is still the loopback placeholder. Plain-HTTP admin calls
+  to a non-loopback engine are refused unless
+  `HUITZILOPOCHTLI_ALLOW_INSECURE_ENGINE=1`; prefer `https://`.
+- **Provider:** `--provider-host` / `-user` / `-password` / `-port`, or
+  `$HUITZILOPOCHTLI_PROVIDER_{HOST,USER,PASSWORD,PORT}`, all overriding the spec.
+  A missing `user` defaults to `root`; a missing password prompts (only for
+  `plant`/`install`, which log in). Prefer the env var over `--provider-password`
+  for the same process-list reason.
+- **Host keys:** the ssh provider refuses to connect without a pinned host key —
+  `provider.known_hosts` in the spec or `$HUITZILOPOCHTLI_KNOWN_HOSTS`;
+  `HUITZILOPOCHTLI_INSECURE_HOST_KEYS=1` is a loud, lab-only opt-out.
 
-## CLI
+## CLI reference
 
-Every subcommand supports `--json`: the **result is a single JSON line on
-stdout** (parseable like nakon's `--json`); progress/logs go to **stderr**, so
-`boxbuilder <cmd> --json | jq` works.
+Run everything as `python3 -m boxbuilder <subcommand>`.
+
+Common to `compile`, `plant`, `install`, `package` and `build`:
 
 ```
-boxbuilder compile --spec box.yaml [--out artifacts/] [--json]
-    Compile scenario + build agent.pyz + build nakon bundle. (Needs vulndb.)
-
-boxbuilder plant   --spec box.yaml [--out artifacts/] [--bundle DIR] [--json]
-    Deploy the vulns onto the box via nakon. (Needs only paramiko.)
-
-boxbuilder install --spec box.yaml [--out artifacts/] [--init systemd|openrc|none]
-                   [--checkin-interval N] [--json]
-    Place agent + manifest (+ rubric for honor) on the box and enable the init
-    unit. Ranked also uploads the engine record + mints an enrollment token
-    (admin token from $HUITZILOPOCHTLI_ADMIN_TOKEN).
-
-boxbuilder package --spec box.yaml --image-out box.ova [--format ova|qcow2|raw] [--json]
-    Export the box image for distribution.
-
-boxbuilder build   --spec box.yaml [--from-step compile|plant|install|package]
-                   [--image-out box.ova] [--json]
-    Run all four steps with resumability. compile writes artifacts/build-state.json
-    with an input fingerprint; later steps refuse to resume if the scenario or
-    nakon config changed (re-run compile). Reinstalling clears the install dir
-    unconditionally, so no previous rubric/identity/report survives a mode or
-    scenario change.
+--spec FILE | --scenario FILE   exactly one; --scenario also needs --nakon-config
+--nakon-config FILE             nakon machine list (direct-flag path)
+--mode honor|ranked             build target (default: scenario.mode)
+--engine-url URL                ranked engine (default: $HUITZILOPOCHTLI_ENGINE_URL,
+                                then ranked.engine_url)
+--authoring-key FILE            32-byte Ed25519 seed (default: artifacts/authoring.key)
+--nakon-dir DIR                 nakon checkout (default: $NAKON_DIR, vendor/nakon,
+                                then ../nakon)
+--vulndb-url URL                vulndb-ui (default: $VULNDB_UI_URL, then
+                                http://127.0.0.1:3000)
+--provider ssh                  box provider (v1: ssh only)
+--provider-host HOST            box address (default: $HUITZILOPOCHTLI_PROVIDER_HOST)
+--provider-user USER            default: $HUITZILOPOCHTLI_PROVIDER_USER, then the spec
+--provider-password PASS        default: $HUITZILOPOCHTLI_PROVIDER_PASSWORD, else prompt
+--provider-port PORT            default: $HUITZILOPOCHTLI_PROVIDER_PORT, then 22
+--out DIR                       artifacts directory (default: ./artifacts)
+--json                          one JSON line on stdout
 ```
 
-Windows targets also run `packaging/huitz-hardening-win.ps1` (logon pop-ups,
-Edge first-run, Python MSI advertised shortcuts), exactly like the POSIX init
-customization. The Python MSI repair is bounded at 120s so a slow msiexec
-cannot stall a build. Reinstalling over a box that already carries the SYSTEM
-`HuitzilopochtliAgent` task stops the task and kills the old agent's python
-process first, so the locked `.grade.lock` cannot block the clean.
+Each subcommand, with its extra flags:
 
-You can pass the two inputs directly instead of `--spec`:
-`--scenario X.yaml --nakon-config Y.json --provider ssh --provider-host ...`.
+```
+compile    [common] --no-bundle
+    Compile the scenario, build agent.pyz, build the nakon bundle (needs nakon
+    plus its catalog access; themes or bundled seeds also need vulndb-ui).
+    --no-bundle skips nakon and vulndb entirely: install-only artifacts, for a
+    ranked template that installs over an already-planted honor seal.
 
-## Providers
+plant      [common] --bundle PATH
+    Deploy the vulns via `nakon deploy`. Needs the bundle (from --bundle or
+    build-state.json) and the ssh provider, but not vulndb.
 
-The provider is how boxbuilder reaches and packages the box. Pluggable; v1 ships:
+install    [common] --init systemd|openrc|none --admin-token TOKEN
+           --checkin-interval SECS --enrollment-ttl SECS --competition
+    Place the agent + manifest (+ rubric for honor), write the motd fragment,
+    install and enable the init unit; ranked also wires the engine.
 
-- **`ssh`** — box already running, reached over SSH (paramiko). `export()` returns
-  `mode: "manual"` with instructions (a remote box can't snapshot itself; you
-  export from its hypervisor).
+package    [common] --image-out PATH --format ova|qcow2|raw
+    Export the box image through the provider. --image-out is required.
 
-Future providers (drop-ins, no boxbuilder changes needed):
-- **`qemu`** — boots a cloud-init qcow2, deploys, exports the qcow2/ova.
-- **`proxmox`** — clones a template, deploys via jump host, exports (mirrors
-  tezcatlipoca's model).
+build      [common] --image-out PATH --from-step compile|plant|install|package
+           --init … --admin-token … --checkin-interval … --enrollment-ttl …
+           --competition --no-bundle --format …
+    Run the four steps with resumability: later steps refuse a build-state.json
+    whose input fingerprint no longer matches the scenario/nakon config, and a
+    reinstall clears the install dir so no old rubric, identity or report
+    survives a mode or scenario change.
 
-Address reconciliation: the provider handle is the single source of truth for
-the box's address. At deploy time, boxbuilder rewrites the nakon deploy config
-to use the provider's address (vulns still come from your nakon config).
+verify     [common] [--competition] [--expect-total N] [--for-seal]
+    Check a live box against the build: install completeness, manifest/key
+    lineage, agent config, init state, journal, report, theme artifacts and
+    (optionally) seal hygiene. Exit 1 on any failure; `skip` means "not
+    measurable here". See "Verify and seal" below.
+
+seal-prepare [common] [--competition] [--expect-total N] [--for-seal]
+           [--skip-verify] --yes
+    Stop and disable the agent, remove identity/enrollment/report state and
+    per-user mirrors, truncate /etc/machine-id, and print the lineage hashes.
+    Aborts unless `verify` passes. Idempotent; --yes is required.
+
+lint       --all | --spec FILE | --scenario FILE --nakon-config FILE
+           [--boxes-dir DIR] [--mode honor|ranked] [--engine-url URL]
+           [--catalog] [--nakon-dir DIR] [--json]
+    Cross-check each planted vuln against the scored checks. --all walks
+    ./boxes (or --boxes-dir) for */box.yaml. --catalog additionally validates
+    the selection with `nakon catalog check` (needs the nakon checkout and
+    catalog access); without it lint never touches the network.
+
+answer-key --scenario FILE [--out PATH] [--html] [--json]
+    Render authored `solution:` walkthroughs into a post-event handout.
+```
+
+`lint` writes one status line per box to stderr; with `--json`, stdout carries
+one line: `{"ok": bool, "reports": [...]}`. Exit code is 1 if any box fails and
+2 if `--all` found no boxes.
 
 ## nakon integration
 
-boxbuilder treats nakon as a **CLI dependency** (never imports it as a library),
-consistent with tezcatlipoca and nakon's documented CLI contract
-(`vendor/nakon/README.md`). It shells out:
+boxbuilder treats nakon as a **CLI dependency** — it shells out with
+`cwd = <nakon-dir>` (so nakon can read its own `.env`) and never imports it:
 
-- `nakon build --json` (cwd = `$NAKON_DIR`, so nakon can read its `.env`/vulndb)
-  → parses `{bundle_id, path, plans, machines}` from the final stdout line.
-- `nakon deploy --json` → parses `{ok, failures, machines[].steps}`.
+- `nakon build --json` → `{bundle_id, path, plans, machines}`. Bundles are
+  content-addressed under `<nakon-dir>/bundles/`, with the path recorded in
+  `build-state.json` for `plant`.
+- `nakon deploy --json` → `{bundle_id, machines, failures, ok, log_dir}`.
 
-Set `--nakon-dir` or `$NAKON_DIR` (default: the `vendor/nakon` submodule, falling back to a
-sibling `../nakon` checkout). Catalog theming goes through the `vendor/vulndb-cli` submodule
-(`$VULNDB_CLI_DIR`), not raw HTTP.
+**`bundle_id` / `request_key`.** A bundle is a map from request key to plan, and
+nakon looks plans up by `request_key` — platform plus the *ordered* configuration
+list — never by machine name. Anything that changes that list changes the key.
 
-## How vulns and checks relate (important)
+**Address reconciliation.** `plant` takes the vuln list for the target machine
+from your config but rewrites `ip` / `user` / `password` / `port` from the
+provider handle, the single source of truth for where the box is. That derived
+deploy config is a 0600 temp file inside `artifacts/`, deleted in a `finally`
+right after deploy because it holds the SSH password.
 
-boxbuilder does **not** pair them for you. When you author a box, you must ensure
-each planted vuln has a corresponding check that verifies the hardening — e.g.
-`ssh-root-login` (plants `PermitRootLogin yes`) pairs with a `file_regex` check
-expecting `PermitRootLogin no`. The worked example in `boxes/chocolate-factory/`
-shows several concrete pairings. An agent authoring a box
-should:
+**Themes are appended at compile time.** `theme:` is resolved into extra
+`configurations` entries and appended to every machine's list *before* the bundle
+is built, so the bundle's `request_key` covers them. That is why `plant` reads
+the compiled `artifacts/nakon-config.json` rather than the file you authored:
+deploying the raw config would omit the theme entries and ask nakon for a request
+key the bundle does not contain (falling back to the raw config only when no
+compiled copy exists).
 
-1. `nakon catalog show <vuln> --json` — read exactly what each vuln plants.
-2. Write a check that awards points for the *opposite* (hardened) state.
-3. `nakon catalog check` the selection before building.
+Set `--nakon-dir` or `$NAKON_DIR`; the default is the `vendor/nakon` submodule,
+then a sibling `../nakon` checkout. Catalog theming goes through the
+`vendor/vulndb-cli` submodule (`$VULNDB_CLI_DIR`), not raw HTTP.
+
+## How vulns and checks relate
+
+boxbuilder does **not** pair them for you. Each planted vuln needs a check that
+awards points for the **opposite, hardened state** — a vuln that plants
+`PermitRootLogin yes` pairs with a `file_regex` check expecting
+`PermitRootLogin no`. The rule: read what the vuln plants
+(`nakon catalog show <vuln> --json`), write a check that scores that artefact's
+hardened state, then `nakon catalog check` the selection and `boxbuilder lint`.
+
+`python3 -m boxbuilder lint --all [--json]` is the mechanical half of that
+discipline, and warnings do not fail it — they are the review list. For each box:
+
+- **errors** when the build inputs do not validate for either target, when a
+  configuration's primary planted artefact (its `FILE_PATH`, `DIR`,
+  `TARGET_FILE` or `LIB_PATH` var) is named by no check, when a theme asset
+  (`wallpaper` / `readme` / `logo`) is missing, or when a scenario has no checks
+  or duplicate check ids;
+- **warns** for pairings it cannot prove mechanically — a configuration that
+  plants identifying values none of the checks names, a check that scores a path
+  under a writable data root that nothing plants, and configurations that exist
+  only in the remote catalog (no bundled seed).
 
 ## Theming
 
-An optional top-level `theme:` block in the scenario YAML (sibling of `scenario`/
-`checks`/`adversary`) decorates the box the way a CyberPatriot/CCDC image is themed —
-wallpaper, a desktop README, an MOTD/login banner, and desktop launchers — on top of
-whatever vulns get planted:
+An optional top-level `theme:` block (a sibling of `scenario` / `checks` /
+`forensics`) decorates the box like a CyberPatriot/CCDC image:
 
 ```yaml
 theme:
-  title: "Operation Featherstorm"        # report masthead + shortcut label fallback
-  organization: "DawgSec"                 # report subtitle
-  accent: "#c8102e"                       # report accent color (#rrggbb)
-  logo: ./assets/logo.png                 # embedded in report.html as base64 (size-capped)
-  wallpaper: ./assets/wallpaper.png       # file path, resolved relative to the scenario file
-  readme: ./assets/README.md              # authored as Markdown; rendered to a themed
-                                          # README.html in every user's
-                                          # Documents/huitzilopochtli/ (off the Desktop;
-                                          # .html passes through unrendered)
-  motd: "Authorized use only."            # -> /etc/motd (+ /etc/issue if `issue` absent)
-  desktop_shortcuts: [{name: "Wiki", exec: "xdg-open https://..."}]
+  title: "Example Range"           # report masthead + shortcut label fallback
+  organization: "Example Org"      # report subtitle
+  accent: "#c8102e"                # report accent (#rrggbb)
+  logo: assets/logo.png            # embedded in the signed manifest (size-capped)
+  wallpaper: assets/wallpaper.png  # resolved relative to the scenario file
+  readme: assets/README.md         # authored Markdown → themed README.html on the box
+  motd: "Authorized use only."     # -> /etc/motd (+ /etc/issue if `issue` absent)
+  desktop_shortcuts:
+    - {name: "Wiki", exec: "xdg-open https://example.invalid"}
+```
 
-# Scored forensics questions (CyberPatriot-style) -- see "Forensics questions" below.
+`theme` keys split by destination:
+
+- **Signed manifest:** `title`, `organization`, `accent`, the base64 `logo`, and
+  the handbook text itself (`readme_text`) — read by the agent to brand
+  `report.html`, and by `huitz readme` to render the handbook from the report
+  snapshot in both modes. The logo is size-capped and fails the compile if over.
+- **vulndb attachments:** the on-box decoration — wallpaper, motd/issue text, the
+  rendered `README.html`, and desktop shortcuts (a "Scoring Report" launcher is
+  appended unless `theme.include_report_shortcut: false`). `theme.py` turns these
+  into extra catalog configurations (`theme-wallpaper`, `theme-motd`,
+  `theme-readme`, `theme-shortcuts`, with `-win` variants) that `vulndb.py`
+  creates idempotently; free text rides as nakon `vars`, and files go through one
+  content-addressed attachment per distinct byte sequence.
+
+The handbook is the assignment, not the answer key — write it to the bar in
+[HANDBOOK_GUIDE.md](../HANDBOOK_GUIDE.md). Compile enforces the mechanical half
+(`authoring/readme_lint.py`): a forensics answer verbatim in the handbook **fails
+the compile**, while lesser leaks (copied walkthrough lines, mutation commands,
+planted paths) surface as `readme_warnings` and `[boxbuilder] WARNING:` log
+lines. `theme.readme_lint_allow` lists answer aliases the lint may ignore.
+
+A **themed** compile therefore needs vulndb-ui reachable (`--vulndb-url` or
+`$VULNDB_UI_URL`, default `http://127.0.0.1:3000`) on top of the catalog nakon
+itself needs; `compile --no-bundle` touches neither, so it builds install-only
+artifacts.
+
+## Forensics questions and answer keys
+
+Forensics questions are scored like checks, in a top-level `forensics:` block:
+an id, the question, an `answer` (plus optional `answers` aliases), `points`, and
+an optional `path` for the answers file.
+
+```yaml
 forensics:
-  - id: fq-mail-port
-    question: "What port is the mail server listening on?"
-    answer: "587"
+  - id: fq-hidden-cron             # must not collide with a check id
+    question: "What is the filename of the hidden cron job?"
+    answer: "example-hidden-sync"
     points: 10
 ```
 
-`title`/`organization`/`accent`/`logo` are small and cosmetic — they're compiled straight
-into the **signed manifest** (`authoring/compile.py::_build_manifest_theme`) and read by
-the agent to brand `report.html` (`agent/reporter.py`). Everything else — the actual
-on-box decoration — is **entirely vulndb-catalog-driven, with zero nakon source
-changes**: `boxbuilder/theme.py` turns it into extra entries appended to every machine's
-`configurations` list, referencing four small, generic, reusable catalog configurations
-(`theme-wallpaper`, `theme-motd`, `theme-readme`, `theme-shortcuts` — static definitions
-in `boxbuilder/vulndb_theme_configs/`) that `boxbuilder/vulndb.py` auto-creates
-idempotently the first time they're needed. Free text (motd/issue/
-shortcut name+exec) rides as ordinary nakon `vars`; the wallpaper/README files go through
-one content-addressed attachment per distinct file — uploaded once, reused by every
-scenario that references identical bytes, using nakon's own existing MinIO-backed
-attachment fetcher unmodified.
+- **Compile** turns each question into a `forensics_answer` check (question text
+  and answers-file path in the manifest) plus a rubric entry holding the answer
+  key, so the key never ships in the manifest.
+- **On the box**, the agent writes `Forensics-Questions.txt` with blank answer
+  lines to the primary desktop user's Desktop on first boot and never overwrites
+  it, so answers survive reboots and re-grades. Players record them with
+  `huitz forensics <n> "<text>"`; answers match case-insensitively, collapsing
+  whitespace and ignoring surrounding punctuation.
+- Pair questions with planted evidence, like checks — otherwise it is a guessing
+  game.
 
-The `readme:` handbook is the assignment, not the answer key — author it to the bar in
-[`HANDBOOK_GUIDE.md`](../HANDBOOK_GUIDE.md) (supported Markdown subset, information
-budget, the pinecrest hint ceiling). Compile enforces the mechanical half via
-`authoring/readme_lint.py`: a forensics answer verbatim in the handbook fails the
-compile, and lesser leaks (walkthrough copy-paste, mutation commands, planted paths)
-are reported as `readme_warnings` in the compile result and
-`[boxbuilder] WARNING: …` log lines. `theme.readme_lint_allow` lists answer values the
-lint may ignore (lenient aliases colliding with story vocabulary).
+**Answer-key handouts.** Any check or forensics entry may carry a `solution:`
+(a string or list of strings) in post-event walkthrough voice — authoring-side
+only, never copied into the manifest or rubric. Render it with:
 
-This means a **themed** `compile` needs vulndb-ui reachable (`--vulndb-url` or
-`$VULNDB_UI_URL`, default `http://127.0.0.1:3000` — same env var and default
-`vulndb-cli` uses) *in addition to* the usual nakon/vulndb reachability `nakon build`
-already needs; a scenario with **no theme block and no locally-seeded vulns**
-never touches vulndb-ui at all. (Note: `compile` also ensures any *selected*
-vuln that has a bundled seed in `boxbuilder/vulndb_vuln_configs/` exists in the
-catalog — create-if-missing — so scenarios selecting seeded vulns reach
-vulndb-ui even when untheme'd.) See
-`boxes/chocolate-factory/{scenario,box}.yaml` for a worked,
-themed example.
-
-## Forensics questions (scored)
-
-Forensics questions work like CyberPatriot's: each carries points, teams type answers
-on the box, and correct answers earn the points (wrong/blank answers never deduct).
-They live in a top-level `forensics:` block (sibling of `scenario:`/`checks:`):
-
-```yaml
-forensics:
-  - id: fq-hidden-cron            # must not collide with a check id
-    question: "What is the filename of the hidden cron job?"
-    answer: "cocoa-hidden-sync"   # exact key; `answers: [...]` adds alternates
-    points: 10                    # positive integer
-    # path: /home/user/Desktop/Forensics-Questions.txt   # optional; default = Desktop
-```
-
-How it works end to end:
-
-- **Compile** turns each question into a `forensics_answer` check (question text +
-  answers-file path in the signed manifest) plus a rubric entry holding the answer key.
-  The key never ships in the manifest — engine-side rubric in ranked mode, on-box
-  `rubric.json` in honor mode, same as every other check.
-- **On the box**, the agent writes `Forensics-Questions.txt` (with blank `Answer: ____
-  ` lines) to the primary desktop user's Desktop on first boot — if the file already
-  exists it is never overwritten, so team answers survive reboots/re-grades.
-- **Scoring**: teams replace the `____` blanks; the agent's collector reads the file
-  each re-grade/check-in pass and the shared evaluator compares answers (case-
-  insensitive, whitespace-collapsed, punctuation-tolerant). A correct answer earns the
-  question's points; the report shows a Forensics card with per-question status.
-
-Because questions are scored, **pair them with planted vulnerabilities** like checks:
-each answer should be discoverable from the box's evidence (see "How vulns and checks
-relate" above). The chocolate-factory example shows four question/vuln pairings.
-
-## Answer keys (post-event handouts)
-
-Each check and each forensics entry may carry an authored `solution:` — a walkthrough
-in post-event handout voice (spot it → trace it → fix it → confirm it). It is a
-string (YAML block scalar) or a list of strings, rendered verbatim as Markdown:
-
-```yaml
-checks:
-  - id: beacon_process_gone
-    # ...id/type/category/display/max_points/collect/expect as always...
-    solution: |
-      **1. Hunt by process list.** `ps aux` shows a root process with a
-      chatty command line:
-      ```
-      /opt/tide-sync/tide-syncd -t 10.233.0.66 -p 8443 ...
-      ```
-      **2. Kill it the right way.** ...
-```
-
-`solution` is authoring-side only: `compile_scenario` never copies it into the
-manifest or rubric (pinned by a leak-guard test in
-`tests/unit/test_boxbuilder_answerkey.py`), so the box never sees it.
-
-Render the handout with:
-
-```
+```bash
 python3 -m boxbuilder answer-key --scenario boxes/<box>/scenario.yaml [--out PATH] [--html]
 ```
 
-Output defaults to `artifacts/answer-keys/<scenario-slug>.md` (gitignored — it gives
-away every point, keep it out of shared media and off boxes). `--html` also writes a
-themed standalone page in the box README's visual language. The generator joins each
-check's player-facing `display`/points, a derived plain-English goal line, and the
-authored walkthrough; forensics questions render with their accepted answers. Items
-without a `solution:` render a visible placeholder and are reported on stderr/in the
-`--json` summary, so backfill progress is trackable (`boxes/opochtli-landing` and
-`boxes/solar-observatory` are fully backfilled).
+Output defaults to `artifacts/answer-keys/<scenario-slug>.md` (gitignored, 0600);
+`--html` adds a themed page. Items without a `solution:` render a placeholder and
+are reported as gaps, so backfill is trackable.
 
-## Artifacts
+## Artifacts and secrets
 
-`compile` writes to `artifacts/` (gitignored — contains the authoring key, rubric,
-and agent zipapp):
+`compile` writes into the artifacts directory (`--out`, default `./artifacts`):
 
 ```
 artifacts/
-  build-state.json         # resumability checkpoint (paths + bundle id; no secrets)
-  authoring.key            # Ed25519 seed, mode 0600 (auto-generated if not supplied)
-  manifest.signed.json     # signed manifest (compiled)
-  rubric.json              # honor mode only
-  engine_record.json       # ranked upload target
-  authoring_public_key.b64 # verifies manifest signature on-box
-  agent.pyz                # the agent artifact
-  nakon-config.json        # the build input (captured)
-  nakon-deploy-config.json # derived (address-reconciled) deploy config
-  agent_config.json        # generated per-mode (placed on-box)
+  authoring.key             Ed25519 seed, 0600 (generated if not supplied)
+  manifest.signed.json      signed manifest (public)
+  rubric.json               honor only
+  engine_record.json        ranked upload payload
+  authoring_public_key.b64  ships on the box to verify the manifest signature
+  agent.pyz                 the agent artifact
+  nakon-config.json         theme-expanded build input (absent with --no-bundle)
+  build-state.json          resumability, input fingerprint, and the
+                            manifest/key hashes `verify` checks lineage against
 ```
+
+The bundle lives under `<nakon-dir>/bundles/`, recorded by path in
+`build-state.json`; `install` also stages `agent_config.json`, `.score.dat`
+(honor: the obfuscated rubric) and `huitzilopochtli-motd.sh` here first.
+
+**Secrets.** `artifacts/` is gitignored and holds the authoring key, which signs
+manifests for any box trusting the matching public key. The directory is `0700`;
+the key, rubric, engine record and generated agent config are `0600`; the
+transient deploy config is deleted after `plant`. Never commit it, never copy it
+to shared media, and treat generated answer keys the same way.
+
+## Verify and seal
+
+The two steps between "installed" and "shipped" are mechanical, so they are
+subcommands rather than prose:
+
+```bash
+python3 -m boxbuilder verify --spec boxes/<box>/box.yaml --mode ranked \
+  --provider-host <box> --competition --for-seal
+python3 -m boxbuilder seal-prepare --spec boxes/<box>/box.yaml --mode ranked \
+  --provider-host <box> --competition --yes
+```
+
+`verify` compares the box against the build: the files the install placed, the
+manifest and authoring-key hashes `compile` recorded, `agent_config.json`
+against the target, unit/timer state (stopped for a competition template),
+recent journal crashes, the report snapshot and expected total, the theme
+artifacts for a real user, and — where `xwd` is available — a framebuffer
+capture that proves the desktop paints. `--for-seal` adds seal hygiene (no
+per-player identity, no legacy install dir, a non-empty machine-id to wipe).
+
+`skip` results are not failures: they mean the target cannot answer that
+question (Windows has no journald or `/etc/machine-id`; a headless image has no
+X display). `warn` is advisory. Only `fail` exits non-zero.
+
+`seal-prepare` runs `verify` first and refuses on failure (`--skip-verify`
+overrides), then does the destructive cleanup and prints the manifest/key
+hashes to record with the template. The remaining steps — delete the snapshot,
+clean shutdown, convert to a template, rename — are hypervisor operations; see
+`DEPLOY.md`.
+
+## Deployment
+
+`boxbuilder` plants and installs over ssh — the only provider in v1 (a running
+box reached over SSH with paramiko). Its `export()` is deliberately manual: a
+remote box cannot snapshot itself, so `package` returns `mode: "manual"` plus
+hypervisor instructions for exporting it.
+
+Promoting a built box to a reusable template (clone → snapshot → deploy →
+verify → seal) is a separate manual loop, documented once in
+[DEPLOY.md](DEPLOY.md). Deployment supplies every environment-specific value at
+invoke time — provider host, provider password, engine URL — via the flags or
+`HUITZILOPOCHTLI_*` variables above; never commit a host, password, VMID, bridge
+or engine address, and never put one in `box.yaml`.
 
 ## Tests
 
-```
+```bash
 pytest tests/unit/test_boxbuilder_*.py tests/integration/boxbuilder/
 ```
 
-Unit tests cover spec parsing, key handling, nakon wrappers, per-mode artifact
-generation, the provider registry, and theming (`vulndb.py` against a fake
-`http.server`, `theme.py` with `vulndb.ensure_*` monkeypatched). Integration tests drive
-`plant`/`install`/`package`/`build` end-to-end with a FakeProvider + a fake nakon (no
-real VM, no real vulndb), and exercise `engine.py` against the **real** engine server.
+Unit tests cover spec parsing, keys, nakon wrappers, per-mode artifacts,
+theming, the provider registry, answer keys and per-box compile; integration
+tests drive `plant` / `install` / `package` / `build` with a fake provider and
+nakon, and exercise the ranked engine client against the real engine server.
 
 ## Out of scope
 
-- **No vuln→check registry** (by design — agents author both halves).
-- **Engine co-location** — ranked boxes need a separate running engine. A
-  self-contained "engine-on-box" ranked variant is a future mode.
-- **Multi-box / multi-team competitions** — boxbuilder targets single practice
-  boxes. tezcatlipoca covers multi-team ranges; boxbuilder is complementary.
-- **SshProvider self-export** — returns `manual`; a qemu/proxmox provider will
-  make export fully automatic.
+- **No vuln→check registry** — you author both halves; `lint` only proves they
+  still agree.
+- **Engine co-location** — ranked boxes need a separate running engine; an
+  "engine-on-box" ranked variant is not supported.
+- **Multi-box / multi-team ranges** and **self-exporting ssh** — boxbuilder
+  targets single practice boxes, packaged manually from the hypervisor.

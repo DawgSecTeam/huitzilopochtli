@@ -1,13 +1,20 @@
 # Template prep artifacts (headless Debian 13 mail-server box)
 
-What TEMPLATE PREP bakes in before any nakon plant (see box.yaml header for
-the full build loop). These files are deployed, not scored — they are the
+What TEMPLATE PREP bakes in before any nakon plant (see `boxbuilder/DEPLOY.md`
+for the full build loop). These files are deployed, not scored — they are the
 box's legitimate mail stack, its evidence trail, and the redtag incident
 replay. ORDER IS LOAD-BEARING: the weak stack must be LIVE for the replay
 (80) to write real log lines, the rotation (85) must run BEFORE the
 sabotage (90) — it is what saves the relay blast from the wiper cron — and
 the sabotage must run LAST so the box is handed over exactly as the story
 left it.
+
+Everything this box needs is baked in by these scripts and belongs to the
+fiction: the hostname, the timezone, the account names, and the weak
+passwords the replay uses. The only values supplied at deploy time are the
+box's address and the provider login, passed to `boxbuilder` as
+`--provider-host` / `--provider-password` (or
+`$HUITZILOPOCHTLI_PROVIDER_*`) — they are never committed here.
 
 ## Run order (as root; stage the prep dir at /root/broadneck-prep)
 
@@ -62,12 +69,13 @@ minute from then on — that is the finding working, not a build failure.
 ## The evidence sources players correlate
 
 - `/var/log/mail.log.1` — the relay blast: 40 `client=glittercrate.buzz
-  [198.51.100.23]` lines (the count answer), message-id/from= lines (the
+  [198.51.100.23]` queue lines (the count answer), message-id/from= lines (the
   sender-domain answers). The live mail.log is the wiper's victim.
 - journald (`journalctl -u ssh`) — the guessing run and the accepted
   password for routeaudit (the flat auth.log was truncated).
-- `lastb` / `last` (wtmp/btmp) — failed vs successful logins; the wiper
-  never touched the binary ledgers.
+- the ssh login journal (`journalctl -u ssh`) — the guessing run's four
+  failures (2 postmaster, 2 routeaudit) and the accepted password, in order (sshd on this image does
+  not write btmp; the journal is the failed-login ledger).
 - the held queue message (`postqueue -p` after the rebuild, `postcat -vq
   <id>`, or read /var/spool/postfix/hold/ directly) — the Received chain
   with the originating client IP.
@@ -95,7 +103,8 @@ minute from then on — that is the finding working, not a build failure.
   postfix dovecot` reports `masked` for both.
 - `mailq` (run BEFORE the config deletion — it is captured in 90's own
   verification) showed exactly ONE held message with `!`.
-- `grep -c '198.51.100.23' /var/log/mail.log.1` prints 40.
+- `grep -c 'client=glittercrate' /var/log/mail.log.1` prints 40
+  (one client= queue line per relayed message).
 - `ls /var/log/mail.log` exists (empty — rsyslog recreated it).
 - `cat /home/postmaster/.forward` shows the drop address; `postmap -q
   routesupport hash:/etc/aliases.db` returns the pipe.

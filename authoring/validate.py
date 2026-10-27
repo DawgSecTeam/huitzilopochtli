@@ -16,8 +16,10 @@ from common.matchers import validate_matcher
 _VALID_MODES = ("honor", "ranked")
 _VALID_CATEGORIES = ("vuln", "penalty", "prohibited")
 
-_TOP_LEVEL_KEYS = frozenset({"scenario", "checks", "services", "theme", "forensics", "adversary", "pool"})
+_TOP_LEVEL_KEYS = frozenset({"scenario", "checks", "services", "theme", "forensics",
+                             "adversary", "pool", "ranked"})
 _SCENARIO_KEYS = frozenset({"name", "version", "mode", "hosts", "engine_url"})
+_RANKED_KEYS = frozenset({"engine_url", "checks", "services", "adversary", "pool"})
 
 # workshop-vm-distribution provision API contract (provision.GROUPS there).
 _POOL_GROUPS = ("Workshop", "Challenge", "Generic")
@@ -144,24 +146,53 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
         elif not all(isinstance(h, str) and h.strip() for h in hosts):
             errors.append(f"{source_path}: scenario.hosts entries must be non-empty strings")
 
-    engine_url = scenario.get("engine_url")
-    if engine_url is not None:
-        if not isinstance(engine_url, str) or not engine_url.strip():
-            errors.append(f"{source_path}: scenario.engine_url must be a non-empty string")
-        else:
-            parts = urlsplit(engine_url)
-            if parts.scheme not in ("http", "https") or not parts.hostname:
-                errors.append(
-                    f"{source_path}: scenario.engine_url must be an http(s) URL "
-                    f"with a host, got {engine_url!r}"
-                )
-    if mode == "ranked" and not engine_url:
+    ranked = parsed_yaml.get("ranked")
+    if ranked is not None and not isinstance(ranked, dict):
+        errors.append(f"{source_path}: 'ranked' must be a mapping")
+        ranked = {}
+    ranked = ranked or {}
+    unknown_ranked = sorted(set(ranked) - _RANKED_KEYS)
+    if unknown_ranked:
         errors.append(
-            f"{source_path}: scenario.engine_url is required when mode is 'ranked'"
+            f"{source_path}: ranked block has unknown key(s): "
+            f"{', '.join(unknown_ranked)} (allowed: {', '.join(sorted(_RANKED_KEYS))})"
         )
 
+    for label, value in (("scenario.engine_url", scenario.get("engine_url")),
+                         ("ranked.engine_url", ranked.get("engine_url"))):
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{source_path}: {label} must be a non-empty string")
+        else:
+            parts = urlsplit(value)
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                errors.append(
+                    f"{source_path}: {label} must be an http(s) URL "
+                    f"with a host, got {value!r}"
+                )
+
+    # An engine address may live in the ranked block; a ranked build without
+    # one is a deployment that would silently target nothing.
+    if (mode == "ranked" or ranked) and not (
+            scenario.get("engine_url") or ranked.get("engine_url")):
+        errors.append(
+            f"{source_path}: an engine_url is required for a ranked build "
+            f"(put it in the top-level 'ranked' block)"
+        )
+
+    # Ranked-only content belongs under `ranked:`. On a ranked-only file the
+    # legacy top-level placement is still accepted.
+    for key in ("services", "adversary", "pool"):
+        if key in parsed_yaml and "ranked" not in parsed_yaml and mode == "honor":
+            errors.append(
+                f"{source_path}: '{key}' is ranked-only; move it under the "
+                f"top-level 'ranked:' block"
+            )
     if "pool" in parsed_yaml:
-        errors.extend(_validate_pool(parsed_yaml.get("pool"), mode, source_path))
+        errors.extend(_validate_pool(parsed_yaml.get("pool"), source_path))
+    if "pool" in ranked:
+        errors.extend(_validate_pool(ranked.get("pool"), source_path))
 
     checks = parsed_yaml.get("checks")
     check_by_id = {}
@@ -169,110 +200,34 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
         errors.append(f"{source_path}: missing required top-level key 'checks'")
     elif not isinstance(checks, list):
         errors.append(f"{source_path}: 'checks' must be a list")
+        checks = []
     else:
-        for idx, check in enumerate(checks):
-            ref = f"checks[{idx}]"
-            if not isinstance(check, dict):
-                errors.append(f"{source_path}: {ref} must be a mapping")
-                continue
+        _validate_checks(checks, source_path, "checks", errors, check_by_id)
 
-            unknown_check = sorted(set(check) - _CHECK_KEYS)
-            if unknown_check:
-                errors.append(
-                    f"{source_path}: {ref} has unknown key(s): {', '.join(unknown_check)}"
-                )
+    ranked_checks = ranked.get("checks")
+    if ranked_checks is not None and not isinstance(ranked_checks, list):
+        errors.append(f"{source_path}: ranked.checks must be a list")
+        ranked_checks = []
+    elif ranked_checks:
+        # Ranked-only checks share the base id namespace: a collision would
+        # silently drop one entry from the rubric.
+        _validate_checks(ranked_checks, source_path, "ranked.checks", errors,
+                         check_by_id)
+    ranked_checks = ranked_checks or []
 
-            for key in _REQUIRED_CHECK_KEYS:
-                if key not in check:
-                    errors.append(f"{source_path}: {ref} missing required key '{key}'")
+    all_checks = list(checks or []) + list(ranked_checks)
 
-            cid = check.get("id")
-            if cid is not None:
-                if not isinstance(cid, str) or not cid.strip():
-                    errors.append(f"{source_path}: {ref}.id must be a non-empty string")
-                elif cid in check_by_id:
-                    errors.append(f"{source_path}: {ref} duplicate check id {cid!r}")
-                else:
-                    check_by_id[cid] = check
-
-            check_type = check.get("type")
-            if check_type is not None:
-                if not isinstance(check_type, str) or not check_type.strip():
-                    errors.append(f"{source_path}: {ref}.type must be a non-empty string")
-                elif check_type not in CHECK_TYPES:
-                    errors.append(
-                        f"{source_path}: {ref}.type {check_type!r} is not a registered "
-                        f"check type (known: {', '.join(sorted(CHECK_TYPES))})"
-                    )
-
-            category = check.get("category")
-            if category is not None and category not in _VALID_CATEGORIES:
-                errors.append(
-                    f"{source_path}: {ref}.category must be one of "
-                    f"{_VALID_CATEGORIES!r}, got {category!r}"
-                )
-
-            display = check.get("display")
-            if display is not None and (not isinstance(display, str) or not display.strip()):
-                errors.append(f"{source_path}: {ref}.display must be a non-empty string")
-
-            max_points = check.get("max_points")
-            if max_points is not None and (
-                isinstance(max_points, bool) or not isinstance(max_points, int)
-                or max_points < 0
-            ):
-                errors.append(f"{source_path}: {ref}.max_points must be a non-negative integer")
-
-            timeout_s = check.get("timeout_s")
-            if timeout_s is not None and (
-                not _is_finite_number(timeout_s) or timeout_s <= 0
-            ):
-                errors.append(f"{source_path}: {ref}.timeout_s must be a finite positive number")
-
-            is_sla = check.get("is_sla")
-            if is_sla is not None and not isinstance(is_sla, bool):
-                errors.append(f"{source_path}: {ref}.is_sla must be a boolean")
-
-            collect = check.get("collect")
-            if collect is not None and not isinstance(collect, dict):
-                errors.append(f"{source_path}: {ref}.collect must be a mapping")
-            elif isinstance(collect, dict) and isinstance(check_type, str):
-                for required_key in _REQUIRED_COLLECT.get(check_type, ()):
-                    if required_key not in collect:
-                        errors.append(
-                            f"{source_path}: {ref}.collect missing required key "
-                            f"'{required_key}' for type {check_type!r}"
-                        )
-
-            expect = check.get("expect")
-            if "expect" in check:
-                if not isinstance(expect, dict) or len(expect) == 0:
-                    errors.append(
-                        f"{source_path}: {ref}.expect must be a non-null, "
-                        f"non-empty mapping (an empty matcher crashes the evaluator)"
-                    )
-                elif isinstance(expect, dict):
-                    errors.extend(
-                        _validate_expect(check, expect, ref, source_path,
-                                         check_type, category, max_points, is_sla)
-                    )
-
-            if "solution" in check:
-                errors.extend(
-                    _validate_solution(check["solution"], f"{source_path}: {ref}.solution")
-                )
-
-    services = parsed_yaml.get("services") or []
+    services = ranked.get("services") or parsed_yaml.get("services") or []
     if services:
-        errors.extend(_validate_services(services, checks, source_path))
-    if not checks and not parsed_yaml.get("forensics") and not services:
+        errors.extend(_validate_services(services, all_checks, source_path))
+    if not all_checks and not parsed_yaml.get("forensics") and not services:
         errors.append(
             f"{source_path}: scenario has no checks, services, or forensics questions"
         )
 
     # --- adversary ------------------------------------------------------
-    if "adversary" in parsed_yaml:
-        adversary = parsed_yaml.get("adversary")
+    if "adversary" in ranked or "adversary" in parsed_yaml:
+        adversary = ranked.get("adversary") or parsed_yaml.get("adversary")
         adv_errors = validate_adversary_pool(adversary)
         errors.extend(f"{source_path}: {e}" for e in adv_errors)
         service_ids = {
@@ -304,24 +259,124 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
         errors.extend(_validate_theme(parsed_yaml.get("theme"), source_path))
 
     if "forensics" in parsed_yaml:
-        errors.extend(_validate_forensics(parsed_yaml.get("forensics"), checks, source_path))
+        errors.extend(_validate_forensics(parsed_yaml.get("forensics"), all_checks,
+                                          source_path))
 
     return errors
 
 
-def _validate_pool(pool, mode, source_path: str) -> list:
-    """Validate the optional top-level ``pool`` block (ranked only).
+def _validate_checks(checks: list, source_path: str, prefix: str,
+                     errors: list, check_by_id: dict) -> None:
+    """Validate one ``checks``-shaped list, appending to ``errors`` in place."""
+    for idx, check in enumerate(checks):
+        ref = f"{prefix}[{idx}]"
+        if not isinstance(check, dict):
+            errors.append(f"{source_path}: {ref} must be a mapping")
+            continue
+
+        unknown_check = sorted(set(check) - _CHECK_KEYS)
+        if unknown_check:
+            errors.append(
+                f"{source_path}: {ref} has unknown key(s): {', '.join(unknown_check)}"
+            )
+
+        for key in _REQUIRED_CHECK_KEYS:
+            if key not in check:
+                errors.append(f"{source_path}: {ref} missing required key '{key}'")
+
+        cid = check.get("id")
+        if cid is not None:
+            if not isinstance(cid, str) or not cid.strip():
+                errors.append(f"{source_path}: {ref}.id must be a non-empty string")
+            elif cid in check_by_id:
+                errors.append(f"{source_path}: {ref} duplicate check id {cid!r}")
+            else:
+                check_by_id[cid] = check
+
+        check_type = check.get("type")
+        if check_type is not None:
+            if not isinstance(check_type, str) or not check_type.strip():
+                errors.append(f"{source_path}: {ref}.type must be a non-empty string")
+            elif check_type not in CHECK_TYPES:
+                errors.append(
+                    f"{source_path}: {ref}.type {check_type!r} is not a registered "
+                    f"check type (known: {', '.join(sorted(CHECK_TYPES))})"
+                )
+
+        category = check.get("category")
+        if category is not None and category not in _VALID_CATEGORIES:
+            errors.append(
+                f"{source_path}: {ref}.category must be one of "
+                f"{_VALID_CATEGORIES!r}, got {category!r}"
+            )
+
+        display = check.get("display")
+        if display is not None and (not isinstance(display, str) or not display.strip()):
+            errors.append(f"{source_path}: {ref}.display must be a non-empty string")
+
+        max_points = check.get("max_points")
+        if max_points is not None and (
+            isinstance(max_points, bool) or not isinstance(max_points, int)
+            or max_points < 0
+        ):
+            errors.append(f"{source_path}: {ref}.max_points must be a non-negative integer")
+
+        timeout_s = check.get("timeout_s")
+        if timeout_s is not None and (
+            not _is_finite_number(timeout_s) or timeout_s <= 0
+        ):
+            errors.append(f"{source_path}: {ref}.timeout_s must be a finite positive number")
+
+        is_sla = check.get("is_sla")
+        if is_sla is not None and not isinstance(is_sla, bool):
+            errors.append(f"{source_path}: {ref}.is_sla must be a boolean")
+
+        collect = check.get("collect")
+        if collect is not None and not isinstance(collect, dict):
+            errors.append(f"{source_path}: {ref}.collect must be a mapping")
+        elif isinstance(collect, dict) and isinstance(check_type, str):
+            for required_key in _REQUIRED_COLLECT.get(check_type, ()):
+                if required_key not in collect:
+                    errors.append(
+                        f"{source_path}: {ref}.collect missing required key "
+                        f"'{required_key}' for type {check_type!r}"
+                    )
+
+        expect = check.get("expect")
+        if "expect" in check:
+            if not isinstance(expect, dict) or len(expect) == 0:
+                errors.append(
+                    f"{source_path}: {ref}.expect must be a non-null, "
+                    f"non-empty mapping (an empty matcher crashes the evaluator)"
+                )
+            elif isinstance(expect, dict):
+                errors.extend(
+                    _validate_expect(check, expect, ref, source_path,
+                                     check_type, category, max_points, is_sla)
+                )
+
+        if "solution" in check:
+            errors.extend(
+                _validate_solution(check["solution"], f"{source_path}: {ref}.solution")
+            )
+
+
+_ENV_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Z0-9_]+\}$")
+
+
+def _is_env_placeholder(value) -> bool:
+    """A deployment-supplied value (`${VAR}`), resolved when a ranked build runs."""
+    return isinstance(value, str) and bool(_ENV_PLACEHOLDER_RE.match(value))
+
+
+def _validate_pool(pool, source_path: str) -> list:
+    """Validate the ``pool`` block that lives under ``ranked:``.
 
     The engine provisions one workshop pool per competition from this block;
-    field names mirror workshop-vm-distribution's POST /api/admin/provision
-    1:1 so the engine can pass them through untouched.
+    field names mirror the workshop portal's POST /api/admin/provision 1:1 so
+    the engine can pass them through untouched.
     """
     errors = []
-    if mode == "honor":
-        return [
-            f"{source_path}: 'pool' is only valid for ranked scenarios — an "
-            "honor box is never handed out from a workshop pool"
-        ]
     if pool is None or not isinstance(pool, dict) or not pool:
         return [f"{source_path}: 'pool' must be a non-empty mapping"]
 
@@ -335,8 +390,10 @@ def _validate_pool(pool, mode, source_path: str) -> list:
             errors.append(f"{source_path}: pool missing required key '{key}'")
 
     vm_id = pool.get("template_vm_id")
-    if vm_id is not None and (isinstance(vm_id, bool) or not isinstance(vm_id, int)
-                              or vm_id < 1):
+    if _is_env_placeholder(vm_id):
+        pass
+    elif vm_id is not None and (isinstance(vm_id, bool) or not isinstance(vm_id, int)
+                                or vm_id < 1):
         errors.append(f"{source_path}: pool.template_vm_id must be a positive integer")
 
     access = pool.get("template_vm_access_method")
@@ -353,6 +410,8 @@ def _validate_pool(pool, mode, source_path: str) -> list:
 
     for key, minimum in (("vm_count", 0), ("guac_link_ttl_seconds", 60)):
         value = pool.get(key)
+        if _is_env_placeholder(value):
+            continue
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)
                                   or value < minimum):
             errors.append(

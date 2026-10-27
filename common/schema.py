@@ -14,6 +14,11 @@ from common.matchers import validate_matcher
 
 SCHEMA_VERSION = 1
 
+#: How many per-service SLA observations the engine retains and ships to the
+#: box (the ranked report's "last N ticks" strip). Bounded so the check-in
+#: response cannot grow without limit.
+SLA_HISTORY_MAX = 10
+
 
 class Mode(str, Enum):
     HONOR = "honor"
@@ -154,6 +159,12 @@ class SlaStatus:
     check_id: str
     state: str  # "UP" | "DOWN"
     accrued_points: int
+    # Ranked only, oldest -> newest: the service's post-hysteresis state on
+    # each recent engine-scored check-in. The engine retains ~10 ticks and
+    # includes this ring in every response so the on-box report can draw a
+    # real uptime history instead of guessing from one observation. Legacy
+    # engines omit it; the agent renders a single current tick then.
+    history: list = field(default_factory=list)  # list[str]
 
 
 @dataclass
@@ -208,6 +219,11 @@ class CheckinResponse:
     run_ends_at: Optional[float] = None
     player_name: Optional[str] = None
     competition_name: Optional[str] = None
+    # Live scoreboard position at the moment this check-in was scored. The
+    # box renders it in the ranked report's top bar; None for legacy engines
+    # or a box that is not tied to a competition.
+    rank: Optional[int] = None
+    rank_total: Optional[int] = None
 
 
 @dataclass

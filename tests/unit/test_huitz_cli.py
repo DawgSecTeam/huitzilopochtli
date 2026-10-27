@@ -307,6 +307,34 @@ class TestSnapshot:
         now = _time.time()
         assert now + 55 <= snap["next_event_at"] <= now + 65
 
+    def test_ranked_snapshot_carries_rank_clock_and_uptime_history(self):
+        from common.schema import SlaStatus
+        score = _score(sla_status=[
+            SlaStatus(check_id="web", state="UP", accrued_points=3,
+                      history=["DOWN", "UP", "UP"])])
+        snap = snapshot.build_snapshot(
+            score, _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60,
+            rank=2, rank_total=6, run_ends_at=4000.0)
+        assert snap["rank"] == 2 and snap["rank_total"] == 6
+        assert snap["run_ends_at"] == 4000.0
+        assert snap["sla_status"][0]["history"] == ["DOWN", "UP", "UP"]
+        # The new fields validate (and are optional for older snapshots).
+        snapshot._validate_snapshot(snap, "mem")
+
+    def test_snapshot_rejects_non_list_history(self):
+        import copy
+        from common.schema import SlaStatus
+        snap = snapshot.build_snapshot(
+            _score(sla_status=[SlaStatus(check_id="web", state="UP",
+                                         accrued_points=3)]),
+            _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60)
+        bad = copy.deepcopy(snap)
+        bad["sla_status"][0]["history"] = "UP"
+        with pytest.raises(snapshot.SnapshotError, match="history"):
+            snapshot._validate_snapshot(bad, "mem")
+
     def test_awaiting_engine_total_is_null(self):
         snap = snapshot.build_snapshot(
             _score(total=0, results=[]), _manifest(), mode="ranked",
@@ -489,6 +517,20 @@ class TestRenderScorecard:
         assert "c1" in out and "equals FOUND" in out  # safe: rubric is off-box
         assert "authoritative score" in out
         assert "SLA STATUS" in out and "UP" in out
+
+    def test_ranked_header_shows_position_event_clock_and_ticks(self):
+        from common.schema import SlaStatus
+        snap = snapshot.build_snapshot(
+            _score(sla_status=[
+                SlaStatus(check_id="web", state="UP", accrued_points=3,
+                          history=["UP", "DOWN", "UP"])]),
+            _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60,
+            rank=2, rank_total=6, run_ends_at=560.0)
+        out = self._render(snap)
+        assert "position 2 of 6" in out
+        assert "01:00 remaining at last check-in" in out
+        assert "ticks" in out
 
     def test_narrow_width_does_not_spill(self, tmp_path):
         _, snap = _honor_snapshot(tmp_path)

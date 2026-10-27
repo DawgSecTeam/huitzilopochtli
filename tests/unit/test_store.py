@@ -269,6 +269,33 @@ def test_update_sla_atomic_first_observation_initializes(store):
     assert store.get_sla_state("box-new", "check-x").accrued_points == 0
 
 
+def test_sla_history_ring_records_each_tick_and_caps_at_ten(store):
+    """The ranked report draws the last ~10 engine-scored ticks per service."""
+    from common.schema import SlaParams
+    from engine.sla import update_sla
+
+    params = SlaParams(interval_s=60, points_per_interval=1,
+                       hysteresis_fail_n=1, hysteresis_ok_n=1,
+                       max_intervals_per_checkin=100)
+    ups = [True, True, False, False, True, True, True, True,
+           False, True, True, False]
+    for i, is_up in enumerate(ups):
+        rec = update_sla(store, "box-h", "svc", params, is_up=is_up,
+                         received_at=1000.0 + i * 60)
+
+    expected = ["UP" if up else "DOWN" for up in ups][-10:]
+    assert rec.history == expected
+    assert store.get_sla_state("box-h", "svc").history == expected
+
+
+def test_sla_history_round_trips_through_save(store):
+    rec = SlaStateRecord("box-h", "svc", "UP", 1, 0, 100.0, 5,
+                         history=["DOWN", "UP"])
+    store.save_sla_state(rec)
+    fetched = store.get_sla_state("box-h", "svc")
+    assert fetched.history == ["DOWN", "UP"]
+
+
 # --- adversary_log --------------------------------------------------------
 
 

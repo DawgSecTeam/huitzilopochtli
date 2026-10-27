@@ -6,14 +6,25 @@ Build a versioned bundle on the dev host:
 python3 packaging/build_engine_bundle.py dist/huitzilopochtli-engine.tar.gz
 ```
 
-On an Ubuntu/Debian engine VM, as root:
+On an Ubuntu/Debian engine host, as root:
 
 ```bash
 mkdir -p /tmp/huitz-bundle
 tar xzf huitzilopochtli-engine.tar.gz -C /tmp/huitz-bundle
-HUITZ_ADMIN_PASSWORD='...' HUITZ_PUBLIC_URL='http://10.0.0.160:8080' \
+# Installer inputs: the admin password to create and the URL the portal's VMs
+# reach the engine on. Supply them from the environment; never commit them.
+HUITZ_ADMIN_PASSWORD="$HUITZILOPOCHTLI_ADMIN_PASSWORD" \
+HUITZ_PUBLIC_URL="$HUITZILOPOCHTLI_PUBLIC_URL" \
   bash /tmp/huitz-bundle/engine/deploy/install.sh
 ```
+
+`install.sh` reads the short `HUITZ_*` names and writes them out as the
+`HUITZILOPOCHTLI_*` keys of `engine.env` (`HUITZ_ADMIN_PASSWORD` →
+`HUITZILOPOCHTLI_ADMIN_PASSWORD`, `HUITZ_PUBLIC_URL` →
+`HUITZILOPOCHTLI_PUBLIC_URL`; see `engine.env.example` for the full set). If
+`HUITZ_ADMIN_PASSWORD` is unset a random one is generated and written to the
+credentials file below; `HUITZ_PUBLIC_URL` defaults to a loopback URL, so set
+it whenever players reach the engine over the network.
 
 The installer creates:
 

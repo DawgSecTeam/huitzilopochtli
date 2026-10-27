@@ -7,7 +7,7 @@ record the OUTSIDE documentation address:
 
   1. alias 198.51.100.23 up on lo (NOT persistent -- removed at the end;
      the logs are the witness).
-  2. ssh guessing run: 2 failures vs postmaster, 3 failures vs routeaudit,
+  2. ssh guessing run: 2 failures vs postmaster, 2 failures vs routeaudit,
      then success (paramiko, password auth).
   3. relay blast: 40 messages, one SMTP connection each, bound to the
      alias, EHLO glittercrate.buzz, From promo@glittercrate.buzz, To
@@ -128,7 +128,7 @@ def main():
         # --- the guessing run ------------------------------------------------
         attempts = [(USER_PLAY, "Winter1234", False), (USER_PLAY, "Summer1234", False),
                     (USER_FALL, "Route2024", False), (USER_FALL, "Postal2024", False),
-                    (USER_FALL, FALL_PW, True)]
+                    (USER_FALL, FALL_PW, True)]  # 4 failures, then the hit
         ok = False
         for user, pw, expect in attempts:
             got = ssh_attempt(user, pw)

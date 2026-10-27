@@ -341,6 +341,28 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     if mode != "honor" and isinstance(hard, int) and isinstance(svc, int):
         lines.append("  " + sty.color(
             f"{hard} hardening  +  {svc} service uptime", "muted"))
+    if mode != "honor":
+        # Same two facts as the ranked HTML event bar. The clock is labelled
+        # as of the last check-in: the snapshot is written once per check-in,
+        # so this is the engine's remainder at that moment, not a live tick.
+        bits = []
+        rank = snap.get("rank")
+        rank_total = snap.get("rank_total")
+        if (isinstance(rank, int) and not isinstance(rank, bool)
+                and isinstance(rank_total, int)
+                and not isinstance(rank_total, bool)):
+            bits.append(f"position {rank} of {rank_total}")
+        run_ends_at = snap.get("run_ends_at")
+        confirmed = snap.get("last_confirmed_at")
+        if (isinstance(run_ends_at, (int, float))
+                and not isinstance(run_ends_at, bool)
+                and isinstance(confirmed, (int, float))
+                and not isinstance(confirmed, bool)):
+            bits.append(
+                f"{agent.term.fmt_mmss(run_ends_at - confirmed)} remaining"
+                " at last check-in")
+        if bits:
+            lines.append("  " + sty.color("  ·  ".join(bits), "muted"))
     lines.append("")
 
     if mode == "honor":
@@ -492,9 +514,19 @@ def _ranked_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
             colored = (sty.color(state, "ok", 1) if state == "UP"
                        else sty.color(state, "bad", 1))
             cid = agent.term.ellipsize(str(s.get("check_id", "")), 30, sym)
-            lines.append(
-                f"  {cid:<30}  {colored}  "
-                + f"accrued {s.get('accrued_points', 0)}")
+            line = (f"  {cid:<30}  {colored}  "
+                    + f"accrued {s.get('accrued_points', 0)}")
+            history = [str(h).upper() for h in (s.get("history") or [])
+                       if str(h).upper() in ("UP", "DOWN")][-10:]
+            if history:
+                # Same oldest->newest tick strip as the HTML uptime tab:
+                # solid = UP, light = DOWN, colored per tick.
+                marks = "".join(
+                    sty.color(sym.block if h == "UP" else sym.light,
+                              "ok" if h == "UP" else "bad")
+                    for h in history)
+                line += f"  ticks {marks}"
+            lines.append(line)
     return lines
 
 

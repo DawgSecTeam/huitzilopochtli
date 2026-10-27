@@ -1,12 +1,16 @@
 <?php
 // Opochtli Landing Port Authority — Cargo Manifest Lookup
-// Backed by the shared port-authority MariaDB (workshop-shared-mariadb,
-// 192.168.100.10:3306). If the database cannot be reached the page still
-// renders; manifest rows just won't.
+// Backed by a shared port-authority MariaDB on port 3306. Connection values
+// are supplied at deploy time (see prep-notes.md); the defaults below are
+// RFC 5737 documentation placeholders and must be overridden. If the database
+// cannot be reached the page still renders; manifest rows just won't.
 mysqli_report(MYSQLI_REPORT_OFF);
+$db_host = getenv('PORT_AUTHORITY_DB_HOST') ?: '192.0.2.10';
+$db_user = getenv('PORT_AUTHORITY_DB_USER') ?: 'portauthority';
+$db_pass = getenv('PORT_AUTHORITY_DB_PASSWORD') ?: 'change-me';
 $db = mysqli_init();
 $db->options(MYSQLI_OPT_CONNECT_TIMEOUT, 2);
-if (!$db->real_connect('192.168.100.10', 'portauthority', 'manifest-db', 'portauthority')) {
+if (!$db->real_connect($db_host, $db_user, $db_pass, 'portauthority')) {
     $db = false;
 }
 header('Content-Type: text/html; charset=utf-8');

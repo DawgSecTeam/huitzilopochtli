@@ -419,6 +419,15 @@ def test_first_boot_enroll_restart_and_crash_recovery(tmp_path):
             f"which the rubric's equals-'no' matcher should award 10 points for; got {rows[0]}"
         )
 
+        # The ranked report's two-tab detail is present even for a plain
+        # enrolled box (no competition): this path has no rank/event clock, so
+        # the event bar is correctly absent.
+        report_html = report_path.read_text()
+        assert "data-tabs" in report_html
+        assert "Configuration &amp; forensics" in report_html
+        assert "Service uptime" in report_html
+        assert 'class="event-bar"' not in report_html
+
         # --- (2) restart against the SAME identity/config: must NOT re-enroll ---
         proc2 = _run_agent(str(config_path))
         try:

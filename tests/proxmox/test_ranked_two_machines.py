@@ -65,11 +65,11 @@ def _wait_for_http(url: str, timeout_s: float = 180) -> None:
 def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
     # Both roles clone the Ubuntu template, whose image carries a stale
     # /etc/machine-id: every clone presents the same DHCP client id and the
-    # two collide onto one IP (the rebuilt 9106 that fixed this is gone), so
-    # each clone regenerates its machine-id and reboots before use. Fedora was ruled out for the agent role separately: its
-    # guest-agent runs SELinux-confined (virt_qemu_ga_t) and denies outbound
-    # connect() for anything it spawns, which breaks agent.identity.enroll()'s
-    # plain urllib POST.
+    # two collide onto one IP, so each clone regenerates its machine-id and
+    # reboots before use. Fedora was ruled out for the agent role
+    # separately: its guest-agent runs SELinux-confined (virt_qemu_ga_t) and
+    # denies outbound connect() for anything it spawns, which breaks
+    # agent.identity.enroll()'s plain urllib POST.
     engine_vmid = ph.clone_vm(proxmox, int(os.environ["TEST_TEMPLATE_VMID_UBUNTU"]), "engine")
     agent_vmid = ph.clone_vm(proxmox, int(os.environ["TEST_TEMPLATE_VMID_UBUNTU"]), "agent")
     try:

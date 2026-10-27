@@ -290,6 +290,25 @@ class Handler(BaseHTTPRequestHandler):
                 return value
         return None
 
+    def _current_player(self):
+        """(player, competition) from the browser's player cookie, or (None, None).
+
+        One player slot per browser is the engine's player identity: it is what
+        keeps a person in one competition at a time and what the main page uses
+        to say "this is your run".
+        """
+        pid = self._cookie("huitz_player")
+        if not pid:
+            return None, None
+        player = self.store.get_player(pid)
+        if player is None:
+            return None, None
+        return player, self.store.get_competition(player.competition_id)
+
+    @staticmethod
+    def _clear_player_cookie() -> str:
+        return "huitz_player=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
     def _read_form(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length < 0 or length > self._MAX_BODY_BYTES:
@@ -422,10 +441,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, leaderboard.get_leaderboard(self.store, scenario))
             return
         if path == "/":
-            # Public visitors only see open competitions; admins see everything.
+            # A player who is in a live competition sees their run here, not
+            # a list of competitions they cannot currently join. Everyone else
+            # gets the public list (admins also see non-live competitions).
+            player, current = self._current_player()
+            if competition.is_active_player(player, current):
+                data = competition.leaderboard_payload(self.store, current)
+                row = next((r for r in data["leaderboard"]
+                            if r["player_id"] == player.player_id), None)
+                services = (row.get("services") if row else None) or \
+                    competition.service_rows(self.store, current, player.box_id)
+                player_csrf = claims.player_csrf(self.server_secret,
+                                                 player.player_id)
+                self._send_html(200, web.home_competition_page(
+                    current, player, row, data["leaderboard"], player.claim_url,
+                    csrf=player_csrf, leave_csrf=player_csrf,
+                    player_count=data["competition"]["player_count"],
+                    services=services))
+                return
             admin_view = self._admin_actor()[0]
-            self._send_html(200, web.index_page(self.store.list_competitions(),
-                                                admin_view=admin_view))
+            comps = self.store.list_competitions()
+            counts = {c.id: self.store.count_players(c.id) for c in comps}
+            self._send_html(200, web.index_page(comps, admin_view=admin_view,
+                                                players_by_comp=counts))
             return
         if path.startswith("/c/"):
             self._handle_public_competition(path, parts)
@@ -556,7 +594,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if len(rest) == 1:
             data = competition.leaderboard_payload(self.store, comp)
-            self._send_html(200, web.competition_page(data))
+            viewer, viewer_comp = self._current_player()
+            if not competition.is_active_player(viewer, viewer_comp):
+                viewer_comp = None
+            self._send_html(200, web.competition_page(data,
+                                                      viewer_comp=viewer_comp))
             return
         if rest[1] == "join" and len(rest) >= 3 and rest[2] == "success":
             pid = self._cookie("huitz_player")
@@ -566,11 +608,24 @@ class Handler(BaseHTTPRequestHandler):
                     404, "No player session",
                     "Join again to get a new slot.", f"/c/{comp.slug}/join"))
                 return
+            if player.box_id:
+                # The run is live; the main page is the run now.
+                self._redirect("/")
+                return
             self._send_html(200, web.join_success_page(
                 comp, player, join_code=player.join_code_plain or "",
                 csrf=claims.player_csrf(self.server_secret, player.player_id)))
             return
         if rest[1] == "join":
+            player, current = self._current_player()
+            if competition.is_active_player(player, current):
+                if current.id == comp.id:
+                    # Already holds a slot here -- the main page is the run.
+                    self._redirect("/")
+                    return
+                self._send_html(409, web.join_form_page(
+                    comp, blocked_comp=current))
+                return
             payload = competition.public_competition_payload(self.store, comp)
             notice = ""
             if not payload["can_join"]:
@@ -742,8 +797,33 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send_html(400, web.join_form_page(comp, "Malformed form."))
             return
+        player, current = self._current_player()
+        if competition.is_active_player(player, current):
+            if current.id == comp.id:
+                self._redirect("/")
+                return
+            self._send_html(409, web.join_form_page(comp, blocked_comp=current))
+            return
+        name = str(form.get("name", ""))
+        # The cookie is the primary identity, but a cleared cookie must not
+        # turn one person into two competitors. Names are the only other handle
+        # the engine has; while a name is live it cannot be reused elsewhere.
+        name_error = competition.validate_display_name(name)
+        if not name_error:
+            other = self.store.find_active_player_by_name(
+                competition.normalize_name(name))
+            if other is not None and other.competition_id != comp.id:
+                other_comp = self.store.get_competition(other.competition_id)
+                if competition.is_active_player(other, other_comp):
+                    self._send_html(409, web.join_form_page(
+                        comp,
+                        error=(f"'{other.display_name}' is already competing "
+                               f"in {other_comp.name}. A player can be in only "
+                               "one competition at a time — choose a different "
+                               "name or wait for that run to end.")))
+                    return
         player, code, error = competition.create_player_with_code(
-            self.store, comp, str(form.get("name", "")), self.server_secret)
+            self.store, comp, name, self.server_secret)
         if error:
             self._send_html(400, web.join_form_page(comp, error))
             return
@@ -752,10 +832,66 @@ class Handler(BaseHTTPRequestHandler):
         self.store.add_audit("player", "join_reserved", comp.id, player.player_id,
                              details_json=json.dumps({"name": player.display_name}),
                              remote_addr=self.client_address[0] if self.client_address else None)
-        # PRG: a redirect (not a 200 page) so refreshing never re-submits the form.
-        self._redirect(f"/c/{comp.slug}/join/success", extra_headers={"Set-Cookie": (
+        # PRG: a redirect (not a 200 page) so refreshing never re-submits the
+        # form. The main page is now the run dashboard; the success page is
+        # kept for the pending/fallback states and redirects here once bound.
+        self._redirect("/", extra_headers={"Set-Cookie": (
             f"huitz_player={player.player_id}; Path=/; HttpOnly; "
             f"SameSite=Lax; Max-Age=86400")})
+
+    def _handle_public_leave(self, slug: str) -> None:
+        """Player withdraws: release the VM, drop the slot, clear the cookie.
+
+        Leaving a run is a forfeit: the current score disappears from the
+        competition board (the box/score rows remain historical), the portal
+        VM is destroyed, and the player is free to join another competition.
+        """
+        comp = self.store.get_competition_by_slug(slug)
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        player, current = self._current_player()
+        if player is None or current is None or current.id != comp.id:
+            self._redirect("/")
+            return
+        try:
+            form = self._read_form()
+        except Exception:
+            form = {}
+        if not claims.check_csrf(self.server_secret, player.player_id,
+                                 form.get("csrf")):
+            self._send_html(403, web.error_page(
+                403, "Invalid CSRF token",
+                "Go back, reload the page, and try again.", "/"))
+            return
+        if not competition.is_active_player(player, comp):
+            # Already finished/removed: there is nothing to forfeit, just drop
+            # the browser's stale player session.
+            self._redirect("/", extra_headers={
+                "Set-Cookie": self._clear_player_cookie()})
+            return
+        released = False
+        base, _secret = claims.config()
+        if base and player.claim_uid:
+            try:
+                workshop.release_vm(base, player.claim_uid)
+                released = True
+            except workshop.WorkshopError:
+                pass  # the portal reaper will collect it; leaving still works
+        had_box = bool(player.box_id)
+        self.store.remove_player(player.player_id)
+        self.store.update_player(
+            player.player_id, claim_url=None, claim_uid=None, claim_ticket=None,
+            claim_error=None)
+        self.store.add_audit(
+            "player", "player_leave", comp.id, player.player_id,
+            details_json=json.dumps({"released_vm": released,
+                                     "had_box": had_box}),
+            remote_addr=self.client_address[0] if self.client_address else None)
+        self._redirect("/", extra_headers={
+            "Set-Cookie": self._clear_player_cookie()})
 
     def _handle_admin_new_competition(self, session) -> None:
         try:
@@ -899,6 +1035,49 @@ class Handler(BaseHTTPRequestHandler):
                                       "claims_started": claimed})
                 return
             self._redirect(f"/admin/competitions/{comp.id}?msg={message.replace(' ', '+')}")
+            return
+        if action == "delete":
+            if comp.status != "ended":
+                message = "Only ended competitions can be removed; end it first."
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._render_admin_competition(session, comp.id, error=message)
+                return
+            # Release every VM this competition handed out. cleanup_pool does
+            # this too for pools the engine provisioned, but legacy pins were
+            # only unpinned there -- a delete must not leak their VMs.
+            base, _secret = claims.config()
+            released = 0
+            if base:
+                for p in self.store.list_players(comp.id):
+                    if not p.claim_uid:
+                        continue
+                    try:
+                        workshop.release_vm(base, p.claim_uid)
+                        released += 1
+                    except workshop.WorkshopError:
+                        pass  # portal already reaped it; keep deleting
+            pool_stats = claims.cleanup_pool(self.store, comp)
+            if not self.store.delete_competition(comp.id):
+                message = "The competition could not be removed; reload and retry."
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._render_admin_competition(session, comp.id, error=message)
+                return
+            self.store.add_audit(actor, "competition_delete", comp.id,
+                                 details_json=json.dumps(
+                                     {"slug": comp.slug,
+                                      "released_vms": released,
+                                      "pool": pool_stats}),
+                                 remote_addr=self.client_address[0] if self.client_address else None)
+            if session is None:
+                self._send_json(200, {"ok": True, "deleted": comp.id,
+                                      "released_vms": released,
+                                      "pool": pool_stats})
+                return
+            self._redirect("/admin")
             return
         if action == "start":
             self.store.start_competition(comp.id)
@@ -1168,6 +1347,10 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/c/") and path.endswith("/join"):
             slug = path[len("/c/"):].strip("/").split("/")[0]
             self._handle_public_join(slug)
+            return
+        if path.startswith("/c/") and path.endswith("/leave"):
+            slug = path[len("/c/"):].strip("/").split("/")[0]
+            self._handle_public_leave(slug)
             return
         self._send_json(404, {"error": "not found"})
 
