@@ -19,7 +19,7 @@ from typing import Optional
 
 import yaml
 
-from authoring.scenario_modes import MODES, base_mode, merge_effective
+from common.scenario_record import MODES, base_mode, merge_effective
 from boxbuilder.os_family import KNOWN_OS, known_os
 
 

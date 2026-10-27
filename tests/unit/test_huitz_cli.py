@@ -976,7 +976,7 @@ class TestScorecardContrast:
     def test_data_lines_render_ink_not_muted(self, tmp_path):
         _, snap = _honor_snapshot(tmp_path)
         out = self._styled(snap, hints=True)
-        for needle in ("scenario v3", "1 of 2 fixed", "1 issue(s) remain",
+        for needle in ("1 of 2 fixed", "1 issue(s) remain",
                        "last graded"):
             hits = self._lines_with(out, needle)
             assert hits, f"expected a line containing {needle!r}"

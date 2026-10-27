@@ -783,6 +783,31 @@ class Store:
             ).fetchone()
         return row["version"] if row is not None else None
 
+    def delete_scenario_versions(self, scenario_name: str,
+                                 keep_version: int) -> None:
+        """Purge every stored version of a scenario except ``keep_version``.
+
+        The box folder is the source of truth and holds exactly one version;
+        this carries that rule into the serving cache (no backwards
+        compatibility: stale-version check-ins fail until the competition is
+        migrated).
+        """
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM scenarios WHERE scenario_name = ? AND scenario_version <> ?",
+                (scenario_name, keep_version),
+            )
+            self._commit()
+
+    def delete_scenario(self, scenario_name: str) -> None:
+        """Purge every stored version of a scenario (e.g. removed from boxes/)."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM scenarios WHERE scenario_name = ?",
+                (scenario_name,),
+            )
+            self._commit()
+
     # --- ranked competition mode -------------------------------------------
 
     @staticmethod

@@ -71,12 +71,16 @@ curl -sS -X POST "$HUITZILOPOCHTLI_ENGINE_URL/admin/scenarios" \
   --data-binary @artifacts/<box>-ranked/engine_record.json
 ```
 
-The admin picker lists uploaded records **and** ranked records found in a box
-folder (`$HUITZILOPOCHTLI_BOXES_DIR`, or `./boxes`, files named
-`engine_record*.json`). The folder scan is a development convenience — the
-deployed engine ships without it — so **upload is the supported path**
-(`POST /admin/scenarios` or the console's paste-and-validate form).
-`engine_record.json` is not committed under `boxes/`.
+The engine does not need the compiled record at all: it parses the committed
+`boxes/<box>/scenario.yaml` files itself, and **the admin picker lists exactly
+that folder** (`$HUITZILOPOCHTLI_BOXES_DIR`, default `<app dir>/boxes` — the
+deployment bundle ships it). Each scenario appears once, at its current
+authored version; versions are never shown in the UI. Running a competition
+against anything but the current version is refused — when you bump
+`scenario.version`, end and recreate (or rerun) competitions on the new
+version; there is no backwards compatibility. `POST /admin/scenarios` still
+exists for tooling, but an upload only seeds the scoring cache and never adds
+a picker entry.
 
 ## 2. Create and start a competition
 
@@ -87,8 +91,11 @@ curl -sS -X POST "$HUITZILOPOCHTLI_ENGINE_URL/admin/api/competitions" \
   -H 'Content-Type: application/json' \
   -H "X-HUITZILOPOCHTLI-Admin-Token: $HUITZILOPOCHTLI_ADMIN_TOKEN" \
   -d '{"name": "Friday Night Ranked", "scenario_name": "Ranked Demo",
-       "scenario_version": 1, "max_players": 32, "duration_s": 7200}'
+       "max_players": 32, "duration_s": 7200}'
 ```
+
+`scenario_version` may be omitted — it defaults to the box folder's current
+version for that scenario; an explicit older version is refused.
 
 Fields: **name** (slug derived; the API also takes an explicit one — that is
 `/c/<slug>`), **scenario**, **max players** (hard cap), **run duration** (each
@@ -101,6 +108,17 @@ players without ending runs; **End** freezes every run and the board. An ended
 competition can be **rerun** (fresh, same settings) or **removed** — removal
 releases its VMs, cleans its pool, and deletes the competition and its slots;
 boxes and scores remain as history.
+
+**End also tears the pool down.** It releases claimed VMs, destroys the pool's
+remaining pre-provisioned clones, and deletes the pool configuration. If the
+portal is unreachable the pool pin is kept and the sweeper retries. Ending
+seconds after the first claim is safe: the engine waits briefly for clones
+that are still registering, then sweeps again after deleting the pool.
+
+**Ties share a rank.** Equal totals get the same rank on the board, the
+per-box report, and the CSV (standard competition ranking: `1, 2, 2, 4`).
+Rows keep a stable display order, but that order does not change a tied
+player's rank.
 
 ## 3. Build the ranked template
 
@@ -126,6 +144,12 @@ places the agent, the signed manifest, the authoring public key, and an
 record, no answer key** — and leaves the agent unit (or Windows task)
 disabled. Confirm no `identity.json*` or report artifacts remain, then seal;
 `huitz join` enables and starts the unit on the player's clone.
+
+**Seal on a network that can reach the engine.** A template on an isolated
+bridge can only check in if that bridge's gateway allows the engine's port
+(and only that port) and the engine has a return route to the bridge's subnet.
+If either side is missing, `huitz join` times out and the box never checks in;
+no engine-side fix can compensate.
 
 ```bash
 python3 -m boxbuilder lint --all    # plant/check cross-check, every box
@@ -246,8 +270,7 @@ or URL.
 
 Console `/admin` (competitions, counts, audit), `/admin/competitions/<id>`
 (start/end/close joins/rerun, roster, reissue, disqualify/remove, CSV; ended
-competitions add **Remove**), `/admin/scenarios` (paste a record),
-`/admin/audit`. API: `/admin/api/competitions` and `/admin/players/<id>`;
+competitions add **Remove**), `/admin/audit`. API: `/admin/api/competitions` and `/admin/players/<id>`;
 CSRF applies to session forms only. A sweeper
 (`$HUITZILOPOCHTLI_SWEEP_INTERVAL_S`, 15s) retries failed claims, rotates
 expiring codes, and cleans ended pools. Engine install, upgrade, and

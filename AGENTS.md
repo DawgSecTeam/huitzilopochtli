@@ -33,6 +33,13 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
 - **The box never holds the answer key in ranked mode.** `collect_params` and the
   manifest carry what to collect, never expected values (§2.4, §6.1); the rubric
   stays engine-side (§3).
+- **The engine serves exactly what `boxes/` holds.** The admin scenario picker
+  lists the committed box folder only — the engine parses each
+  `boxes/<box>/scenario.yaml` itself (no `engine_record.json` required) and
+  keeps one current version per scenario name; creating, starting, or rerunning
+  a competition against any other version is refused (competitions migrate
+  forward when a version is released, never back-compatible), and versions are
+  never rendered in any UI.
 - **The box clock is diagnostic-only.** All timed scoring uses the engine's
   receipt clock; never score from box-claimed time (§2.3, §11.3).
 - **The adversary is a closed allowlist with no network egress.** No scenario
@@ -133,10 +140,12 @@ password, VMID, bridge, or engine address — and never put one in `box.yaml`.
   (see the boundary bullet below).
 - **Dependency boundaries (hard).** `agent/` + `common/` are stdlib-only
   (vendored Ed25519 is the sole exception); `engine/` adds only stdlib
-  `sqlite3`. PyYAML lives in `authoring/` + `boxbuilder/` only
-  (`paramiko` for the ssh provider, `proxmoxer` in `tests/` only). The zipapp
-  bundles `agent/` + `common/` and nothing else — a third-party import there
-  silently ships breakage to every box.
+  `sqlite3` plus PyYAML (the distro `python3-yaml` package on the engine VM) —
+  the engine parses `boxes/*/scenario.yaml` itself. `common/` stays stdlib-only
+  because the zipapp bundles `agent/` + `common/` and nothing else — a
+  third-party import there silently ships breakage to every box. PyYAML is
+  also used by `authoring/` + `boxbuilder/` (`paramiko` for the ssh provider,
+  `proxmoxer` in `tests/` only).
 - **No src-layout.** conftest.py puts the repo root on `sys.path`, so
   `import agent`, `import common`, `import boxbuilder` work everywhere.
 - **Layout:** `common/` (shared schema + evaluator + crypto), `agent/` (on-box

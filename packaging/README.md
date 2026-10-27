@@ -148,7 +148,8 @@ authoring-only dependency) or ship server-side code to a box.
 
 Use the existing `authoring/compile.py` `compile_scenario(...)` to
 produce `manifest.signed.json` (+ `rubric.json` for honor mode, or
-`engine_record.json` for ranked) from a scenario YAML. That output is
+`engine_record.json` for ranked — a cache seed; the ranked engine parses the
+committed `boxes/` sources itself) from a scenario YAML. That output is
 what gets copied into `/opt/.huitzilopochtli/` alongside the `.pyz`
 below (the rubric first passing through `common/rubric_codec.py` --
 `boxbuilder` does this for you) --

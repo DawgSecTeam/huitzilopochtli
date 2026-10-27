@@ -4,7 +4,7 @@ import os
 import pytest
 import yaml
 
-from authoring.scenario_modes import (
+from common.scenario_record import (
     LOOPBACK_ENGINE_URL,
     ScenarioModeError,
     base_mode,

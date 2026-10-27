@@ -17,7 +17,7 @@ fi
 
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  python3 ca-certificates curl ufw qemu-guest-agent chrony >/dev/null
+  python3 python3-yaml ca-certificates curl ufw qemu-guest-agent chrony >/dev/null
 
 id -u huitz >/dev/null 2>&1 || useradd --system --home "$STATE_DIR" --shell /usr/sbin/nologin huitz
 install -d -o root -g root -m 755 /opt/huitzilopochtli
@@ -26,6 +26,14 @@ chmod -R u+w "$APP_DIR" 2>/dev/null || true
 cp -a "$SRC_DIR/common/." "$APP_DIR/common/"
 cp -a "$SRC_DIR/engine/." "$APP_DIR/engine/"
 cp -a "$SRC_DIR/engine/deploy/." "$APP_DIR/deploy/"
+# The engine parses the committed box scenarios itself (the admin picker
+# serves exactly what boxes/ holds), so the bundle must carry them.
+if [[ -d "$SRC_DIR/boxes" ]]; then
+  install -d -o root -g root -m 755 "$APP_DIR/boxes"
+  cp -a "$SRC_DIR/boxes/." "$APP_DIR/boxes/"
+else
+  echo "WARNING: bundle has no boxes/ folder; the admin picker will be empty" >&2
+fi
 chown -R root:root /opt/huitzilopochtli
 chmod -R a-w /opt/huitzilopochtli
 install -d -o huitz -g huitz -m 700 "$STATE_DIR" "$BACKUP_DIR"
@@ -53,6 +61,8 @@ HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD=${HUITZ_WORKSHOP_ADMIN_PASSWORD:-}
 HUITZILOPOCHTLI_WORKSHOP_SECRET=${HUITZ_WORKSHOP_SECRET:-}
 HUITZILOPOCHTLI_SWEEP_INTERVAL_S=${HUITZ_SWEEP_INTERVAL_S:-15}
 HUITZILOPOCHTLI_PUBLIC_URL=${HUITZ_PUBLIC_URL:-http://127.0.0.1:8080}
+# Optional override for the scenario source folder (default: <app dir>/boxes).
+#HUITZILOPOCHTLI_BOXES_DIR=/opt/huitzilopochtli/engine/boxes
 EOF
   chmod 600 "$ENV_FILE"
   chown root:root "$ENV_FILE"

@@ -58,6 +58,8 @@ _THEMES = {
         "line": "#37301f", "line-2": "#5c5140",
         "accent": "#c99a62", "on-accent": "#211c16",
         "ok": "#7fae7a", "warn": "#c9973f", "danger": "#d96f66",
+        # The projector board keeps its near-black ground in both themes.
+        "display-bg": "#0f0c09",
     },
     "light": {
         "bg": "#f7f1e3", "surface": "#efe8d8", "surface-2": "#e6dcc6",
@@ -67,6 +69,7 @@ _THEMES = {
         "line": "#ddd2ba", "line-2": "#8d7f66",
         "accent": "#5f4a38", "on-accent": "#f7f1e3",
         "ok": "#3a6a41", "warn": "#7c5717", "danger": "#a03a30",
+        "display-bg": "#0f0c09",
     },
 }
 _SEMANTIC_BG = {
@@ -307,6 +310,29 @@ def _service_history(services: list) -> str:
     return '<div class="svc-history">' + "".join(rows) + "</div>"
 
 
+def _score_cell(row: dict) -> str:
+    """Total with the spelled-out breakdown under it (leaderboard + roster)."""
+    return (f'<div class="score-cell"><span class="score">{esc(row.get("total", 0))}</span>'
+            f'<span class="muted small">hardening {esc(row.get("hardening_points", 0))} · '
+            f'services {esc(row.get("service_points", 0))}</span></div>')
+
+
+def _time_cell(row: dict) -> str:
+    """Live countdown while the run is on; a quiet dot once the clock stops."""
+    if row.get("status") == "running" and row.get("remaining_s", 0) > 0:
+        return (f'<span class="cd" data-remaining="{int(row["remaining_s"])}"'
+                f'>{esc(_fmt_countdown(row["remaining_s"]))}</span>')
+    return '<span class="muted">⋅</span>'
+
+
+def _updated_clock() -> str:
+    return f'<span class="updated" data-updated>{esc(_fmt_clock())}</span>'
+
+
+def _updates_meta() -> str:
+    return f'<span class="meta">auto-updates · {_updated_clock()}</span>'
+
+
 def _copy_btn(value: str, label: str) -> str:
     return (f'<button type="button" class="btn" data-copy="{esc(value)}">'
             f'<span>{esc(label)}</span></button>')
@@ -448,7 +474,7 @@ def index_page(comps: list, admin_view: bool = False,
         other = [c for c in comps if c.status != "live"]
         body += f"""
 <h2 class="section-title">Other competitions</h2>{_comp_cards(other, players_by_comp)}"""
-    return layout("Competitions", body, current="home")
+    return layout("Competitions", body, admin=admin_view, current="home")
 
 
 def _join_box(comp: dict, viewer_comp: Optional[CompetitionRecord] = None) -> str:
@@ -472,25 +498,17 @@ def _join_box(comp: dict, viewer_comp: Optional[CompetitionRecord] = None) -> st
     return f'<span class="muted small">{esc(reason)}</span>'
 
 
-def _leader_row(r: dict, first: bool) -> str:
-    dots = _service_dots(r.get("services"))
-    if r["status"] == "running" and r.get("remaining_s", 0) > 0:
-        time_cell = (f'<span class="cd" data-remaining="{int(r["remaining_s"])}"'
-                     f'>{esc(_fmt_countdown(r["remaining_s"]))}</span>')
-    else:
-        time_cell = '<span class="muted">final</span>'
-    score = (f'<div class="score-cell"><span class="score">{esc(r["total"])}</span>'
-             f'<span class="muted small">H {esc(r["hardening_points"])} · S {esc(r["service_points"])}</span></div>')
-    return f"""<tr{' class="leader"' if first else ''}>
+def _leader_row(r: dict) -> str:
+    return f"""<tr>
 <td class="rank">{esc(r['rank'])}</td>
 <td><div class="pname"><strong>{esc(r['name'])}</strong>{player_badge(r['status'])}</div></td>
-<td class="r">{score}</td>
-<td>{dots}</td>
-<td class="num r">{time_cell}</td></tr>"""
+<td class="r">{_score_cell(r)}</td>
+<td>{_service_dots(r.get("services"))}</td>
+<td class="num r">{_time_cell(r)}</td></tr>"""
 
 
 def _board_table(rows: list) -> str:
-    body_rows = "".join(_leader_row(r, i == 0) for i, r in enumerate(rows)) \
+    body_rows = "".join(_leader_row(r) for r in rows) \
         or '<tr><td colspan="5" class="empty">No players yet.</td></tr>'
     return (f'<div class="table-wrap"><table><thead><tr>'
             f'<th class="r">#</th><th>Player</th><th class="r">Score</th>'
@@ -499,7 +517,8 @@ def _board_table(rows: list) -> str:
 
 
 def competition_page(data: dict, *, refresh: int = 5,
-                     viewer_comp: Optional[CompetitionRecord] = None) -> str:
+                     viewer_comp: Optional[CompetitionRecord] = None,
+                     admin: bool = False) -> str:
     comp = data["competition"]
     rows = data["leaderboard"]
     full = (comp["status"] == "live" and comp["max_players"] > 0
@@ -512,13 +531,14 @@ def competition_page(data: dict, *, refresh: int = 5,
 <div class="joinbox">{_join_box(comp, viewer_comp)}</div>
 </section>
 <div id="board" data-poll="{refresh * 1000}">
-<section class="card"><div class="card-head"><h2>Leaderboard</h2>
-<span class="meta">auto-updates · <span class="updated" data-updated>{esc(_fmt_clock())}</span></span></div>
+<section class="board"><div class="board-head"><h2>Leaderboard</h2>
+{_updates_meta()}</div>
 {_board_table(rows)}
 </section>
 </div>"""
     accent = (comp.get("theme") or {}).get("accent")
-    return layout(comp["name"], body, refresh=refresh, accent=accent, current="home")
+    return layout(comp["name"], body, refresh=refresh, accent=accent,
+                  admin=admin, current="home")
 
 
 def display_page(data: dict) -> str:
@@ -528,13 +548,13 @@ def display_page(data: dict) -> str:
 <span class="rank">{esc(r['rank'])}</span>
 <span class="name">{esc(r['name'])}</span>
 <span class="score">{esc(r['total'])}</span>
-<span class="time">{f'<span data-remaining="{int(r["remaining_s"])}">{esc(_fmt_countdown(r["remaining_s"]))}</span>' if r['status'] == 'running' and r.get('remaining_s', 0) > 0 else '<span class="muted">final</span>'}</span>
+<span class="time">{_time_cell(r)}</span>
 <span>{_service_dots(r.get('services'))}</span>
 </div>""" for r in rows) or '<p class="empty">Waiting for players…</p>'
     body = f"""<section class="display-head"><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div></section>
 <div id="board" data-poll="5000">
 <section class="display-board">{board}</section>
-<p class="display-meta">{esc(len(rows))} on the board · auto-updates · <span class="updated" data-updated>{esc(_fmt_clock())}</span></p>
+<p class="display-meta">{esc(len(rows))} on the board · auto-updates · {_updated_clock()}</p>
 </div>"""
     accent = (comp.get("theme") or {}).get("accent")
     return layout(comp["name"], body, refresh=5, body_class="display", accent=accent, chrome=False)
@@ -542,7 +562,8 @@ def display_page(data: dict) -> str:
 
 def join_form_page(comp: CompetitionRecord, error: str = "",
                    closed_notice: str = "",
-                   blocked_comp: Optional[CompetitionRecord] = None) -> str:
+                   blocked_comp: Optional[CompetitionRecord] = None,
+                   admin: bool = False) -> str:
     if blocked_comp is not None:
         # One competition at a time: point them at the run they already own
         # instead of rendering a form whose POST can only be refused.
@@ -554,14 +575,16 @@ Finish (or leave) your current run before joining another.</p>
 <p class="actions"><a class="btn primary" href="/">Go to my run</a>
 <a class="btn" href="/c/{esc(blocked_comp.slug)}">Its leaderboard</a></p>
 </section>"""
-        return layout(f"Join {comp.name}", body, comp=comp, current="home")
+        return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
+                      current="home")
     if closed_notice:
         body = f"""<section class="hero"><h1>Join {esc(comp.name)}</h1></section>
 <section class="card narrow center">
 <p class="muted">{esc(closed_notice)}</p>
 <a class="btn" href="/c/{esc(comp.slug)}">Back to the leaderboard</a>
 </section>"""
-        return layout(f"Join {comp.name}", body, comp=comp, current="home")
+        return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
+                      current="home")
     body = f"""<section class="hero"><h1>Join {esc(comp.name)}</h1>
 <p class="lede">Enter the name your competitors will see. You will get a VM link and a one-time code to run inside the box.</p></section>
 <section class="card narrow">
@@ -572,7 +595,8 @@ Finish (or leave) your current run before joining another.</p>
 </form>
 <p class="muted small">By joining you agree to compete on a disposable ranked box. One box per player; no teams; one competition at a time. Provisioning your VM can take a minute.</p>
 </section>"""
-    return layout(f"Join {comp.name}", body, comp=comp, current="home")
+    return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
+                  current="home")
 
 
 def _claim_retry_form(player: PlayerRecord, csrf: str) -> str:
@@ -582,7 +606,8 @@ def _claim_retry_form(player: PlayerRecord, csrf: str) -> str:
 
 
 def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
-                      join_code: str = "", csrf: str = "") -> str:
+                      join_code: str = "", csrf: str = "",
+                      admin: bool = False) -> str:
     code = join_code or player.join_code_plain or ""
     url = player.claim_url
     bound = bool(player.box_id)
@@ -597,6 +622,11 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
             f'{_copy_btn(url, "Copy link")}</div>')
     if bound:
         parts.append('<p class="okmsg">Your box is joined — the run is live.</p>')
+        if player.ends_at:
+            parts.append(
+                f'<p class="muted small">Run ends {esc(_fmt_ts(player.ends_at))} '
+                f'· hard stop {esc(_fmt_ts(player.ends_at - 300))} '
+                f'(five minutes before).</p>')
         parts.append(f'<p class="actions"><a class="btn" href="/c/{esc(comp.slug)}/me">My status</a> '
                      f'<a class="btn" href="/c/{esc(comp.slug)}">Leaderboard</a></p>')
     elif url:
@@ -660,13 +690,13 @@ when it does.</p></li>"""
 <p><a href="/c/{esc(comp.slug)}">Leaderboard</a> · <a href="/c/{esc(comp.slug)}/me">My status</a></p></li>
 </ol>
 </section>"""
-    return layout("You're in", body, comp=comp, current="home",
+    return layout("You're in", body, comp=comp, admin=admin, current="home",
                   refresh=None if bound else 5)
 
 
 def player_page(comp: CompetitionRecord, player: PlayerRecord,
                 board_row: Optional[dict], claim_url: Optional[str],
-                csrf: str = "") -> str:
+                csrf: str = "", admin: bool = False) -> str:
     row = board_row or {}
     running = player.status == "running"
     remaining = max(0, int(player.ends_at - time.time())) if (running and player.ends_at) else 0
@@ -683,7 +713,7 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
     elif player.status == "invited":
         time_block = '<span class="muted small">starts when your box joins</span>'
     else:
-        time_block = '<span class="muted">final</span>'
+        time_block = '<span class="muted">—</span>'
     body = f"""<section class="page-head-row"><div>
 <div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}</div>
 <p class="meta">{esc(comp.name)}</p></div></section>
@@ -705,7 +735,8 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
 <p><a href="/c/{esc(comp.slug)}">Leaderboard →</a></p>
 </section>
 </div>"""
-    return layout(player.display_name, body, comp=comp, current="home")
+    return layout(player.display_name, body, comp=comp, admin=admin,
+                  current="home")
 
 
 def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
@@ -769,7 +800,8 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                           claim_url: Optional[str], csrf: str = "",
                           leave_csrf: str = "",
                           player_count: Optional[int] = None,
-                          services: Optional[list] = None) -> str:
+                          services: Optional[list] = None,
+                          admin: bool = False) -> str:
     """The main page while a run is active: a full-width run dashboard.
 
     The old narrow card left most of the viewport empty. This layout uses the
@@ -790,7 +822,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
     elif player.status == "invited":
         time_block = '<span class="muted small">starts when your box joins</span>'
     else:
-        time_block = '<span class="muted">final</span>'
+        time_block = '<span class="muted">—</span>'
     if row:
         score_block = (f'<div class="stat-big">{esc(row.get("total", 0))}</div>'
                        f'<div class="scoresplit"><span>hardening '
@@ -838,7 +870,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 <div class="card-head"><h2>Competition</h2>
 <a class="small" href="/c/{esc(comp.slug)}/display">Big screen →</a></div>
 <dl class="kv home-facts">
-<dt>Scenario</dt><dd>{esc(comp.scenario_name)} v{esc(comp.scenario_version)}</dd>
+<dt>Scenario</dt><dd>{esc(comp.scenario_name)}</dd>
 <dt>Players</dt><dd>{esc(joined)} of {esc(comp.max_players)}</dd>
 <dt>Duration</dt><dd>{esc(_fmt_duration(comp.duration_s))}</dd>
 </dl>
@@ -853,14 +885,15 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 </section>
 </div>
 <p class="home-note">You can join another competition once this run ends.</p>"""
-    return layout("My competition", body, comp=comp, current="home")
+    return layout("My competition", body, comp=comp, admin=admin,
+                  current="home")
 
 
 # --- admin pages -----------------------------------------------------------------
 
 
 def login_page(error: str = "") -> str:
-    body = f"""<section class="card narrow login">
+    body = f"""<section class="login-page">
 <h1>Admin login</h1>
 {f'<p class="error">{esc(error)}</p>' if error else ''}
 <form method="post" action="/admin/login" class="stack">
@@ -868,7 +901,7 @@ def login_page(error: str = "") -> str:
 <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
 <button class="btn primary" type="submit">Sign in</button>
 </form></section>"""
-    return layout("Admin login", body, admin=False)
+    return layout("Admin login", body, admin=False, body_class="login-body")
 
 
 def admin_dashboard_page(comps: list, players_by_comp: dict,
@@ -884,7 +917,7 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}
 <div id="dash" data-poll="30000">
 <section class="card"><div class="card-head"><h2>Competitions</h2>
-<span class="meta">auto-updates · <span class="updated" data-updated>{esc(_fmt_clock())}</span></span></div>
+{_updates_meta()}</div>
 <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="5" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
     return layout("Admin", body, admin=True, current="admin")
@@ -892,21 +925,27 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
 
 def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> str:
     opts = "".join(
-        f'<option value="{esc(name)}|{esc(version)}">{esc(name)} v{esc(version)}</option>'
+        # The version stays in the value as invisible plumbing; it is never
+        # rendered as a label.
+        f'<option value="{esc(name)}|{esc(version)}">{esc(name)}</option>'
         for name, version, _path in scenarios
     )
-    body = f"""{_page_head("New competition")}
+    body = f"""<div class="form-page">
+{_page_head("New competition")}
 {f'<p class="error">{esc(error)}</p>' if error else ''}
-<section class="card narrow"><form method="post" action="/admin/competitions/new" class="stack">
+<form method="post" action="/admin/competitions/new" class="stack">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
+<div class="form-grid form-lead">
 <label>Name<input name="name" required placeholder="Friday Night Ranked" autofocus></label>
-<label>Scenario<select name="scenario" required>{opts or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios uploaded to the engine or built in the box folder.</span></label>
-<div class="form-grid">
+<label>Scenario<select name="scenario" required>{opts or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
+</div>
+<div class="form-grid form-cols">
 <label>Max players<input name="max_players" type="number" min="1" value="32"></label>
 <label>Run duration (minutes)<input name="duration_min" type="number" min="1" value="120"></label>
-</div>
 <label>Accent color<input name="accent" type="color" value="#5f4a38"></label>
-<button class="btn primary" type="submit">Create draft</button></form></section>"""
+</div>
+<div class="form-foot"><button class="btn primary" type="submit">Create draft</button></div>
+</form></div>"""
     return layout("New competition", body, admin=True, current="admin")
 
 
@@ -917,8 +956,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
     for p in players:
         row = next((r for r in board.get("leaderboard", []) if r["player_id"] == p.player_id), {})
         if row:
-            score = (f'<div class="score-cell"><span class="score">{esc(row.get("total", 0))}</span>'
-                     f'<span class="muted small">H {esc(row.get("hardening_points", 0))} · S {esc(row.get("service_points", 0))}</span></div>')
+            score = _score_cell(row)
         elif p.status == "invited":
             score = '<span class="small muted">not started</span>'
         else:
@@ -971,7 +1009,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
     # in which case the error text lands on the player row.
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp.name)}</h1>{comp_status_tag(comp.status)}</div>
-<p class="meta">/c/{esc(comp.slug)} · {esc(comp.scenario_name)} v{esc(comp.scenario_version)}</p></div>
+<p class="meta">/c/{esc(comp.slug)} · {esc(comp.scenario_name)}</p></div>
 <div class="actions">{''.join(controls)}</div></section>
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}{f'<p class="error">{esc(error)}</p>' if error else ''}
 <section class="card"><div class="card-head"><h2>Settings</h2></div>
@@ -985,10 +1023,125 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 </div></section>
 <div id="roster" data-poll="15000">
 <section class="card"><div class="card-head"><h2>Players ({esc(len(players))})</h2>
-<span class="meta">auto-updates · <span class="updated" data-updated>{esc(_fmt_clock())}</span></span></div>
+{_updates_meta()}</div>
 <div class="table-wrap"><table class="roster"><thead><tr><th>Player</th><th class="r">Score</th><th>Services</th><th class="r">Check-in</th><th>Box</th><th>Actions</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="6" class="empty">No players yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
     return layout(comp.name, body, comp=comp, admin=True, current="admin")
+
+
+def styleguide_page() -> str:
+    """Admin-only component reference, not linked from the nav.
+
+    Every shared chrome element rendered with the real classes and fake data,
+    so a design change can be eyeballed against the whole kit -- and both
+    themes, via the nav toggle -- without standing up a competition.
+    """
+
+    def swatches(theme: str) -> str:
+        chips = "".join(
+            f'<div class="fact"><span class="fact-label">{esc(name)}</span>'
+            f'<span class="fact-value"><span style="display:inline-block;width:14px;'
+            f'height:14px;background:{esc(value)};border:1px solid var(--line-2)"></span>'
+            f'<code>{esc(value)}</code></span></div>'
+            for name, value in _THEMES[theme].items())
+        return f'<div class="facts">{chips}</div>'
+
+    sample_rows = [
+        {"rank": 1, "name": "Blue 07", "status": "running", "total": 556,
+         "hardening_points": 210, "service_points": 346, "remaining_s": 7199,
+         "services": [{"display": "Web", "state": "UP"},
+                      {"display": "SSH", "state": "UP"},
+                      {"display": "DB", "state": "DOWN"}]},
+        {"rank": 2, "name": "Blue 04", "status": "finished", "total": 554,
+         "hardening_points": 210, "service_points": 344, "remaining_s": 0,
+         "services": [{"display": "Web", "state": "UP"},
+                      {"display": "SSH", "state": "UP"},
+                      {"display": "DB", "state": "UP"}]},
+    ]
+    history_services = [
+        {"display": "Web", "state": "UP",
+         "history": ["UP", "UP", "DOWN", "UP", "UP", "UP", "UP", "UP", "UP", "UP"]},
+        {"display": "DB", "state": "DOWN", "history": ["UP", "DOWN", "DOWN"]},
+    ]
+    body = f"""{_page_head("Styleguide")}
+<section class="card"><div class="card-head"><h2>Typography</h2>
+<span class="meta">serif display · sans labels</span></div>
+<h1 style="font-size:1.6rem">Heading one (serif)</h1>
+<h2>Heading two</h2>
+<p>Body copy runs in the sans face at 16px. <a href="#">A link</a> takes the
+readable accent; <span class="muted">muted text</span> and
+<span class="small">small text</span> stay chrome-quiet.</p>
+<p class="meta">.meta — the caption line under a page title</p>
+<p class="help">.help — the whisper under a form field</p>
+</section>
+<section class="card"><div class="card-head"><h2>Buttons</h2>
+<span class="meta">one 32px height · fill carries importance</span></div>
+<p class="actions"><button class="btn" type="button">Default</button>
+<button class="btn primary" type="button">Primary</button>
+<button class="btn danger" type="button">Danger</button>
+<button class="btn copied" type="button">Copied (transient)</button>
+{_THEME_TOGGLE}</p>
+<div class="row-actions"><form class="inline" onsubmit="return false"><button class="btn" type="submit">Row action</button></form>
+<span class="act-sep" aria-hidden="true"></span>
+<form class="inline" onsubmit="return false"><button class="btn danger" type="submit">Destructive</button></form></div>
+</section>
+<section class="card"><div class="card-head"><h2>Fields</h2>
+<span class="meta">the new-competition grid</span></div>
+<div class="form-grid form-lead">
+<label>Name<input name="sg-name" type="text" placeholder="Friday Night Ranked"></label>
+<label>Scenario<select><option>Broadneck Post v1</option></select>
+<span class="help">.help — one line of context under a field.</span></label>
+</div>
+<div class="form-grid form-cols">
+<label>Number<input type="number" value="32"></label>
+<label>Color<input type="color" value="#5f4a38"></label>
+<label>Text<input type="text"></label>
+</div>
+<div class="form-foot"><button class="btn primary" type="button">Submit on a hairline</button></div>
+</section>
+<section class="card"><div class="card-head"><h2>Status</h2>
+<span class="meta">dots carry the word in a tooltip</span></div>
+<p class="row-actions">{comp_badge("live")}{comp_badge("draft")}{comp_badge("ended")}
+{player_badge("invited")}{player_badge("running")}{player_badge("finished")}{player_badge("disqualified")}
+{comp_status_tag("live")}</p>
+<p class="row-actions">{_service_dots(sample_rows[0]["services"])}
+{_service_dots([])}
+<span class="fullflag">full</span>
+<span class="fullnote">Competition is full</span></p>
+</section>
+<section class="card"><div class="card-head"><h2>Service uptime</h2>
+<span class="muted small">last 10 ticks</span></div>
+{_service_history(history_services)}
+</section>
+<section class="card"><div class="card-head"><h2>Table</h2>
+<span class="meta">leaderboard board, no container</span></div>
+{_board_table(sample_rows)}
+</section>
+<section class="card"><div class="card-head"><h2>Data displays</h2></div>
+<div class="facts">
+<div class="fact"><span class="fact-label">Status</span><span class="fact-value">{comp_status_label("live")} {comp_badge("live")}</span></div>
+<div class="fact"><span class="fact-label">Players</span><span class="fact-value">8 / 32 joined</span></div>
+</div>
+<dl class="kv">
+<dt>Last check-in</dt><dd>{esc(_rel_ts(0))}</dd>
+<dt>Duration</dt><dd>{esc(_fmt_duration(5400))} runs</dd>
+</dl>
+<p class="actions"><span class="bigscore">556</span>
+<span class="scoresplit"><span>hardening 210</span><span>services 346</span></span></p>
+<div class="codebox"><code>H7X2-9KQA</code>{_copy_btn("H7X2-9KQA", "Copy code")}</div>
+</section>
+<section class="card"><div class="card-head"><h2>Messages</h2></div>
+<p class="okmsg">.okmsg — the box is joined.</p>
+<p class="error">.error — we couldn't prepare your VM.</p>
+<p class="empty">.empty — no players yet.</p>
+</section>
+<section class="card"><div class="card-head"><h2>Palette — dark roast (:root)</h2></div>
+{swatches("dark")}
+</section>
+<section class="card"><div class="card-head"><h2>Palette — cream (light)</h2></div>
+{swatches("light")}
+</section>"""
+    return layout("Styleguide", body, admin=True, current="admin")
 
 
 
@@ -1059,6 +1212,10 @@ button rests on a quiet tint and empties to an outline on hover. */
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);min-height:var(--control);margin-bottom:var(--s3)}
 .card-head .meta{margin:0;white-space:nowrap;font-variant-numeric:tabular-nums}
 .center{text-align:center}
+/* The public leaderboard runs straight on the page ground: a head row and the
+   table, no panel behind them (the column headers carry the only hairline). */
+.board-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--s4);min-height:var(--control);margin-bottom:var(--s2)}
+.board .table-wrap{margin:0}
 .row{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);flex-wrap:wrap}
 .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--s4) var(--s5)}
 .fact{display:flex;flex-direction:column;gap:var(--s1);min-width:0}
@@ -1076,7 +1233,6 @@ td.rank{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 .score{font-weight:700;font-variant-numeric:tabular-nums}
 .score-cell{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
 .num{font-variant-numeric:tabular-nums}
-tr.leader td:first-child{box-shadow:inset 3px 0 0 var(--accent-text)}
 .svcs{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .svcs .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .svcs .dot.up{background:var(--ok)}.svcs .dot.down{background:var(--danger)}.svcs .dot.pending{background:var(--muted)}
@@ -1102,10 +1258,16 @@ label{display:flex;flex-direction:column;gap:.32rem;color:var(--ink-2);font-weig
 input,select,textarea{background:var(--bg);border:1px solid var(--line-2);border-radius:0;color:var(--ink);font:inherit;width:100%}
 input,select{height:var(--control);padding:0 .6rem}
 textarea{padding:.5rem .6rem}
-input[type=color]{padding:.15rem;width:3.2rem;height:2.2rem;cursor:pointer}
+input[type=color]{padding:.15rem;width:3.2rem;height:var(--control);cursor:pointer}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-text);outline-offset:1px;border-color:var(--accent-text)}
 .help{color:var(--muted);font-size:.8rem;font-weight:400}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3)}
+/* Full-page admin form: one centered column on the bare page ground — no
+   card, no tint; the terminal action sits on a hairline. */
+.form-page{max-width:46rem;margin:0 auto;width:100%}
+.form-lead{grid-template-columns:minmax(0,2fr) minmax(0,3fr)}
+.form-cols{grid-template-columns:1fr 1fr 1fr;align-items:start}
+.form-foot{display:flex;justify-content:flex-end;border-top:1px solid var(--line);padding-top:var(--s4)}
 code{background:var(--surface-2);border-radius:0;padding:.08rem .35rem;font-size:.9em}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:0;padding:var(--pad-card);overflow:auto}
 pre code{background:none;padding:0}
@@ -1124,7 +1286,11 @@ pre code{background:none;padding:0}
 .steps>li::before{counter-increment:step;content:counter(step);position:absolute;left:0;top:-.1rem;width:1.75rem;height:1.75rem;border-radius:0;background:var(--accent);color:var(--on-accent);font-weight:700;font-size:.9rem;display:flex;align-items:center;justify-content:center;font-family:var(--font-sans)}
 .steps>li:not(:last-child)::after{content:"";position:absolute;left:.85rem;top:1.9rem;bottom:.25rem;width:1px;background:var(--line)}
 .steps h2{font-size:1.02rem}
-.login{margin-top:var(--margin-trail)}
+/* Admin login owns the viewport: no card, vertically centered, wide type. */
+body.login-body main.wrap{min-height:calc(100vh - 57px);justify-content:center}
+.login-page{width:100%;max-width:36rem;margin:0 auto}
+.login-page h1{font-size:clamp(2.2rem,5vw,3.1rem);line-height:1.05;margin-bottom:var(--s3)}
+.login-page .stack{gap:var(--s4)}
 .err-card{text-align:center;margin-top:var(--margin-trail)}
 .err-code{font-size:2.4rem;font-weight:800;color:var(--muted);margin:.2rem 0}
 .bigscore{font-size:2.6rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
@@ -1161,7 +1327,7 @@ pre code{background:none;padding:0}
 .home-note{margin:var(--s4) 0 0;color:var(--muted);font-size:.86rem}
 .leave-card{border-color:var(--danger)}
 @media(max-width:900px){.home-grid{grid-template-columns:1fr}.home-hero h1{font-size:clamp(1.7rem,6vw,2.6rem)}}
-body.display{background:#0f0c09}
+body.display{background:var(--display-bg)}
 body.display main{display:block;max-width:1200px;padding:2.2rem 2rem}
 .display-head{display:flex;align-items:center;justify-content:center;gap:var(--s5);flex-wrap:wrap;margin-bottom:1.4rem}
 .display-head h1{font-size:2.2rem}

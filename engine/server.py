@@ -457,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
                     current, player, row, data["leaderboard"], player.claim_url,
                     csrf=player_csrf, leave_csrf=player_csrf,
                     player_count=data["competition"]["player_count"],
-                    services=services))
+                    services=services, admin=self._admin_actor()[0]))
                 return
             admin_view = self._admin_actor()[0]
             comps = self.store.list_competitions()
@@ -477,6 +477,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(401, web.login_page("Sign in to continue."))
                 return
             self._render_admin_dashboard(session)
+            return
+        if path == "/admin/styleguide":
+            # Component reference for design rounds; not linked from the nav.
+            session = self._admin_page_session()
+            if session is None:
+                self._send_html(401, web.login_page("Sign in to continue."))
+                return
+            self._send_html(200, web.styleguide_page())
             return
         if path == "/admin/api/competitions":
             ok, _actor, _session, _via = self._admin_actor()
@@ -592,13 +600,17 @@ class Handler(BaseHTTPRequestHandler):
                 404, "Competition not found",
                 "No competition lives at this address.", "/"))
             return
+        # Read-only admin detection (never mints a session): a signed-in admin
+        # gets the Log out control on every public page too.
+        is_admin = self._admin_actor()[0]
         if len(rest) == 1:
             data = competition.leaderboard_payload(self.store, comp)
             viewer, viewer_comp = self._current_player()
             if not competition.is_active_player(viewer, viewer_comp):
                 viewer_comp = None
             self._send_html(200, web.competition_page(data,
-                                                      viewer_comp=viewer_comp))
+                                                      viewer_comp=viewer_comp,
+                                                      admin=is_admin))
             return
         if rest[1] == "join" and len(rest) >= 3 and rest[2] == "success":
             pid = self._cookie("huitz_player")
@@ -614,7 +626,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_html(200, web.join_success_page(
                 comp, player, join_code=player.join_code_plain or "",
-                csrf=claims.player_csrf(self.server_secret, player.player_id)))
+                csrf=claims.player_csrf(self.server_secret, player.player_id),
+                admin=is_admin))
             return
         if rest[1] == "join":
             player, current = self._current_player()
@@ -624,7 +637,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._redirect("/")
                     return
                 self._send_html(409, web.join_form_page(
-                    comp, blocked_comp=current))
+                    comp, blocked_comp=current, admin=is_admin))
                 return
             payload = competition.public_competition_payload(self.store, comp)
             notice = ""
@@ -636,7 +649,8 @@ class Handler(BaseHTTPRequestHandler):
                         notice = "This competition is full."
                     else:
                         notice = "Joins are closed."
-            self._send_html(200, web.join_form_page(comp, closed_notice=notice))
+            self._send_html(200, web.join_form_page(comp, closed_notice=notice,
+                                                    admin=is_admin))
             return
         if rest[1] == "display":
             data = competition.leaderboard_payload(self.store, comp)
@@ -656,7 +670,8 @@ class Handler(BaseHTTPRequestHandler):
                         if r["player_id"] == player.player_id), None)
             self._send_html(200, web.player_page(
                 comp, player, row, player.claim_url,
-                csrf=claims.player_csrf(self.server_secret, player.player_id)))
+                csrf=claims.player_csrf(self.server_secret, player.player_id),
+                admin=is_admin))
             return
         self._send_html(404, web.error_page(404, "Not found",
                                             "The page you requested does not exist.",
@@ -739,8 +754,11 @@ class Handler(BaseHTTPRequestHandler):
             comps, counts, session.csrf_token))
 
     def _render_admin_new_competition(self, session, error: str = "") -> None:
+        sync_errors = scenario_mod.sync_box_scenarios(self.store)
+        if sync_errors:
+            error = error or "; ".join(sync_errors[:3])
         self._send_html(200 if not error else 400, web.admin_new_competition_page(
-            scenario_mod.list_admin_scenarios(self.store), session.csrf_token,
+            scenario_mod.list_admin_scenarios(), session.csrf_token,
             error))
 
     def _render_admin_competition(self, session, comp_id: str,
@@ -918,15 +936,25 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._render_admin_new_competition(session, "Pick a scenario from the list.")
             return
-        if scenario_mod.load_box_scenario(scenario_name, scenario_version) is not None:
-            # The box folder is the source of truth when the engine has it.
-            err = self._import_box_scenario(scenario_name, scenario_version)
-        elif self.store.get_scenario(scenario_name, scenario_version) is not None:
-            err = None  # an uploaded engine record; nothing to import
-        else:
+        # The picker only ever offers the box folder's current versions, so a
+        # mismatch here is a stale form (or a hand-rolled POST): refuse it --
+        # competitions are migrated to new versions, never run back-compatible.
+        sync_errors = scenario_mod.sync_box_scenarios(self.store)
+        if sync_errors:
+            self._render_admin_new_competition(
+                session, "Scenario folder: " + "; ".join(sync_errors[:3]))
+            return
+        current = scenario_mod.current_box_scenario(scenario_name)
+        if current is not None and scenario_version != current[0]:
+            self._render_admin_new_competition(
+                session,
+                f"Scenario {scenario_name} v{scenario_version} is not current "
+                f"(engine has v{current[0]}); migrate the competition to the "
+                f"current version.")
+            return
+        if self.store.get_scenario(scenario_name, scenario_version) is None:
             err = (f"Scenario {scenario_name} v{scenario_version} is not on the "
-                   f"engine; upload it first.")
-        if err:
+                   f"engine; the engine's box folder has no such scenario.")
             self._render_admin_new_competition(session, err)
             return
         # Derive the slug from the name. No pool is chosen here: a dedicated
@@ -974,6 +1002,21 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_html(409, web.error_page(
                         409, "Not rerunnable",
                         "Only ended competitions can be rerun.",
+                        f"/admin/competitions/{comp.id}", admin=True))
+                return
+            # A rerun pins the old scenario version; if the box folder has
+            # moved on, refuse rather than silently run a stale rubric.
+            current = scenario_mod.current_box_scenario(comp.scenario_name)
+            if current is not None and comp.scenario_version != current[0]:
+                message = (f"Scenario {comp.scenario_name} v{comp.scenario_version} "
+                           f"is not current (engine has v{current[0]}); migrate "
+                           f"this competition by creating a new one on the "
+                           f"current version.")
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._send_html(409, web.error_page(
+                        409, "Scenario version moved on", message,
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
             taken = {c.slug for c in self.store.list_competitions()}
@@ -1080,6 +1123,20 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/admin")
             return
         if action == "start":
+            # Going live pins the rubric for every player: refuse a draft
+            # whose scenario version is no longer the box folder's current.
+            current = scenario_mod.current_box_scenario(comp.scenario_name)
+            if current is not None and comp.scenario_version != current[0]:
+                message = (f"Scenario {comp.scenario_name} v{comp.scenario_version} "
+                           f"is not current (engine has v{current[0]}); migrate "
+                           f"the competition before starting it.")
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._send_html(409, web.error_page(
+                        409, "Scenario version moved on", message,
+                        f"/admin/competitions/{comp.id}", admin=True))
+                return
             self.store.start_competition(comp.id)
         elif action == "end":
             self.store.end_competition(comp.id)
@@ -1177,25 +1234,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._redirect(f"/admin/competitions/{comp.id}" if comp else "/admin")
 
-    def _import_box_scenario(self, name: str, version: int) -> Optional[str]:
-        """Load a record from the box folder into the store (the folder is the
-        source of truth; the DB is the serving cache). Returns an error string
-        or None on success."""
-        record = scenario_mod.load_box_scenario(name, version)
-        if record is None:
-            return (f"Scenario {name} v{version} was not found in the ranked "
-                    f"box folder.")
-        rubric, adversary, services, pool = record
-        try:
-            scenario_mod.save_scenario_record(self.store, rubric, adversary,
-                                              services, pool)
-        except scenario_mod.ScenarioError as exc:
-            return f"Invalid engine record for {name} v{version}: {exc}"
-        return None
-
     def _handle_admin_upload_scenario(self):
         """JSON-only scenario import, kept for tooling (boxbuilder engine
-        client, scripts). The admin picker lists uploaded records plus ranked records found in the box folder (folder builds are re-imported on selection)."""
+        client, scripts). Uploads only seed the serving cache: the admin
+        picker lists the box folder exclusively, and sync_box_scenarios
+        overwrites/purges cache rows to mirror that folder."""
         ok, status, msg = self._admin_authorized()
         if not ok:
             self._send_json(status, {"error": msg})
@@ -1288,11 +1331,28 @@ class Handler(BaseHTTPRequestHandler):
                         str(body.get("name", "")),
                         {c.slug for c in self.store.list_competitions()})
                 scenario_name = str(body.get("scenario_name", ""))
-                scenario_version = int(body.get("scenario_version", 0))
+                scenario_mod.sync_box_scenarios(self.store)
+                raw_version = body.get("scenario_version")
+                current = scenario_mod.current_box_scenario(scenario_name)
+                if raw_version is None:
+                    # Omitted version means "the box folder's current one".
+                    if current is None:
+                        raise ValueError(
+                            f"scenario {scenario_name!r} is not in the engine's "
+                            f"box folder; pass scenario_version explicitly")
+                    scenario_version = current[0]
+                else:
+                    scenario_version = int(raw_version)
+                    if current is not None and scenario_version != current[0]:
+                        raise ValueError(
+                            f"Scenario {scenario_name} v{scenario_version} is not "
+                            f"current (engine has v{current[0]}); migrate the "
+                            f"competition to the current version.")
                 if self.store.get_scenario(scenario_name, scenario_version) is None:
-                    err = self._import_box_scenario(scenario_name, scenario_version)
-                    if err:
-                        raise ValueError(err)
+                    raise ValueError(
+                        f"Scenario {scenario_name} v{scenario_version} is not on "
+                        f"the engine; the engine's box folder has no such "
+                        f"scenario.")
                 # Pools are provisioned per competition at claim time
                 # (claims.ensure_pool); no caller-chosen pool is accepted.
                 comp = competition.create_competition(
@@ -1558,6 +1618,11 @@ def main() -> None:
                                           record.get("services", []))
         print(f"loaded scenario record from {engine_record_path}")
 
+    # Mirror the box folder into the store at startup; the sweep loop keeps
+    # it current, so a scenario bump purges stale versions without a restart.
+    for sync_error in scenario_mod.sync_box_scenarios(store):
+        print(f"scenario sync: {sync_error}", file=sys.stderr)
+
     Handler.store = store
     Handler.server_secret = server_secret
     Handler.admin_token = os.environ.get("HUITZILOPOCHTLI_ADMIN_TOKEN", "")
@@ -1608,13 +1673,18 @@ def main() -> None:
         while True:
             time.sleep(sweep_interval)
             try:
+                scenario_mod.sync_box_scenarios(store)
+            except Exception as exc:  # one bad sweep must not kill the loop
+                print(f"scenario sync error: {exc}", file=sys.stderr)
+            if not claims.enabled():
+                continue
+            try:
                 claims.sweep(store, server_secret)
             except Exception as exc:  # one bad sweep must not kill the loop
                 print(f"sweep error: {exc}", file=sys.stderr)
 
-    if claims.enabled():
-        threading.Thread(target=_sweep_loop, name="huitz-sweep",
-                         daemon=True).start()
+    threading.Thread(target=_sweep_loop, name="huitz-sweep",
+                     daemon=True).start()
 
     httpd = _EngineHTTPServer((bind_host, port), Handler, ssl_ctx=context,
                               max_conns=max_conns)

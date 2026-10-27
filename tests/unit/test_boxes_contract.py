@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 from authoring.compile import compile_scenario
-from authoring.scenario_modes import base_mode, merge_effective
+from common.scenario_record import base_mode, merge_effective
 from boxbuilder.os_family import KNOWN_OS, family
 from boxbuilder.spec import load_spec
 from common.crypto import signing
@@ -196,6 +196,34 @@ def test_compile_contract(box, target, tmp_path, authoring_key):
                     f"{box}: adversary affects_check must be rewritten to svc_*")
     else:
         assert not manifest.get("services"), f"{box}: honor manifest has services"
+
+
+@pytest.mark.parametrize("box", [b for b, t in CASES if t == "ranked"],
+                         ids=[b for b, t in CASES if t == "ranked"])
+def test_engine_parses_the_record_compile_writes(box, tmp_path, authoring_key):
+    """Engine/authoring parity, pinned per committed ranked box.
+
+    The engine parses boxes/<box>/scenario.yaml itself (sync_box_scenarios);
+    boxbuilder compile writes engine_record.json. Both go through
+    common.scenario_record, so the served record must equal the compiled one
+    exactly -- and validate under the engine's own validator.
+    """
+    from common.scenario_record import build_scenario_parts
+    from engine.scenario import validate_scenario_record
+
+    spec = load_spec(os.path.join(_box_dir(box), "box.yaml"), mode="ranked")
+    out = compile_scenario(spec.scenario_path, str(tmp_path), authoring_key,
+                           mode="ranked")
+    compiled = json.load(open(out["engine_record"], encoding="utf-8"))
+
+    parsed = yaml.safe_load(open(spec.scenario_path, encoding="utf-8"))
+    built = build_scenario_parts(parsed, "ranked",
+                                 source=spec.scenario_path)["engine_record"]
+
+    assert built == compiled
+    assert validate_scenario_record(
+        built["rubric"], built["adversary"], built["services"],
+        built.get("pool")) == []
 
 
 @pytest.mark.parametrize("box,target", CASES[:2],

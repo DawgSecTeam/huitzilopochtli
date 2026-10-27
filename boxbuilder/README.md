@@ -148,7 +148,7 @@ separate ranked scenario or spec files: `--mode ranked` merges the same file's
 |---|---|---|---|
 | engine needed | no | yes — a running engine on its own host | yes — at join time |
 | rubric | on the box (`.score.dat`, obfuscated) | engine-side only | engine-side only |
-| step 3 also | — | uploads the scenario record, mints an enrollment token | nothing; the admin uploads the record |
+| step 3 also | — | seeds the engine's scenario cache (upload), mints an enrollment token | nothing; the engine reads `boxes/` itself — create the competition in the admin console |
 | enrollment | — | token in `agent_config.json`, consumed on first boot | player runs `huitz join` with the one-time code |
 | `ranked:` block read | no | yes | yes |
 
@@ -161,8 +161,9 @@ practice box.
 
 - **Ranked** needs the engine's admin token: `--admin-token` or, preferably,
   `$HUITZILOPOCHTLI_ADMIN_TOKEN` (the flag shows up in process lists and shell
-  history). boxbuilder posts the engine record to `/admin/scenarios` and mints a
-  token from `/admin/tokens`; `--enrollment-ttl` (default 86400 s) bounds its
+  history). boxbuilder posts the engine record to `/admin/scenarios` (a cache
+  seed — the admin picker lists the engine's own `boxes/` folder, which the
+  engine parses itself) and mints a token from `/admin/tokens`; `--enrollment-ttl` (default 86400 s) bounds its
   life and `--checkin-interval` (default 60 s) sets the check-in cadence.
 - **Ranked competition** (`install`/`build --competition`): no upload and no
   token. The box cannot check in until the player runs `huitz join` with the code
@@ -413,7 +414,8 @@ artifacts/
   authoring.key             Ed25519 seed, 0600 (generated if not supplied)
   manifest.signed.json      signed manifest (public)
   rubric.json               honor only
-  engine_record.json        ranked upload payload
+  engine_record.json        ranked cache-seed upload (the engine also parses
+                            boxes/ sources itself)
   authoring_public_key.b64  ships on the box to verify the manifest signature
   agent.pyz                 the agent artifact
   nakon-config.json         theme-expanded build input (absent with --no-bundle)

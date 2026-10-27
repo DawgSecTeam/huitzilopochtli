@@ -94,6 +94,12 @@ class _EngineProc:
         env["PYTHONUNBUFFERED"] = "1"
         if env_extra:
             env.update(env_extra)
+        # Tests must never see the real repo boxes/ folder (cwd=REPO_ROOT
+        # would find it): default to a path that does not exist so scenario
+        # sync is a no-op unless a test opts in with its own folder.
+        env.setdefault("HUITZILOPOCHTLI_BOXES_DIR",
+                       os.path.join(tempfile.gettempdir(),
+                                    f"huitz-test-noboxes-{os.getpid()}"))
         self.admin_token = admin_token
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "engine.server"],

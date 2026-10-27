@@ -9,27 +9,16 @@ import yaml
 
 from authoring.readme_lint import lint_readme
 from authoring.sign_scenario import sign_manifest
-from authoring.scenario_modes import base_mode, merge_effective
 from authoring.validate import validate_scenario_yaml
 from common.crypto.signing import public_key_from_private
+from common.scenario_record import build_scenario_parts, base_mode
 from common.schema import (
-    Category,
-    CheckSpec,
-    ForensicsQuestion,
     Manifest,
     Mode,
-    Rubric,
-    RubricEntry,
     SCHEMA_VERSION,
-    ServiceSpec,
-    SlaParams,
     validate_manifest,
     validate_rubric,
 )
-
-_DEFAULT_TIMEOUT_S = 5.0
-_DEFAULT_HOST_ID = "localhost"
-_DEFAULT_FORENSICS_PATH = "Forensics-Questions.txt"
 
 _MAX_LOGO_BYTES = 150 * 1024  # Keep signed manifest small (logo is data: URI).
 _MAX_README_BYTES = 64 * 1024  # Handbook text for `huitz readme` (plain UTF-8).
@@ -90,160 +79,6 @@ def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> tuple:
     return manifest_theme, text
 
 
-def _build_check_spec(check: dict) -> CheckSpec:
-    expect = check.get("expect", {}) or {}
-    return CheckSpec(
-        id=check["id"],
-        type=check["type"],
-        category=Category(check["category"]),
-        host_id=check.get("host_id", _DEFAULT_HOST_ID),
-        collect_params=check.get("collect", {}),
-        display_title=check["display"],
-        display_max_points=check["max_points"],
-        timeout_s=check.get("timeout_s", _DEFAULT_TIMEOUT_S),
-        is_sla=bool(check.get("is_sla") or ("sla" in expect)),
-    )
-
-
-def _build_rubric_entry(check: dict) -> RubricEntry:
-    expect = dict(check.get("expect", {}) or {})
-    category = check["category"]
-
-    points = expect.pop("points", 0)
-    sla_raw = expect.pop("sla", None)
-
-    if isinstance(points, bool) or not isinstance(points, int):
-        raise ValueError(
-            f"check {check.get('id')!r}: expect.points must be an integer, "
-            f"got {points!r}"
-        )
-
-    matcher = expect
-
-    if category in ("penalty", "prohibited"):
-        points = -abs(points)
-
-    sla = None
-    if sla_raw is not None:
-        unknown = sorted(set(sla_raw) - set(SlaParams.__dataclass_fields__))
-        if unknown:
-            raise ValueError(
-                f"check {check.get('id')!r}: expect.sla has unknown key(s): "
-                f"{', '.join(unknown)}"
-            )
-        sla = SlaParams(
-            interval_s=sla_raw["interval_s"],
-            points_per_interval=sla_raw["points_per_interval"],
-            hysteresis_fail_n=sla_raw.get("hysteresis_fail_n", 2),
-            hysteresis_ok_n=sla_raw.get("hysteresis_ok_n", 2),
-            max_intervals_per_checkin=sla_raw.get("max_intervals_per_checkin", 3),
-        )
-
-    return RubricEntry(
-        check_id=check["id"],
-        category=Category(category),
-        matcher=matcher,
-        points=points,
-        sla=sla,
-    )
-
-
-def _build_forensics(question: dict, ordinal: int) -> tuple:
-    """Compile one forensics question into (CheckSpec, RubricEntry).
-
-    The CheckSpec (public, shipped in the manifest) carries only the question
-    text and where to read answers from; the answer key lives solely in the
-    RubricEntry matcher (engine-side in ranked, on-box rubric.json in honor).
-    """
-    fq_id = question["id"]
-    path = question.get("path", _DEFAULT_FORENSICS_PATH)
-    points = question["points"]
-
-    spec = CheckSpec(
-        id=fq_id,
-        type="forensics_answer",
-        category=Category.VULN,
-        host_id=_DEFAULT_HOST_ID,
-        collect_params={
-            "path": path,
-            "question_id": fq_id,
-            "ordinal": ordinal,
-        },
-        display_title=question["question"],
-        display_max_points=points,
-        timeout_s=_DEFAULT_TIMEOUT_S,
-    )
-
-    if "answer" in question and "answers" in question:
-        matcher = {
-            "tag": "answer_equals",
-            "value": question["answer"],
-            "accept": list(question["answers"]),
-        }
-    elif "answers" in question:
-        matcher = {"tag": "answer_equals", "accept": list(question["answers"])}
-    else:
-        matcher = {"tag": "answer_equals", "value": question["answer"]}
-
-    entry = RubricEntry(
-        check_id=fq_id,
-        category=Category.VULN,
-        matcher=matcher,
-        points=points,
-    )
-    return spec, entry
-
-
-_SERVICE_KEYS = frozenset({
-    "id", "display", "type", "collect", "expect", "interval_s",
-    "points_per_interval", "hysteresis_fail_n", "hysteresis_ok_n",
-    "max_intervals_per_checkin", "timeout_s",
-})
-
-
-def _build_service(service: dict) -> tuple:
-    """Expand one services[] entry into (CheckSpec dict, RubricEntry dict,
-    public ServiceSpec metadata).
-
-    The check id is prefixed with ``svc_`` so a service can never collide with
-    an author-written check id. Expected values stay in the rubric only; the
-    manifest carries just the display metadata.
-    """
-    sid = service["id"]
-    check_id = f"svc_{sid}"
-    display = service["display"]
-    collect = dict(service.get("collect") or {})
-    expect = dict(service.get("expect") or {})
-    expect["points"] = 0
-    expect["sla"] = {
-        "interval_s": service["interval_s"],
-        "points_per_interval": service["points_per_interval"],
-        "hysteresis_fail_n": service.get("hysteresis_fail_n", 2),
-        "hysteresis_ok_n": service.get("hysteresis_ok_n", 2),
-        "max_intervals_per_checkin": service.get("max_intervals_per_checkin", 3),
-    }
-    check = {
-        "id": check_id,
-        "type": service["type"],
-        "category": "vuln",
-        "display": f"SERVICE: {display}",
-        "max_points": service["points_per_interval"],
-        "collect": collect,
-        "expect": expect,
-        "is_sla": True,
-        "timeout_s": service.get("timeout_s", _DEFAULT_TIMEOUT_S),
-    }
-    meta = ServiceSpec(
-        id=sid,
-        check_id=check_id,
-        display=display,
-        type=service["type"],
-        interval_s=service["interval_s"],
-        points_per_interval=service["points_per_interval"],
-    )
-    return check, meta
-
-
 def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
                      mode: Optional[str] = None, engine_url: Optional[str] = None) -> dict:
     """Compile scenario YAML into signed manifest, rubric, and engine record.
@@ -259,49 +94,10 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
     if errors:
         raise ValueError("\n".join(errors))
 
-    effective = merge_effective(parsed, mode or base_mode(parsed),
-                                engine_url=engine_url, source=yaml_path)
-
+    parts = build_scenario_parts(parsed, mode, engine_url=engine_url,
+                                 source=yaml_path)
+    effective = parts["effective"]
     scenario = effective["scenario"]
-    checks = list(effective["checks"])
-    forensics = effective["forensics"]
-
-    service_specs = []
-    service_check_ids = {}
-    for service in effective["services"]:
-        check, meta = _build_service(service)
-        checks.append(check)
-        service_specs.append(meta)
-        service_check_ids[service["id"]] = check["id"]
-
-    # Let an adversary event name a service id (`web`) instead of the
-    # generated check id (`svc_web`); the rubric/scheduler needs the latter.
-    adversary_raw = effective["adversary"] or {}
-    if service_check_ids and isinstance(adversary_raw, dict):
-        rewritten = []
-        for event in adversary_raw.get("events", []):
-            if isinstance(event, dict):
-                target = event.get("affects_check")
-                if isinstance(target, str) and target in service_check_ids:
-                    event = dict(event)
-                    event["affects_check"] = service_check_ids[target]
-            rewritten.append(event)
-        adversary_raw = dict(adversary_raw)
-        adversary_raw["events"] = rewritten
-
-    check_specs = [_build_check_spec(c) for c in checks]
-    rubric_entries = [_build_rubric_entry(c) for c in checks]
-
-    forensics_questions = []
-    for ordinal, fq in enumerate(forensics, start=1):
-        spec, entry = _build_forensics(fq, ordinal)
-        check_specs.append(spec)
-        rubric_entries.append(entry)
-        forensics_questions.append(
-            ForensicsQuestion(
-                id=fq["id"], question=fq["question"], max_points=fq["points"]
-            )
-        )
 
     manifest_theme, readme_text = _build_manifest_theme(effective["theme"], yaml_path)
 
@@ -320,32 +116,14 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
         mode=Mode(scenario["mode"]),
         engine_url=scenario.get("engine_url"),
         hosts=scenario["hosts"],
-        checks=check_specs,
+        checks=parts["check_specs"],
         theme=manifest_theme,
-        forensics=forensics_questions or None,
-        services=[dataclasses.asdict(s) for s in service_specs] or None,
+        forensics=parts["forensics_questions"] or None,
+        services=[dataclasses.asdict(s) for s in parts["service_specs"]] or None,
     )
 
-    rubric = Rubric(
-        schema_version=SCHEMA_VERSION,
-        scenario_name=scenario["name"],
-        scenario_version=scenario["version"],
-        entries=rubric_entries,
-    )
-
-    engine_record = {
-        "rubric": dataclasses.asdict(rubric),
-        "adversary": adversary_raw,
-        "services": [dataclasses.asdict(s) for s in service_specs],
-        # The engine's box-folder listing filters on this (ranked boxes only);
-        # honor records simply carry "honor".
-        "mode": scenario["mode"],
-    }
-    # Workshop pool provisioning spec (ranked only; validation rejects a pool
-    # block on honor scenarios). Passed through to the engine, which provisions
-    # one pool per competition from it.
-    if "pool" in effective:
-        engine_record["pool"] = effective["pool"]
+    rubric = parts["rubric"]
+    engine_record = parts["engine_record"]
 
     manifest_dict = dataclasses.asdict(manifest)
     rubric_dict = dataclasses.asdict(rubric)

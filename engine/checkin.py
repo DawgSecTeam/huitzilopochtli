@@ -212,13 +212,10 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         try:
             rubric, event_pool = scenario_mod.load_scenario(
                 store, box.scenario_name, box.scenario_version)
-        except scenario_mod.ScenarioNotFound:
-            raise CheckinError(
-                409,
-                f"no engine record for scenario {box.scenario_name!r} "
-                f"version {box.scenario_version}",
-                last_seq=box.last_seq,
-            )
+        except scenario_mod.ScenarioNotFound as exc:
+            # The message distinguishes "unknown scenario" from "version no
+            # longer current (engine has vN); migrate the competition".
+            raise CheckinError(409, str(exc), last_seq=box.last_seq)
         except scenario_mod.ScenarioError:
             raise CheckinError(
                 500, "stored scenario record is invalid", last_seq=box.last_seq

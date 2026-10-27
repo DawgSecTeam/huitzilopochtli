@@ -55,6 +55,7 @@ class _Workshop(BaseHTTPRequestHandler):
     counter = 0
     fail_claims = 0
     pools = []
+    vms = []
 
     def log_message(self, *a):
         pass
@@ -84,12 +85,24 @@ class _Workshop(BaseHTTPRequestHandler):
                 return
             self._reply(200, list(type(self).pools))
             return
+        if self.path == "/api/admin/pool":
+            if not self._admin():
+                self._reply(403, {"detail": "admin auth required"})
+                return
+            self._reply(200, list(type(self).vms))
+            return
         self._reply(404, {"detail": "not found"})
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         body = json.loads(raw or b"{}")
         type(self).requests.append((self.path, dict(self.headers), body))
+        if self.path == "/api/admin/destroy":
+            if not self._admin():
+                self._reply(403, {"detail": "admin auth required"})
+                return
+            self._reply(200, {"status": "done"})
+            return
         if self.path == "/api/admin/provision":
             if not self._admin():
                 self._reply(403, {"detail": "admin auth required"})
@@ -159,6 +172,33 @@ def _services():
              "type": "tcp_port", "interval_s": 1, "points_per_interval": 1}]
 
 
+def _scenario_yaml():
+    """Ranked box source equivalent of _rubric() + _services() + pool."""
+    import yaml
+    return yaml.safe_dump({
+        "scenario": {"name": "HTTPComp", "version": 1, "mode": "honor",
+                     "hosts": ["localhost"]},
+        "checks": [{"id": "banner", "type": "file_regex", "category": "vuln",
+                    "display": "Banner", "max_points": 10,
+                    "collect": {"path": "/srv/banner", "extract": "B"},
+                    "expect": {"equals": "ok", "points": 10}}],
+        "ranked": {
+            "engine_url": "http://127.0.0.1:8080",
+            "services": [{"id": "web", "display": "Web", "type": "tcp_port",
+                          "collect": {"host": "127.0.0.1", "port": 80},
+                          "expect": {"equals": True, "field": "open"},
+                          "interval_s": 1, "points_per_interval": 1,
+                          "hysteresis_fail_n": 1, "hysteresis_ok_n": 1,
+                          "max_intervals_per_checkin": 3}],
+            "adversary": {},
+            "pool": {"template_vm_id": 174, "template_vm_access_method": "ssh",
+                     "template_vm_username": "sysadmin",
+                     "template_vm_password": "asdf", "vm_count": 1},
+        },
+    })
+
+
+
 def test_public_join_signed_join_and_leaderboard(tmp_path):
     port = _free_port()
     workshop_port = _free_port()
@@ -167,16 +207,15 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
     _Workshop.counter = 0
     _Workshop.fail_claims = 0
     _Workshop.pools = []
+    # One registered clone for the provisioned pool: teardown enumerates it
+    # (via /api/admin/pool), destroys it, then deletes the pool config.
+    _Workshop.vms = [{"vmid": 901, "pool": "PROV1", "student_id":
+                      "huitz-ranked-http-comp-1", "claimed": True,
+                      "expired": False}]
     db = tmp_path / "engine.db"
     boxes = tmp_path / "boxes" / "http-comp-box"
     boxes.mkdir(parents=True)
-    (boxes / "engine_record.json").write_text(json.dumps({
-        "rubric": _rubric(), "adversary": {}, "services": _services(),
-        "mode": "ranked",
-        "pool": {"template_vm_id": 174, "template_vm_access_method": "ssh",
-                 "template_vm_username": "sysadmin",
-                 "template_vm_password": "asdf", "vm_count": 1},
-    }))
+    (boxes / "scenario.yaml").write_text(_scenario_yaml())
     env = dict(os.environ)
     env.update({
         "HUITZILOPOCHTLI_DB_PATH": str(db),

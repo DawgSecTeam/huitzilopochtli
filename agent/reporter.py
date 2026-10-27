@@ -400,7 +400,6 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     table and scored service uptime with its recent tick history.
     """
     theme = theme or {}
-    scenario_version = html.escape(str(score.scenario_version))
     mode_label = html.escape(mode.value if hasattr(mode, "value") else str(mode))
 
     raw_title = str(theme.get("title") or score.scenario_name)
@@ -409,10 +408,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     accent_css_block = accent_css(theme.get("accent"))
 
     masthead = masthead_html(raw_title, organization, logo_b64)
-    sub_html = (
-        f'<p class="sub">scenario version {scenario_version}'
-        f' &middot; mode: {mode_label}</p>'
-    )
+    sub_html = f'<p class="sub">mode: {mode_label}</p>'
 
     is_ranked = mode == Mode.RANKED
     is_honor = not is_ranked

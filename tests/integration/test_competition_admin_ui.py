@@ -37,12 +37,40 @@ def _rubric():
                          "points": 10, "sla": None}]}
 
 
+_SCENARIO_YAML = """scenario:
+  name: UIComp
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+checks:
+  - id: banner
+    type: file_regex
+    category: vuln
+    display: Banner
+    max_points: 10
+    collect:
+      path: /srv/banner
+      extract: B
+    expect:
+      equals: ok
+      points: 10
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services: []
+  adversary: {}
+"""
+
+
+def _write_box_scenario(boxes_root):
+    boxes_root.mkdir(parents=True, exist_ok=True)
+    (boxes_root / "ui-comp-box").mkdir(exist_ok=True)
+    (boxes_root / "ui-comp-box" / "scenario.yaml").write_text(_SCENARIO_YAML)
+
+
+
 def test_admin_login_page_start_and_csrf(tmp_path):
     port = _free_port()
-    boxes = tmp_path / "boxes" / "ui-comp-box"
-    boxes.mkdir(parents=True)
-    (boxes / "engine_record.json").write_text(json.dumps(
-        {"rubric": _rubric(), "adversary": {}, "services": [], "mode": "ranked"}))
+    _write_box_scenario(tmp_path / "boxes")
     env = dict(os.environ)
     env.update({
         "HUITZILOPOCHTLI_DB_PATH": str(tmp_path / "engine.db"),
@@ -74,6 +102,10 @@ def test_admin_login_page_start_and_csrf(tmp_path):
         status, body, _ = _req(port, "GET", "/admin")
         assert status == 401 and "Admin login" in body
 
+        # The hidden component reference is admin-gated like the rest.
+        status, body, _ = _req(port, "GET", "/admin/styleguide")
+        assert status == 401 and "Admin login" in body
+
         status, _body, headers = _req(
             port, "POST", "/admin/login",
             "username=admin&password=pass",
@@ -83,6 +115,10 @@ def test_admin_login_page_start_and_csrf(tmp_path):
         status, dashboard, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
         assert status == 200 and "Admin console" in dashboard
         assert 'id="theme-toggle"' in dashboard and 'data-poll="30000"' in dashboard
+        status, styleguide, _ = _req(port, "GET", "/admin/styleguide",
+                                     headers={"Cookie": cookie})
+        assert status == 200 and ">Styleguide<" in styleguide
+        assert 'action="/admin/logout"' in styleguide and 'class="sdot ok"' in styleguide
         status, comp_page, _ = _req(
             port, "GET", f"/admin/competitions/{comp_id}", headers={"Cookie": cookie})
         assert status == 200
@@ -137,10 +173,7 @@ def test_reissue_shows_the_fresh_code_once_and_roster_never(tmp_path):
     code exactly once via the one-time flash, never in the URL."""
     import sqlite3
     port = _free_port()
-    boxes = tmp_path / "boxes" / "ui-comp-box"
-    boxes.mkdir(parents=True)
-    (boxes / "engine_record.json").write_text(json.dumps(
-        {"rubric": _rubric(), "adversary": {}, "services": [], "mode": "ranked"}))
+    _write_box_scenario(tmp_path / "boxes")
     env = dict(os.environ)
     env.update({
         "HUITZILOPOCHTLI_DB_PATH": str(tmp_path / "engine.db"),
@@ -229,7 +262,7 @@ def test_reissue_shows_the_fresh_code_once_and_roster_never(tmp_path):
             proc.kill()
 
 
-def test_new_competition_offers_uploaded_scenarios_without_a_box_folder(tmp_path):
+def test_picker_ignores_uploaded_records_without_a_box_folder(tmp_path):
     """The deployed engine has no repo `boxes/` dir: uploaded scenarios must
     still be selectable and creatable from the admin form."""
     port = _free_port()
@@ -267,26 +300,24 @@ def test_new_competition_offers_uploaded_scenarios_without_a_box_folder(tmp_path
         assert status == 303
         cookie = headers["Set-Cookie"].split(";", 1)[0]
 
+        # The picker is the box folder, full stop: an uploaded record with no
+        # box folder behind it is never offered (the upload only seeds the
+        # serving cache for tooling; with no folder to contradict it, an API
+        # create by exact name still works, but the form has nothing to pick).
         status, page, _ = _req(port, "GET", "/admin/competitions/new",
                                headers={"Cookie": cookie})
         assert status == 200
-        assert 'value="UIComp|1"' in page, page
-        assert "No ranked scenarios found" not in page
+        assert 'value="UIComp|1"' not in page, page
+        assert "No ranked scenarios found" in page
         csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
 
-        status, _body, headers = _req(
-            port, "POST", "/admin/competitions/new",
-            urllib.parse.urlencode({
-                "csrf": csrf, "name": "UI Upload Comp", "scenario": "UIComp|1",
-                "max_players": "4", "duration_min": "10",
-                "accent": "#5f4a38",
-            }),
-            {"Cookie": cookie, "Content-Type": "application/x-www-form-urlencoded"})
-        assert status == 303, _body
-        assert headers["Location"].startswith("/admin/competitions/")
-
-        status, dashboard, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
-        assert status == 200 and "UI Upload Comp" in dashboard
+        auth = {"X-HUITZILOPOCHTLI-Admin-Token": "token"}
+        status, body, _ = _req(port, "POST", "/admin/api/competitions", {
+            "slug": "ui-upload-comp", "name": "UI Upload Comp",
+            "scenario_name": "UIComp", "scenario_version": 1,
+            "max_players": 4, "duration_s": 600,
+        }, auth)
+        assert status == 200, body
     finally:
         proc.terminate()
         try:

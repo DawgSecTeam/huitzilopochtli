@@ -100,6 +100,9 @@ def test_theme_colors_come_from_one_python_table():
     assert web._THEMES["dark"]["accent"] in web._FAVICON.replace("%23", "#")
     assert web._CANVAS["dark"] == web._THEMES["dark"]["surface-2"]
     assert web._INK_ANCHOR["light"] == web._THEMES["light"]["ink"]
+    # Even the projector ground is a theme table entry, not a CSS literal.
+    assert "--display-bg:#0f0c09" in web.CSS
+    assert "body.display{background:var(--display-bg)}" in web.CSS
 
 
 def test_spacing_tokens_exist_and_dead_rules_are_gone():
@@ -205,12 +208,38 @@ def test_leaderboard_polls_and_carries_countdown_data():
     assert 'data-updated' in page
 
 
-def test_leaderboard_folds_point_columns_into_the_score_cell():
+def test_leaderboard_runs_on_the_page_ground_without_a_leader_bar():
+    page = web.competition_page(_payload())
+    # The board is not a card: no surface, no border, straight on the ground.
+    assert '<section class="board"><div class="board-head"><h2>Leaderboard</h2>' in page
+    assert '<section class="card"><div class="card-head"><h2>Leaderboard' not in page
+    assert ".board .table-wrap{margin:0}" in web.CSS
+    # Rank one gets no special border; the top-row accent bar is gone.
+    assert "tr.leader" not in web.CSS and 'class="leader"' not in page
+
+
+def test_leaderboard_spells_out_the_score_breakdown():
     page = web.competition_page(_payload())
     assert "<th>Hardening</th>" not in page
     assert "<th>Services</th>" not in page
     assert "<th>Services up</th>" in page
-    assert "H 100 · S 20" in page  # breakdown rides under the total
+    assert "hardening 100 · services 20" in page  # no abbreviation to decode
+
+
+def test_time_cell_counts_down_then_goes_quiet():
+    running = web._time_cell(_board_row())
+    assert 'data-remaining="7199"' in running and ">1:59:59<" in running
+    done = web._time_cell(_board_row(status="finished", remaining_s=0))
+    assert done == '<span class="muted">⋅</span>'
+    # The literal status words are gone from every board surface.
+    for page in (web.competition_page(_payload(
+            leaderboard=[_board_row(status="finished", remaining_s=0)])),
+            web.display_page(_payload(
+                leaderboard=[_board_row(status="finished", remaining_s=0)]))):
+        assert ">final<" not in page and "finished<" not in page
+    # The player-facing run clocks use the app's nothing-glyph instead.
+    me = web.player_page(_comp(), _player(status="finished"), None, None)
+    assert ">final<" not in me and '<div class="bigtime"><span class="muted">—</span></div>' in me
 
 
 def test_settings_card_is_a_fact_grid():
@@ -548,7 +577,7 @@ def test_admin_roster_rows_are_single_line():
     # Score breakdown rides under the total in one right-aligned cell.
     page = web.admin_competition_page(_comp(), _payload(), [_player()], "csrf")
     assert ('<div class="score-cell"><span class="score">120</span>'
-            '<span class="muted small">H 100 · S 20</span></div>') in page
+            '<span class="muted small">hardening 100 · services 20</span></div>') in page
     assert 'class="roster"' in page
 
 
@@ -581,6 +610,9 @@ def test_new_competition_form_dropdown_from_folder():
          ("Demo Beta", 1, "/scenarios/beta")], "csrf")
     assert 'name="name"' in page
     assert 'name="scenario"' in page and 'value="Demo Alpha|2"' in page
+    # The version is plumbing in the option value, never a rendered label.
+    assert ">Demo Alpha</option>" in page and "Demo Alpha v2" not in page
+    assert "v1" not in page.split("<option")[1].split("</option>")[0]
     assert 'name="max_players"' in page and 'name="duration_min"' in page
     assert 'name="accent"' in page
     for gone in ('name="slug"', 'name="workshop_pool_code"',
@@ -589,8 +621,12 @@ def test_new_competition_form_dropdown_from_folder():
         assert gone not in page
     empty = web.admin_new_competition_page([], "csrf")
     assert "No ranked scenarios found" in empty
-    # Centered heading with the short Back link beneath it.
+    # One centered column on the bare page ground: heading with the short Back
+    # link, no card and no tint around the form.
     assert 'class="page-head"' in page and ">Back</a>" in page
+    assert '<div class="form-page">' in page
+    assert ".form-page{max-width:46rem;margin:0 auto;width:100%}" in web.CSS
+    assert 'class="card' not in page
 
 
 def test_dashboard_has_no_audit_card_or_scenario_column():
@@ -606,8 +642,9 @@ def test_footer_removed_sitewide():
 
 
 def test_nav_is_identical_across_pages_and_logout_is_admin_only():
-    """The Admin entry is the same element in the same slot everywhere; only
-    admin pages additionally carry the POST-only Log out control."""
+    """The Admin entry is the same element in the same slot everywhere; Log out
+    rides only on an admin session -- admin pages always, public pages only
+    when the viewer is a signed-in admin."""
     import re
 
     def nav_hrefs(doc):
@@ -624,11 +661,40 @@ def test_nav_is_identical_across_pages_and_logout_is_admin_only():
         assert "/admin/logout" not in page
     admin = [web.admin_dashboard_page([], {}, "csrf"),
              web.admin_new_competition_page([], "csrf"),
-             web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")]
+             web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf"),
+             web.styleguide_page()]
     for page in admin:
         assert nav_hrefs(page) == ["/", "/admin"]
         assert 'action="/admin/logout"' in page
         assert ">Log out</button>" in page
+    # A signed-in admin keeps Log out on the public pages too.
+    admined = [web.index_page([_comp()], admin_view=True),
+               web.competition_page(_payload(), admin=True),
+               web.join_form_page(_comp(), admin=True),
+               web.join_success_page(_comp(), _player(box_id=None), admin=True),
+               web.player_page(_comp(), _player(), None, None, admin=True),
+               web.home_competition_page(_comp(), _player(), _board_row(),
+                                         [_board_row()], None, admin=True)]
+    for page in admined:
+        assert nav_hrefs(page) == ["/", "/admin"]
+        assert 'action="/admin/logout"' in page
+    # ...and the projector board stays chrome-free either way.
+    assert "<header" not in web.display_page(_payload())
+
+
+def test_styleguide_page_renders_the_component_kit():
+    page = web.styleguide_page()
+    # Real components, fake data: buttons, fields, dots, board table, palettes.
+    assert 'class="btn primary"' in page and 'class="btn danger"' in page
+    assert 'class="sdot ok"' in page and 'class="sdot danger"' in page
+    assert 'class="score-cell"' in page and "hardening 210 · services 346" in page
+    assert "--display-bg:#0f0c09" in page and "Palette — cream (light)" in page
+    # The time cell shows the quiet dot, never the old status word.
+    assert ">final<" not in page
+    # It is an admin page: full chrome with Log out, but absent from the nav.
+    assert 'action="/admin/logout"' in page
+    for other in (web.index_page([]), web.competition_page(_payload())):
+        assert 'href="/admin/styleguide"' not in other
 
 
 def test_index_competitions_are_stacked_rows():
@@ -714,34 +780,45 @@ def test_ended_competition_has_rerun_button():
 
 def test_box_scenario_scanner(tmp_path, monkeypatch):
     from engine import scenario
+    import yaml as yaml_mod
     boxes = tmp_path / "boxes"
     ranked = boxes / "alpha"
     ranked.mkdir(parents=True)
-    (ranked / "engine_record.json").write_text(json.dumps(
-        {"rubric": {"scenario_name": "Demo Alpha", "scenario_version": 2},
-         "adversary": {}, "services": [{"id": "web"}], "mode": "ranked"}))
-    ranked_v3 = boxes / "beta"
-    ranked_v3.mkdir()
-    (ranked_v3 / "engine_record-r3.json").write_text(json.dumps(
-        {"rubric": {"scenario_name": "Demo Beta R3", "scenario_version": 1},
-         "adversary": {"events": []}, "services": [], "mode": "ranked"}))
+    (ranked / "scenario.yaml").write_text(yaml_mod.safe_dump({
+        "scenario": {"name": "Demo Alpha", "version": 2, "mode": "honor",
+                     "hosts": ["localhost"]},
+        "checks": [{"id": "c1", "type": "file_regex", "category": "vuln",
+                    "display": "C1", "max_points": 5,
+                    "collect": {"path": "/srv/x", "extract": "X"},
+                    "expect": {"equals": "X", "points": 5}}],
+        "ranked": {"engine_url": "http://127.0.0.1:8080",
+                   "services": [{"id": "web", "display": "Web", "type":
+                                 "tcp_port", "collect": {"host": "x", "port": 1},
+                                 "expect": {"equals": True},
+                                 "interval_s": 60, "points_per_interval": 1}],
+                   "adversary": {}}}))
     honor = boxes / "honor-box"
     honor.mkdir()
-    (honor / "engine_record.json").write_text(json.dumps(
-        {"rubric": {"scenario_name": "Demo Honor", "scenario_version": 1},
-         "adversary": {}, "services": [], "mode": "honor"}))
+    (honor / "scenario.yaml").write_text(yaml_mod.safe_dump({
+        "scenario": {"name": "Demo Honor", "version": 1, "mode": "honor",
+                     "hosts": ["localhost"]},
+        "checks": [{"id": "c1", "type": "file_regex", "category": "vuln",
+                    "display": "C1", "max_points": 5,
+                    "collect": {"path": "/srv/x", "extract": "X"},
+                    "expect": {"equals": "X", "points": 5}}]}))
     junk = boxes / "broken-box"
     junk.mkdir()
-    (junk / "engine_record.json").write_text("{not json")
+    (junk / "scenario.yaml").write_text("{not yaml")
 
     monkeypatch.setenv("HUITZILOPOCHTLI_BOXES_DIR", str(boxes))
     listed = scenario.list_box_scenarios()
-    assert [("Demo Alpha", 2), ("Demo Beta R3", 1)] == [(n, v) for n, v, _ in listed]
-    record = scenario.load_box_scenario("Demo Alpha", 2)
-    assert record[0]["scenario_name"] == "Demo Alpha"
-    assert record[2] == [{"id": "web"}]
-    assert scenario.load_box_scenario("Chocolate Factory", 1) is None
+    assert [("Demo Alpha", 2)] == [(n, v) for n, v, _ in listed]
+    rubric, adversary, services, _pool = scenario.load_box_scenario("Demo Alpha", 2)
+    assert rubric["scenario_name"] == "Demo Alpha"
+    assert [s["id"] for s in services] == ["web"]
+    assert scenario.load_box_scenario("Demo Alpha", 1) is None  # stale version
     assert scenario.load_box_scenario("Nope", 9) is None
+    assert any("broken-box" in e for e in scenario.box_folder_errors())
 
 
 def test_box_scanner_empty_dir(tmp_path, monkeypatch):

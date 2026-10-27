@@ -17,6 +17,7 @@ import dataclasses
 import os
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 
@@ -72,6 +73,12 @@ def _spawn_engine(env_overrides: dict, port: int) -> subprocess.Popen:
             env.pop(key, None)
         else:
             env[key] = value
+    # Tests must never see the real repo boxes/ folder (cwd=REPO_ROOT would
+    # find it): default to a path that does not exist so scenario sync is a
+    # no-op unless a test opts in with its own folder.
+    env.setdefault("HUITZILOPOCHTLI_BOXES_DIR",
+                   os.path.join(tempfile.gettempdir(),
+                                f"huitz-test-noboxes-{os.getpid()}"))
     env["HUITZILOPOCHTLI_PORT"] = str(port)
     proc = subprocess.Popen(
         [sys.executable, "-m", "engine.server"],

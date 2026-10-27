@@ -131,7 +131,7 @@ The authored field list (every key the block accepts, with examples) is
 canonical in [`boxbuilder/README.md`](boxbuilder/README.md#the-inputs-you-author);
 this section pins the behaviour it must have.
 
-`authoring/scenario_modes.py` is the single implementation of the merge (`merge_effective`), shared by `authoring/compile.py`, `boxbuilder/spec.py`, and `boxbuilder/lint.py`. `compile_scenario(..., mode=, engine_url=)` defaults to the file's `scenario.mode`. Engine address precedence: `--engine-url` > `$HUITZILOPOCHTLI_ENGINE_URL` > `ranked.engine_url` (a legacy top-level `scenario.engine_url` is also accepted); `http://127.0.0.1:8080` is the explicit "not configured" placeholder.
+`common/scenario_record.py` is the single implementation of the merge (`merge_effective`) and of the whole source→engine-record pipeline, shared by `authoring/compile.py`, `boxbuilder/spec.py`, `boxbuilder/lint.py`, and the engine's box-folder source. `compile_scenario(..., mode=, engine_url=)` defaults to the file's `scenario.mode`. Engine address precedence: `--engine-url` > `$HUITZILOPOCHTLI_ENGINE_URL` > `ranked.engine_url` (a legacy top-level `scenario.engine_url` is also accepted); `http://127.0.0.1:8080` is the explicit "not configured" placeholder.
 
 ### 8.2 Build pipeline
 
@@ -220,7 +220,7 @@ Always-on and portable: a plain HTTP service behind TLS, stdlib-first.
 - `POST /checkin` — the core loop (§14.2).
 - `GET /leaderboard?scenario=...` — aggregated scores (§11.4); `400` without the parameter, `200 []` for an unknown scenario.
 - `GET /health` — liveness.
-- `POST /admin/scenarios` — upload or replace an engine record (`{rubric, adversary, services?, pool?}`); `400` on invalid input.
+- `POST /admin/scenarios` — upload or replace an engine record (`{rubric, adversary, services?, pool?}`); `400` on invalid input. Tooling-only: it seeds the serving cache and never affects the admin picker.
 - `POST /admin/tokens` — mint a one-time enrollment token (`{scenario_name, ttl_s?}`).
 - Competition pages plus `/admin/*` CRUD and `/api/public/*` (§21.4).
 
@@ -228,7 +228,7 @@ Admin requests use the `X-HUITZILOPOCHTLI-Admin-Token` header compared against `
 
 ### 11.2 Storage (`engine/store.py`)
 
-Stdlib `sqlite3` by default; an optional Postgres backend behind the same interface remains *Open*. `engine/store_schema.py` is the authoritative table/column list: boxes, enrollment tokens, check-in audit, SLA state (including the tick-history ring), scores (with the hardening/service split), adversary log, versioned scenario records keyed by `(scenario_name, scenario_version)`, engine metadata, and the competition tables (§21). The database is created `0600`.
+Stdlib `sqlite3` by default; an optional Postgres backend behind the same interface remains *Open*. `engine/store_schema.py` is the authoritative table/column list: boxes, enrollment tokens, check-in audit, SLA state (including the tick-history ring), scores (with the hardening/service split), adversary log, scenario records keyed by `(scenario_name, scenario_version)` but pruned by `sync_box_scenarios` to exactly one current version per name (the box folder's), engine metadata, and the competition tables (§21). The database is created `0600`.
 
 ### 11.3 SLA ledger & hysteresis (`engine/sla.py`)
 
@@ -312,7 +312,7 @@ Response `200`: `server_time`, `score` (`total`, `results`, `sla_status[]` with 
 
 ### 14.3 Versioning
 
-Every bundle and manifest carries `schema_version`, `agent_version`, and `scenario_version`. The engine rejects an incompatible `schema_version` and a mismatched agent major version. Scenario records are stored per `(scenario_name, scenario_version)`; the engine scores a box against the version bound at enrollment and returns `409` (with `last_seq`) when that version has no record. Uploading a newer rubric does not retroactively rescore enrolled boxes.
+Every bundle and manifest carries `schema_version`, `agent_version`, and `scenario_version`. The engine rejects an incompatible `schema_version` and a mismatched agent major version. The box folder holds exactly one current version per scenario; the engine mirrors it into the store (startup, admin pages, sweep loop) and purges every other version — there is no backwards compatibility. Creating, starting, or rerunning a competition against a non-current version is refused with a migrate-the-competition error, and a check-in from a stale-version enrollment returns `409` (with `last_seq`) naming the current version. Competitions are migrated by creating them anew on the current version.
 
 ## 15. Interaction Flows
 
@@ -394,7 +394,7 @@ Point-in-time scoring is unchanged. Self-reported **scored services** are declar
 
 ### 21.4 Web surface
 
-Public competition pages (`/`, `/c/<slug>`, join/join-success/me/display) and JSON under `/api/public/*`. Admin `/admin` (HTTP Basic → server-side session + CSRF) covers competition CRUD, start/end/close-joins, roster, join-code reissue, disqualify/remove, scenario upload, audit, and CSV export; `/admin/api/*` also accepts the legacy `X-HUITZILOPOCHTLI-Admin-Token`. The engine stays stdlib-only (`http.server`, `sqlite3`); HTML is server-rendered and escaped.
+Public competition pages (`/`, `/c/<slug>`, join/join-success/me/display) and JSON under `/api/public/*`. Admin `/admin` (HTTP session + CSRF) covers competition CRUD, start/end/close-joins, roster, join-code reissue, disqualify/remove, audit, and CSV export; the scenario picker serves the committed box folder, which the engine parses itself (§8.2); `/admin/api/*` also accepts the legacy `X-HUITZILOPOCHTLI-Admin-Token`, and `POST /admin/scenarios` remains as a tooling-only cache seeder. The engine is stdlib + `sqlite3` + PyYAML (`http.server`, `sqlite3`, `yaml`); HTML is server-rendered and escaped.
 
 ### 21.5 Deployment and boxes
 

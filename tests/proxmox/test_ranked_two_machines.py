@@ -94,6 +94,10 @@ def test_ranked_mode_across_two_real_machines(proxmox, tmp_path):
             f"cd {ENGINE_DIR} && "
             f"PYTHONPATH={ENGINE_DIR} HUITZILOPOCHTLI_PORT={ENGINE_PORT} "
             f"HUITZILOPOCHTLI_ADMIN_TOKEN={ADMIN_TOKEN} HUITZILOPOCHTLI_BIND=0.0.0.0 "
+            # The bundle ships the repo's boxes/ folder; freeze the sweep so
+            # this test's uploaded (non-boxes) scenario is not purged as an
+            # orphan mid-run.
+            f"HUITZILOPOCHTLI_SWEEP_INTERVAL_S=3600 "
             f"setsid nohup python3 -m engine.server > /tmp/engine.log 2>&1 "
             f"< /dev/null & echo started"
         )

@@ -134,7 +134,7 @@ def _mentioned(value: str, blobs: list) -> bool:
 
 
 def _effective(spec) -> dict:
-    from authoring.scenario_modes import merge_effective
+    from common.scenario_record import merge_effective
     return merge_effective(spec.scenario, spec.mode,
                            engine_url=spec.engine_url_override,
                            source=spec.scenario_path)

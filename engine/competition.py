@@ -129,8 +129,10 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
 
     One ordering function for the public board and the per-box rank shown in
     the ranked report: totals first, then the stable started_at/player_id
-    tie-breaks. A player whose clock has run out is treated as finished even
-    if no check-in has persisted that status yet.
+    ordering. Equal totals share a rank (standard competition ranking:
+    1, 2, 2, 4); the ordering keys only decide display order. A player whose
+    clock has run out is treated as finished even if no check-in has
+    persisted that status yet.
     """
     players = [p for p in store.list_players(comp.id)
                if p.status in ("running", "finished")]
@@ -147,6 +149,12 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
     return scored
 
 
+def _shared_rank(scored: list, total: int) -> int:
+    """Standard competition rank for ``total`` on ``scored`` (1,2,2,4)."""
+    return 1 + sum(1 for _p, _s, _sc, row_total in scored
+                   if row_total > total)
+
+
 def rank_for_player(store: Store, comp: Optional[CompetitionRecord],
                     player: Optional[PlayerRecord],
                     now: Optional[float] = None) -> "tuple[Optional[int], Optional[int]]":
@@ -154,15 +162,16 @@ def rank_for_player(store: Store, comp: Optional[CompetitionRecord],
 
     Returns (None, None) for a box that is not attached to a competition, and
     (None, total) if the player is no longer on the board (e.g. removed).
-    The identity comparison is by player_id, not object identity.
+    Equal totals share a position. The identity comparison is by player_id,
+    not object identity.
     """
     if comp is None or player is None:
         return None, None
     now = time.time() if now is None else now
     scored = _scored_players(store, comp, now)
-    for idx, (row_player, _status, _score, _total) in enumerate(scored, start=1):
+    for row_player, _status, _score, total in scored:
         if row_player.player_id == player.player_id:
-            return idx, len(scored)
+            return _shared_rank(scored, total), len(scored)
     return None, len(scored)
 
 
@@ -185,8 +194,13 @@ def leaderboard_payload(store: Store, comp: CompetitionRecord,
             "services": _service_rows(store, comp, p.box_id),
             "box_bound": bool(p.box_id),
         })
-    for idx, row in enumerate(rows, start=1):
-        row["rank"] = idx
+    previous_total = None
+    previous_rank = 0
+    for position, row in enumerate(rows, start=1):
+        if row["total"] != previous_total:
+            previous_rank = position
+            previous_total = row["total"]
+        row["rank"] = previous_rank
     return {
         "competition": public_competition_payload(store, comp, now=now),
         "leaderboard": rows,
@@ -322,8 +336,18 @@ def create_competition(store: Store, *, slug: str, name: str,
         raise ValueError("duration_s must be at least 60 seconds.")
     if store.get_competition_by_slug(slug) is not None:
         raise ValueError("That slug is already in use.")
+    # The box folder holds exactly one current version per scenario; running
+    # anything else is refused (competitions migrate forward, never back).
+    current = scenario_mod.current_box_scenario(scenario_name)
+    if current is not None and scenario_version != current[0]:
+        raise ValueError(
+            f"Scenario {scenario_name} v{scenario_version} is not current "
+            f"(engine has v{current[0]}); migrate the competition to the "
+            f"current version.")
     if store.get_scenario(scenario_name, scenario_version) is None:
-        raise ValueError("Upload that scenario record to the engine first.")
+        raise ValueError(
+            f"Scenario {scenario_name} v{scenario_version} is not on the "
+            f"engine; sync the box folder or upload the record.")
     return store.create_competition(
         slug=slug, name=name.strip(), scenario_name=scenario_name,
         scenario_version=scenario_version, max_players=max_players,

@@ -3,7 +3,8 @@
 
 Usage: python3 packaging/build_engine_bundle.py [OUT]
 Writes OUT (default dist/huitzilopochtli-engine.tar.gz) containing common/,
-engine/, and engine/deploy/ so the VM never runs from a git checkout.
+engine/, and the committed boxes/ folder (the engine parses box scenarios
+itself) so the VM never runs from a git checkout.
 """
 import os
 import sys
@@ -15,10 +16,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def build(out: str) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with tarfile.open(out, "w:gz") as tf:
-        for name in ("common", "engine"):
+        for name in ("common", "engine", "boxes"):
             path = os.path.join(ROOT, name)
+            if not os.path.isdir(path):
+                continue
             for dirpath, dirnames, filenames in os.walk(path):
-                dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+                # Never ship working-tree build outputs: boxes/*/artifacts*/
+                # hold authoring keys and compiled rubrics.
+                dirnames[:] = [d for d in dirnames
+                               if d != "__pycache__" and not d.startswith("artifacts")
+                               and not d.startswith(".")]
                 rel = os.path.relpath(dirpath, ROOT)
                 tf.add(dirpath, arcname=rel, recursive=False)
                 for fn in filenames:

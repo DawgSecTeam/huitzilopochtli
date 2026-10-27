@@ -641,25 +641,64 @@ def test_admin_disabled_without_token_env(tmp_path_factory):
         eng.stop()
 
 
-def test_v2_upload_does_not_rescore_an_enrolled_v1_box(engine, scenario,
-                                                        enrolled_box, seqs):
-    """A v2 record must not silently replace the rubric a v1 box enrolled
-    against. The v1 check-in keeps scoring against v1."""
-    name, v1 = scenario
-    priv, box_id = enrolled_box
+def test_stale_version_checkin_is_refused_with_migration_message(tmp_path):
+    """No backwards compatibility: when the box folder moves to v2, a v1
+    enrollment is no longer scoreable -- the 409 names the current version
+    and says the competition must be migrated."""
+    import yaml as yaml_mod
 
-    v2_rubric = lb._base_rubric(name, [{
-        "check_id": "backdoor-absent",
-        "category": "vuln",
-        "matcher": {"tag": "equals", "field": "matched", "value": "no"},
-        "points": 99,
-    }])
-    v2_rubric["scenario_version"] = 2
-    engine.upload_scenario(v2_rubric)
+    name = "proto-stale"
+    boxes = tmp_path / "boxes" / "stale-box"
+    boxes.mkdir(parents=True)
+    (boxes / "scenario.yaml").write_text(yaml_mod.safe_dump({
+        "scenario": {"name": name, "version": 1, "mode": "honor",
+                     "hosts": ["localhost"]},
+        "checks": [{"id": "backdoor-absent", "type": "file_regex",
+                    "category": "vuln", "display": "B", "max_points": 10,
+                    "collect": {"path": "/srv/x", "extract": "X"},
+                    "expect": {"equals": "no", "field": "matched",
+                               "points": 10}}],
+        "ranked": {"engine_url": "http://127.0.0.1:8080",
+                   "services": [], "adversary": {}},
+    }))
+    eng = lb._EngineProc(
+        tmp_path, env_extra={"HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes")})
+    try:
+        status, _, priv, box_id = _enroll(eng, eng.mint_token(name),
+                                          name, 1, box_id="proto-stale-box")
+        assert status == 200
+        body = _bundle_dict(box_id, 1, name, 1, {"matched": "no"})
+        status, parsed, _ = _signed_checkin(eng, priv, body)
+        assert status == 200, parsed
 
-    body = _bundle_dict(box_id, next(seqs), name, v1, {"matched": "no"})
-    status, parsed, _ = _signed_checkin(engine, priv, body)
-    assert status == 200, parsed
-    by_id = {r["check_id"]: r for r in parsed["score"]["results"]}
-    assert by_id["backdoor-absent"]["awarded_points"] == 10, (
-        "v1 box was rescored against the v2 rubric")
+        # The author bumps the scenario to v2 in the box folder...
+        (boxes / "scenario.yaml").write_text(yaml_mod.safe_dump({
+            "scenario": {"name": name, "version": 2, "mode": "honor",
+                         "hosts": ["localhost"]},
+            "checks": [{"id": "backdoor-absent", "type": "file_regex",
+                        "category": "vuln", "display": "B", "max_points": 10,
+                        "collect": {"path": "/srv/x", "extract": "X"},
+                        "expect": {"equals": "no", "field": "matched",
+                                   "points": 10}}],
+            "ranked": {"engine_url": "http://127.0.0.1:8080",
+                       "services": [], "adversary": {}},
+        }))
+        # ...then an admin creates the v2 competition; that create syncs the
+        # folder into the store, purging v1. (Any admin page or sweep would
+        # do the same.)
+        status, body, _ = _post_json(
+            eng, "/admin/api/competitions", {
+                "slug": "proto-stale-migrate", "name": "Migrate",
+                "scenario_name": name, "max_players": 2, "duration_s": 600,
+                "scenario_version": 2,
+            },
+            headers={"X-HUITZILOPOCHTLI-Admin-Token": lb.ADMIN_TOKEN})
+        assert status == 200, body
+
+        status, parsed, _ = _signed_checkin(
+            eng, priv, _bundle_dict(box_id, 2, name, 1, {"matched": "no"}))
+        assert status == 409, parsed
+        assert "not current" in parsed["error"], parsed
+        assert "v2" in parsed["error"] and "migrat" in parsed["error"], parsed
+    finally:
+        eng.stop()

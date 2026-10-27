@@ -297,7 +297,7 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     # masthead — same information architecture as the HTML report
     title = str(snap.get("title") or snap.get("scenario_name") or "Score report")
     lines.append(sty.color(sty.bold(title), "accent"))
-    sub = [f"scenario v{snap.get('scenario_version', '?')}", f"{mode} mode"]
+    sub = [f"{mode} mode"]
     if snap.get("organization"):
         sub.append(str(snap["organization"]))
     lines.append("  ·  ".join(sub))
@@ -363,6 +363,15 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
                 " at last check-in")
         if bits:
             lines.append("  " + sty.color("  ·  ".join(bits), "muted"))
+        if (isinstance(run_ends_at, (int, float))
+                and not isinstance(run_ends_at, bool)):
+            # Keep the deadline on its own line: folded into the position /
+            # remaining line it gets clipped at 80 columns, which is exactly
+            # the fact players need most.
+            lines.append("  " + sty.color(
+                f"run ends {_fmt_clock(run_ends_at)} UTC"
+                f"  ·  hard stop {_fmt_clock(run_ends_at - 300)} UTC",
+                "muted"))
     lines.append("")
 
     if mode == "honor":
@@ -1292,7 +1301,8 @@ def cmd_join(argv: list, outstream, instream) -> int:
           f"· {result.get('competition_name', 'competition')}", file=outstream)
     ends = result.get("run_ends_at")
     if ends:
-        print(f"run ends at {_fmt_clock(ends)} UTC", file=outstream)
+        print(f"run ends at {_fmt_clock(ends)} UTC "
+              f"(hard stop {_fmt_clock(ends - 300)} UTC)", file=outstream)
     print("the ranked agent is starting; use `huitz watch` to follow along.",
           file=outstream)
     return _EXIT_OK

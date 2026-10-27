@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 
@@ -54,6 +55,12 @@ def engine_server(tmp_path):
         "HUITZILOPOCHTLI_DB_PATH": str(db),
         "HUITZILOPOCHTLI_ADMIN_TOKEN": ADMIN_TOKEN,
     })
+    # Tests must never see the real repo boxes/ folder (cwd=REPO_ROOT would
+    # find it): default to a path that does not exist so scenario sync is a
+    # no-op unless a test opts in with its own folder.
+    env.setdefault("HUITZILOPOCHTLI_BOXES_DIR",
+                   os.path.join(tempfile.gettempdir(),
+                                f"huitz-test-noboxes-{os.getpid()}"))
     proc = subprocess.Popen(
         [sys.executable, "-m", "engine.server"],
         cwd=REPO_ROOT, env=env,

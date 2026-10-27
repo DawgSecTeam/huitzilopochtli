@@ -322,7 +322,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
         # on-box agent_config so they can never diverge.
         resolved_engine_url = compile_result.get("engine_url") or spec.engine_url
         if mode == "ranked" and not competition_mode:
-            from authoring.scenario_modes import LOOPBACK_ENGINE_URL
+            from common.scenario_record import LOOPBACK_ENGINE_URL
             if resolved_engine_url == LOOPBACK_ENGINE_URL:
                 log("[boxbuilder] WARNING: engine_url is the loopback placeholder; "
                     "pass --engine-url or set $HUITZILOPOCHTLI_ENGINE_URL for a real "

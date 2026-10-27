@@ -199,7 +199,8 @@ compile_scenario('$MANUAL/ranked/scenario.yaml', '$MANUAL/ranked/box', priv,
 "
 ```
 
-Upload the record and mint an enrollment token:
+Upload the record (cache seed only — the picker reads the engine's boxes/
+folder) and mint an enrollment token:
 
 ```bash
 curl -s -X POST localhost:8080/admin/scenarios \
