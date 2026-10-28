@@ -37,7 +37,7 @@ CODE_REFRESH_MARGIN = 600.0
 #: how long the background job waits for them to register. A cold Windows
 #: clone takes ~60-180 s to answer RDP, and the portal provisions ten at a
 #: time, so 30 boxes can legitimately take several minutes.
-WARM_MAX = 64
+WARM_MAX = 200
 WARM_WAIT_S = 900.0
 
 #: comp id -> background warm job state. Process-local on purpose: it is a
@@ -186,6 +186,29 @@ def warm_status(comp_id: str) -> dict:
         return dict(job) if job is not None else {"status": "idle"}
 
 
+def live_pool_status(comp: CompetitionRecord) -> dict:
+    """The competition pool's usable-box counts right now, from the portal.
+
+    Cheap enough for the admin page's poll: one GET per render. Never raises
+    -- portal trouble reads as ``{"status": "unavailable"}`` and no pool pin
+    (nothing pre-deployed yet) as ``{"status": "unpinned"}``."""
+    if not comp.workshop_pool_code:
+        return {"status": "unpinned"}
+    base, _secret = config()
+    password = _admin_password()
+    if not base or not password:
+        return {"status": "unavailable", "error": "the workshop portal is not configured"}
+    try:
+        snap = workshop.pool_snapshot(base, password, comp.workshop_pool_code)
+    except workshop.WorkshopError as exc:
+        return {"status": "unavailable", "error": str(exc)[:200]}
+    if snap is None:
+        return {"status": "unpinned"}
+    return {"status": "ok",
+            "available": int(snap.get("available") or 0),
+            "total": int(snap.get("total") or 0)}
+
+
 def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
     """Start pre-deploying ``count`` boxes into the competition's pool.
 
@@ -316,6 +339,7 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
     topup_sent = created
     next_topup_at = 0.0
     available = total = in_use = 0
+    target = None
     while True:
         try:
             snap = workshop.pool_snapshot(base, password, pool_code)
@@ -330,27 +354,35 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
         available = int(snap.get("available") or 0)
         total = int(snap.get("total") or 0)
         in_use = int(snap.get("in_use") or 0)
+        if target is None:
+            # The requested count ADDS to whatever the pool already has ready
+            # (a fresh pool starts at zero), so pre-deploying 2 into a pool
+            # holding 12 grows it to 14 instead of being satisfied instantly
+            # by the boxes already in it.
+            target = count if created else available + count
         _warm_job_update(comp.id, pool_code=pool_code, available=available,
-                         total=total, in_use=in_use)
-        if available >= count:
+                         total=total, in_use=in_use, target=target)
+        if available >= target:
             return {"status": "ready", "requested": count, "pool_code": pool_code,
                     "available": available, "total": total, "in_use": in_use,
+                    "target": target,
                     "waited_s": round(time.time() - started, 1)}
         now = time.time()
         if now >= deadline:
             return {"status": "timeout", "requested": count,
                     "pool_code": pool_code, "available": available,
-                    "total": total, "in_use": in_use,
+                    "total": total, "in_use": in_use, "target": target,
                     "waited_s": round(now - started, 1),
-                    "error": (f"only {available} of {count} boxes were ready "
+                    "error": (f"only {available} of {target} boxes were ready "
                               f"after {int(now - started)} s")}
         # A brand-new pool is already provisioning `count` boxes. An existing
-        # pool is topped up once; a 409 means an earlier portal job is still
-        # running, so retry after it has had time to finish.
+        # pool is topped up once toward the additive target; a 409 means an
+        # earlier portal job is still running, so retry after it has had time
+        # to finish.
         if not topup_sent and now >= next_topup_at:
             try:
                 workshop.provision_more(base, password, pool_code,
-                                        count - available)
+                                        max(0, target - available))
                 topup_sent = True
             except workshop.WorkshopError as exc:
                 if "already running" in str(exc).lower():
