@@ -13,6 +13,18 @@ import tarfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _box_permissions(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Box directories are read by the engine's unprivileged service user.
+
+    A box directory committed as 0700 (easy to do with a restrictive umask)
+    would otherwise be preserved into /opt and silently hide the scenario
+    from the engine. Normalize everything under boxes/ to world-readable.
+    """
+    if ti.name == "boxes" or ti.name.startswith("boxes/"):
+        ti.mode = 0o755 if ti.isdir() else 0o644
+    return ti
+
+
 def build(out: str) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with tarfile.open(out, "w:gz") as tf:
@@ -27,12 +39,14 @@ def build(out: str) -> str:
                                if d != "__pycache__" and not d.startswith("artifacts")
                                and not d.startswith(".")]
                 rel = os.path.relpath(dirpath, ROOT)
-                tf.add(dirpath, arcname=rel, recursive=False)
+                tf.add(dirpath, arcname=rel, recursive=False,
+                       filter=_box_permissions)
                 for fn in filenames:
                     if fn.endswith(".pyc"):
                         continue
                     full = os.path.join(dirpath, fn)
-                    tf.add(full, arcname=os.path.join(rel, fn))
+                    tf.add(full, arcname=os.path.join(rel, fn),
+                           filter=_box_permissions)
     return out
 
 
