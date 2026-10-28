@@ -524,6 +524,9 @@ class Handler(BaseHTTPRequestHandler):
             if comp is None:
                 self._send_json(404, {"error": "competition not found"})
                 return
+            if path.endswith("/warm"):
+                self._send_json(200, claims.warm_status(comp.id))
+                return
             payload = competition.leaderboard_payload(self.store, comp)
             payload["players"] = [
                 {"player_id": p.player_id, "name": p.display_name,
@@ -772,7 +775,8 @@ class Handler(BaseHTTPRequestHandler):
         board = competition.leaderboard_payload(self.store, comp)
         players = self.store.list_players(comp.id)
         self._send_html(200, web.admin_competition_page(
-            comp, board, players, session.csrf_token, msg, error))
+            comp, board, players, session.csrf_token, msg, error,
+            warm=claims.warm_status(comp.id)))
 
     # --- POST handlers --------------------------------------------------
 
@@ -1047,6 +1051,42 @@ class Handler(BaseHTTPRequestHandler):
                                           self.store, new)})
                 return
             self._redirect(f"/admin/competitions/{new.id}")
+            return
+        if action == "warm":
+            if comp.status == "ended":
+                message = "Only a draft or live competition can pre-deploy boxes."
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._render_admin_competition(session, comp.id, error=message)
+                return
+            try:
+                count = int(form.get("count", "0"))
+            except (TypeError, ValueError):
+                count = 0
+            result = claims.start_warm(self.store, comp, count)
+            if result.get("status") == "error":
+                message = result.get("error") or "Could not start pre-deploy."
+                if session is None:
+                    self._send_json(400, {"error": message})
+                else:
+                    self._render_admin_competition(session, comp.id, error=message)
+                return
+            self.store.add_audit(actor, "competition_warm", comp.id,
+                                 details_json=json.dumps(
+                                     {"requested": count,
+                                      "status": result.get("status")}),
+                                 remote_addr=self.client_address[0] if self.client_address else None)
+            if result.get("status") == "running" and result.get("available"):
+                message = (f"Pre-deploy already running: {result['available']} "
+                           f"of {count} box(es) ready.")
+            else:
+                message = (f"Pre-deploying {count} box(es); the pool fills in "
+                           "the background.")
+            if session is None:
+                self._send_json(200, result)
+                return
+            self._redirect(f"/admin/competitions/{comp.id}?msg={message.replace(' ', '+')}")
             return
         if action == "pool":
             pool = str(form.get("pool_code", "")).strip().upper()

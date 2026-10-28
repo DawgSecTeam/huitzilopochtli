@@ -1543,9 +1543,9 @@ ranked:
     points_per_interval: 1
     max_intervals_per_checkin: 3
   pool:
-    template_vm_id: ${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}
+    template_vm_id: ${HUITZILOPOCHTLI_SALTMARSH_EXCHANGE_POOL_TEMPLATE_VM_ID}
     template_vm_access_method: rdp
-    template_vm_username: ${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}
-    template_vm_password: ${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}
+    template_vm_username: ${HUITZILOPOCHTLI_SALTMARSH_EXCHANGE_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_SALTMARSH_EXCHANGE_POOL_TEMPLATE_PASSWORD}
     vm_count: 2
     guac_link_ttl_seconds: 14400

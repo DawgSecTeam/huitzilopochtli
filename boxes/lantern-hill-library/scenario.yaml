@@ -1212,9 +1212,9 @@ ranked:
       - 5400
       affects_check: mariadb
   pool:
-    template_vm_id: ${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}
+    template_vm_id: ${HUITZILOPOCHTLI_LANTERN_HILL_LIBRARY_POOL_TEMPLATE_VM_ID}
     template_vm_access_method: ssh
-    template_vm_username: ${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}
-    template_vm_password: ${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}
+    template_vm_username: ${HUITZILOPOCHTLI_LANTERN_HILL_LIBRARY_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_LANTERN_HILL_LIBRARY_POOL_TEMPLATE_PASSWORD}
     vm_count: 3
     guac_link_ttl_seconds: 14400

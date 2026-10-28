@@ -33,12 +33,21 @@ BOX_SPECS = sorted(glob.glob(os.path.join(REPO, "boxes", "*", "box.yaml")))
 BOXES = [os.path.basename(os.path.dirname(path)) for path in BOX_SPECS]
 
 # pool values are deployment inputs, not authored ones; a ranked compile
-# expands them from the environment.
+# expands them from the environment. A box may author the generic trio or
+# scenario-specific names (HUITZILOPOCHTLI_<SLUG>_POOL_TEMPLATE_*), so both
+# are seeded for every box and a new box inherits the floor without edits.
 POOL_ENV = {
     "HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID": "4242",
     "HUITZILOPOCHTLI_POOL_TEMPLATE_USER": "template-user",
     "HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD": "template-password",
 }
+
+
+def _per_slug_pool_env(box: str) -> dict:
+    prefix = "HUITZILOPOCHTLI_" + box.upper().replace("-", "_") + "_POOL_TEMPLATE"
+    return {f"{prefix}_VM_ID": "4242",
+            f"{prefix}_USER": "template-user",
+            f"{prefix}_PASSWORD": "template-password"}
 
 
 def _box_dir(box: str) -> str:
@@ -74,6 +83,9 @@ def authoring_key():
 def _pool_env(monkeypatch):
     for name, value in POOL_ENV.items():
         monkeypatch.setenv(name, value)
+    for box in BOXES:
+        for name, value in _per_slug_pool_env(box).items():
+            monkeypatch.setenv(name, value)
 
 
 def test_the_corpus_is_not_empty():

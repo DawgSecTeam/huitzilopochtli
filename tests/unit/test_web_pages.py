@@ -205,7 +205,8 @@ def test_leaderboard_polls_and_carries_countdown_data():
     assert "<noscript><meta http-equiv=\"refresh\" content=\"5\"></noscript>" in page
     # Server-rendered countdown fallback + data attribute for the JS ticker.
     assert 'data-remaining="7199"' in page and ">1:59:59<" in page
-    assert 'data-updated' in page
+    # The auto-updates clock line is gone; the polling itself stays.
+    assert 'data-updated' not in page and "auto-updates" not in page
 
 
 def test_leaderboard_runs_on_the_page_ground_without_a_leader_bar():
@@ -379,6 +380,8 @@ def test_status_dots_carry_the_word_in_a_tooltip():
     assert 'data-tip="Draft"' in web.comp_badge("draft")
     assert 'data-tip="Ended"' in web.comp_badge("ended")
     assert 'data-tip="Disqualified"' in web.player_badge("disqualified")
+    # A finished run is the quiet default: no dot at all.
+    assert web.player_badge("finished") == ""
     assert 'class="badge' not in live + web.player_badge("invited")
 
 
@@ -436,13 +439,23 @@ def test_join_box_reasons():
     draft = comp(status="draft", join_open=True, max_players=4, player_count=0)
     assert "Competition hasn&#x27;t started." in web._join_box(draft)
     ended = comp(status="ended", join_open=True, max_players=4, player_count=1)
-    assert "Competition has ended." in web._join_box(ended)
+    # The title-area badge already says the competition ended; the join slot
+    # stays empty instead of repeating it.
+    assert web._join_box(ended) == ""
 
 
 def test_leaderboard_meta_flags_full():
     page = web.competition_page(_payload(competition={"max_players": 1,
                                                       "player_count": 1}))
     assert '<span class="fullflag">full</span>' in page
+
+
+def test_ended_competition_keeps_only_the_title_badge():
+    page = web.competition_page(_payload(competition={"status": "ended",
+                                                      "join_open": False,
+                                                      "can_join": False}))
+    assert 'data-tip="Ended"' in page           # the title-area dot stays
+    assert "Competition has ended." not in page  # the join-slot note is gone
 
 
 def test_join_form_closed_notice_replaces_the_form():
@@ -735,23 +748,31 @@ def test_public_index_shows_only_live_admins_see_all():
     assert "Draft Cup" in admin and "Old Cup" in admin
 
 
-def test_status_dots_render_on_every_competition_card():
-    # The dot sits beside the title with its tooltip; there is no separate
-    # badge column and no hidden-vs-shown distinction between sections.
-    out = web._comp_cards([_comp()])
-    assert 'data-tip="Live"' in out
+def test_status_dots_on_cards_only_where_the_header_doesnt_say_it():
+    # The "Live" section header already says live, so live-section cards skip
+    # the status dot; mixed-status sections keep it as the differentiator.
+    out = web._comp_cards([_comp()], show_status=False)
+    assert 'data-tip="Live"' not in out
     other = web._comp_cards([_comp(status="ended")])
     assert 'data-tip="Ended"' in other
     assert 'class="badge' not in out + other
+    live = _comp()
+    ended = _comp(status="ended", slug="old-cup", name="Old Cup")
+    admin = web.index_page([live, ended], admin_view=True)
+    live_section = admin.split("Other competitions")[0]
+    assert 'data-tip="Live"' not in live_section
+    assert 'data-tip="Ended"' in admin.split("Other competitions", 1)[1]
 
 
 def test_index_cards_show_capacity_and_flag_full():
     counts = {"c1": 3}
     out = web._comp_cards([_comp(max_players=4)], players_by_comp=counts)
     assert "3 of 4 joined" in out
-    assert "Full" not in out and "/join" in out  # room left -> Join offered
+    assert "fullflag" not in out and "/join" in out  # room left -> Join offered
     full = web._comp_cards([_comp(max_players=3)], players_by_comp=counts)
-    assert '<span class="fullflag">Full</span>' in full
+    # Fullness rides in the meta line; the action slot never carries a flag.
+    assert '<span class="fullflag">full</span>' in full
+    assert '<span class="fullflag">Full</span>' not in full
     assert "/join" not in full          # a full competition offers no join
     # No counts supplied -> the old generic meta, no false full claims.
     plain = web._comp_cards([_comp(max_players=4)])
@@ -847,3 +868,31 @@ def test_layout_declares_an_inline_favicon():
     # No /favicon.ico 404 noise in the console.
     page = web.layout("T", "<p>x</p>")
     assert '<link rel="icon" href="data:image/svg+xml,' in page
+
+
+def test_admin_page_offers_pre_deploy():
+    page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
+    assert "/admin/api/competitions/c1/warm" in page
+    assert "Pre-deploy" in page and 'name="count"' in page
+
+
+def test_admin_page_reports_pre_deploy_progress():
+    running = web.admin_competition_page(
+        _comp(), {"leaderboard": []}, [], "csrf",
+        warm={"status": "running", "requested": 10, "available": 3, "total": 8})
+    assert "3 ready of 8" in running
+    ready = web.admin_competition_page(
+        _comp(), {"leaderboard": []}, [], "csrf",
+        warm={"status": "ready", "requested": 4, "available": 4, "total": 4,
+              "waited_s": 12.5})
+    assert "4 boxes available" in ready
+    failed = web.admin_competition_page(
+        _comp(), {"leaderboard": []}, [], "csrf",
+        warm={"status": "error", "error": "portal down"})
+    assert "portal down" in failed
+
+
+def test_ended_competition_has_no_pre_deploy_form():
+    page = web.admin_competition_page(_comp(status="ended"),
+                                      {"leaderboard": []}, [], "csrf")
+    assert "/warm" not in page

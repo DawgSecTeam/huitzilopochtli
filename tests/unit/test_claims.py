@@ -631,7 +631,8 @@ def test_cleanup_pool_without_a_portal_clears_the_pin(store, comp,
     monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_URL")
     stats = claims.cleanup_pool(store, comp)
     assert stats == {"released": 0, "destroyed": 0, "deleted": False,
-                     "legacy": False, "destroy_pending": False}
+                     "legacy": False, "pool_missing": False,
+                     "destroy_pending": False}
     assert store.get_competition(comp.id).workshop_pool_code is None
 
 
@@ -698,3 +699,175 @@ def test_player_csrf_round_trip():
     assert not claims.check_csrf(b"secret", "p2", token)
     assert not claims.check_csrf(b"secret", "p1", "nope")
     assert not claims.check_csrf(b"secret", "p1", "")
+
+
+# --- admin pre-deploy (warm pool) --------------------------------------------
+
+
+def _warm_row(code, available=0, total=0, in_use=0):
+    return {"code": code, "available": available, "total": total,
+            "in_use": in_use, "name": "huitz-ranked-x", "count": total,
+            "config": {}}
+
+
+def test_warm_status_is_idle_before_any_job():
+    assert claims.warm_status("no-such-competition")["status"] == "idle"
+
+
+def test_warm_creates_the_pool_at_the_requested_size(store, comp_provisioned,
+                                                     monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.time, "sleep", lambda _s: None)
+    sent = {}
+
+    def fake_provision(base, password, slug, spec):
+        sent.update(spec)
+        return {"pool_code": "WARM1"}
+
+    rows = [_warm_row("WARM1", 0, 0), _warm_row("WARM1", 5, 5)]
+    monkeypatch.setattr(claims.workshop, "provision_pool", fake_provision)
+    monkeypatch.setattr(claims.workshop, "pool_snapshot",
+                        lambda *a, **kw: rows.pop(0) if rows else _warm_row("WARM1", 5, 5))
+
+    out = claims.warm_boxes(store, comp_provisioned, 5, wait_s=30)
+    assert out["status"] == "ready", out
+    assert out["available"] == 5 and out["total"] == 5
+    # The first creation carries the requested size, not the scenario default.
+    assert sent["vm_count"] == 5
+    assert store.get_competition(comp_provisioned.id).workshop_pool_code == "WARM1"
+
+
+def test_warm_tops_up_an_existing_pool(store, comp, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.time, "sleep", lambda _s: None)
+    calls = []
+    state = {"available": 0, "total": 2}
+
+    def fake_more(base, password, code, count):
+        calls.append((code, count))
+        state["available"] += count
+        state["total"] += count
+        return {"job_id": "j1"}
+
+    monkeypatch.setattr(claims.workshop, "provision_more", fake_more)
+    monkeypatch.setattr(
+        claims.workshop, "pool_snapshot",
+        lambda *a, **kw: _warm_row("POOL1", state["available"], state["total"]))
+
+    out = claims.warm_boxes(store, comp, 4, wait_s=30)
+    assert out["status"] == "ready", out
+    assert calls == [("POOL1", 4)]
+    assert (out["available"], out["total"]) == (4, 6)
+
+
+def test_warm_tolerates_a_busy_portal_job_then_retries(store, comp, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.time, "sleep", lambda _s: None)
+    calls = []
+    state = {"available": 0, "total": 2, "busy": 1}
+
+    def fake_more(base, password, code, count):
+        calls.append(count)
+        if state["busy"]:
+            state["busy"] -= 1
+            raise workshop.WorkshopError("A provision job is already running.")
+        state["available"] += count
+        state["total"] += count
+        return {"job_id": "j2"}
+
+    monkeypatch.setattr(claims.workshop, "provision_more", fake_more)
+    monkeypatch.setattr(
+        claims.workshop, "pool_snapshot",
+        lambda *a, **kw: _warm_row("POOL1", state["available"], state["total"]))
+    # time.time() is real; the 15 s retry gate must pass in a unit test.
+    ticks = iter([0, 0, 10, 20, 30, 40, 50, 60])
+    monkeypatch.setattr(claims.time, "time", lambda: next(ticks, 60))
+
+    out = claims.warm_boxes(store, comp, 4, wait_s=200)
+    assert out["status"] == "ready", out
+    assert len(calls) == 2
+
+
+def test_warm_reports_a_portal_failure(store, comp_provisioned, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.workshop, "provision_pool",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            workshop.WorkshopError("portal down")))
+    out = claims.warm_boxes(store, comp_provisioned, 2, wait_s=1)
+    assert out["status"] == "error" and "portal down" in out["error"]
+
+
+def test_warm_rejects_a_bad_count(store, comp):
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+        for bad in (0, -1, claims.WARM_MAX + 1, "x"):
+            out = claims.warm_boxes(store, comp, bad, wait_s=1)
+            assert out["status"] == "error", bad
+            assert claims.start_warm(store, comp, bad)["status"] == "error"
+    finally:
+        monkeypatch.undo()
+
+
+def test_warm_needs_the_admin_password(store, comp, monkeypatch):
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", raising=False)
+    out = claims.warm_boxes(store, comp, 2, wait_s=1)
+    assert out["status"] == "error" and "admin password" in out["error"]
+
+
+def test_ensure_pool_replaces_a_pin_the_portal_lost(store, comp_provisioned,
+                                                    monkeypatch):
+    """A deleted portal pool must not pin every later claim to 'Unknown code.'"""
+    store.update_competition(comp_provisioned.id,
+                             workshop_pool_code="STALE1")
+    comp = store.get_competition(comp_provisioned.id)
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims, "_pin_is_alive", lambda *a, **kw: False)
+    monkeypatch.setattr(claims.workshop, "list_pools", lambda *a, **kw: [])
+    monkeypatch.setattr(claims.workshop, "provision_pool",
+                        lambda *a, **kw: {"pool_code": "FRESH1"})
+    code, err = claims.ensure_pool(store, comp)
+    assert (code, err) == ("FRESH1", None)
+    assert store.get_competition(comp.id).workshop_pool_code == "FRESH1"
+
+
+def test_provision_pool_prefers_the_code_its_own_post_created(monkeypatch):
+    calls = {"n": 0}
+    old = _portal_pool("OLD1", "huitz-ranked-x")
+    new = _portal_pool("NEW1", "huitz-ranked-x")
+
+    def fake_list(*a, **kw):
+        calls["n"] += 1
+        return [old] if calls["n"] == 1 else [old, new]
+
+    monkeypatch.setattr(workshop, "list_pools", fake_list)
+    monkeypatch.setattr(workshop, "_call",
+                        lambda *a, **kw: {"job_id": "j1"})
+    out = workshop.provision_pool("http://portal", "pw", "x", _pool_spec())
+    assert out["pool_code"] == "NEW1"
+
+
+def test_cleanup_pool_clears_a_pin_whose_pool_is_already_gone(store, comp,
+                                                              monkeypatch):
+    """A 404 pin must not leave the sweeper retrying cleanup forever."""
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.workshop, "list_pools", lambda *a, **kw: [])
+    stats = claims.cleanup_pool(store, comp)
+    assert stats["pool_missing"] is True and stats["deleted"] is False
+    assert store.get_competition(comp.id).workshop_pool_code is None
+
+
+def test_destroy_vms_waits_out_a_running_destroy_job(monkeypatch):
+    calls = []
+
+    def fake_call(base, method, path, body, timeout, **kw):
+        calls.append(path)
+        if len(calls) == 1:
+            raise workshop.WorkshopError("A destroy job is already running.")
+        return {"job_id": None}
+
+    monkeypatch.setattr(workshop, "_call", fake_call)
+    monkeypatch.setattr(workshop.time, "sleep", lambda _s: None)
+    out = workshop.destroy_vms("http://portal", "pw", [1, 2])
+    assert out["status"] == "done"
+    assert len(calls) == 2

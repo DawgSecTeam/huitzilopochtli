@@ -130,14 +130,51 @@ def provision_pool(base_url: str, admin_password: str, slug: str, spec: dict,
         "vm_count": spec.get("vm_count", 2),
         "guac_link_ttl_seconds": spec.get("guac_link_ttl_seconds", 7200),
     }
+    before = {p.get("code") for p in list_pools(base_url, admin_password, timeout)
+              if isinstance(p, dict)}
     result = _call(base_url, "POST", "/api/admin/provision", body, timeout,
                    headers=_admin_headers(admin_password))
-    found = find_pool_by_name(list_pools(base_url, admin_password, timeout), name)
+    after = list_pools(base_url, admin_password, timeout)
+    # Another engine call may create a same-named pool concurrently (and the
+    # portal also deletes a config whose provision job was refused). Prefer a
+    # code this call did not see before the POST, so a losing call can never
+    # hand back a pool that its own 409 cleanup is about to delete.
+    found = next((p for p in after if isinstance(p, dict)
+                  and p.get("name") == name and p.get("code") not in before),
+                 None) or find_pool_by_name(after, name)
     if not found:
         raise WorkshopError(
             "the portal accepted the provision request but the pool did not appear")
     result["pool_code"] = found["code"]
     return result
+
+
+def pool_snapshot(base_url: str, admin_password: str, pool_code: str,
+                  timeout: float = 10.0) -> Optional[dict]:
+    """One row from /api/admin/pools by code, or None if the pool is gone.
+
+    Used by the admin pre-deploy path to report ``available``/``total`` while
+    a provisioning job fills the pool. A missing pool is a normal answer (an
+    ended competition deletes its config), not an error."""
+    if not pool_code:
+        return None
+    for pool in list_pools(base_url, admin_password, timeout):
+        if isinstance(pool, dict) and pool.get("code") == pool_code:
+            return pool
+    return None
+
+
+def provision_more(base_url: str, admin_password: str, pool_code: str,
+                   count: int, timeout: float = 20.0) -> dict:
+    """POST /api/admin/redeploy: add ``count`` pre-provisioned clones to a pool.
+
+    The portal provisions on a background job (10 clones at a time), so this
+    returns the job reply; callers poll ``pool_snapshot`` for progress. The
+    portal also records ``count`` as the pool's new ``vm_count``.
+    """
+    return _call(base_url, "POST", "/api/admin/redeploy",
+                 {"code": pool_code, "count": int(count)}, timeout,
+                 headers=_admin_headers(admin_password))
 
 
 def delete_pool(base_url: str, admin_password: str, pool_code: str,
@@ -169,9 +206,21 @@ def destroy_vms(base_url: str, admin_password: str, vmids,
     ids = [int(v) for v in vmids if v is not None]
     if not ids:
         return {"status": "done", "vmids": [], "job_id": None}
-    result = _call(base_url, "POST", "/api/admin/destroy",
-                   {"mode": "specific", "vmids": ids}, timeout,
-                   headers=_admin_headers(admin_password))
+    # The portal allows one destroy job at a time. Two competitions ended
+    # back-to-back (a live load test did exactly that) race here; the second
+    # got 409 and the caller dropped the pin, leaking its pool. Wait for the
+    # running job to finish instead of failing the cleanup.
+    result = None
+    for attempt in range(61):
+        try:
+            result = _call(base_url, "POST", "/api/admin/destroy",
+                           {"mode": "specific", "vmids": ids}, timeout,
+                           headers=_admin_headers(admin_password))
+            break
+        except WorkshopError as exc:
+            if "already running" not in str(exc).lower() or attempt == 60:
+                raise
+            time.sleep(5)
     job_id = result.get("job_id")
     if not job_id:
         return {"status": "done", "vmids": ids, "job_id": None}

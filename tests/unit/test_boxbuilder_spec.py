@@ -202,6 +202,26 @@ def test_provider_env_is_the_fallback(monkeypatch):
     assert spec.provider["password"] == "envpass"
 
 
+def test_authoring_key_flag_applies_to_the_spec_path(tmp_path):
+    """--authoring-key must not be ignored when --spec is used."""
+    from boxbuilder.cli import _spec_from_args
+    key = tmp_path / "authoring.key"
+    key.write_text("00" * 32, encoding="ascii")
+    spec = _spec_from_args(_args(
+        command="compile", spec="boxes/broadneck-post/box.yaml",
+        mode="honor", engine_url=None, authoring_key=str(key),
+        scenario=None, nakon_config=None,
+    ))
+    assert spec.authoring_key_path == str(key)
+
+    plain = _spec_from_args(_args(
+        command="compile", spec="boxes/broadneck-post/box.yaml",
+        mode="honor", engine_url=None, authoring_key=None,
+        scenario=None, nakon_config=None,
+    ))
+    assert plain.authoring_key_path is None
+
+
 def test_committed_specs_never_carry_a_host_or_password():
     import glob
     import yaml

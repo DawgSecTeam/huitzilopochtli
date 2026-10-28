@@ -188,6 +188,7 @@ checks:
     category: vuln
     display: "MODERATE: The depot mailer answers on port 25 with an SMTP greeting"
     max_points: 4
+    timeout_s: 15
     collect:
       script: |
         command -v python3 >/dev/null 2>&1 || { echo true; exit 0; }
@@ -328,6 +329,7 @@ checks:
     category: vuln
     display: "HARD: The submission service refuses to relay for anonymous clients"
     max_points: 6
+    timeout_s: 15
     collect:
       script: |
         command -v python3 >/dev/null 2>&1 || { echo true; exit 0; }
@@ -1062,6 +1064,7 @@ checks:
     category: vuln
     display: "MODERATE: The mailer again accepts mail for the depot's own domain, and employees resolve in the user database"
     max_points: 4
+    timeout_s: 15
     collect:
       script: |
         command -v postconf >/dev/null 2>&1 || { echo true; exit 0; }
@@ -1095,6 +1098,12 @@ checks:
       postconf -e "mydestination = broadneckpost.org, mail.broadneckpost.org, localhost"
       systemctl restart postfix
       ```
+
+      Do not "tighten" relay here by adding `reject_unknown_recipient_domain`:
+      it forces a DNS lookup on every RCPT (including this probe) and can make
+      delivery and grading time out. `reject_unauth_destination` is the line
+      that closes the relay; `mydestination` is what makes the depot's own
+      domain local.
 
       **3. Confirm both graded conditions:** `postconf -h mydestination`
       mentions broadneckpost.org, and `doveadm user dispatch` resolves

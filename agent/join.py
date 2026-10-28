@@ -10,6 +10,7 @@ import os
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -25,7 +26,7 @@ class JoinError(Exception):
 
 
 def _post_join(engine_url: str, body: dict, private_key: bytes,
-               timeout: float = 15.0) -> dict:
+               timeout: float = 15.0, attempts: int = 6) -> dict:
     canonical = canon.canonicalize(body)
     sig = signing.sign(private_key, canonical)
     req = urllib.request.Request(
@@ -37,19 +38,35 @@ def _post_join(engine_url: str, body: dict, private_key: bytes,
         },
     )
     ctx = ssl.create_default_context()
-    try:
-        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
+    last = None
+    for attempt in range(attempts):
         try:
-            parsed = json.loads(raw)
-            msg = parsed.get("error") or raw
-        except ValueError:
-            msg = raw or f"HTTP {exc.code}"
-        raise JoinError(f"join rejected ({exc.code}): {msg}") from exc
-    except urllib.error.URLError as exc:
-        raise JoinError(f"could not reach engine at {engine_url}: {exc}") from exc
+            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(raw)
+                msg = parsed.get("error") or raw
+            except ValueError:
+                msg = raw or f"HTTP {exc.code}"
+            # A ranked join storm legitimately exhausts the engine's bounded
+            # Ed25519 verify gate and gets a 503 "busy" (and the public rate
+            # limiter can 429). Both are transient: retry instead of dropping
+            # the player at the terminal. A 403 (bad/consumed code) is final.
+            transient = exc.code in (429, 503) or "busy" in str(msg).lower()
+            if transient and attempt + 1 < attempts:
+                last = f"join rejected ({exc.code}): {msg}"
+                time.sleep(min(1.5 * (attempt + 1), 8.0))
+                continue
+            raise JoinError(f"join rejected ({exc.code}): {msg}") from exc
+        except urllib.error.URLError as exc:
+            last = f"could not reach engine at {engine_url}: {exc}"
+            if attempt + 1 < attempts:
+                time.sleep(min(1.5 * (attempt + 1), 8.0))
+                continue
+            raise JoinError(last) from exc
+    raise JoinError(last or "join failed")
 
 
 def _start_agent() -> None:

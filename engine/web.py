@@ -173,10 +173,6 @@ def _readable_text(accent: str, theme: str, target: float = 4.5) -> str:
 # --- time formatting ---------------------------------------------------------
 
 
-def _fmt_clock(now: Optional[float] = None) -> str:
-    return datetime.datetime.fromtimestamp(time.time() if now is None else now).strftime("%H:%M:%S")
-
-
 def _fmt_ts(ts) -> str:
     if not ts:
         return "—"
@@ -250,6 +246,10 @@ def comp_status_tag(status: str) -> str:
 
 
 def player_badge(status: str) -> str:
+    # A finished run is the quiet default (everyone on an ended board is
+    # finished); only the states that need action or attention get a dot.
+    if status == "finished":
+        return ""
     return _status_dot(status, _PLAYER_STATUS, "Player")
 
 
@@ -325,14 +325,6 @@ def _time_cell(row: dict) -> str:
     return '<span class="muted">⋅</span>'
 
 
-def _updated_clock() -> str:
-    return f'<span class="updated" data-updated>{esc(_fmt_clock())}</span>'
-
-
-def _updates_meta() -> str:
-    return f'<span class="meta">auto-updates · {_updated_clock()}</span>'
-
-
 def _copy_btn(value: str, label: str) -> str:
     return (f'<button type="button" class="btn" data-copy="{esc(value)}">'
             f'<span>{esc(label)}</span></button>')
@@ -392,7 +384,7 @@ def layout(title: str, body: str, *, comp: Optional[CompetitionRecord] = None,
     if chrome:
         header = (
             '<header class="top"><div class="wrap">'
-            '<a class="brand" href="/">Huitzilopochtli <span>ranked</span></a>'
+            '<a class="brand" href="/">Huitzilopochtli</a>'
             f'<nav><a href="/"{cur_home}>Competitions</a><a href="/admin"{cur_admin}>Admin</a>'
             f'{logout}{_THEME_TOGGLE}</nav>'
             '</div></header>'
@@ -432,7 +424,8 @@ def _page_head(title: str, back_href: str = "/admin") -> str:
             f'<a class="btn" href="{esc(back_href)}">Back</a></section>')
 
 
-def _comp_cards(comps: list, players_by_comp: Optional[dict] = None) -> str:
+def _comp_cards(comps: list, players_by_comp: Optional[dict] = None,
+                show_status: bool = True) -> str:
     if not comps:
         return '<p class="empty">No open competitions right now. Check back soon.</p>'
     counts = players_by_comp or {}
@@ -444,18 +437,21 @@ def _comp_cards(comps: list, players_by_comp: Optional[dict] = None) -> str:
         join = ""
         if c.status == "live" and c.join_open and not full:
             join = f'<a class="btn primary" href="/c/{esc(c.slug)}/join">Join</a>'
-        elif full:
-            join = '<span class="fullflag">Full</span>'
         if c.status == "ended":
             meta = "final scores posted"
         elif joined is not None:
             meta = f"{esc(joined)} of {esc(c.max_players)} joined · {_fmt_duration(c.duration_s)} runs"
+            # Fullness rides in the meta line; the action slot only ever
+            # carries a real button, never a floating word beside one.
             if full:
                 meta += ' · <span class="fullflag">full</span>'
         else:
             meta = f"{_fmt_duration(c.duration_s)} runs · up to {esc(c.max_players)} players"
+        # The section header already says "Live", so live-section cards skip
+        # the status dot; mixed-status sections keep it as the differentiator.
+        badge = comp_badge(c.status) if show_status else ""
         rows.append(f"""<article class="card comp-row"><div class="comp-main">
-<div class="comp-title-line"><h2><a href="/c/{esc(c.slug)}">{esc(c.name)}</a></h2>{comp_badge(c.status)}</div>
+<div class="comp-title-line"><h2><a href="/c/{esc(c.slug)}">{esc(c.name)}</a></h2>{badge}</div>
 <p class="comp-meta">{meta}</p></div>
 <div class="comp-actions"><a class="btn" href="/c/{esc(c.slug)}">Leaderboard</a>{join}</div>
 </article>""")
@@ -469,7 +465,7 @@ def index_page(comps: list, admin_view: bool = False,
 <h1>Ranked competitions</h1>
 <p class="lede">Harden your box, keep your services up, and climb the board. Scores are signed by your box and judged by the engine.</p>
 </section>
-<h2 class="section-title">Live now</h2>{_comp_cards(live, players_by_comp)}"""
+<h2 class="section-title">Live</h2>{_comp_cards(live, players_by_comp, show_status=False)}"""
     if admin_view:
         other = [c for c in comps if c.status != "live"]
         body += f"""
@@ -492,9 +488,11 @@ def _join_box(comp: dict, viewer_comp: Optional[CompetitionRecord] = None) -> st
             and comp["player_count"] >= comp["max_players"]:
         # The one join-blocking state worth shouting about.
         return '<p class="fullnote">Competition is full</p>'
-    reason = {"draft": "Competition hasn't started.", "ended": "Competition has ended."}.get(comp["status"])
-    if not reason:
-        reason = "Joins are closed."
+    if comp["status"] == "ended":
+        # The title-area badge already says the competition ended; the join
+        # slot adds nothing and stays empty.
+        return ""
+    reason = {"draft": "Competition hasn't started."}.get(comp["status"], "Joins are closed.")
     return f'<span class="muted small">{esc(reason)}</span>'
 
 
@@ -521,6 +519,7 @@ def competition_page(data: dict, *, refresh: int = 5,
                      admin: bool = False) -> str:
     comp = data["competition"]
     rows = data["leaderboard"]
+    join_box = _join_box(comp, viewer_comp)
     full = (comp["status"] == "live" and comp["max_players"] > 0
             and comp["player_count"] >= comp["max_players"])
     full_flag = ' · <span class="fullflag">full</span>' if full else ""
@@ -528,11 +527,11 @@ def competition_page(data: dict, *, refresh: int = 5,
 <div><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div>
 <p class="meta">{esc(comp['player_count'])} joined of {esc(comp['max_players'])} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a></p>
 {f'<p class="small muted">{esc(comp.get("join_instructions") or "")}</p>' if comp.get('join_instructions') else ''}</div>
-<div class="joinbox">{_join_box(comp, viewer_comp)}</div>
+{f'<div class="joinbox">{join_box}</div>' if join_box else ''}
 </section>
 <div id="board" data-poll="{refresh * 1000}">
 <section class="board"><div class="board-head"><h2>Leaderboard</h2>
-{_updates_meta()}</div>
+</div>
 {_board_table(rows)}
 </section>
 </div>"""
@@ -554,7 +553,7 @@ def display_page(data: dict) -> str:
     body = f"""<section class="display-head"><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div></section>
 <div id="board" data-poll="5000">
 <section class="display-board">{board}</section>
-<p class="display-meta">{esc(len(rows))} on the board · auto-updates · {_updated_clock()}</p>
+<p class="display-meta">{esc(len(rows))} on the board</p>
 </div>"""
     accent = (comp.get("theme") or {}).get("accent")
     return layout(comp["name"], body, refresh=5, body_class="display", accent=accent, chrome=False)
@@ -917,7 +916,7 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}
 <div id="dash" data-poll="30000">
 <section class="card"><div class="card-head"><h2>Competitions</h2>
-{_updates_meta()}</div>
+</div>
 <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="5" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
     return layout("Admin", body, admin=True, current="admin")
@@ -950,8 +949,10 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 
 
 def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
-                           csrf: str, msg: str = "", error: str = "") -> str:
+                           csrf: str, msg: str = "", error: str = "",
+                           warm: Optional[dict] = None) -> str:
     now = time.time()
+    warm = warm or {"status": "idle"}
     rows = []
     for p in players:
         row = next((r for r in board.get("leaderboard", []) if r["player_id"] == p.player_id), {})
@@ -992,7 +993,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <td class="r">{score}</td>
 <td>{_service_dots(row.get('services'))}</td>
 <td class="num r">{checkin}</td>
-<td class="muted small">{esc(p.box_id or '—')}</td>
 <td class="small">{f'<div class="row-actions">{actions}</div>' if actions else '<span class="muted">—</span>'}</td></tr>""")
     controls = []
     if comp.status == "draft":
@@ -1004,6 +1004,35 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/rerun" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Rerun competition</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/delete" class="inline" onsubmit="return confirm(\'Remove this competition and its player records? This cannot be undone.\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Remove competition</button></form>')
     join_url = f"/c/{comp.slug}/join"
+    warm_block = ""
+    if comp.status != "ended":
+        requested = int(warm.get("requested") or 0)
+        available = int(warm.get("available") or 0)
+        total = int(warm.get("total") or 0)
+        waited = warm.get("waited_s")
+        state = warm.get("status")
+        if state == "running":
+            note = (f'<p class="meta">Pre-deploying {requested} boxes — '
+                    f'{available} ready of {total} provisioned so far. '
+                    f'Refresh to follow progress.</p>')
+        elif state == "ready":
+            note = (f'<p class="okmsg">Pool ready: {available} boxes available '
+                    f'of {total} provisioned'
+                    + (f' in {esc(waited)} s' if waited is not None else '')
+                    + '.</p>')
+        elif state in ("timeout", "error"):
+            note = f'<p class="error">{esc(warm.get("error") or "Pre-deploy did not finish.")}</p>'
+        else:
+            note = ('<p class="meta">Nothing pre-deployed yet: the portal clones '
+                    'each box when its player joins. Warm the pool first to move '
+                    'that wait off the join.</p>')
+        default_count = min(max(1, int(comp.max_players or 8)), 64)
+        warm_block = f"""<section class="card"><div class="card-head"><h2>Pre-deploy boxes</h2></div>
+{note}
+<form method="post" action="/admin/api/competitions/{esc(comp.id)}/warm" class="inline">
+<input type="hidden" name="csrf" value="{esc(csrf)}">
+<label class="small">Boxes <input name="count" type="number" min="1" max="64" value="{default_count}" style="width:6rem"></label>
+<button class="btn" type="submit">Pre-deploy</button></form></section>"""
     # The pool code is portal plumbing (audit log / journal carry it for
     # debugging); the UI stays quiet about pools unless a claim actually fails,
     # in which case the error text lands on the player row.
@@ -1021,10 +1050,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <span class="fact-value"><code>{esc(join_url)}</code> {_copy_btn(join_url, "Copy")}
 <a class="btn" href="/admin/api/competitions/{esc(comp.id)}/export.csv">Export CSV</a></span></div>
 </div></section>
+{warm_block}
 <div id="roster" data-poll="15000">
 <section class="card"><div class="card-head"><h2>Players ({esc(len(players))})</h2>
-{_updates_meta()}</div>
-<div class="table-wrap"><table class="roster"><thead><tr><th>Player</th><th class="r">Score</th><th>Services</th><th class="r">Check-in</th><th>Box</th><th>Actions</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="6" class="empty">No players yet.</td></tr>'}</tbody></table></div></section>
+</div>
+<div class="table-wrap"><table class="roster"><thead><tr><th>Player</th><th class="r">Score</th><th>Services</th><th class="r">Check-in</th><th>Actions</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="5" class="empty">No players yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
     return layout(comp.name, body, comp=comp, admin=True, current="admin")
 
@@ -1102,7 +1132,7 @@ readable accent; <span class="muted">muted text</span> and
 <section class="card"><div class="card-head"><h2>Status</h2>
 <span class="meta">dots carry the word in a tooltip</span></div>
 <p class="row-actions">{comp_badge("live")}{comp_badge("draft")}{comp_badge("ended")}
-{player_badge("invited")}{player_badge("running")}{player_badge("finished")}{player_badge("disqualified")}
+{player_badge("invited")}{player_badge("running")}{player_badge("disqualified")}
 {comp_status_tag("live")}</p>
 <p class="row-actions">{_service_dots(sample_rows[0]["services"])}
 {_service_dots([])}
@@ -1168,15 +1198,20 @@ main.wrap{display:flex;flex-direction:column;gap:var(--gap-stack);padding:var(--
 .top{position:sticky;top:0;z-index:20;background:var(--header);border-bottom:1px solid var(--line-2)}
 .top .wrap{display:flex;align-items:center;justify-content:space-between;gap:var(--s5);min-height:56px}
 .brand{font-weight:700;color:var(--ink);font-size:1.08rem}
-.brand span{color:var(--accent-text);font-family:var(--font-sans);font-weight:700;font-size:.64rem;letter-spacing:.18em;text-transform:uppercase;margin-left:.5rem;vertical-align:middle}
 nav{display:flex;gap:var(--s5);align-items:center}
+nav form{display:flex}
 /* Every nav entry reserves the same 4px underline slot, so the aria-current
-bar changes nothing about the row's alignment (no baseline jump on active). */
-nav a,nav button{color:var(--ink-2);font-weight:600;font-size:.76rem;letter-spacing:.09em;text-transform:uppercase;background:none;border:0;padding:0 0 4px;cursor:pointer;font-family:var(--font-sans);transition:color .12s ease}
+bar changes nothing about the row's alignment (no baseline jump on active).
+line-height:1 keeps every entry the same box height; the form is flex so the
+logout button skips the anonymous line-box strut that pushed it low. */
+nav a,nav button{color:var(--ink-2);font-weight:600;font-size:.76rem;letter-spacing:.09em;text-transform:uppercase;background:none;border:0;padding:0 0 4px;cursor:pointer;font-family:var(--font-sans);transition:color .12s ease;line-height:1}
 nav a:hover,nav button:hover{color:var(--ink);text-decoration:none}
 nav a[aria-current]{color:var(--ink);box-shadow:inset 0 -2px 0 var(--accent-text)}
-.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:var(--control);height:var(--control);border:1px solid var(--line-2);border-radius:0;background:transparent;color:var(--ink-2);cursor:pointer}
-.icon-btn:hover{color:var(--ink);border-color:var(--line-2)}
+/* Borderless glyph: padding:0 drops the nav underline slot (it carries no
+text), and the 2px nudge matches the text entries' optical center — their own
+4px underline padding rides the glyphs 2px above box center. */
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:var(--control);height:var(--control);border:0;border-radius:0;background:transparent;color:var(--ink-2);cursor:pointer;padding:0;position:relative;top:-2px}
+.icon-btn:hover{color:var(--ink)}
 .icon-btn svg{width:1rem;height:1rem}
 html[data-theme=dark] .ic-moon{display:none}html[data-theme=light] .ic-sun{display:none}
 .section-title{margin:var(--s6) 0 calc(-1 * var(--s2));color:var(--muted);font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em}
@@ -1239,7 +1274,6 @@ td.rank{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 .svcs .lbl{color:var(--muted);font-size:.8rem;margin-left:4px;font-variant-numeric:tabular-nums}
 .muted{color:var(--muted)}.small{font-size:.82rem}
 .empty{color:var(--muted);text-align:center;padding:var(--pad-card)}
-.updated{font-variant-numeric:tabular-nums}
 .inline{display:inline}
 .row-actions{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
 .row-actions form{display:inline-flex}
