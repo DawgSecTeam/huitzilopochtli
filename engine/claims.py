@@ -529,7 +529,7 @@ def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
     try:
         result = workshop.claim_vm(
             base, pool, code=player.join_code_plain or None,
-            secret=secret or None, back_url=back_url)
+            secret=secret or None, back_url=back_url, timeout=45.0)
     except workshop.WorkshopError as exc:
         # A pool can disappear between the pin check and the claim (the
         # portal's config file is not transactional with our pin). Treat the
@@ -554,7 +554,7 @@ def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
             try:
                 result = workshop.claim_vm(
                     base, pool, code=player.join_code_plain or None,
-                    secret=secret or None, back_url=back_url)
+                    secret=secret or None, back_url=back_url, timeout=45.0)
             except workshop.WorkshopError as exc2:
                 _record_error(store, player, exc2)
                 return {"ok": False, "error": str(exc2)}
@@ -571,7 +571,7 @@ def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
                   f"({exc}); players must enter their join code by hand",
                   flush=True)
             try:
-                result = workshop.claim_vm(base, pool)
+                result = workshop.claim_vm(base, pool, timeout=30.0)
             except workshop.WorkshopError as exc2:
                 _record_error(store, player, exc2)
                 return {"ok": False, "error": str(exc2)}
