@@ -38,7 +38,7 @@ CODE_REFRESH_MARGIN = 600.0
 #: clone takes ~60-180 s to answer RDP, and the portal provisions ten at a
 #: time, so 30 boxes can legitimately take several minutes.
 WARM_MAX = 200
-WARM_WAIT_S = 900.0
+WARM_WAIT_S = 2400.0
 
 #: comp id -> background warm job state. Process-local on purpose: it is a
 #: progress indicator for the admin page, not durable competition state (the
