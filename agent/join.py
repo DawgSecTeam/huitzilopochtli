@@ -74,22 +74,25 @@ def _start_agent() -> None:
 
     Linux: enable+start the systemd unit. Windows: the box ships with the
     SYSTEM scheduled task registered but disabled, so joining enables and
-    runs it. Failures are ignored -- the join itself already succeeded.
+    runs it. A failed start is a failed join: silently ignoring it leaves the
+    player bound to a box that never checks in (seen on 12/28 range Windows
+    clones), so raise JoinError instead.
     """
     if os.name == "nt":
-        # Ranked Windows boxes ship with the SYSTEM task registered but
-        # disabled; joining turns it on so check-ins begin. Best effort: the
-        # task's 5-minute repetition starts it even if the immediate /Run is
-        # denied.
         for args in (["schtasks", "/Change", "/TN", "HuitzilopochtliAgent",
                       "/ENABLE"],
                      ["schtasks", "/Run", "/TN", "HuitzilopochtliAgent"]):
             try:
-                subprocess.run(args, capture_output=True, text=True,
-                               timeout=20)
-            except Exception:
-                continue
+                proc = subprocess.run(args, capture_output=True, text=True,
+                                      timeout=20)
+            except Exception as exc:
+                raise JoinError(f"could not start Windows agent task: {exc}") from exc
+            if proc.returncode != 0:
+                detail = (proc.stdout or proc.stderr or "").strip()[:300]
+                raise JoinError(
+                    f"could not start Windows agent task ({proc.returncode}): {detail}")
     else:
+        last = ""
         for unit in ("huitzilopochtli-agent.service",
                      "huitzilopochtli-agent"):
             try:
@@ -97,9 +100,11 @@ def _start_agent() -> None:
                     ["systemctl", "enable", "--now", unit],
                     capture_output=True, text=True, timeout=20)
                 if proc.returncode == 0:
-                    break
-            except Exception:
-                continue
+                    return
+                last = (proc.stderr or proc.stdout or "").strip()[:300]
+            except Exception as exc:
+                last = str(exc)[:300]
+        raise JoinError(f"could not start the agent service: {last}")
 
 
 def join(config_path: str, code: str, start_service: bool = True) -> dict:
@@ -137,8 +142,8 @@ def join(config_path: str, code: str, start_service: bool = True) -> dict:
     try:
         with open(marker, "w", encoding="utf-8") as f:
             f.write("enrolled\n")
-    except OSError:
-        pass
+    except OSError as exc:
+        raise JoinError(f"could not write enrollment marker {marker!r}: {exc}") from exc
     if start_service:
         _start_agent()
     return result

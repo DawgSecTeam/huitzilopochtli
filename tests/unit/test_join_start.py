@@ -30,14 +30,37 @@ def test_linux_join_enables_the_first_working_unit(monkeypatch):
                       "huitzilopochtli-agent.service"]]
 
 
-def test_agent_start_failures_are_not_fatal(monkeypatch):
+def test_agent_start_failures_are_fatal(monkeypatch):
     monkeypatch.setattr(join_mod, "os", types.SimpleNamespace(name="posix"))
 
     def boom(*a, **kw):
         raise OSError("no systemd here")
 
     monkeypatch.setattr(join_mod, "subprocess", types.SimpleNamespace(run=boom))
-    join_mod._start_agent()  # must not raise
+    try:
+        join_mod._start_agent()
+    except join_mod.JoinError as exc:
+        assert "agent service" in str(exc)
+    else:
+        raise AssertionError("a failed agent start must fail the join")
+
+
+def test_windows_agent_start_failure_is_fatal(monkeypatch):
+    monkeypatch.setattr(join_mod, "os", types.SimpleNamespace(name="nt"))
+
+    class _Fail:
+        returncode = 1
+        stdout = "ERROR: access denied"
+        stderr = ""
+
+    monkeypatch.setattr(join_mod, "subprocess",
+                        types.SimpleNamespace(run=lambda *a, **kw: _Fail()))
+    try:
+        join_mod._start_agent()
+    except join_mod.JoinError as exc:
+        assert "Windows agent task" in str(exc)
+    else:
+        raise AssertionError("a failed schtasks call must fail the join")
 
 
 def test_join_retries_a_busy_engine(monkeypatch):
