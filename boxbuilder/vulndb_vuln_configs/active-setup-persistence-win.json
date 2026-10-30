@@ -1,0 +1,10 @@
+{
+  "name": "active-setup-persistence-win",
+  "description": "Practice-box helper (Windows): plants an Active Setup component under HKLM\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\<GUID> with a StubPath that runs a hidden PowerShell payload at every user logon (the per-user HKCU version value is absent, so the component runs). Vars: PAYLOAD_PATH (required); PAYLOAD_BODY (optional); COMPONENT_GUID (optional, default a fixed GUID); VERSION (optional, default '1,0,0,0'). The hardened state is the StubPath value gone (or the whole component key removed). Idempotent. Pairs with a registry_value check expecting StubPath absent.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $PAYLOAD_PATH) { throw 'PAYLOAD_PATH is required' }\n$guid = if ($COMPONENT_GUID) { $COMPONENT_GUID } else { '{8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43}' }\n$version = if ($VERSION) { $VERSION } else { '1,0,0,0' }\nif ($PAYLOAD_BODY) {\n    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PAYLOAD_PATH) | Out-Null\n    Set-Content -LiteralPath $PAYLOAD_PATH -Value $PAYLOAD_BODY -Encoding ascii\n}\n$key = \"HKLM:\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\$guid\"\nif (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }\nSet-ItemProperty -LiteralPath $key -Name 'StubPath' -Value (\"powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `\"$PAYLOAD_PATH`\"\") -Type String -Force\nSet-ItemProperty -LiteralPath $key -Name 'Version' -Value $version -Type String -Force\nSet-ItemProperty -LiteralPath $key -Name 'IsInstalled' -Value 1 -Type DWord -Force\nWrite-Output \"Active Setup component planted: $guid\"\n",
+  "depends_on": []
+}

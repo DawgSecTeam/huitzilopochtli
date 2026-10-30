@@ -1,0 +1,1011 @@
+# Cinder Ridge Credit Union: a registry-persistence WINDOWS challenge box.
+#
+# Theme: a teller workstation compromised by a fake "StatementSync" updater.
+# The intruder left persistence in the registry and weakened the baseline
+# controls. Twenty scored checks (6 EASY x8 + 8 MODERATE x12 + 6 HARD x16 =
+# 240) plus six scored forensics questions (6 x 10 = 60) = 300 points.
+#
+# Structure: every planted artifact pairs with a check that awards the
+# hardened state. The Run/RunOnce family uses HKLM, HKCU and policy keys; the
+# service family uses ImagePath, an unquoted path, ServiceDll and
+# FailureCommand; the logon/loader family uses Winlogon Userinit, IFEO,
+# AppInit/AppCert and Active Setup; the misconfiguration family uses UAC,
+# Defender, WDigest, LSA PPL, SMB1 and AlwaysInstallElevated.
+#
+# Name discipline: every SERVICE_NAME / VALUE_NAME / PAYLOAD_PATH / GUID in
+# nakon.json MUST match its paired check's collect params byte-identically --
+# nothing cross-validates. The HKCU checks resolve the local account SID at
+# collect time and mount C:\Users\<user>\NTUSER.DAT when the hive is not
+# already loaded (the agent runs as SYSTEM, so plain HKCU is SYSTEM's hive).
+#
+# Forensics-answer hygiene: no check display string names a planted value,
+# service, account or path. The six answers are deliberately absent from the
+# handbook; teams must investigate before they clean.
+#
+# Difficulty: EASY 6 (HKLM Run, HKLM RunOnce, UAC, WDigest, SMB1,
+# AlwaysInstallElevated); MODERATE 8 (HKCU Run, both policy Run keys, unquoted
+# service path, FailureCommand, Userinit, IFEO, LSA PPL); HARD 6 (HKCU RunOnce
+# in a standard user's hive, service ImagePath, ServiceDll, AppInit/AppCert,
+# Active Setup, Defender).
+
+scenario:
+  name: "Cinder Ridge Credit Union"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # --- A. RUN / RUNONCE -----------------------------------------------------
+  - id: hklm_run_autorun_removed
+    type: registry_value
+    category: vuln
+    display: "EASY: The machine-wide logon autorun is removed"
+    max_points: 8
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+      value: WinUpdaterSvc
+    expect:
+      equals: false
+      field: present
+      points: 8
+    solution: |
+      **1. Read the machine Run key.** Everything under it launches at every
+      interactive logon:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          WinUpdaterSvc    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\VendorTelemetry\winupd.ps1"
+      ```
+
+      A "vendor updater" that starts a hidden PowerShell script from a
+      ProgramData staging directory is not an updater. Record the value NAME
+      before deleting it -- it is a forensics answer.
+
+      **2. Delete the value** (not the whole key -- legitimate values may live
+      beside it):
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v WinUpdaterSvc /f
+      ```
+
+      **3. Confirm.** The query above no longer lists the value. The payload
+      script has its own cleanup task.
+
+  - id: hklm_runonce_autorun_removed
+    type: registry_value
+    category: vuln
+    display: "EASY: The machine-wide one-shot logon autorun is removed"
+    max_points: 8
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce
+      value: DriverBoost
+    expect:
+      equals: false
+      field: present
+      points: 8
+    solution: |
+      **1. Read the machine RunOnce key.** RunOnce executes once at the next
+      logon (for an administrator) and is then removed by Windows:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+          DriverBoost    REG_SZ    cmd.exe /c "C:\ProgramData\VendorTelemetry\drvboost.cmd"
+      ```
+
+      **2. Note the command, then delete the value:**
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" /v DriverBoost /f
+      ```
+
+      **3. Confirm.** The RunOnce query returns no DriverBoost value. The
+      dropper path is a forensics answer; record it before cleanup.
+
+  - id: hkcu_run_autorun_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The administrator's per-user logon autorun is removed"
+    max_points: 12
+    timeout_s: 90
+    collect:
+      script: |
+        $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false, 'Global\HuitzHiveAccess'
+        $acquired = $false
+        try {
+            try { $acquired = $mutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+            if (-not $acquired) { throw 'timed out waiting for hive access' }
+            $user = 'sysadmin'
+            $rel = 'Software\Microsoft\Windows\CurrentVersion\Run'
+            $value = 'EdgeSyncHelper'
+            $filter = 'LocalAccount=True AND Name=' + [char]39 + $user + [char]39
+            $u = Get-CimInstance Win32_UserAccount -Filter $filter -ErrorAction Stop
+            if ($null -eq $u) { throw ('user not found: ' + $user) }
+            $loaded = Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $u.SID)
+            $tmpDir = $null
+            if ($loaded) {
+                $regPath = 'HKU\' + $u.SID + '\' + $rel
+            } else {
+                $hive = 'C:\Users\' + $user + '\NTUSER.DAT'
+                if (-not (Test-Path -LiteralPath $hive)) { throw ('hive not found: ' + $hive) }
+                $tmpDir = 'C:\Windows\Temp\huitz-' + [guid]::NewGuid().ToString('N')
+                New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+                Copy-Item -Path ($hive + '*') -Destination $tmpDir -Force -ErrorAction Stop
+                $tmpHive = Join-Path $tmpDir 'NTUSER.DAT'
+                & reg.exe load 'HKU\HuitzCheckRun' $tmpHive | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw ('reg load failed: ' + $tmpHive) }
+                $regPath = 'HKU\HuitzCheckRun\' + $rel
+            }
+            try {
+                & reg.exe query $regPath /v $value 2>&1 | Out-Null
+                $present = ($LASTEXITCODE -eq 0)
+            } finally {
+                if (-not $loaded) {
+                    & reg.exe unload 'HKU\HuitzCheckRun' | Out-Null
+                    if ($tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction Ignore }
+                }
+            }
+            (-not $present) | ConvertTo-Json -Compress
+        } finally {
+            if ($acquired) { $mutex.ReleaseMutex() }
+            $mutex.Dispose()
+        }
+    expect:
+      equals: true
+      field: data
+      points: 12
+    solution: |
+      **1. Read the current user's Run key.** The student session is the
+      administrator account, so `HKCU` is the right hive while logged in:
+
+      ```
+      reg query "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          EdgeSyncHelper    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Users\sysadmin\AppData\Roaming\EdgeSync\edgesync.ps1"
+      ```
+
+      **2. Delete the value:**
+
+      ```
+      reg delete "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v EdgeSyncHelper /f
+      ```
+
+      **3. Confirm.** The query no longer lists it. The check mounts the
+      account's `NTUSER.DAT` when the hive is not loaded, so it also sees the
+      value after a logoff.
+
+  - id: hkcu_runonce_autorun_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The standard user's one-shot logon autorun is removed"
+    max_points: 16
+    timeout_s: 90
+    collect:
+      script: |
+        $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false, 'Global\HuitzHiveAccess'
+        $acquired = $false
+        try {
+            try { $acquired = $mutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+            if (-not $acquired) { throw 'timed out waiting for hive access' }
+            $user = 'teller1'
+            $rel = 'Software\Microsoft\Windows\CurrentVersion\RunOnce'
+            $value = 'TeamsUpdate'
+            $filter = 'LocalAccount=True AND Name=' + [char]39 + $user + [char]39
+            $u = Get-CimInstance Win32_UserAccount -Filter $filter -ErrorAction Stop
+            if ($null -eq $u) { throw ('user not found: ' + $user) }
+            $loaded = Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $u.SID)
+            $tmpDir = $null
+            if ($loaded) {
+                $regPath = 'HKU\' + $u.SID + '\' + $rel
+            } else {
+                $hive = 'C:\Users\' + $user + '\NTUSER.DAT'
+                if (-not (Test-Path -LiteralPath $hive)) { throw ('hive not found: ' + $hive) }
+                $tmpDir = 'C:\Windows\Temp\huitz-' + [guid]::NewGuid().ToString('N')
+                New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+                Copy-Item -Path ($hive + '*') -Destination $tmpDir -Force -ErrorAction Stop
+                $tmpHive = Join-Path $tmpDir 'NTUSER.DAT'
+                & reg.exe load 'HKU\HuitzCheckRunOnce' $tmpHive | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw ('reg load failed: ' + $tmpHive) }
+                $regPath = 'HKU\HuitzCheckRunOnce\' + $rel
+            }
+            try {
+                & reg.exe query $regPath /v $value 2>&1 | Out-Null
+                $present = ($LASTEXITCODE -eq 0)
+            } finally {
+                if (-not $loaded) {
+                    & reg.exe unload 'HKU\HuitzCheckRunOnce' | Out-Null
+                    if ($tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction Ignore }
+                }
+            }
+            (-not $present) | ConvertTo-Json -Compress
+        } finally {
+            if ($acquired) { $mutex.ReleaseMutex() }
+            $mutex.Dispose()
+        }
+    expect:
+      equals: true
+      field: data
+      points: 16
+    solution: |
+      **1. Find the account.** `sysadmin` is the only administrator; a second,
+      standard local account exists for the teller. `Get-LocalUser` or
+      `lusrmgr.msc` shows it.
+
+      **2. Load that account's hive** (it is not the logged-in account, so
+      `HKCU` will not show it). Either use `regedit` > `HKEY_USERS` > File >
+      Load Hive on `C:\Users\teller1\NTUSER.DAT`, or from an elevated prompt:
+
+      ```
+      reg load HKU\teller1 "C:\Users\teller1\NTUSER.DAT"
+      reg query "HKU\teller1\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+          TeamsUpdate    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Users\teller1\AppData\Local\Temp\teamsupd.ps1"
+      ```
+
+      **3. Delete the value and unload the hive:**
+
+      ```
+      reg delete "HKU\teller1\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v TeamsUpdate /f
+      reg unload HKU\teller1
+      ```
+
+      **4. Confirm.** Re-load and re-query: the value is gone. The account
+      name is a forensics answer; record it before cleanup.
+
+  - id: hklm_policy_run_removed
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The machine policy autorun is removed"
+    max_points: 12
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run
+      value: VendorPulse
+    expect:
+      equals: false
+      field: present
+      points: 12
+    solution: |
+      **1. Check the policy Run key.** Explorer also honors a Run list under
+      `Policies\Explorer`, separate from the classic Run key:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run"
+          VendorPulse    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\VendorTelemetry\pulse.ps1"
+      ```
+
+      **2. Delete the value:**
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run" /v VendorPulse /f
+      ```
+
+      **3. Confirm.** The query no longer lists VendorPulse.
+
+  - id: hkcu_policy_run_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The administrator's per-user policy autorun is removed"
+    max_points: 12
+    timeout_s: 90
+    collect:
+      script: |
+        $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false, 'Global\HuitzHiveAccess'
+        $acquired = $false
+        try {
+            try { $acquired = $mutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+            if (-not $acquired) { throw 'timed out waiting for hive access' }
+            $user = 'sysadmin'
+            $rel = 'Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run'
+            $value = 'StatementSync'
+            $filter = 'LocalAccount=True AND Name=' + [char]39 + $user + [char]39
+            $u = Get-CimInstance Win32_UserAccount -Filter $filter -ErrorAction Stop
+            if ($null -eq $u) { throw ('user not found: ' + $user) }
+            $loaded = Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $u.SID)
+            $tmpDir = $null
+            if ($loaded) {
+                $regPath = 'HKU\' + $u.SID + '\' + $rel
+            } else {
+                $hive = 'C:\Users\' + $user + '\NTUSER.DAT'
+                if (-not (Test-Path -LiteralPath $hive)) { throw ('hive not found: ' + $hive) }
+                $tmpDir = 'C:\Windows\Temp\huitz-' + [guid]::NewGuid().ToString('N')
+                New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+                Copy-Item -Path ($hive + '*') -Destination $tmpDir -Force -ErrorAction Stop
+                $tmpHive = Join-Path $tmpDir 'NTUSER.DAT'
+                & reg.exe load 'HKU\HuitzCheckPolicy' $tmpHive | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw ('reg load failed: ' + $tmpHive) }
+                $regPath = 'HKU\HuitzCheckPolicy\' + $rel
+            }
+            try {
+                & reg.exe query $regPath /v $value 2>&1 | Out-Null
+                $present = ($LASTEXITCODE -eq 0)
+            } finally {
+                if (-not $loaded) {
+                    & reg.exe unload 'HKU\HuitzCheckPolicy' | Out-Null
+                    if ($tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction Ignore }
+                }
+            }
+            (-not $present) | ConvertTo-Json -Compress
+        } finally {
+            if ($acquired) { $mutex.ReleaseMutex() }
+            $mutex.Dispose()
+        }
+    expect:
+      equals: true
+      field: data
+      points: 12
+    solution: |
+      **1. Read the per-user policy Run key:**
+
+      ```
+      reg query "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run"
+          StatementSync    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\VendorTelemetry\stmtsync.ps1"
+      ```
+
+      **2. Delete the value:**
+
+      ```
+      reg delete "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run" /v StatementSync /f
+      ```
+
+      **3. Confirm.** The query no longer lists it; the system-run check
+      covers the loaded-hive view.
+
+  # --- B. SERVICE KEYS ------------------------------------------------------
+  - id: service_imagepath_restored
+    type: powershell_json
+    category: vuln
+    display: "HARD: The hijacked service path is restored"
+    max_points: 16
+    timeout_s: 60
+    collect:
+      script: |
+        # Read the registry value the student actually edits (Win32_Service can
+        # lag a sc.exe config change); a missing service key also counts clean.
+        $img = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\VendorTelemetrySvc' -Name ImagePath -ErrorAction Ignore).ImagePath
+        $clean = ($null -eq $img) -or ($img -notmatch 'ProgramData\\VendorTelemetry')
+        $clean | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 16
+    solution: |
+      **1. Compare the registry with the service.** `sc qc` prints the stored
+      binary path:
+
+      ```
+      sc qc VendorTelemetrySvc
+      ```
+
+      The legitimate install path is
+      `C:\Program Files\Vendor Telemetry\agent.exe`; the planted value points
+      into `C:\ProgramData\VendorTelemetry`.
+
+      **2. Restore the path** (quoting the spaced path is good practice):
+
+      ```
+      sc config VendorTelemetrySvc binPath= "\"C:\Program Files\Vendor Telemetry\agent.exe\""
+      ```
+
+      If the service is an attacker-created rogue, deleting it
+      (`sc delete VendorTelemetrySvc`) also satisfies the check.
+
+      **3. Confirm.** `sc qc VendorTelemetrySvc` shows the install path, not
+      the ProgramData path.
+
+  - id: service_unquoted_path_quoted
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The unquoted service path is quoted"
+    max_points: 12
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Services\BackupAgentSvc
+      value: ImagePath
+    expect:
+      regex: '^".*"$'
+      field: value
+      points: 12
+    solution: |
+      **1. See the unquoted path.** A service binary under a spaced directory
+      without quotes lets Windows try `C:\Program.exe` before the intended
+      executable:
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Services\BackupAgentSvc" /v ImagePath
+          ImagePath    REG_SZ    C:\Program Files\Backup Agent\agent.exe
+      ```
+
+      **2. Quote it** (the embedded quotes are part of the stored value):
+
+      ```
+      sc config BackupAgentSvc binPath= "\"C:\Program Files\Backup Agent\agent.exe\""
+      ```
+
+      **3. Confirm.** The `reg query` now shows the path wrapped in quotes.
+
+  - id: service_servicedll_removed
+    type: registry_value
+    category: vuln
+    display: "HARD: The service DLL hijack is removed"
+    max_points: 16
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Services\TelemetrySvc\Parameters
+      value: ServiceDll
+    expect:
+      equals: false
+      field: present
+      points: 16
+    solution: |
+      **1. Read the svchost service's Parameters key.** A service whose
+      `ImagePath` is `svchost.exe -k ...` loads its implementation from
+      `Parameters\ServiceDll`:
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Services\TelemetrySvc\Parameters" /v ServiceDll
+          ServiceDll    REG_SZ    C:\ProgramData\VendorTelemetry\telemetry.dll
+      ```
+
+      **2. Remove the hijacked value** (or delete the whole rogue service):
+
+      ```
+      reg delete "HKLM\SYSTEM\CurrentControlSet\Services\TelemetrySvc\Parameters" /v ServiceDll /f
+      ```
+
+      **3. Confirm.** The value is gone. The service is demand-start, so it
+      was never running.
+
+  - id: service_failurecommand_removed
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The service failure command is removed"
+    max_points: 12
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Services\RecoverySvc
+      value: FailureCommand
+    expect:
+      equals: false
+      field: present
+      points: 12
+    solution: |
+      **1. Read the service's recovery configuration.** A `FailureCommand`
+      runs when the service fails, which makes a stopped or broken service
+      into a persistence trigger:
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Services\RecoverySvc" /v FailureCommand
+          FailureCommand    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\VendorTelemetry\failcmd.ps1"
+      ```
+
+      **2. Delete the value:**
+
+      ```
+      reg delete "HKLM\SYSTEM\CurrentControlSet\Services\RecoverySvc" /v FailureCommand /f
+      ```
+
+      **3. Confirm.** The query errors that the value is not found.
+
+  # --- C. LOGON / LOADER ----------------------------------------------------
+  - id: winlogon_userinit_restored
+    type: registry_value
+    category: vuln
+    display: "MODERATE: Winlogon Userinit is restored to the stock value"
+    max_points: 12
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+      value: Userinit
+    expect:
+      regex: '(?i)^C:\\Windows\\system32\\userinit\.exe,?\s*$'
+      field: value
+      points: 12
+    solution: |
+      **1. Read the Winlogon Userinit value.** The stock value is the
+      userinit program followed by a comma; an appended executable runs at
+      every interactive logon:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Userinit
+          Userinit    REG_SZ    C:\Windows\system32\userinit.exe, C:\ProgramData\VendorTelemetry\winitupd.exe
+      ```
+
+      **2. Restore the stock value:**
+
+      ```
+      reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Userinit /t REG_SZ /d "C:\Windows\system32\userinit.exe," /f
+      ```
+
+      **3. Reboot and confirm logon still works.** The `reg query` now shows
+      only `C:\Windows\system32\userinit.exe,`.
+
+  - id: ifeo_debugger_removed
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The IFEO Debugger hijack is removed"
+    max_points: 12
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe
+      value: Debugger
+    expect:
+      equals: false
+      field: present
+      points: 12
+    solution: |
+      **1. Check the accessibility executable's IFEO key.** A `Debugger`
+      value makes Windows run the debugger instead of the target -- on an
+      accessibility binary that launches from the logon screen, that is an
+      unauthenticated shell:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe" /v Debugger
+          Debugger    REG_SZ    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\ProgramData\VendorTelemetry\sethc.ps1"
+      ```
+
+      **2. Delete the Debugger value:**
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe" /v Debugger /f
+      ```
+
+      **3. Confirm.** The query reports the value is not found, and pressing
+      the accessibility shortcut at the logon screen no longer starts a
+      payload.
+
+  - id: appinit_hooks_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The global AppInit and AppCert DLL hooks are removed"
+    max_points: 16
+    timeout_s: 60
+    collect:
+      script: |
+        $win = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows'
+        $app = (Get-ItemProperty -LiteralPath $win -Name AppInit_DLLs -ErrorAction Ignore).AppInit_DLLs
+        $certs = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs' -ErrorAction Ignore
+        $certVals = @()
+        if ($null -ne $certs) {
+            $certVals = @($certs.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object { [string]$_.Value })
+        }
+        $appBad = $app -and ($app -match 'VendorTelemetry')
+        $certBad = @($certVals | Where-Object { $_ -match 'VendorTelemetry' }).Count -gt 0
+        (-not $appBad -and -not $certBad) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 16
+    solution: |
+      **1. Read both machine-wide DLL-load hooks.** `AppInit_DLLs` loads a
+      DLL into every user32 process; `AppCertDLLs` loads one into every
+      process that calls `CreateProcess`:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v AppInit_DLLs
+      reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs"
+      ```
+
+      Both point at the same staging file. The loader may silently fail on a
+      non-PE placeholder, but the registration is the persistence.
+
+      **2. Clear the values:**
+
+      ```
+      reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v AppInit_DLLs /t REG_SZ /d "" /f
+      reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs" /v inproc_helper /f
+      ```
+
+      Setting `LoadAppInit_DLLs` to 0 is good hygiene but not required once
+      `AppInit_DLLs` is empty.
+
+      **3. Confirm.** Both queries show no path under the staging directory.
+
+  - id: active_setup_stub_removed
+    type: registry_value
+    category: vuln
+    display: "HARD: The rogue Active Setup component is removed"
+    max_points: 16
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: 'SOFTWARE\Microsoft\Active Setup\Installed Components\{8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43}'
+      value: StubPath
+    expect:
+      equals: false
+      field: present
+      points: 16
+    solution: |
+      **1. Enumerate Active Setup components.** Active Setup runs a component's
+      `StubPath` at logon when the per-user version value is absent or older:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components" /s /v StubPath
+      ```
+
+      One component is a GUID with no vendor meaning and a `StubPath` that
+      starts a hidden PowerShell script. The benign components have
+      human-readable names and system paths.
+
+      **2. Delete the rogue component key** (or just its `StubPath` value):
+
+      ```
+      reg delete "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43}" /f
+      ```
+
+      **3. Confirm.** The `StubPath` value is gone.
+
+  # --- D. BASIC MISCONFIGURATION KEYS ---------------------------------------
+  - id: uac_enabled
+    type: registry_value
+    category: vuln
+    display: "EASY: User Account Control is enabled"
+    max_points: 8
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+      value: EnableLUA
+    expect:
+      equals: 1
+      field: value
+      points: 8
+    solution: |
+      **1. Read the UAC switch:**
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA
+          EnableLUA    REG_DWORD    0x0
+      ```
+
+      **2. Set it back to 1:**
+
+      ```
+      reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA /t REG_DWORD /d 1 /f
+      ```
+
+      **3. Reboot** (UAC changes take effect at logon) and confirm the query
+      reads `0x1`.
+
+  - id: defender_rtp_on
+    type: powershell_json
+    category: vuln
+    display: "HARD: Defender real-time protection and policy are restored"
+    max_points: 16
+    timeout_s: 120
+    collect:
+      script: |
+        Import-Module Defender -ErrorAction Ignore
+        $statusOk = $false
+        $rtp = $false
+        try {
+            $s = Get-MpComputerStatus -ErrorAction Stop
+            $rtp = [bool]$s.RealTimeProtectionEnabled
+            $statusOk = $true
+        } catch { $statusOk = $false }
+        $policy = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -Name DisableAntiSpyware -ErrorAction Ignore).DisableAntiSpyware
+        $excl = @()
+        try { $excl = @((Get-MpPreference -ErrorAction Stop).ExclusionPath) } catch { $excl = @() }
+        $bad = @($excl | Where-Object { $_ -and ($_ -match 'VendorTelemetry') })
+        $clean = $statusOk -and $rtp -and (($null -eq $policy) -or ([int]$policy -ne 1)) -and ($bad.Count -eq 0)
+        $clean | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 16
+    solution: |
+      **1. See the three separate switches.** The policy kills the engine,
+      real-time monitoring is a separate preference, and an exclusion hides
+      the staging directory:
+
+      ```
+      reg query "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiSpyware
+      Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled
+      Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+      ```
+
+      **2. Clear the policy first, then re-enable protection.** The preference
+      change does not stick while `DisableAntiSpyware=1` is still in force:
+
+      ```
+      reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiSpyware /f
+      Set-MpPreference -DisableRealtimeMonitoring $false
+      Remove-MpPreference -ExclusionPath "C:\ProgramData\VendorTelemetry"
+      Start-Service WinDefend
+      ```
+
+      **3. Confirm.** `Get-MpComputerStatus` reports
+      `RealTimeProtectionEnabled : True`, the policy value is gone, and the
+      exclusion list is empty.
+
+  - id: wdigest_cleartext_off
+    type: registry_value
+    category: vuln
+    display: "EASY: WDigest cleartext credential caching is disabled"
+    max_points: 8
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest
+      value: UseLogonCredential
+    expect:
+      not_equals: 1
+      field: value
+      points: 8
+    solution: |
+      **1. Read the WDigest switch:**
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest" /v UseLogonCredential
+          UseLogonCredential    REG_DWORD    0x1
+      ```
+
+      **2. Set it to 0 (or delete the value):**
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest" /v UseLogonCredential /t REG_DWORD /d 0 /f
+      ```
+
+      **3. Confirm.** The query reads `0x0`, and new logons no longer leave
+      cleartext passwords in LSASS memory.
+
+  - id: lsa_ppl_on
+    type: registry_value
+    category: vuln
+    display: "MODERATE: LSA protection is enabled"
+    max_points: 12
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Control\Lsa
+      value: RunAsPPL
+    expect:
+      equals: 1
+      field: value
+      points: 12
+    solution: |
+      **1. Read the LSA protection value:**
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPL
+          RunAsPPL    REG_DWORD    0x0
+      ```
+
+      **2. Set it to 1 and reboot:**
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPL /t REG_DWORD /d 1 /f
+      ```
+
+      **3. Confirm after the reboot.** The query reads `0x1`; LSASS now runs
+      as a protected process.
+
+  - id: smb1_disabled
+    type: registry_value
+    category: vuln
+    display: "EASY: The SMB1 protocol flag is disabled"
+    max_points: 8
+    timeout_s: 20
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters
+      value: SMB1
+    expect:
+      not_equals: 1
+      field: value
+      points: 8
+    solution: |
+      **1. Read the SMB1 flag:**
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v SMB1
+          SMB1    REG_DWORD    0x1
+      ```
+
+      **2. Set it to 0 (or delete the value):**
+
+      ```
+      reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v SMB1 /t REG_DWORD /d 0 /f
+      ```
+
+      **3. Confirm.** The query reads `0x0` (or the value is gone), and SMB1
+      is no longer offered by the server.
+
+  - id: always_install_elevated_off
+    type: powershell_json
+    category: vuln
+    display: "EASY: AlwaysInstallElevated is disabled in both hives"
+    max_points: 8
+    timeout_s: 90
+    collect:
+      script: |
+        $hklm = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -ErrorAction Ignore).AlwaysInstallElevated
+        $mutex = New-Object -TypeName System.Threading.Mutex -ArgumentList $false, 'Global\HuitzHiveAccess'
+        $acquired = $false
+        try {
+            try { $acquired = $mutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+            if (-not $acquired) { throw 'timed out waiting for hive access' }
+            $user = 'sysadmin'
+            $rel = 'SOFTWARE\Policies\Microsoft\Windows\Installer'
+            $filter = 'LocalAccount=True AND Name=' + [char]39 + $user + [char]39
+            $u = Get-CimInstance Win32_UserAccount -Filter $filter -ErrorAction Stop
+            if ($null -eq $u) { throw ('user not found: ' + $user) }
+            $loaded = Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $u.SID)
+            $tmpDir = $null
+            if ($loaded) {
+                $regPath = 'HKU\' + $u.SID + '\' + $rel
+            } else {
+                $hive = 'C:\Users\' + $user + '\NTUSER.DAT'
+                if (-not (Test-Path -LiteralPath $hive)) { throw ('hive not found: ' + $hive) }
+                $tmpDir = 'C:\Windows\Temp\huitz-' + [guid]::NewGuid().ToString('N')
+                New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+                Copy-Item -Path ($hive + '*') -Destination $tmpDir -Force -ErrorAction Stop
+                $tmpHive = Join-Path $tmpDir 'NTUSER.DAT'
+                & reg.exe load 'HKU\HuitzCheckInstall' $tmpHive | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw ('reg load failed: ' + $tmpHive) }
+                $regPath = 'HKU\HuitzCheckInstall\' + $rel
+            }
+            try {
+                $out = & reg.exe query $regPath /v AlwaysInstallElevated 2>&1 | Out-String
+                $hkcu = $null
+                if ($LASTEXITCODE -eq 0) {
+                    if ($out -match '0x1') { $hkcu = 1 }
+                    elseif ($out -match '0x0') { $hkcu = 0 }
+                }
+            } finally {
+                if (-not $loaded) {
+                    & reg.exe unload 'HKU\HuitzCheckInstall' | Out-Null
+                    if ($tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction Ignore }
+                }
+            }
+            $hklmBad = ($null -ne $hklm) -and ([int]$hklm -eq 1)
+            $hkcuBad = ($null -ne $hkcu) -and ([int]$hkcu -eq 1)
+            (-not ($hklmBad -or $hkcuBad)) | ConvertTo-Json -Compress
+        } finally {
+            if ($acquired) { $mutex.ReleaseMutex() }
+            $mutex.Dispose()
+        }
+    expect:
+      equals: true
+      field: data
+      points: 8
+    solution: |
+      **1. Read the policy in both hives.** Microsoft's installer honors the
+      value only when BOTH the machine and user copies are 1:
+
+      ```
+      reg query "HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer" /v AlwaysInstallElevated
+      reg query "HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer" /v AlwaysInstallElevated
+      ```
+
+      **2. Clear both values:**
+
+      ```
+      reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer" /v AlwaysInstallElevated /f
+      reg delete "HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer" /v AlwaysInstallElevated /f
+      ```
+
+      **3. Confirm.** Both queries report the value is gone, and a standard
+      user can no longer install an MSI with SYSTEM rights.
+
+forensics:
+  - id: fq_hklm_run_value
+    question: "The machine-wide Run key launches a hidden PowerShell payload from a staging directory. What is the exact name of that registry VALUE?"
+    points: 10
+    answer: "WinUpdaterSvc"
+    answers: ["WinUpdaterSvc", "winupdatersvc"]
+    solution: |
+      Read the machine Run key and look at the left-hand column:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          WinUpdaterSvc    REG_SZ    powershell.exe ... -File "C:\ProgramData\VendorTelemetry\winupd.ps1"
+      ```
+
+      One value starts a hidden PowerShell script from a staging directory.
+      The answer is the VALUE name (`WinUpdaterSvc`), not the command.
+
+  - id: fq_runonce_payload
+    question: "The machine-wide RunOnce key stages a dropper for the next administrator logon. What is the full path of the file that value executes?"
+    points: 10
+    answer: 'C:\ProgramData\VendorTelemetry\drvboost.cmd'
+    answers: ['C:\ProgramData\VendorTelemetry\drvboost.cmd', 'drvboost.cmd']
+    solution: |
+      Read the machine RunOnce key:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+          DriverBoost    REG_SZ    cmd.exe /c "C:\ProgramData\VendorTelemetry\drvboost.cmd"
+      ```
+
+      The data names the file to run. The answer is the full path
+      `C:\ProgramData\VendorTelemetry\drvboost.cmd`.
+
+  - id: fq_hkcu_owner
+    question: "One rogue per-user RunOnce value lives in a standard user's hive, not the logged-in administrator's. What is that account's username?"
+    points: 10
+    answer: "teller1"
+    answers: ["teller1"]
+    solution: |
+      `sysadmin` is the only administrator. Enumerate local accounts
+      (`Get-LocalUser` or `lusrmgr.msc`) and find the standard teller
+      account; its profile hive is
+      `C:\Users\<name>\NTUSER.DAT`. Load that hive (regedit > HKEY_USERS >
+      File > Load Hive, or `reg load`) and query:
+
+      ```
+      reg query "HKU\<name>\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+          TeamsUpdate    REG_SZ    powershell.exe ... -File "C:\Users\<name>\AppData\Local\Temp\teamsupd.ps1"
+      ```
+
+      The account is `teller1`.
+
+  - id: fq_service_imagepath
+    question: "One service's ImagePath was repointed from its install directory into a staging directory under ProgramData. What is the service's name?"
+    points: 10
+    answer: "VendorTelemetrySvc"
+    answers: ["VendorTelemetrySvc", "vendortelemetrysvc"]
+    solution: |
+      Compare each service's registry ImagePath with the binary it claims to
+      run:
+
+      ```
+      Get-CimInstance Win32_Service | Where-Object { $_.PathName -match 'ProgramData' } |
+          Select-Object Name, PathName
+      ```
+
+      One service's path points into the staging directory while its display
+      name and install directory claim a vendor product. The answer is
+      `VendorTelemetrySvc`.
+
+  - id: fq_unquoted_service
+    question: "One service has an unquoted ImagePath that contains a space. What is the service's name?"
+    points: 10
+    answer: "BackupAgentSvc"
+    answers: ["BackupAgentSvc", "backupagentsvc"]
+    solution: |
+      Find services whose stored binary path is not wrapped in quotes but
+      contains a spaced directory:
+
+      ```
+      Get-CimInstance Win32_Service |
+          Where-Object { $_.PathName -notmatch '^"' -and $_.PathName -match ' ' } |
+          Select-Object Name, PathName
+      ```
+
+      The unquoted one is `BackupAgentSvc`; the answer is the service name.
+
+  - id: fq_userinit_extra
+    question: "What extra executable was appended to the Winlogon Userinit value?"
+    points: 10
+    answer: 'C:\ProgramData\VendorTelemetry\winitupd.exe'
+    answers: ['C:\ProgramData\VendorTelemetry\winitupd.exe', 'winitupd.exe']
+    solution: |
+      Read the Winlogon Userinit value:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Userinit
+          Userinit    REG_SZ    C:\Windows\system32\userinit.exe, C:\ProgramData\VendorTelemetry\winitupd.exe
+      ```
+
+      The stock value is `C:\Windows\system32\userinit.exe,`; everything
+      after the comma is the extra executable
+      `C:\ProgramData\VendorTelemetry\winitupd.exe`.
+
+theme:
+  title: "Cinder Ridge Credit Union"
+  organization: "Cinder Ridge Credit Union"
+  accent: "#B45309"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  desktop_shortcuts:
+    - name: "Hardening Handbook"
+      exec: "%PUBLIC%\\Documents\\huitzilopochtli\\README.html"

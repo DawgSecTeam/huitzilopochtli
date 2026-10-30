@@ -1,0 +1,160 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "cr-teller01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "defender-off-win",
+          "vars": {
+            "EXCLUSION_PATH": "C:\\ProgramData\\VendorTelemetry"
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "VALUE_NAME": "WinUpdaterSvc",
+            "VALUE_DATA": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\ProgramData\\VendorTelemetry\\winupd.ps1\"",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\winupd.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+            "VALUE_NAME": "DriverBoost",
+            "VALUE_DATA": "cmd.exe /c \"C:\\ProgramData\\VendorTelemetry\\drvboost.cmd\"",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\drvboost.cmd",
+            "PAYLOAD_BODY": "@echo off\r\npowershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\ProgramData\\VendorTelemetry\\winupd.ps1\""
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "HIVE": "HKCU",
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "VALUE_NAME": "EdgeSyncHelper",
+            "VALUE_DATA": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\Users\\sysadmin\\AppData\\Roaming\\EdgeSync\\edgesync.ps1\"",
+            "PAYLOAD_PATH": "C:\\Users\\sysadmin\\AppData\\Roaming\\EdgeSync\\edgesync.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "HIVE": "HKCU",
+            "USERNAME": "teller1",
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+            "VALUE_NAME": "TeamsUpdate",
+            "VALUE_DATA": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\Users\\teller1\\AppData\\Local\\Temp\\teamsupd.ps1\"",
+            "PAYLOAD_PATH": "C:\\Users\\teller1\\AppData\\Local\\Temp\\teamsupd.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run",
+            "VALUE_NAME": "VendorPulse",
+            "VALUE_DATA": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\ProgramData\\VendorTelemetry\\pulse.ps1\"",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\pulse.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "HIVE": "HKCU",
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run",
+            "VALUE_NAME": "StatementSync",
+            "VALUE_DATA": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\\ProgramData\\VendorTelemetry\\stmtsync.ps1\"",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\stmtsync.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "service-key-persistence-win",
+          "vars": {
+            "SERVICE_NAME": "VendorTelemetrySvc",
+            "MODE": "imagepath",
+            "LEGIT_PATH": "C:\\Program Files\\Vendor Telemetry\\agent.exe",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\svc.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }",
+            "DISPLAY_NAME": "Vendor Telemetry Agent"
+          }
+        },
+        {
+          "name": "service-key-persistence-win",
+          "vars": {
+            "SERVICE_NAME": "BackupAgentSvc",
+            "MODE": "unquoted",
+            "LEGIT_PATH": "C:\\Program Files\\Backup Agent\\agent.exe",
+            "DISPLAY_NAME": "Backup Agent Service"
+          }
+        },
+        {
+          "name": "service-key-persistence-win",
+          "vars": {
+            "SERVICE_NAME": "TelemetrySvc",
+            "MODE": "servicedll",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\telemetry.dll",
+            "PAYLOAD_BODY": "Cinder Ridge training placeholder: not a PE",
+            "DISPLAY_NAME": "Telemetry Transport"
+          }
+        },
+        {
+          "name": "service-key-persistence-win",
+          "vars": {
+            "SERVICE_NAME": "RecoverySvc",
+            "MODE": "failurecommand",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\failcmd.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }",
+            "DISPLAY_NAME": "Recovery Coordinator"
+          }
+        },
+        {
+          "name": "winlogon-shell-win",
+          "vars": {
+            "PAYLOAD_PS1": "C:\\ProgramData\\VendorTelemetry\\winitupd.ps1",
+            "PAYLOAD_EXE": "C:\\ProgramData\\VendorTelemetry\\winitupd.exe",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "ifeo-backdoor-win",
+          "vars": {
+            "EXECUTABLE": "sethc.exe",
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\sethc.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "windows-appinit-hook-registry",
+          "vars": {
+            "DLL_PATH": "C:\\ProgramData\\VendorTelemetry\\appinit.dll"
+          }
+        },
+        {
+          "name": "active-setup-persistence-win",
+          "vars": {
+            "PAYLOAD_PATH": "C:\\ProgramData\\VendorTelemetry\\activesetup.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }",
+            "COMPONENT_GUID": "{8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43}"
+          }
+        },
+        "uac-disabled-win",
+        "wdigest-cleartext-win",
+        "lsa-ppl-off-win",
+        "smb1-enabled-win",
+        "always-install-elevated-win"
+      ]
+    }
+  ]
+}
