@@ -292,20 +292,37 @@ class TestSnapshot:
         assert snap["last_confirmed_at"] is None
         assert snap["total"] == 30
 
-    def test_ranked_snapshot_carries_diagnostics(self):
+    def test_ranked_snapshot_is_positive_only(self):
         score = _score(sla_status=[
             __import__("common.schema", fromlist=["SlaStatus"]).SlaStatus(
                 check_id="web", state="UP", accrued_points=3)])
         snap = snapshot.build_snapshot(
             score, _manifest(), mode="ranked", agent_version="t", delta=0,
             computed_at=100.0, server_time=500.0, next_checkin_s=60)
-        assert [r["check_id"] for r in snap["results"]] == ["c1", "c2", "p1", "f1"]
+        # A failed check must not be in the Desktop-readable snapshot; the
+        # passed/penalty rows that derive the board are still there.
+        assert [r["check_id"] for r in snap["results"]] == ["c1", "p1", "f1"]
         assert snap["sla_status"][0]["state"] == "UP"
         assert snap["last_confirmed_at"] == 500.0
         # Countdown is anchored to box receipt time, not the engine clock.
         import time as _time
         now = _time.time()
         assert now + 55 <= snap["next_event_at"] <= now + 65
+
+    def test_read_drops_failed_results_from_an_old_snapshot(self, tmp_path):
+        snap = snapshot.build_snapshot(
+            _score(), _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60)
+        snap["results"].append({
+            "check_id": "c2", "category": "vuln", "awarded_points": 0,
+            "passed": False, "reason": "equals removed expected yes",
+        })
+        report = tmp_path / "report.html"
+        snapshot.write(str(report), snap)
+        loaded = snapshot.read(snapshot.snapshot_path_for(str(report)))
+        # A stale report.json (pre-fix) can never make `score --json` echo
+        # the failed check.
+        assert [r["check_id"] for r in loaded["results"]] == ["c1", "p1", "f1"]
 
     def test_ranked_snapshot_carries_rank_clock_and_uptime_history(self):
         from common.schema import SlaStatus
@@ -505,7 +522,7 @@ class TestRenderScorecard:
         assert "submitted — awaiting engine" in out
         assert "30 pts" not in out  # no score exists yet; nothing to show
 
-    def test_ranked_diagnostic_view(self):
+    def test_ranked_is_positive_only_like_honor(self):
         from common.schema import SlaStatus
         snap = snapshot.build_snapshot(
             _score(sla_status=[SlaStatus(check_id="web", state="UP",
@@ -513,8 +530,15 @@ class TestRenderScorecard:
             _manifest(), mode="ranked", agent_version="t", delta=0,
             computed_at=100.0, server_time=500.0, next_checkin_s=60)
         out = self._render(snap)
-        assert "CHECK RESULTS" in out
-        assert "c1" in out and "equals FOUND" in out  # safe: rubric is off-box
+        # Same spoiler contract as honor: fixed work is named, failures are
+        # counted only. A diagnostic table / check id / matcher reason is the
+        # answer key and must not appear.
+        assert "CHECK RESULTS" not in out
+        assert "c1" not in out and "c2" not in out
+        assert "equals FOUND" not in out
+        assert "VULNERABILITIES FIXED — 1 of 2" in out
+        assert "SSH root login disabled" in out
+        assert "Firewall still enabled" in out  # incurred penalty, named
         assert "authoritative score" in out
         assert "SLA STATUS" in out and "UP" in out
 

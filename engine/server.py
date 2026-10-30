@@ -776,7 +776,9 @@ class Handler(BaseHTTPRequestHandler):
         players = self.store.list_players(comp.id)
         self._send_html(200, web.admin_competition_page(
             comp, board, players, session.csrf_token, msg, error,
-            warm=claims.warm_status(comp.id)))
+            warm=claims.warm_status(comp.id),
+            pool=claims.live_pool_status(comp),
+            public_base=self._public_base()))
 
     # --- POST handlers --------------------------------------------------
 
@@ -1077,16 +1079,12 @@ class Handler(BaseHTTPRequestHandler):
                                      {"requested": count,
                                       "status": result.get("status")}),
                                  remote_addr=self.client_address[0] if self.client_address else None)
-            if result.get("status") == "running" and result.get("available"):
-                message = (f"Pre-deploy already running: {result['available']} "
-                           f"of {count} box(es) ready.")
-            else:
-                message = (f"Pre-deploying {count} box(es); the pool fills in "
-                           "the background.")
             if session is None:
                 self._send_json(200, result)
                 return
-            self._redirect(f"/admin/competitions/{comp.id}?msg={message.replace(' ', '+')}")
+            # No flash: the pre-deploy card's polled note is the one message
+            # about warm state, so progress never needs a reload to show up.
+            self._redirect(f"/admin/competitions/{comp.id}")
             return
         if action == "pool":
             pool = str(form.get("pool_code", "")).strip().upper()

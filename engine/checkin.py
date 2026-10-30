@@ -47,12 +47,33 @@ def _agent_version_compatible(agent_version: str) -> bool:
         return False
 
 
-def _redact_for_box(score, evidence_by_check_id: dict) -> None:
-    """Replace each CheckResult.reason (built by common.matchers from the
-    rubric's expected values) with the box's own evidence reason."""
+def _redact_for_box(score, evidence_by_check_id: dict,
+                    *, hide_forensics: bool = False) -> None:
+    """Reduce the score to the positive-only facts the box may see.
+
+    Matcher reasons embed expected values (the answer key), so they are
+    replaced with the box's own evidence reason. More importantly, a failed
+    check is itself a spoiler: its id, category, points and evidence reason
+    tell the player exactly what to fix. The box therefore only receives
+    checks that are passed or have incurred a non-zero penalty — the same
+    positive-only board honor mode shows — while the engine keeps the full
+    result list in its stored score for the leaderboard/admin side.
+
+    While a ranked run is still live, also hide the per-question forensics
+    results. A player who sees "Q4 scored" can iterate wrong answers for
+    free; the run total still moves, but the per-question oracle is gone.
+    The full list is restored when the run finishes/ends.
+    """
+    visible = []
     for result in score.results:
+        if hide_forensics and result.check_id.startswith("fq-"):
+            continue
+        if not (result.passed or result.awarded_points != 0):
+            continue  # a failed zero-point check is the answer key
         ev = evidence_by_check_id.get(result.check_id)
         result.reason = ev.reason if ev is not None and ev.reason else ""
+        visible.append(result)
+    score.results = visible
 
 
 def _entry_matcher(rubric: Rubric, check_id: str) -> dict:
@@ -374,9 +395,12 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             score_json=json.dumps(dataclasses.asdict(score), default=str),
         )
 
-    # §2.4: matcher reasons embed expected values (the answer key); the box
-    # only gets its own evidence reason alongside pass/points.
-    _redact_for_box(score, evidence_by_check_id)
+    # §2.4: matcher reasons embed expected values (the answer key), and a
+    # failed check's id/points are just as revealing. The box gets the
+    # positive-only board (passed checks + incurred penalties) with its own
+    # evidence reasons; the full result list stays engine-side.
+    _redact_for_box(score, evidence_by_check_id,
+                    hide_forensics=(run_status == "running"))
 
     # Scoreboard position is a presentation fact, not a scoring input: derive
     # it after the score write so it reflects this check-in, including ties.

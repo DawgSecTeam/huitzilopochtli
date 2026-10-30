@@ -104,16 +104,21 @@ the first claim provisions a private dispenser pool from the scenario's
 `pool:` block (§3.1).
 
 **Start** moves `draft → live` and opens joins; **Close joins** stops new
-players without ending runs; **End** freezes every run and the board. An ended
-competition can be **rerun** (fresh, same settings) or **removed** — removal
-releases its VMs, cleans its pool, and deletes the competition and its slots;
-boxes and scores remain as history.
+players without ending runs; **End** freezes every run and the board. A draft
+can be **discarded** the same way (End on the draft page): it becomes ended and
+the normal end cleanup runs, so an abandoned draft cannot strand its
+pre-deployed pool. An ended competition can be **rerun** (fresh, same settings)
+or **removed** — removal releases its VMs, cleans its pool, and deletes the
+competition and its slots; boxes and scores remain as history.
 
 **End also tears the pool down.** It releases claimed VMs, destroys the pool's
 remaining pre-provisioned clones, and deletes the pool configuration. If the
 portal is unreachable the pool pin is kept and the sweeper retries. Ending
 seconds after the first claim is safe: the engine waits briefly for clones
-that are still registering, then sweeps again after deleting the pool.
+that are still registering, then sweeps again after deleting the pool. If the
+pool config is already gone, it still enumerates the portal's VMs by pool
+code/student_id and destroys the clones; a DELETE 404 is success, and the pin
+survives until a fresh listing shows zero VMs.
 
 **Ties share a rank.** Equal totals get the same rank on the board, the
 per-box report, and the CSV (standard competition ranking: `1, 2, 2, 4`).
@@ -151,6 +156,10 @@ bridge can only check in if that bridge's gateway allows the engine's port
 If either side is missing, `huitz join` times out and the box never checks in;
 no engine-side fix can compensate.
 
+**Do not deploy under a live field.** `install.sh` reads `/health` and refuses
+when a competition is live unless `HUITZ_DEPLOY_FORCE=1` is set. A mid-run
+code swap can orphan End-time cleanup even though scores persist.
+
 ```bash
 python3 -m boxbuilder lint --all    # plant/check cross-check, every box
 ```
@@ -175,6 +184,26 @@ ranked:
     # defaults: dispenser: true, private: true, group: Challenge,
     #           guac_link_ttl_seconds: 7200
 ```
+
+When the engine parses `boxes/` directly, one global
+`HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID` cannot describe several ranked boxes
+that clone different templates. Put the deployment values in a local,
+gitignored map keyed by scenario name:
+
+```yaml
+# /etc/huitzilopochtli/pools.yaml (0600; never committed)
+scenarios:
+  "Broadneck Post":
+    template_vm_id: <template-vmid>
+    template_vm_access_method: ssh
+    template_vm_username: <template-login-user>
+    template_vm_password: <template-login-password>
+```
+
+`HUITZILOPOCHTLI_POOLS_FILE` overrides the path. A box with no entry falls
+back to the committed `${VAR}` expansion (single-box deployments). The
+installer creates an empty map if none is supplied and copies one from
+`HUITZ_POOLS_FILE` when given.
 
 Add the block after the template is sealed (the VM id only exists then), then
 recompile and upload. `compile` fails on an unset variable rather than

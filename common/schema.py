@@ -172,7 +172,7 @@ class ScoreBreakdown:
     scenario_name: str
     scenario_version: int
     total: int
-    results: list  # list[CheckResult]
+    results: list  # list[CheckResult]; on the box wire, passed/incurred only
     sla_status: list  # list[SlaStatus] — empty in honor mode
     computed_at: float
 

@@ -32,22 +32,14 @@ def _fmt_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
 
 
-def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
-    """CyberPatriot-style honor board: positive-only.
+def _render_config_cards(b) -> str:
+    """Positive-only configuration/forensics cards.
 
-    All derived facts (fixed vulns, active penalties, forensics state,
-    progress) come from agent/board.py — the same derivation the huitz CLI
-    and the report.json snapshot render from.
-
-    - Only passed vulns are listed with display_title + points.
-    - Penalties / prohibited only when incurred (awarded != 0).
-    - No check_id, category, reason, or awarded=0 rows ever surface.
-    - Shows k of n + progress bar + remaining count.
-    - Scored forensics questions get their own card and are excluded from the
-      vulnerabilities-fixed accounting (they still add to score.total).
+    Shared by honor and ranked: only passed vulns (display_title) and
+    incurred penalties are named. A failed check id, category, reason, or
+    awarded=0 row never reaches the page — in ranked mode that is the answer
+    key, not a diagnostic.
     """
-    b = board_mod.build_board(score, manifest)
-
     def _li(title_esc: str, pts: int) -> str:
         if pts > 0:
             pts_html = f'<span class="pts pos">+{html.escape(str(pts))} pts</span>'
@@ -73,24 +65,12 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
         pen_items = '<li class="muted"><em>No penalties</em></li>'
         pen_header = "Penalties &mdash; 0"
 
-    remaining_vulns = b.remaining
-    if remaining_vulns > 0:
-        remaining_html = f'<p class="muted remaining">{remaining_vulns} issue(s) remain.</p>'
+    if b.remaining > 0:
+        remaining_html = f'<p class="muted remaining">{b.remaining} issue(s) remain.</p>'
     elif b.all_fixed:
         remaining_html = '<p class="muted remaining">All scored issues fixed</p>'
     else:
         remaining_html = ""
-
-    max_label = (
-        f" / {b.max_possible} max"
-        if b.max_possible and b.max_possible != b.vulns_fixed
-        else ""
-    )
-    fraction_label = (
-        f"{b.vulns_fixed} of {b.vulns_total} fixed"
-        if b.vulns_total
-        else f"{b.vulns_fixed} fixed"
-    )
 
     forensics_card = ""
     if b.forensics:
@@ -120,19 +100,6 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
   </section>"""
 
     return f"""
-<div class="score-header">
-  <div>
-    <div class="total">Total: {html.escape(str(b.total))}<span class="total-suffix"> pts</span></div>
-    <div class="fraction">{html.escape(fraction_label)}{html.escape(max_label)} &middot; {html.escape(str(b.total))} pts earned</div>
-  </div>
-  <div class="countdown-wrap">
-    <div class="countdown-label">Next check in</div>
-    <div id="countdown" class="countdown" aria-live="polite">--:--</div>
-  </div>
-</div>
-<div class="progress" role="progressbar" aria-valuenow="{b.progress_pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Progress">
-  <div class="fill" style="width: {b.progress_pct}%"></div>
-</div>
 <div class="cards">
   <section class="card">
     <h2><span class="icon ok">✓</span> Vulnerabilities Fixed — {b.vulns_fixed} of {b.vulns_total}</h2>
@@ -148,37 +115,52 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     </ul>
   </section>
 {forensics_card}
-</div>
-<p class="stamp honor-stamp">Last checked: {html.escape(_fmt_time(score.computed_at))} &middot; Honor mode — SLA not scored (untimed)</p>
-"""
+</div>"""
 
 
-def _render_results_table(results) -> str:
-    rows = []
-    for r in results:
-        category = r.category.value if hasattr(r.category, "value") else r.category
-        rows.append(
-            "<tr>"
-            f"<td>{html.escape(str(category))}</td>"
-            f"<td>{html.escape(str(r.check_id))}</td>"
-            f"<td class=\"num\">{html.escape(str(r.awarded_points))}</td>"
-            f"<td>{'yes' if r.passed else 'no'}</td>"
-            f"<td>{html.escape(str(r.reason))}</td>"
-            "</tr>"
-        )
-    body = "\n".join(rows) if rows else (
-        '<tr><td colspan="5"><em>No point-in-time checks.</em></td></tr>'
+def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
+    """CyberPatriot-style honor board: positive-only.
+
+    All derived facts (fixed vulns, active penalties, forensics state,
+    progress) come from agent/board.py — the same derivation the huitz CLI
+    and the report.json snapshot render from.
+
+    - Only passed vulns are listed with display_title + points.
+    - Penalties / prohibited only when incurred (awarded != 0).
+    - No check_id, category, reason, or awarded=0 rows ever surface.
+    - Shows k of n + progress bar + remaining count.
+    - Scored forensics questions get their own card and are excluded from the
+      vulnerabilities-fixed accounting (they still add to score.total).
+    """
+    b = board_mod.build_board(score, manifest)
+
+    max_label = (
+        f" / {b.max_possible} max"
+        if b.max_possible and b.max_possible != b.vulns_fixed
+        else ""
     )
+    fraction_label = (
+        f"{b.vulns_fixed} of {b.vulns_total} fixed"
+        if b.vulns_total
+        else f"{b.vulns_fixed} fixed"
+    )
+
     return f"""
-<table>
-  <caption>Point-in-time results</caption>
-  <thead>
-    <tr><th>Category</th><th>Check ID</th><th>Awarded</th><th>Passed</th><th>Reason</th></tr>
-  </thead>
-  <tbody>
-    {body}
-  </tbody>
-</table>
+<div class="score-header">
+  <div>
+    <div class="total">Total: {html.escape(str(b.total))}<span class="total-suffix"> pts</span></div>
+    <div class="fraction">{html.escape(fraction_label)}{html.escape(max_label)} &middot; {html.escape(str(b.total))} pts earned</div>
+  </div>
+  <div class="countdown-wrap">
+    <div class="countdown-label">Next check in</div>
+    <div id="countdown" class="countdown" aria-live="polite">--:--</div>
+  </div>
+</div>
+<div class="progress" role="progressbar" aria-valuenow="{b.progress_pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Progress">
+  <div class="fill" style="width: {b.progress_pct}%"></div>
+</div>
+{_render_config_cards(b)}
+<p class="stamp honor-stamp">Last checked: {html.escape(_fmt_time(score.computed_at))} &middot; Honor mode — SLA not scored (untimed)</p>
 """
 
 
@@ -346,8 +328,8 @@ stays up and are separate from the hardening score.</p>
 """
 
 
-def _render_ranked_detail(board, results_table: str) -> str:
-    """Two-tab detail: configuration/forensics vs scored service uptime."""
+def _render_ranked_detail(board, config_html: str) -> str:
+    """Two-tab detail: configuration/forensics (positive-only) vs uptime."""
     return f"""
 <div class="tabs" data-tabs>
   <div class="tablist" role="tablist" aria-label="Ranked score detail">
@@ -360,7 +342,7 @@ def _render_ranked_detail(board, results_table: str) -> str:
   </div>
   <section class="tabpanel" id="panel-config" role="tabpanel"
            aria-labelledby="tab-config" tabindex="0">
-    {results_table}
+    {config_html}
   </section>
   <section class="tabpanel" id="panel-uptime" role="tabpanel"
            aria-labelledby="tab-uptime" tabindex="0" hidden>
@@ -396,8 +378,9 @@ def render_report(score: ScoreBreakdown, mode: Mode,
 
     Ranked mode additionally opens with an event bar (time left in the run +
     live scoreboard position, from the engine's check-in response) and splits
-    the detail into two tabs: the existing configuration/forensics results
-    table and scored service uptime with its recent tick history.
+    the detail into two tabs: the positive-only configuration/forensics board
+    (same spoiler contract as honor) and scored service uptime with its recent
+    tick history. No per-check result table exists in either mode.
     """
     theme = theme or {}
     mode_label = html.escape(mode.value if hasattr(mode, "value") else str(mode))
@@ -436,8 +419,12 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             target_epoch = float(score.computed_at) + interval
             body_suffix_html = countdown_script(target_epoch, time.time())
         else:
-            # Ranked: verbose diagnostic table (rubric off-box, so safe to show)
-            results_table = _render_results_table(score.results)
+            # Ranked is positive-only in the configuration/forensics tab,
+            # exactly like honor: the engine has already filtered failed
+            # zero-point checks, and the board only names fixed vulns and
+            # incurred penalties. Never render the per-check result table.
+            _rb = board_mod.build_board(score, manifest)
+            config_html = _render_config_cards(_rb)
             stamp_html = ""
             if last_confirmed_at is not None:
                 stamp_html = (
@@ -467,7 +454,6 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                 rank, rank_total, run_ends_at, last_confirmed_at)
             # Total = hardening + service accrual, both derived once in
             # agent/board.py (ranked_split) — never re-split here.
-            _rb = board_mod.build_board(score, manifest)
             split_html = ""
             if _rb.hardening_points is not None and _rb.service_points is not None:
                 split_html = (
@@ -484,7 +470,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
   {rank_countdown_block}
 </div>
 {stamp_html}
-{_render_ranked_detail(_rb, results_table)}
+{_render_ranked_detail(_rb, config_html)}
 """
             body_suffix_html = (
                 rank_countdown_script + event_countdown_script + tabs_script()

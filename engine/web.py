@@ -240,7 +240,7 @@ def comp_status_label(status: str) -> str:
 def comp_status_tag(status: str) -> str:
     """Admin view: the dot AND the word, for operator-at-a-glance reads."""
     label, cls = _COMP_STATUS.get(status, ((status or "?").title(), "muted"))
-    return (f'<span class="stwdot"><button class="sdot {cls}" type="button" '
+    return (f'<span class="stwdot {cls}"><button class="sdot {cls}" type="button" '
             f'data-tip="{esc(label)}" aria-label="Competition status: {esc(label)}"></button>'
             f'<span class="word">{esc(label)}</span></span>')
 
@@ -427,7 +427,7 @@ def _page_head(title: str, back_href: str = "/admin") -> str:
 def _comp_cards(comps: list, players_by_comp: Optional[dict] = None,
                 show_status: bool = True) -> str:
     if not comps:
-        return '<p class="empty">No open competitions right now. Check back soon.</p>'
+        return '<p class="empty">No open competitions.</p>'
     counts = players_by_comp or {}
     rows = []
     for c in comps:
@@ -438,7 +438,7 @@ def _comp_cards(comps: list, players_by_comp: Optional[dict] = None,
         if c.status == "live" and c.join_open and not full:
             join = f'<a class="btn primary" href="/c/{esc(c.slug)}/join">Join</a>'
         if c.status == "ended":
-            meta = "final scores posted"
+            meta = "finished"
         elif joined is not None:
             meta = f"{esc(joined)} of {esc(c.max_players)} joined · {_fmt_duration(c.duration_s)} runs"
             # Fullness rides in the meta line; the action slot only ever
@@ -462,8 +462,7 @@ def index_page(comps: list, admin_view: bool = False,
                players_by_comp: Optional[dict] = None) -> str:
     live = [c for c in comps if c.status == "live"]
     body = f"""<section class="hero">
-<h1>Ranked competitions</h1>
-<p class="lede">Harden your box, keep your services up, and climb the board. Scores are signed by your box and judged by the engine.</p>
+<h1>Available competitions</h1>
 </section>
 <h2 class="section-title">Live</h2>{_comp_cards(live, players_by_comp, show_status=False)}"""
     if admin_view:
@@ -684,7 +683,7 @@ when it does.</p></li>"""
 <section class="card narrow">
 <ol class="steps">
 <li><h2>Your VM</h2>{step1}</li>{vm_script}
-{fallback if err else ''}
+{fallback if (code and not bound) else ''}
 <li><h2>Watch the board</h2>
 <p><a href="/c/{esc(comp.slug)}">Leaderboard</a> · <a href="/c/{esc(comp.slug)}/me">My status</a></p></li>
 </ol>
@@ -908,7 +907,10 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
     cards = []
     for c in comps:
         n = players_by_comp.get(c.id, 0)
-        cards.append(f"""<tr><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div></td>
+        # The whole row is one click target (the name link stays for
+        # keyboard/middle-click use); the JS delegates so polling can swap
+        # rows freely.
+        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div></td>
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
 <td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a></td></tr>""")
     body = f"""<section class="page-head-row"><div><h1>Admin console</h1></div>
@@ -950,9 +952,12 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 
 def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            csrf: str, msg: str = "", error: str = "",
-                           warm: Optional[dict] = None) -> str:
+                           warm: Optional[dict] = None,
+                           pool: Optional[dict] = None,
+                           public_base: str = "") -> str:
     now = time.time()
     warm = warm or {"status": "idle"}
+    pool = pool or {"status": "unknown"}
     rows = []
     for p in players:
         row = next((r for r in board.get("leaderboard", []) if r["player_id"] == p.player_id), {})
@@ -997,13 +1002,21 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
     controls = []
     if comp.status == "draft":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/start" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Start competition</button></form>')
+        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'Discard this draft and release any pre-deployed boxes?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Discard draft</button></form>')
     if comp.status == "live":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'End the competition for everyone?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">End competition</button></form>')
     if comp.status == "ended":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/rerun" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Rerun competition</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/delete" class="inline" onsubmit="return confirm(\'Remove this competition and its player records? This cannot be undone.\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Remove competition</button></form>')
-    join_url = f"/c/{comp.slug}/join"
+    join_path = f"/c/{comp.slug}/join"
+    # Copy hands the player the whole URL their browser needs, not just the
+    # path tail; without a public base the path is all we know.
+    join_url = f"{public_base.rstrip('/')}{join_path}" if public_base else join_path
+    # A roster export only makes sense once there is a run to export.
+    csv_btn = (f'<a class="btn" href="/admin/api/competitions/{esc(comp.id)}'
+               f'/export.csv">Export CSV</a>'
+               if comp.status in ("live", "ended") else "")
     warm_block = ""
     if comp.status != "ended":
         requested = int(warm.get("requested") or 0)
@@ -1012,14 +1025,13 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         waited = warm.get("waited_s")
         state = warm.get("status")
         if state == "running":
-            note = (f'<p class="meta">Pre-deploying {requested} boxes — '
-                    f'{available} ready of {total} provisioned so far. '
-                    f'Refresh to follow progress.</p>')
+            note = f'<p class="meta">Pre-deploying {requested} boxes…</p>'
         elif state == "ready":
-            note = (f'<p class="okmsg">Pool ready: {available} boxes available '
-                    f'of {total} provisioned'
-                    + (f' in {esc(waited)} s' if waited is not None else '')
-                    + '.</p>')
+            # A completed pre-deploy is news for a few seconds; the standing
+            # count line above carries the state after that, across reloads.
+            done = warm.get("finished_at")
+            note = ('' if done is not None and now - float(done) > 10
+                    else '<p class="okmsg">Box pre-deployment completed.</p>')
         elif state in ("timeout", "error"):
             note = f'<p class="error">{esc(warm.get("error") or "Pre-deploy did not finish.")}</p>'
         else:
@@ -1027,9 +1039,21 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                     'each box when its player joins. Warm the pool first to move '
                     'that wait off the join.</p>')
         default_count = min(max(1, int(comp.max_players or 8)), 64)
+        # Standing live count from the portal snapshot (survives engine
+        # restarts, unlike the in-memory job note below it); both lines live
+        # in the polled node so they update without a reload.
+        if pool.get("status") == "ok":
+            pool_line = (f"<p class=\"meta\">{int(pool.get('available') or 0)} of "
+                         f"{int(pool.get('total') or 0)} boxes ready to claim</p>")
+        elif pool.get("status") == "unpinned":
+            pool_line = '<p class="meta">No boxes pre-deployed yet.</p>'
+        elif pool.get("status") == "unavailable":
+            pool_line = '<p class="meta">Pool count unavailable right now.</p>'
+        else:
+            pool_line = ""
         warm_block = f"""<section class="card"><div class="card-head"><h2>Pre-deploy boxes</h2></div>
-{note}
-<form method="post" action="/admin/api/competitions/{esc(comp.id)}/warm" class="inline">
+<div id="warm" data-poll="10000">{pool_line}{note}</div>
+<form method="post" action="/admin/api/competitions/{esc(comp.id)}/warm" class="warm-form">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <label class="small">Boxes <input name="count" type="number" min="1" max="64" value="{default_count}" style="width:6rem"></label>
 <button class="btn" type="submit">Pre-deploy</button></form></section>"""
@@ -1048,11 +1072,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <div class="fact"><span class="fact-label">Run duration</span><span class="fact-value">{_fmt_duration(comp.duration_s)} runs</span></div>
 <div class="fact wide"><span class="fact-label">Join URL</span>
 <span class="fact-value"><code>{esc(join_url)}</code> {_copy_btn(join_url, "Copy")}
-<a class="btn" href="/admin/api/competitions/{esc(comp.id)}/export.csv">Export CSV</a></span></div>
+{csv_btn}</span></div>
 </div></section>
 {warm_block}
 <div id="roster" data-poll="15000">
-<section class="card"><div class="card-head"><h2>Players ({esc(len(players))})</h2>
+<section class="card"><div class="card-head"><h2>Players</h2>
 </div>
 <div class="table-wrap"><table class="roster"><thead><tr><th>Player</th><th class="r">Score</th><th>Services</th><th class="r">Check-in</th><th>Actions</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="5" class="empty">No players yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
@@ -1232,6 +1256,10 @@ hover/focus tooltip (data-tip), so color is never the only signal. */
 .pname{display:flex;align-items:center;gap:var(--s2);min-width:0}
 /* Admin reads: dot + written-out word, same slot either theme. */
 .stwdot{display:inline-flex;align-items:center;gap:var(--s2);font-size:.72rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2);white-space:nowrap}
+/* Draft is the one status that asks for attention before anything is
+   happening; the word takes the amber so it survives a scan in light mode. */
+.stwdot.warn .word{color:var(--warn)}
+tr[data-href]{cursor:pointer}
 /* One button height everywhere; importance is the fill color, not size. Every
 button rests on a quiet tint and empties to an outline on hover. */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);height:var(--control);padding:0 14px;background:var(--surface-2);color:var(--ink-2);border:1px solid transparent;border-radius:0;font-family:var(--font-sans);font-weight:700;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;cursor:pointer}
@@ -1302,6 +1330,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-text);out
 .form-lead{grid-template-columns:minmax(0,2fr) minmax(0,3fr)}
 .form-cols{grid-template-columns:1fr 1fr 1fr;align-items:start}
 .form-foot{display:flex;justify-content:flex-end;border-top:1px solid var(--line);padding-top:var(--s4)}
+/* The pre-deploy row: caption+input sit in one column, the button base-aligns
+with the input (flex-end, both --control tall), so nothing stacks crooked. */
+.warm-form{display:flex;gap:var(--s2);align-items:flex-end;flex-wrap:wrap}
 code{background:var(--surface-2);border-radius:0;padding:.08rem .35rem;font-size:.9em}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:0;padding:var(--pad-card);overflow:auto}
 pre code{background:none;padding:0}
@@ -1422,6 +1453,14 @@ document.addEventListener('click',function(ev){
     document.body.appendChild(ta);ta.select();
     try{document.execCommand('copy');done();}catch(e){}
     document.body.removeChild(ta);
+  }
+});
+/* Click anywhere on a competition row (delegated, so polling can swap rows);
+   links and buttons inside keep their own behavior. */
+document.addEventListener('click',function(ev){
+  var row=ev.target.closest?ev.target.closest('tr[data-href]'):null;
+  if(row&&!ev.target.closest('a,button')){
+    location.href=row.getAttribute('data-href');
   }
 });
 function pad(n){return (n<10?'0':'')+n;}

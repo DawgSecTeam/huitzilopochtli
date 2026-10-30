@@ -17,11 +17,11 @@ access
 needed (except `grade`, which runs the scoring pipeline and therefore
 requires root, exactly like the systemd timer does).
 
-Honor mode renders the CyberPatriot-style board (positive-only: failed
-checks stay anonymous, both here and in the snapshot, so the CLI can't
-leak what the HTML doesn't). Ranked mode renders the engine's diagnostic
-view (per-check results + SLA), mirroring the ranked HTML table — the
-rubric never shipped to this box, so there is nothing to leak.
+Honor and ranked both render the CyberPatriot-style board (positive-only:
+failed checks stay anonymous, both here and in the snapshot, so the CLI
+can't leak what the HTML doesn't). Ranked adds the engine's SLA service
+state, live rank and run clock; it never shows a per-check diagnostic
+table, because a failed check id is the answer key.
 
 Pure stdlib; terminal behavior lives in agent/term.py. Only `grade`
 touches the scoring pipeline (via agent/__main__), and only for honor
@@ -377,7 +377,11 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     if mode == "honor":
         lines.extend(_board_sections(snap, sty, sym, width))
     else:
-        lines.extend(_ranked_sections(snap, sty, sym, width))
+        # Positive-only, like honor. The ranked header already carries the
+        # engine total, rank and run clock; SLA state is the only extra
+        # ranked detail, never a per-check diagnostic table.
+        lines.extend(_board_sections(snap, sty, sym, width))
+        lines.extend(_sla_section(snap, sty, sym, width))
         lines.append("")
 
     # delta banner — same one-run semantics as the HTML (nonzero only on the
@@ -483,32 +487,14 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
     return lines
 
 
-def _ranked_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
-    """Ranked diagnostic view: per-check results + SLA — mirrors the ranked
-    HTML table (safe on-box: the rubric never shipped here)."""
-    lines = []
-    results = snap.get("results") or []
-    lines.append("  " + sty.bold("CHECK RESULTS"))
-    if results:
-        id_w = max(8, min(30, max(len(r.get("check_id", "")) for r in results)))
-        pts_w = 5
-        head = (f"  {'CHECK':<{id_w}}  {'CATEGORY':<10} {'PTS':>{pts_w}}  DETAIL")
-        lines.append(sty.color(head, 1))
-        lines.append(sty.color(agent.term.rule(min(width, 78) - 2, sym), "muted"))
-        for r in results:
-            cid = agent.term.ellipsize(str(r.get("check_id", "")), id_w, sym)
-            cat = agent.term.ellipsize(str(r.get("category", "")), 10, sym)
-            points = int(r.get("awarded_points", 0))
-            plain = _pts_plain(points)
-            reason_width = max(8, width - (id_w + 10 + pts_w + 8))
-            reason = agent.term.ellipsize(str(r.get("reason", "")), reason_width, sym)
-            pad = " " * (pts_w - len(plain))
-            lines.append(
-                f"  {cid:<{id_w}}  {sty.color(cat, 'muted')} {pad}"
-                f"{_pts_cell(sty, points)}  {reason}")
-    else:
-        lines.append("      no point-in-time checks")
+def _sla_section(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
+    """Ranked-only scored-service state; no per-check hardening results.
 
+    Service ids/names are already public (they are the player-facing services
+    the scenario scores), and uptime is the one ranked signal honor mode
+    cannot show. A failed *hardening* check is never rendered here.
+    """
+    lines = []
     sla = snap.get("sla_status") or []
     if sla:
         lines.append("")

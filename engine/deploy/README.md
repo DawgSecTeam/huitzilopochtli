@@ -28,11 +28,21 @@ it whenever players reach the engine over the network.
 
 The installer creates:
 
-- `/opt/huitzilopochtli/engine/{common,engine,deploy}`
+- `/opt/huitzilopochtli/engine/{common,engine,deploy,boxes}`
 - `/etc/huitzilopochtli/engine.env` (0600)
+- `/etc/huitzilopochtli/pools.yaml` (0600) — per-box ranked pool values
 - `/var/lib/huitzilopochtli/engine.db` (0600)
 - `/var/backups/huitzilopochtli/`
 - `huitzilopochtli-engine.service` + `huitzilopochtli-backup.timer`
+
+The engine parses `boxes/<box>/scenario.yaml` directly. Deployment-specific
+pool values live in `pools.yaml`, keyed by scenario name; `HUITZ_POOLS_FILE`
+copies a local map into place on install. A box with no entry falls back to
+the committed `${VAR}` placeholders.
+
+`install.sh` refuses to run while `/health` reports a live competition; set
+`HUITZ_DEPLOY_FORCE=1` only for an explicit emergency. A mid-run code swap can
+orphan End-time pool cleanup.
 
 Generated admin credentials are written to
 `/root/huitz-engine-credentials.txt` (0600). Change them in `engine.env` and

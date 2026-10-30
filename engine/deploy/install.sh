@@ -15,6 +15,14 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# A deploy replaces the code the live scoring loop is running. Refuse while a
+# competition is live: the six-player field lost its End-time teardown to a
+# mid-run redeploy. HUITZ_DEPLOY_FORCE=1 is the explicit override.
+if HEALTH=$(curl -fsS --max-time 3 \
+    "http://127.0.0.1:${HUITZ_PORT:-8080}/health" 2>/dev/null); then
+  printf '%s' "$HEALTH" | python3 "$SRC_DIR/engine/deploy/guard.py" || exit 1
+fi
+
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
   python3 python3-yaml ca-certificates curl ufw qemu-guest-agent chrony >/dev/null
@@ -61,6 +69,7 @@ HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD=${HUITZ_WORKSHOP_ADMIN_PASSWORD:-}
 HUITZILOPOCHTLI_WORKSHOP_SECRET=${HUITZ_WORKSHOP_SECRET:-}
 HUITZILOPOCHTLI_SWEEP_INTERVAL_S=${HUITZ_SWEEP_INTERVAL_S:-15}
 HUITZILOPOCHTLI_PUBLIC_URL=${HUITZ_PUBLIC_URL:-http://127.0.0.1:8080}
+HUITZILOPOCHTLI_POOLS_FILE=$ETC_DIR/pools.yaml
 # Optional override for the scenario source folder (default: <app dir>/boxes).
 #HUITZILOPOCHTLI_BOXES_DIR=/opt/huitzilopochtli/engine/boxes
 EOF
@@ -73,6 +82,20 @@ HUITZILOPOCHTLI_ADMIN_PASSWORD=$ADMIN_PASS
 EOF
   chmod 600 /root/huitz-engine-credentials.txt
 fi
+
+# The box-folder source carries ${VAR} placeholders; per-box deployment values
+# live in this local map, never in the repository.
+if ! grep -q '^HUITZILOPOCHTLI_POOLS_FILE=' "$ENV_FILE"; then
+  printf 'HUITZILOPOCHTLI_POOLS_FILE=%s\n' "$ETC_DIR/pools.yaml" >> "$ENV_FILE"
+fi
+if [[ -n "${HUITZ_POOLS_FILE:-}" && -f "$HUITZ_POOLS_FILE" ]]; then
+  install -m 600 "$HUITZ_POOLS_FILE" "$ETC_DIR/pools.yaml"
+elif [[ ! -f "$ETC_DIR/pools.yaml" ]]; then
+  printf 'scenarios: {}\n' > "$ETC_DIR/pools.yaml"
+  chmod 600 "$ETC_DIR/pools.yaml"
+fi
+chown huitz:huitz "$ETC_DIR/pools.yaml"
+chmod 600 "$ETC_DIR/pools.yaml"
 
 install -m 644 "$APP_DIR/deploy/huitzilopochtli-engine.service" /etc/systemd/system/
 install -m 644 "$APP_DIR/deploy/huitzilopochtli-backup.service" /etc/systemd/system/

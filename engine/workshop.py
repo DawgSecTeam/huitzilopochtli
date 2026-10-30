@@ -31,7 +31,9 @@ def _call(base_url: str, method: str, path: str, body: Optional[dict] = None,
             parsed = json.loads(raw) if raw else {}
         except ValueError:
             parsed = {}
-        raise WorkshopError(parsed.get("detail") or f"HTTP {exc.code}") from exc
+        err = WorkshopError(parsed.get("detail") or f"HTTP {exc.code}")
+        err.status = exc.code
+        raise err from exc
     except (urllib.error.URLError, OSError) as exc:
         raise WorkshopError(f"workshop portal unreachable: {exc}") from exc
 
@@ -179,9 +181,18 @@ def provision_more(base_url: str, admin_password: str, pool_code: str,
 
 def delete_pool(base_url: str, admin_password: str, pool_code: str,
                 timeout: float = 10.0) -> None:
-    """DELETE /api/admin/pools/<code> (config only; release VMs separately)."""
-    _call(base_url, "DELETE", f"/api/admin/pools/{pool_code}", timeout=timeout,
-          headers=_admin_headers(admin_password))
+    """DELETE /api/admin/pools/<code> (config only; release VMs separately).
+
+    A 404 means the config is already gone; that is the desired end state, not
+    a reason to keep the engine's pin alive forever.
+    """
+    try:
+        _call(base_url, "DELETE", f"/api/admin/pools/{pool_code}",
+              timeout=timeout, headers=_admin_headers(admin_password))
+    except WorkshopError as exc:
+        if getattr(exc, "status", None) == 404:
+            return
+        raise
 
 
 def list_vms(base_url: str, admin_password: str, timeout: float = 15.0) -> list:

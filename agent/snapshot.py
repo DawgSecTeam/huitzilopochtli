@@ -9,15 +9,17 @@ accounts that cannot read the sealed install dir (§17). The snapshot is a
 presentation of the ScoreBreakdown, never a scoring input (§2.1): nothing
 reads it back into the evaluator.
 
-Secrecy follows the HTML report's per-mode contract (§13):
+Secrecy follows the HTML report's positive-only contract (§13):
 
 - **honor**: CyberPatriot positive-only. Failed checks are never identified
   — no `results` list, no reasons — only the derived board (fixed titles,
   incurred penalties, forensics state, counts). Spoiler-safety survives
   `cat`, `jq`, and the Desktop copy.
-- **ranked**: the rubric never touched the box, so the engine's full
-  diagnostic (per-check results + SLA states) rides along, mirroring the
-  ranked HTML table.
+- **ranked**: also positive-only. The snapshot may carry the passed and
+  incurred-penalty results needed to derive the board, plus SLA states, live
+  rank, and the run clock — never a failed zero-point check. The engine
+  filters that list too, so an old/compromised response cannot reintroduce
+  the answer key; the CLI/HTML mirror honor mode's board.
 
 `snapshot_version` gates the format; the CLI refuses newer majors with a
 clear message instead of misrendering.
@@ -131,8 +133,10 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
     }
 
     if mode == "ranked":
-        # Diagnostic detail is safe here and only here: the rubric never
-        # shipped to this box (§2.4), so results leak no answer key.
+        # Positive-only, exactly like honor: a failed zero-point check names
+        # a misconfiguration, so it never enters the world-readable snapshot.
+        # Passing/incurred-penalty rows are kept because the derived board
+        # needs them (and they are facts the player already knows).
         snap["results"] = [
             {
                 "check_id": r.check_id,
@@ -143,6 +147,7 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "reason": r.reason,
             }
             for r in (score.results or [])
+            if r.passed or r.awarded_points != 0
         ]
         snap["sla_status"] = [
             {
@@ -343,4 +348,16 @@ def read(path: str) -> dict:
             f"v{SNAPSHOT_VERSION}; update the agent on this box"
         )
     _validate_snapshot(data, path)
+    if data.get("mode") == "ranked" and isinstance(data.get("results"), list):
+        # A snapshot written before the positive-only change (or by a
+        # compromised agent) may still list failed checks. Never let the CLI
+        # or `score --json` render/echo them: that is the answer key.
+        data["results"] = [
+            r for r in data["results"]
+            if isinstance(r, dict)
+            and (r.get("passed") is True
+                 or (isinstance(r.get("awarded_points"), int)
+                     and not isinstance(r.get("awarded_points"), bool)
+                     and r.get("awarded_points") != 0))
+        ]
     return _sanitize_strings(data)

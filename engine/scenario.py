@@ -270,6 +270,7 @@ import os
 import yaml
 
 from common.scenario_record import ScenarioModeError, build_scenario_parts
+from engine import pool_config
 
 
 def boxes_dir() -> str:
@@ -320,10 +321,15 @@ def _scan_box_folder() -> tuple:
         except OSError:
             continue  # not a scenario folder
         sources.append((box_path, source))
-    key = (root, tuple(stamps))
+    key = (root, tuple(stamps), pool_config.source_stamp())
     with _SCAN_LOCK:
         if _SCAN_CACHE["key"] == key:
             return _SCAN_CACHE["result"]
+
+    try:
+        pool_overrides = pool_config.load_overrides()
+    except pool_config.PoolConfigError as exc:
+        return None, (str(exc),)
 
     scenarios = {}
     declared = set()
@@ -337,6 +343,7 @@ def _scan_box_folder() -> tuple:
             continue
         if not isinstance(parsed, dict) or not parsed.get("ranked"):
             continue  # honor-only box: never a ranked competition scenario
+        parsed = pool_config.apply_overrides(parsed, pool_overrides)
         scenario = parsed.get("scenario") or {}
         name = scenario.get("name")
         if isinstance(name, str) and name:

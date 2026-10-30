@@ -166,19 +166,29 @@ def test_honor_countdown_and_progress_present():
     assert "Honor mode" in out
 
 
-def test_ranked_still_verbose():
+def test_ranked_is_positive_only():
     score = ScoreBreakdown(
         scenario_name="Test Scenario", scenario_version=1, total=5,
         results=[CheckResult(check_id="c1", category=Category.VULN, awarded_points=5, passed=True, reason="ok reason")],
         sla_status=[SlaStatus(check_id="c1", state="UP", accrued_points=3)],
         computed_at=1234.0,
     )
-    out = render_report(score, Mode.RANKED, 1700000000.0)
-    # Ranked keeps diagnostic table with category/check_id/reason
-    assert "c1" in out
-    assert "ok reason" in out
-    assert "Category" in out
-    assert "Reason" in out
+    manifest = {"checks": [
+        {"id": "c1", "category": "vuln",
+         "display_title": "SSH root login disabled",
+         "display_max_points": 5},
+    ]}
+    out = render_report(score, Mode.RANKED, 1700000000.0, manifest=manifest)
+    # Same positive-only contract as honor: named fixed work, no per-check
+    # id/reason table (a failed id would be the answer key).
+    assert "SSH root login disabled" in out
+    assert "c1" not in out
+    assert "ok reason" not in out
+    assert "Point-in-time results" not in out
+    assert "Category" not in out and "Reason" not in out
+    # Ranked still gets its own two-tab shell (config + service uptime).
+    assert "Configuration &amp; forensics" in out
+    assert "Service uptime" in out
 
 
 def test_ranked_total_shows_the_hardening_service_split():

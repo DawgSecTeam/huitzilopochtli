@@ -170,6 +170,7 @@ def test_ensure_pool_refuses_a_same_name_pool_from_the_wrong_template(
 def test_ensure_pool_reports_a_busy_portal_and_retries_later(
         store, comp_provisioned, monkeypatch):
     monkeypatch.setattr(claims.workshop, "list_pools", lambda *a, **kw: [])
+    monkeypatch.setattr(claims.time, "sleep", lambda *_: None)
 
     def boom(*a, **kw):
         raise workshop.WorkshopError("A provision job is already running.")
@@ -177,8 +178,33 @@ def test_ensure_pool_reports_a_busy_portal_and_retries_later(
     monkeypatch.setattr(claims.workshop, "provision_pool", boom)
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
     code, err = claims.ensure_pool(store, comp_provisioned)
-    assert code is None and "already running" in err
+    assert code is None and "still provisioning" in err
     assert store.get_competition(comp_provisioned.id).workshop_pool_code is None
+
+
+def test_ensure_pool_recovers_from_a_busy_portal_by_reusing_the_pool(
+        store, comp_provisioned, monkeypatch):
+    """A 409 is a queue: once the pool appears, pin it instead of erroring."""
+    calls = {"n": 0}
+
+    def pools(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return []
+        return [_portal_pool("NEWP1", "huitz-ranked-provision-me",
+                             template=174)]
+
+    def boom(*a, **kw):
+        raise workshop.WorkshopError("A provision job is already running.")
+
+    monkeypatch.setattr(claims.workshop, "list_pools", pools)
+    monkeypatch.setattr(claims.workshop, "provision_pool", boom)
+    monkeypatch.setattr(claims.time, "sleep", lambda *_: None)
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    code, err = claims.ensure_pool(store, comp_provisioned)
+    assert err is None and code == "NEWP1"
+    assert store.get_competition(comp_provisioned.id).workshop_pool_code == \
+        "NEWP1"
 
 
 def test_ensure_pool_needs_a_pool_block(store, comp, monkeypatch):
@@ -760,6 +786,32 @@ def test_warm_tops_up_an_existing_pool(store, comp, monkeypatch):
     assert (out["available"], out["total"]) == (4, 6)
 
 
+def test_warm_adds_to_what_the_pool_already_has(store, comp, monkeypatch):
+    # Requesting 2 on a pool already holding 3 must GROW it to 5, not be
+    # satisfied instantly by the boxes already in it.
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.time, "sleep", lambda _s: None)
+    calls = []
+    state = {"available": 3, "total": 3}
+
+    def fake_more(base, password, code, count):
+        calls.append((code, count))
+        state["available"] += count
+        state["total"] += count
+        return {"job_id": "j3"}
+
+    monkeypatch.setattr(claims.workshop, "provision_more", fake_more)
+    monkeypatch.setattr(
+        claims.workshop, "pool_snapshot",
+        lambda *a, **kw: _warm_row("POOL1", state["available"], state["total"]))
+
+    out = claims.warm_boxes(store, comp, 2, wait_s=30)
+    assert out["status"] == "ready", out
+    assert calls == [("POOL1", 2)]
+    assert (out["available"], out["total"]) == (5, 5)
+    assert out["target"] == 5
+
+
 def test_warm_tolerates_a_busy_portal_job_then_retries(store, comp, monkeypatch):
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
     monkeypatch.setattr(claims.time, "sleep", lambda _s: None)
@@ -852,9 +904,44 @@ def test_cleanup_pool_clears_a_pin_whose_pool_is_already_gone(store, comp,
     """A 404 pin must not leave the sweeper retrying cleanup forever."""
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
     monkeypatch.setattr(claims.workshop, "list_pools", lambda *a, **kw: [])
+    _patch_vm_teardown(monkeypatch)
     stats = claims.cleanup_pool(store, comp)
     assert stats["pool_missing"] is True and stats["deleted"] is False
     assert store.get_competition(comp.id).workshop_pool_code is None
+
+
+def test_cleanup_pool_sweeps_vms_when_the_config_is_already_gone(store, comp,
+                                                                monkeypatch):
+    """The leak this round: config gone, clones still alive."""
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.workshop, "list_pools", lambda *a, **kw: [])
+    destroyed = _patch_vm_teardown(monkeypatch, vms=[
+        {"vmid": 201, "student_id": "huitz-ranked-claim-comp-1"},
+        {"vmid": 202, "student_id": "huitz-ranked-claim-comp-2"},
+        {"vmid": 999, "student_id": "huitz-ranked-other-1"},
+    ])
+    stats = claims.cleanup_pool(store, comp)
+    assert destroyed == [201, 202]
+    assert stats["pool_missing"] is True and stats["destroyed"] == 2
+    assert store.get_competition(comp.id).workshop_pool_code is None
+
+
+def test_cleanup_pool_keeps_the_pin_while_destroy_is_pending(store, comp,
+                                                             monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(
+        claims.workshop, "list_pools",
+        lambda *a, **kw: [{"code": comp.workshop_pool_code,
+                           "name": "huitz-ranked-claim-comp", "count": 1}])
+    monkeypatch.setattr(claims.workshop, "release_vm", lambda *a, **kw: None)
+    _patch_vm_teardown(monkeypatch,
+                       vms=[{"vmid": 301,
+                             "student_id": "huitz-ranked-claim-comp-1"}],
+                       status="running")
+    stats = claims.cleanup_pool(store, comp)
+    assert stats["destroy_pending"] is True
+    assert store.get_competition(comp.id).workshop_pool_code == \
+        comp.workshop_pool_code
 
 
 def test_destroy_vms_waits_out_a_running_destroy_job(monkeypatch):

@@ -253,9 +253,18 @@ def test_settings_card_is_a_fact_grid():
 def test_admin_pages_write_out_the_status_word():
     # Operator view: the dot AND the word (dashboard column + page title).
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
-    assert 'class="stwdot"' in page and '<span class="word">Live</span>' in page
+    assert 'class="stwdot ok"' in page and '<span class="word">Live</span>' in page
     dash = web.admin_dashboard_page([_comp(status="draft")], {"c1": 0}, "csrf")
-    assert 'class="stwdot"' in dash and '<span class="word">Draft</span>' in dash
+    assert 'class="stwdot warn"' in dash and '<span class="word">Draft</span>' in dash
+    # Draft is the one pre-run status that must survive a scan: amber word.
+    assert ".stwdot.warn .word{color:var(--warn)}" in web.CSS
+
+
+def test_admin_console_rows_click_through_to_the_management_page():
+    dash = web.admin_dashboard_page([_comp()], {"c1": 0}, "csrf")
+    assert 'tr data-href="/admin/competitions/c1"' in dash
+    assert "tr[data-href]{cursor:pointer}" in web.CSS
+    assert "closest('tr[data-href]')" in web.JS
 
 
 def test_nav_active_underline_cannot_shift_alignment():
@@ -266,8 +275,9 @@ def test_nav_active_underline_cannot_shift_alignment():
 
 
 def test_copy_buttons_present_on_join_success_and_admin_comp():
-    # The terminal fallback (with the copyable code) appears only when the
-    # automatic join failed; pending and ready states never need it.
+    # The terminal fallback (with the copyable code) is always available while
+    # the run is unbound: the harness and a player who lost the auto-join both
+    # need it, and it is already scoped to this player's own page.
     failed = _player(status="invited", box_id=None, claim_url=None,
                      claim_error="huitz not found in the guest")
     page = web.join_success_page(_comp(), failed, join_code="ABCD2345",
@@ -277,12 +287,13 @@ def test_copy_buttons_present_on_join_success_and_admin_comp():
                       claim_ticket="t1")
     page = web.join_success_page(_comp(), pending, join_code="ABCD2345",
                                  csrf="csrf1")
-    assert 'data-copy="ABCD2345"' not in page
+    assert 'data-copy="ABCD2345"' in page
     ready = _player(status="invited", box_id=None,
                     claim_url="http://portal/r/u1")
     page = web.join_success_page(_comp(), ready, join_code="ABCD2345",
                                  csrf="csrf1")
     assert 'data-copy="http://portal/r/u1"' in page  # stable open link
+    assert 'data-copy="ABCD2345"' in page            # terminal fallback
     board = _payload()
     admin = web.admin_competition_page(_comp(), board, [_player()], "csrf")
     assert 'data-copy="/c/demo/join"' in admin  # join URL
@@ -874,22 +885,57 @@ def test_admin_page_offers_pre_deploy():
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
     assert "/admin/api/competitions/c1/warm" in page
     assert "Pre-deploy" in page and 'name="count"' in page
+    # The warm note polls in place: progress never needs a reload, and the
+    # count + action share one aligned row.
+    assert 'id="warm" data-poll="10000"' in page
+    assert 'class="warm-form"' in page and ".warm-form{display:flex" in web.CSS
 
 
 def test_admin_page_reports_pre_deploy_progress():
     running = web.admin_competition_page(
         _comp(), {"leaderboard": []}, [], "csrf",
         warm={"status": "running", "requested": 10, "available": 3, "total": 8})
-    assert "3 ready of 8" in running
-    ready = web.admin_competition_page(
+    assert "Pre-deploying 10 boxes" in running
+    assert "Refresh to follow progress" not in running
+    fresh = web.admin_competition_page(
         _comp(), {"leaderboard": []}, [], "csrf",
         warm={"status": "ready", "requested": 4, "available": 4, "total": 4,
-              "waited_s": 12.5})
-    assert "4 boxes available" in ready
+              "finished_at": time.time() - 2})
+    assert "Box pre-deployment completed." in fresh
+    # Old news goes away (the standing count line above carries the state),
+    # including across reloads.
+    old = web.admin_competition_page(
+        _comp(), {"leaderboard": []}, [], "csrf",
+        warm={"status": "ready", "requested": 4, "available": 4, "total": 4,
+              "finished_at": time.time() - 11})
+    assert "Box pre-deployment completed" not in old
     failed = web.admin_competition_page(
         _comp(), {"leaderboard": []}, [], "csrf",
         warm={"status": "error", "error": "portal down"})
     assert "portal down" in failed
+
+
+def test_draft_can_be_discarded_and_ended_page_offers_remove():
+    comp = _comp(status="draft")
+    page = web.admin_competition_page(comp, {"leaderboard": []}, [], "csrf")
+    assert "Start competition" in page
+    assert "Discard draft" in page
+    assert f'/admin/api/competitions/{comp.id}/end' in page
+    # Discarding lands on the ended page, which is where Remove lives.
+    ended = web.admin_competition_page(_comp(status="ended"),
+                                       {"leaderboard": []}, [], "csrf")
+    assert "Remove competition" in ended
+
+
+def test_export_csv_appears_only_once_the_run_exists():
+    draft = web.admin_competition_page(_comp(status="draft"),
+                                       {"leaderboard": []}, [], "csrf")
+    assert "Export CSV" not in draft
+    live = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
+    assert "export.csv" in live
+    ended = web.admin_competition_page(_comp(status="ended"),
+                                       {"leaderboard": []}, [], "csrf")
+    assert "export.csv" in ended
 
 
 def test_ended_competition_has_no_pre_deploy_form():

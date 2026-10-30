@@ -281,6 +281,18 @@ class Store:
                         f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
                     )
 
+        # Free removed players' display names for a future join. The table's
+        # UNIQUE (competition_id, display_name_norm) includes removed rows, so
+        # a removed slot used to keep its name locked forever (Team B -> B2 in
+        # the six-player field). The tombstone is invisible to the UI and
+        # unique per player id.
+        self._conn.execute(
+            "UPDATE players SET display_name_norm = display_name_norm "
+            "|| char(31) || player_id "
+            "WHERE status = 'removed' "
+            "AND instr(display_name_norm, char(31)) = 0"
+        )
+
     def _commit(self) -> None:
         """Commit unless an enclosing atomic() block owns the transaction."""
         if self._txn_depth == 0:
@@ -920,9 +932,13 @@ class Store:
     def end_competition(self, comp_id: str) -> bool:
         now = time.time()
         with self._lock:
+            # A draft can be ended too: that is how an abandoned draft gets its
+            # pre-deployed pool cleaned up (the end path always calls
+            # claims.cleanup_pool). For a live competition this freezes runs.
             cur = self._conn.execute(
                 "UPDATE competitions SET status = 'ended', join_open = 0, "
-                "ended_at = ? WHERE id = ? AND status = 'live'", (now, comp_id)
+                "ended_at = ? WHERE id = ? AND status IN ('draft', 'live')",
+                (now, comp_id)
             )
             self._conn.execute(
                 "UPDATE players SET status = 'finished', finished_at = ?, "
@@ -1159,7 +1175,11 @@ class Store:
                     (time.time(), player_id, player.box_id),
                 )
             self._conn.execute(
-                "UPDATE players SET status = 'removed', join_code_hash = NULL "
+                "UPDATE players SET status = 'removed', join_code_hash = NULL, "
+                "display_name_norm = CASE "
+                "WHEN instr(display_name_norm, char(31)) = 0 "
+                "THEN display_name_norm || char(31) || player_id "
+                "ELSE display_name_norm END "
                 "WHERE player_id = ?", (player_id,),
             )
             self._commit()

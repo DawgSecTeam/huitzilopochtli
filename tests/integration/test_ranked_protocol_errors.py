@@ -371,11 +371,8 @@ def test_checkin_scores_and_redacts_expected_values(engine, scenario,
     results = {r["check_id"]: r for r in parsed["score"]["results"]}
     assert results["backdoor-absent"]["awarded_points"] == 10
     assert results["backdoor-absent"]["passed"] is True
-    assert results["secret-eq"]["awarded_points"] == 0
-    assert results["secret-eq"]["passed"] is False
-    # The failing matcher's reason must be the box's own evidence reason --
-    # never the rubric's expected value (§2.4).
-    assert results["secret-eq"]["reason"] == "collected by test"
+    # The failing check is the answer key: it is not on the wire at all.
+    assert "secret-eq" not in results
     assert SECRET not in raw, (
         f"engine leaked a rubric expected value over the wire: {raw!r}"
     )

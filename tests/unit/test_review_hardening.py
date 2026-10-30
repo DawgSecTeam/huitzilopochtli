@@ -90,16 +90,26 @@ def enrolled(store, monkeypatch):
 
 # --- 1. ranked responses never carry the answer key --------------------------------
 
-def test_checkin_response_redacts_expected_values(enrolled):
+def test_checkin_response_omits_failed_checks(enrolled):
+    """A failed check id/points is the answer key: the box gets none of them."""
     resp = handle_checkin(enrolled, _bundle(_failing_evidence()), b"sig",
                           _secret_rubric(), b"secret", [])
     wire = json.dumps(server_mod._jsonable(resp))
-    # SECRET_NEQ / SECRET_USER were sent BY the box, but their evidence
-    # reasons are blank, so they may only reappear via the matcher reason.
     assert "SECRET" not in wire, wire
-    by_id = {r.check_id: r for r in resp.score.results}
-    assert by_id["eq"].reason == "collected"
-    assert by_id["eq"].passed is False
+    assert resp.score.results == []
+
+
+def test_checkin_response_keeps_passed_checks_with_evidence_reason(enrolled):
+    """Passed rows are positive-only, with the box's own reason, not the matcher's."""
+    evidence = _failing_evidence()
+    evidence[0] = _evidence("eq", {"matched": "SECRET_EQ"})
+    resp = handle_checkin(enrolled, _bundle(evidence), b"sig",
+                          _secret_rubric(), b"secret", [])
+    wire = json.dumps(server_mod._jsonable(resp))
+    assert "SECRET" not in wire, wire
+    assert [r.check_id for r in resp.score.results] == ["eq"]
+    assert resp.score.results[0].passed is True
+    assert resp.score.results[0].reason == "collected"
 
 
 def test_checkin_500_body_omits_exception_text(store, monkeypatch):

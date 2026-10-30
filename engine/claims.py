@@ -157,7 +157,29 @@ def _ensure_pool_locked(store: Store, comp: CompetitionRecord) -> tuple:
             return existing["code"], None
         result = workshop.provision_pool(base, password, comp.slug, spec)
     except workshop.WorkshopError as exc:
-        return None, str(exc)
+        if "already running" not in str(exc).lower():
+            return None, str(exc)
+        # Another competition's provisioning job is still holding the
+        # portal's single job slot. Wait for it, then reuse our pool if it
+        # appeared; a 409 is a transient queue, not a terminal error.
+        for _ in range(10):
+            time.sleep(1.0)
+            try:
+                existing = workshop.find_pool_by_name(
+                    workshop.list_pools(base, password), name)
+            except workshop.WorkshopError:
+                existing = None
+            if existing is not None:
+                template = (existing.get("config") or {}).get("template_vm_id")
+                if template is not None and \
+                        template != spec.get("template_vm_id"):
+                    return None, (f"workshop pool {existing['code']} clones "
+                                  f"template {template}, not the scenario's "
+                                  f"{spec.get('template_vm_id')}")
+                _pin_pool(store, comp, existing["code"], "reused_pending")
+                return existing["code"], None
+        return None, ("the workshop portal is still provisioning another "
+                      "pool; the claim will retry")
     _pin_pool(store, comp, result["pool_code"], "provisioned")
     return result["pool_code"], None
 
@@ -396,16 +418,17 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
 
 
 def _pool_vmids(base: str, password: str, prefix: str, pool_code: str,
-                expected: int) -> list:
+                expected: int, attempts: Optional[int] = None) -> list:
     """VMIDs the portal lists for this competition's pool.
 
     Pre-provisioned clones register asynchronously, so an operator who ends a
     competition immediately after its first claim can race the portal. When
     the pool reports a non-zero size, poll briefly before concluding there is
-    nothing to destroy.
+    nothing to destroy. ``attempts`` overrides that decision for the
+    pool-config-already-gone case, where the expected count is unknown.
     """
-    attempts = 5 if expected else 1
-    for attempt in range(attempts):
+    tries = attempts if attempts is not None else (5 if expected else 1)
+    for attempt in range(tries):
         vms = workshop.list_vms(base, password)
         vmids = [v.get("vmid") for v in vms
                  if isinstance(v, dict)
@@ -413,7 +436,7 @@ def _pool_vmids(base: str, password: str, prefix: str, pool_code: str,
                       or v.get("pool") == pool_code)]
         if vmids:
             return vmids
-        if attempt + 1 < attempts:
+        if attempt + 1 < tries:
             time.sleep(2.0)
     return []
 
@@ -425,6 +448,12 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
     released and deleted; a competition pinned to a pre-existing shared pool
     just has its pin cleared so the operator's pool stays untouched. Best
     effort and idempotent — the sweeper retries while the pin survives.
+
+    The pool config can be gone while clones still live (a crash between
+    provision and pin, an operator delete, or the mid-run engine restart that
+    produced this round's leak). In that case we still enumerate the portal's
+    VM list by pool code/student_id and destroy the clones; a missing config
+    is never treated as "nothing to clean".
     """
     stats = {"released": 0, "destroyed": 0, "deleted": False,
              "legacy": False, "pool_missing": False,
@@ -444,62 +473,72 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
         if entry is not None and entry.get("name") != \
                 workshop.competition_pool_name(comp.slug):
             stats["legacy"] = True
-        elif entry is None:
-            # The config is already gone (a failed provision, an operator
-            # delete, or a crash between create and pin). There is nothing to
-            # release or delete; clearing the pin is the whole cleanup, and
-            # leaving it would make the sweeper retry a 404 forever.
-            stats["pool_missing"] = True
-        else:
-            for p in store.list_players(comp.id):
-                if p.claim_uid:
-                    try:
-                        workshop.release_vm(base, p.claim_uid)
-                        stats["released"] += 1
-                    except workshop.WorkshopError:
-                        pass  # the portal expires it; do not block deletion
-            # A dispenser pool pre-provisions clones that no player ever
-            # claimed. Releasing player claims does not touch those, so
-            # enumerate the portal's own VM list and destroy every clone
-            # that belongs to this competition's pool.
-            prefix = workshop.competition_pool_name(comp.slug) + "-"
-            expected = int((entry or {}).get("count")
-                           or (entry or {}).get("total") or 0)
+            store.update_competition(comp.id, workshop_pool_code=None)
+            store.add_audit("system", "competition_pool_cleanup", comp.id,
+                            details_json=json.dumps({"pool": pinned, **stats}))
+            return stats
+        # Release claimed players, then destroy every clone that belongs to
+        # this competition. Both happen whether or not the config still exists.
+        for p in store.list_players(comp.id):
+            if p.claim_uid:
+                try:
+                    workshop.release_vm(base, p.claim_uid)
+                    stats["released"] += 1
+                except workshop.WorkshopError:
+                    pass  # the portal expires it; do not block cleanup
+        prefix = workshop.competition_pool_name(comp.slug) + "-"
+        expected = int((entry or {}).get("count")
+                       or (entry or {}).get("total") or 0)
+        try:
+            vmids = _pool_vmids(base, password, prefix, pinned, expected,
+                                attempts=None if entry is not None else 3)
+        except workshop.WorkshopError:
+            return stats  # keep the pin; the sweeper retries
+        if vmids:
             try:
-                vmids = _pool_vmids(base, password, prefix, pinned, expected)
+                job = workshop.destroy_vms(base, password, vmids)
             except workshop.WorkshopError:
                 return stats  # keep the pin; the sweeper retries
-            if vmids:
-                try:
-                    job = workshop.destroy_vms(base, password, vmids)
-                except workshop.WorkshopError:
-                    return stats  # keep the pin; the sweeper retries
-                if job.get("status") == "error":
-                    return stats
-                stats["destroyed"] += len(vmids)
-                stats["destroy_pending"] = job.get("status") != "done"
+            if job.get("status") == "error":
+                return stats
+            stats["destroyed"] += len(vmids)
+            if job.get("status") != "done":
+                stats["destroy_pending"] = True
+                # Keep the pin: the destroy job is still running, and the
+                # next sweep must verify the clones are actually gone.
+                print(f"competition {comp.slug}: pool {pinned} destroy "
+                      f"pending {stats}", flush=True)
+                return stats
+        if entry is not None:
             try:
                 workshop.delete_pool(base, password, pinned)
                 stats["deleted"] = True
             except workshop.WorkshopError:
                 return stats  # keep the pin; the sweeper retries
-            # Deleting the config can race a clone registering itself. Sweep
-            # once more now that the pool is gone; the portal keeps the VM
-            # entry (and its pool code) even without a saved config.
+        else:
+            stats["pool_missing"] = True
+            # No config left to delete; the clones (if any) were swept above.
+        # Deleting the config can race a clone registering itself. Sweep once
+        # more now that the pool is gone; the portal keeps the VM entry (and
+        # its pool code) even without a saved config.
+        try:
+            late = _pool_vmids(base, password, prefix, pinned, expected=0,
+                               attempts=1)
+        except workshop.WorkshopError:
+            late = []
+        if late:
             try:
-                late = _pool_vmids(base, password, prefix, pinned, expected=0)
+                job = workshop.destroy_vms(base, password, late)
             except workshop.WorkshopError:
-                late = []
-            if late:
-                try:
-                    job = workshop.destroy_vms(base, password, late)
-                except workshop.WorkshopError:
-                    return stats
-                if job.get("status") == "error":
-                    return stats
-                stats["destroyed"] += len(late)
-                stats["destroy_pending"] = (
-                    stats["destroy_pending"] or job.get("status") != "done")
+                return stats
+            if job.get("status") == "error":
+                return stats
+            stats["destroyed"] += len(late)
+            if job.get("status") != "done":
+                stats["destroy_pending"] = True
+                print(f"competition {comp.slug}: pool {pinned} late destroy "
+                      f"pending {stats}", flush=True)
+                return stats
     store.update_competition(comp.id, workshop_pool_code=None)
     store.add_audit("system", "competition_pool_cleanup", comp.id,
                     details_json=json.dumps({"pool": pinned, **stats}))

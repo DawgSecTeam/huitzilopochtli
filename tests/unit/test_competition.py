@@ -195,6 +195,19 @@ def test_duplicate_name_and_max_players(store):
     assert p4 is None and "full" in err
 
 
+def test_removed_player_name_is_reusable(store):
+    """Removing a slot must free its display name (Team B -> B2 bug)."""
+    comp = _comp(store)
+    p, _code, err = competition.create_player_with_code(store, comp, "Ada", b"s")
+    assert err is None
+    store.remove_player(p.player_id)
+    p2, _code, err = competition.create_player_with_code(store, comp, "Ada", b"s")
+    assert err is None and p2.player_id != p.player_id
+    # An active duplicate is still refused.
+    p3, _code, err = competition.create_player_with_code(store, comp, "Ada", b"s")
+    assert p3 is None and "taken" in err
+
+
 def test_join_rejects_bad_and_expired_code(store):
     comp = _comp(store)
     player, code, err = competition.create_player_with_code(store, comp, "Ada", b"s")
@@ -246,3 +259,24 @@ def test_delete_competition_is_ended_only_and_keeps_boxes(store):
     assert store.get_player(player.player_id) is None
     # Boxes/scores are history and survive a competition removal.
     assert store.get_box(box_id) is not None
+
+
+def test_end_competition_accepts_a_draft_so_its_pool_can_be_cleaned(store):
+    """A draft that pre-deployed boxes must be endable (not just deletable).
+
+    The admin end path calls claims.cleanup_pool unconditionally; all that
+    used to block an abandoned draft was the store refusing the transition.
+    """
+    comp = competition.create_competition(
+        store, slug="draft-comp", name="Draft Comp",
+        scenario_name="TestComp", scenario_version=1,
+        max_players=2, duration_s=3600, workshop_pool_code="POOL1",
+    )
+    assert store.get_competition(comp.id).status == "draft"
+    assert store.end_competition(comp.id) is True
+    ended = store.get_competition(comp.id)
+    assert ended.status == "ended" and ended.ended_at is not None
+    # Ending is a one-way transition; a second call is a no-op.
+    assert store.end_competition(comp.id) is False
+    # An ended draft is removable like any other ended competition.
+    assert store.delete_competition(comp.id) is True

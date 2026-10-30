@@ -34,7 +34,7 @@ A missing snapshot says how to produce one; a corrupt or newer-version snapshot 
 ### Presentation
 
 - **Honor** is positive-only: fixed vulnerabilities, incurred penalties, and forensics state are named; failed checks stay anonymous (a count only). The snapshot carries no per-check results list, so `cat`/`jq` on the Desktop copy spoils exactly as little as the HTML.
-- **Ranked** is the engine's diagnostic view: per-check results, SLA state, live rank, and the "engine's authoritative score" label. Check reasons are the box's own evidence reasons — the rubric never shipped here. Before the first engine response, `score`/`watch` say *submitted — awaiting engine*.
+- **Ranked** is positive-only too: fixed vulnerabilities, incurred penalties, forensics state, SLA service state, live rank, and the "engine's authoritative score" label. Failed hardening checks are never named — their ids are the answer key — and the engine filters them out of the response before the box ever sees them. The snapshot carries only passed/incurred rows. Before the first engine response, `score`/`watch` say *submitted — awaiting engine*.
 
 `agent/board.py` derives the board once; the HTML report, `report.json`, and the terminal all render from it. `agent/snapshot.py` owns the versioned snapshot format (`snapshot_version` 1, newer majors refused).
 
