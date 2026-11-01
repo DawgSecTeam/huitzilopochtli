@@ -231,13 +231,86 @@ def live_pool_status(comp: CompetitionRecord) -> dict:
             "total": int(snap.get("total") or 0)}
 
 
+#: Standing reasons a competition has nothing to pre-deploy from, phrased for
+#: the admin page. Each names the knob to touch and carries no secret. The
+#: dashboard shows them before the click (and the click is refused) so a
+#: scenario nobody gave a pool to does not look like a broken button: the
+#: failure used to arrive seconds later as a background job note, after the
+#: operator had already pressed it.
+PORTAL_MISSING = ("The workshop portal is not configured "
+                  "(HUITZILOPOCHTLI_WORKSHOP_URL), so there is nowhere to "
+                  "pre-deploy boxes to.")
+PORTAL_PASSWORD_MISSING = (
+    "The workshop portal admin password "
+    "(HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD) is not set, so the engine "
+    "cannot ask the portal to clone boxes.")
+
+#: The short form for the admin console's competition rows.
+POOL_SOURCE_MISSING_SHORT = "No pool to pre-deploy from"
+
+
+def no_pool_message(scenario_name: str) -> str:
+    """Why this scenario can clone nothing, and how to fix it."""
+    return (f"No pool to pre-deploy from: the scenario '{scenario_name}' "
+            "carries no pool block, so the engine has no ranked template to "
+            "clone. Add a 'pool:' section to the ranked scenario (or an entry "
+            "for it in the engine's pools file), recompile and re-upload the "
+            "scenario, then reload this page.")
+
+
+def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
+                      pool: Optional[dict] = None,
+                      check_pin: bool = True) -> Optional[str]:
+    """Why there is no pool to pre-deploy from right now, or ``None``.
+
+    Pre-deploy warms the pool pinned to the competition; with no pin — or a
+    pin the portal no longer recognises — that pool has to be cloned from the
+    scenario record's ``pool:`` block. When neither exists, the only thing a
+    click can produce is a failed job, so the dashboard says so up front.
+
+    ``pool`` lets a caller that already took a live snapshot
+    (``live_pool_status``) hand it over instead of reading the portal twice;
+    ``check_pin=False`` skips the portal read entirely, which is what the
+    competition rows want (a cheap structural answer, on a 30 s poll). A
+    portal that is merely unreachable never reads as blocked — the claim and
+    warm paths report the real transport error.
+    """
+    base, _secret = config()
+    if not base:
+        return PORTAL_MISSING
+    password = _admin_password()
+    if not password:
+        return PORTAL_PASSWORD_MISSING
+    if comp.workshop_pool_code:
+        if not check_pin:
+            # Structural only: a pin may be topping up a pool that is still
+            # alive, and telling needs a portal read the row must not make.
+            # The competition page (which has the snapshot) decides.
+            return None
+        if pool is not None:
+            gone = pool.get("status") == "unpinned"
+        else:
+            gone = not _pin_is_alive(base, password, comp.workshop_pool_code)
+        if not gone:
+            # The pool is there; topping it up needs no scenario pool block.
+            return None
+        # The pin is dead, but the scenario can still clone a fresh pool:
+        # warm_boxes recovers that itself, so it is not a blocker.
+    if not scenario_mod.load_pool_spec(store, comp.scenario_name,
+                                       comp.scenario_version):
+        return no_pool_message(comp.scenario_name)
+    return None
+
+
 def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
     """Start pre-deploying ``count`` boxes into the competition's pool.
 
     Returns the job state immediately; the work runs in a daemon thread so
     the admin page is not held open for the several minutes a cold batch
     takes. One job per competition at a time (a second click joins the
-    running job instead of asking the portal for another batch).
+    running job instead of asking the portal for another batch). A click that
+    cannot possibly work is refused here rather than handed to the thread, so
+    the operator gets the reason on the spot instead of as a job note.
     """
     try:
         count = int(count)
@@ -246,6 +319,20 @@ def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
     if count < 1 or count > WARM_MAX:
         return {"status": "error",
                 "error": f"Box count must be between 1 and {WARM_MAX}."}
+    with _WARM_LOCK:
+        existing = _WARM_JOBS.get(comp.id)
+        if existing is not None and existing.get("status") == "running":
+            return dict(existing)
+    # Outside the lock: the blocker may read the portal, and the worker takes
+    # the same lock for its progress updates. The registration below re-checks
+    # for a running job, so two simultaneous clicks still start only one batch.
+    blocker = predeploy_blocker(store, comp)
+    if blocker:
+        store.add_audit("system", "competition_warm_blocked", comp.id,
+                        details_json=json.dumps(
+                            {"requested": count, "reason": blocker[:300]}))
+        return {"status": "error", "requested": count, "blocked": True,
+                "error": blocker}
     with _WARM_LOCK:
         existing = _WARM_JOBS.get(comp.id)
         if existing is not None and existing.get("status") == "running":
@@ -306,6 +393,18 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
                 "error": "the workshop admin password is not configured"}
     pool_code = comp.workshop_pool_code
     created = False
+    if pool_code and not _pin_is_alive(base, password, pool_code):
+        # The pin outlived its pool (an operator delete, a portal reset).
+        # Topping up a pool that is gone can only fail, and the scenario can
+        # still clone a fresh one from its own template, so recover the same
+        # way a first claim does instead of reporting a dead end.
+        store.update_competition(comp.id, workshop_pool_code=None)
+        store.add_audit("system", "competition_pool_stale", comp.id,
+                        details_json=json.dumps({"pool": pool_code}))
+        print(f"competition {comp.slug}: pinned pool {pool_code} is gone; "
+              "pre-deploy will clone a fresh one", flush=True)
+        comp = store.get_competition(comp.id) or comp
+        pool_code = None
     if not pool_code:
         with _POOL_LOCK:
             # Re-read under the lock: a claim or another warm call may have

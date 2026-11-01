@@ -14,11 +14,20 @@ class WorkshopError(Exception):
     pass
 
 
+#: The production portal sits behind Cloudflare, whose browser-integrity check
+#: answers urllib's default "Python-urllib/x" User-Agent with HTTP 403 (error
+#: 1010). Identify the engine by name on every call so claims, pool warm-up and
+#: pre-deploy reach the portal instead of a WAF block.
+USER_AGENT = "huitzilopochtli-engine/1.0"
+
+
 def _call(base_url: str, method: str, path: str, body: Optional[dict] = None,
           timeout: float = 15.0, headers: Optional[dict] = None) -> dict:
     url = base_url.rstrip("/") + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    h = {"Content-Type": "application/json"} if data else {}
+    h = {"User-Agent": USER_AGENT}
+    if data:
+        h["Content-Type"] = "application/json"
     h.update(headers or {})
     req = urllib.request.Request(url, data=data, method=method, headers=h)
     try:
@@ -120,6 +129,16 @@ def provision_pool(base_url: str, admin_password: str, slug: str, spec: dict,
     dispenser and clones on demand.
     """
     name = competition_pool_name(slug)
+    missing = [key for key in ("template_vm_id", "template_vm_access_method",
+                               "template_vm_username", "template_vm_password")
+               if spec.get(key) in (None, "")]
+    if missing:
+        # A hand-edited pools file can reach here without authoring's
+        # validation; a KeyError would surface as an engine 500, not a fixable
+        # message. Say which key is missing instead.
+        raise WorkshopError(
+            "the scenario's pool block is missing "
+            + ", ".join(repr(key) for key in missing))
     body = {
         "pool_name": name,
         "group": spec.get("group") or "Challenge",

@@ -234,6 +234,15 @@ does with it:
   pool (`POST /admin/api/competitions/<id>/pool` with an empty `pool_code`) so
   the next claim provisions afresh. A competition can never be pointed at an
   arbitrary existing pool.
+- **Pre-deploy** (the competition page's *Pre-deploy boxes* card) warms the
+  pool ahead of the joins. It can only work with something to clone from: a
+  pin the portal still lists, or the scenario's `pool:` block. With neither,
+  the admin console flags the competition row, the card states the reason, and
+  the click is refused before any job starts — the card clears itself on the
+  next poll once the scenario or the engine's pools file is fixed. A pin whose
+  pool the portal no longer lists is not a dead end: the next pre-deploy or
+  join re-clones one from the scenario's template (audit
+  `competition_pool_stale`).
 
 ### 3.2 Pre-bound joins (no terminal, no code)
 

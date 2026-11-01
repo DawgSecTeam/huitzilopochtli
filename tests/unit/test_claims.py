@@ -87,6 +87,31 @@ def test_find_pool_by_name_matches_the_portal_row():
     assert workshop.find_pool_by_name(["junk"], "mine") is None
 
 
+def test_workshop_calls_identify_the_engine(monkeypatch):
+    """Cloudflare 403s urllib's default UA (error 1010); every portal call must
+    carry the engine's own User-Agent or claims/pre-deploy hit the WAF."""
+    seen = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(workshop.urllib.request, "urlopen", fake_urlopen)
+    assert workshop.list_pools("http://portal", "pw") == []
+    assert seen["ua"] == workshop.USER_AGENT
+    assert "urllib" not in (seen["ua"] or "").lower()
+
+
 def test_provision_pool_passes_the_spec_and_captures_the_code(monkeypatch):
     sent = {}
 
@@ -865,6 +890,107 @@ def test_warm_needs_the_admin_password(store, comp, monkeypatch):
     monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", raising=False)
     out = claims.warm_boxes(store, comp, 2, wait_s=1)
     assert out["status"] == "error" and "admin password" in out["error"]
+
+
+# --- pre-deploy blockers (no pool to clone from) -----------------------------
+
+
+def test_predeploy_blocker_names_a_missing_portal(store, comp, monkeypatch):
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_URL", raising=False)
+    reason = claims.predeploy_blocker(store, comp)
+    assert reason and "HUITZILOPOCHTLI_WORKSHOP_URL" in reason
+
+
+def test_predeploy_blocker_names_the_missing_admin_password(store, comp,
+                                                            monkeypatch):
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD",
+                       raising=False)
+    reason = claims.predeploy_blocker(store, comp)
+    assert reason and "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD" in reason
+
+
+def test_predeploy_blocker_explains_a_scenario_with_no_pool_block(
+        store, comp, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    store.update_competition(comp.id, workshop_pool_code=None)
+    c = store.get_competition(comp.id)
+    # The live snapshot reaching the page is "unpinned" (nothing pre-deployed),
+    # and the scenario itself carries no pool: nothing could ever be cloned.
+    reason = claims.predeploy_blocker(store, c, pool={"status": "unpinned"})
+    assert reason and "No pool to pre-deploy from" in reason
+    assert "pool:" in reason
+    # The dashboard row's structural answer agrees, without reading the portal.
+    assert claims.predeploy_blocker(store, c, check_pin=False) == reason
+
+
+def test_predeploy_blocker_accepts_a_live_pool(store, comp, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims, "_pin_is_alive", lambda *a, **kw: True)
+    assert claims.predeploy_blocker(store, comp) is None
+    # A snapshot that says the pool exists short-circuits the pin probe too.
+    assert claims.predeploy_blocker(
+        store, comp, pool={"status": "ok", "available": 2, "total": 2}) is None
+    # A pinned competition is never flagged by the console row's structural
+    # check: topping up a live pool needs no scenario block, and only the page
+    # (which reads the portal) can say the pin is dead.
+    assert claims.predeploy_blocker(store, comp, check_pin=False) is None
+
+
+def test_predeploy_blocker_passes_a_dead_pin_the_scenario_can_replace(
+        store, comp_provisioned, monkeypatch):
+    """A pin the portal lost is a notice, not a dead end: the scenario clones."""
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    store.update_competition(comp_provisioned.id, workshop_pool_code="GONE1")
+    c = store.get_competition(comp_provisioned.id)
+    monkeypatch.setattr(claims, "_pin_is_alive", lambda *a, **kw: False)
+    assert claims.predeploy_blocker(store, c) is None
+    assert claims.predeploy_blocker(store, c, pool={"status": "unpinned"}) is None
+
+
+def test_start_warm_refuses_a_click_that_cannot_work(store, comp, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    store.update_competition(comp.id, workshop_pool_code=None)
+    c = store.get_competition(comp.id)
+    threads = []
+    monkeypatch.setattr(claims.threading, "Thread",
+                        lambda **kw: threads.append(kw))
+    out = claims.start_warm(store, c, 4)
+    assert out["status"] == "error" and out["blocked"] is True
+    assert "No pool to pre-deploy from" in out["error"]
+    # The refusal is synchronous: no worker thread, no job note to wait for.
+    assert threads == []
+    assert claims.warm_status(c.id)["status"] == "idle"
+    audits = [a for a in store.list_audit() if a.action == "competition_warm_blocked"]
+    assert audits and audits[0].competition_id == c.id
+
+
+def test_warm_replaces_a_pinned_pool_the_portal_lost(store, comp_provisioned,
+                                                     monkeypatch):
+    """Pre-deploy recovers a dead pin the way a first claim does."""
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.time, "sleep", lambda _s: None)
+    store.update_competition(comp_provisioned.id, workshop_pool_code="GONE1")
+    c = store.get_competition(comp_provisioned.id)
+    monkeypatch.setattr(claims, "_pin_is_alive", lambda *a, **kw: False)
+    sent = {}
+
+    def fake_provision(base, password, slug, spec):
+        sent.update(spec)
+        return {"pool_code": "FRESH1"}
+
+    rows = [_warm_row("FRESH1", 0, 0), _warm_row("FRESH1", 3, 3)]
+    monkeypatch.setattr(claims.workshop, "provision_pool", fake_provision)
+    monkeypatch.setattr(
+        claims.workshop, "pool_snapshot",
+        lambda *a, **kw: rows.pop(0) if rows else _warm_row("FRESH1", 3, 3))
+    out = claims.warm_boxes(store, c, 3, wait_s=30)
+    assert out["status"] == "ready", out
+    assert out["pool_code"] == "FRESH1"
+    # Cloned from the scenario's own template at the requested size.
+    assert sent["template_vm_id"] == 174 and sent["vm_count"] == 3
+    assert store.get_competition(c.id).workshop_pool_code == "FRESH1"
+    actions = [a.action for a in store.list_audit()]
+    assert "competition_pool_stale" in actions
 
 
 def test_ensure_pool_replaces_a_pin_the_portal_lost(store, comp_provisioned,

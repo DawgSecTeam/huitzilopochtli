@@ -250,6 +250,19 @@ def test_settings_card_is_a_fact_grid():
     assert 'class="fact-label">Join URL<' in page
 
 
+def test_removed_player_is_not_on_the_admin_roster():
+    """A removed slot is a tombstone, not a roster row: it keeps the freed
+    name in the DB but must not be rendered or counted as a player."""
+    gone = _player(player_id="p2", display_name="Casey",
+                   display_name_norm="casey\x1fp2", status="removed",
+                   join_code_plain=None, box_id=None, claim_url=None,
+                   claim_uid=None)
+    page = web.admin_competition_page(_comp(), _payload(),
+                                      [_player(), gone], "csrf")
+    assert "Casey" not in page
+    assert "1 / 32 joined" in page
+
+
 def test_admin_pages_write_out_the_status_word():
     # Operator view: the dot AND the word (dashboard column + page title).
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")

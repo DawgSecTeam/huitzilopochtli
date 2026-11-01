@@ -903,14 +903,21 @@ def login_page(error: str = "") -> str:
 
 
 def admin_dashboard_page(comps: list, players_by_comp: dict,
-                         csrf: str, msg: str = "") -> str:
+                         csrf: str, msg: str = "",
+                         pool_warn: Optional[dict] = None) -> str:
+    pool_warn = pool_warn or {}
     cards = []
     for c in comps:
         n = players_by_comp.get(c.id, 0)
+        # A competition that could not pre-deploy anything says so on its row,
+        # so the operator learns it before opening the page and pressing the
+        # button (the page itself carries the full reason and the fix).
+        warn = pool_warn.get(c.id)
+        warn_line = (f'<div class="fullflag">{esc(warn)}</div>' if warn else "")
         # The whole row is one click target (the name link stays for
         # keyboard/middle-click use); the JS delegates so polling can swap
         # rows freely.
-        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div></td>
+        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
 <td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a></td></tr>""")
     body = f"""<section class="page-head-row"><div><h1>Admin console</h1></div>
@@ -954,10 +961,15 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            csrf: str, msg: str = "", error: str = "",
                            warm: Optional[dict] = None,
                            pool: Optional[dict] = None,
-                           public_base: str = "") -> str:
+                           public_base: str = "",
+                           predeploy_warn: str = "") -> str:
     now = time.time()
     warm = warm or {"status": "idle"}
     pool = pool or {"status": "unknown"}
+    # A removed player is a tombstone: it keeps the row (and its freed name)
+    # but is gone from the roster, the count and the action buttons. The
+    # tombstone is what lets the same name join again.
+    players = [p for p in players if p.status != "removed"]
     rows = []
     for p in players:
         row = next((r for r in board.get("leaderboard", []) if r["player_id"] == p.player_id), {})
@@ -1039,24 +1051,49 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                     'each box when its player joins. Warm the pool first to move '
                     'that wait off the join.</p>')
         default_count = min(max(1, int(comp.max_players or 8)), 64)
+        # A competition with nothing to clone from must not offer a button
+        # whose only outcome is a failed job: the reason sits in the card and
+        # the click is refused before the thread starts. The form lives inside
+        # the polled node so the button re-enables by itself once the scenario
+        # (or the engine's pools file) gains the missing pool block.
+        blocked = bool(predeploy_warn)
+        stale_pin = (pool.get("status") == "unpinned"
+                     and bool(comp.workshop_pool_code))
+        if blocked:
+            pool_line = f'<p class="warnmsg">{esc(predeploy_warn)}</p>'
         # Standing live count from the portal snapshot (survives engine
         # restarts, unlike the in-memory job note below it); both lines live
         # in the polled node so they update without a reload.
-        if pool.get("status") == "ok":
+        elif pool.get("status") == "ok":
             pool_line = (f"<p class=\"meta\">{int(pool.get('available') or 0)} of "
                          f"{int(pool.get('total') or 0)} boxes ready to claim</p>")
+        elif stale_pin:
+            # A pin outlives its pool only until the next warm/claim; this is a
+            # notice, not an error, and it must not read as "nothing set up".
+            pool_line = ('<p class="warnmsg">The pool this competition used is '
+                         'gone from the portal; the next pre-deploy or join '
+                         'clones a fresh one from the scenario template.</p>')
         elif pool.get("status") == "unpinned":
             pool_line = '<p class="meta">No boxes pre-deployed yet.</p>'
         elif pool.get("status") == "unavailable":
             pool_line = '<p class="meta">Pool count unavailable right now.</p>'
         else:
             pool_line = ""
+        if state == "idle" and (blocked or stale_pin
+                                or pool.get("status") not in ("unpinned",
+                                                               "unknown")):
+            # The "nothing pre-deployed yet" explainer only fits an empty pool
+            # with nothing else to say; a count, a stale-pin notice or a
+            # blocker would contradict it.
+            note = ""
+        button = (f'<button class="btn" type="submit" disabled title="{esc(predeploy_warn)}">Pre-deploy</button>'
+                  if blocked else '<button class="btn" type="submit">Pre-deploy</button>')
         warm_block = f"""<section class="card"><div class="card-head"><h2>Pre-deploy boxes</h2></div>
-<div id="warm" data-poll="10000">{pool_line}{note}</div>
+<div id="warm" data-poll="10000">{pool_line}{note}
 <form method="post" action="/admin/api/competitions/{esc(comp.id)}/warm" class="warm-form">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <label class="small">Boxes <input name="count" type="number" min="1" max="64" value="{default_count}" style="width:6rem"></label>
-<button class="btn" type="submit">Pre-deploy</button></form></section>"""
+{button}</form></div></section>"""
     # The pool code is portal plumbing (audit log / journal carry it for
     # debugging); the UI stays quiet about pools unless a claim actually fails,
     # in which case the error text lands on the player row.
@@ -1186,6 +1223,7 @@ readable accent; <span class="muted">muted text</span> and
 </section>
 <section class="card"><div class="card-head"><h2>Messages</h2></div>
 <p class="okmsg">.okmsg — the box is joined.</p>
+<p class="warnmsg">.warnmsg — there is no pool to pre-deploy from.</p>
 <p class="error">.error — we couldn't prepare your VM.</p>
 <p class="empty">.empty — no players yet.</p>
 </section>
@@ -1269,6 +1307,9 @@ button rests on a quiet tint and empties to an outline on hover. */
 .btn.danger{color:var(--danger);background:var(--danger-bg)}
 .btn.danger:hover{background:transparent;border-color:var(--danger);color:var(--danger)}
 .btn.copied{color:var(--ok);border-color:var(--ok);background:transparent}
+/* A refused action (no pool to pre-deploy from) must not look pressable. */
+.btn[disabled],.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn[disabled]:hover,.btn:disabled:hover{background:var(--surface-2);border-color:transparent;color:var(--ink-2)}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:0;padding:var(--pad-card)}
 .card.narrow{max-width:640px;margin-left:auto;margin-right:auto}
 .card h1{font-size:1.3rem}
@@ -1340,6 +1381,7 @@ pre code{background:none;padding:0}
 .codebox code{background:none;letter-spacing:inherit;padding:0}
 .vm-actions{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2)}
 .okmsg{color:var(--ok);background:var(--ok-bg);border:1px solid var(--ok);border-radius:0;padding:.6rem .85rem}
+.warnmsg{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);border-radius:0;padding:.6rem .85rem}
 .error{color:var(--danger);background:var(--danger-bg);border:1px solid var(--danger);border-radius:0;padding:.6rem .85rem}
 /* Capacity states users must not miss. */
 .fullnote{display:inline-flex;align-items:center;gap:var(--s2);margin:0;color:var(--warn);background:var(--warn-bg);padding:var(--s2) var(--s3);font-size:.78rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}

@@ -115,6 +115,15 @@ def test_admin_login_page_start_and_csrf(tmp_path):
         status, dashboard, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
         assert status == 200 and "Admin console" in dashboard
         assert 'id="theme-toggle"' in dashboard and 'data-poll="30000"' in dashboard
+        # This engine has no workshop portal configured, so the draft has no
+        # pool to clone from: the console flags the row before the operator
+        # opens it, and the API refuses the click with the same reason.
+        assert 'class="fullflag">No pool to pre-deploy from</div>' in dashboard
+        status, body, _ = _req(port, "POST",
+                               f"/admin/api/competitions/{comp_id}/warm",
+                               {"count": 4}, auth)
+        assert status == 400, body
+        assert "HUITZILOPOCHTLI_WORKSHOP_URL" in body
         status, styleguide, _ = _req(port, "GET", "/admin/styleguide",
                                      headers={"Cookie": cookie})
         assert status == 200 and ">Styleguide<" in styleguide
@@ -123,6 +132,10 @@ def test_admin_login_page_start_and_csrf(tmp_path):
             port, "GET", f"/admin/competitions/{comp_id}", headers={"Cookie": cookie})
         assert status == 200
         assert 'data-poll="15000"' in comp_page
+        # The pre-deploy card warns in place and disables the button instead of
+        # letting the click fail in a background job.
+        assert 'class="warnmsg"' in comp_page
+        assert 'disabled title=' in comp_page
         csrf = re.search(r'name="csrf" value="([^"]+)"', comp_page).group(1)
 
         # Missing CSRF is rejected.
@@ -141,8 +154,35 @@ def test_admin_login_page_start_and_csrf(tmp_path):
         # The public board polls in place and has a <noscript> meta fallback.
         assert 'data-poll="' in page and "<noscript><meta http-equiv=" in page
 
-        # Rerun: end the competition, then rerun it into a fresh draft.
+        # Removing a slot must take it off the roster and free the name: the
+        # row stays as a tombstone (status removed) so the same name can join
+        # again instead of being held forever.
+        status, _body, _headers = _req(
+            port, "POST", "/c/ui-comp/join", "name=Casey",
+            {"Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
         auth = {"X-HUITZILOPOCHTLI-Admin-Token": "token"}
+        status, body, _ = _req(port, "GET",
+                               f"/admin/api/competitions/{comp_id}", headers=auth)
+        casey = next(p for p in json.loads(body)["players"]
+                     if p["name"] == "Casey")
+        status, body, _ = _req(
+            port, "POST", f"/admin/players/{casey['player_id']}/remove",
+            {}, auth)
+        assert status == 200, body
+        status, roster, _ = _req(port, "GET",
+                                 f"/admin/competitions/{comp_id}",
+                                 headers={"Cookie": cookie})
+        assert "Casey" not in roster
+        status, body, _ = _req(port, "GET",
+                               f"/admin/api/competitions/{comp_id}", headers=auth)
+        assert all(p["name"] != "Casey" for p in json.loads(body)["players"])
+        status, _body, _headers = _req(
+            port, "POST", "/c/ui-comp/join", "name=Casey",
+            {"Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+
+        # Rerun: end the competition, then rerun it into a fresh draft.
         assert _req(port, "POST", f"/admin/api/competitions/{comp_id}/end", {}, auth)[0] in (200, 303)
         status, _body, headers = _req(
             port, "POST", f"/admin/api/competitions/{comp_id}/rerun",

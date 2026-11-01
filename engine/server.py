@@ -534,6 +534,7 @@ class Handler(BaseHTTPRequestHandler):
                  "joined_at": p.joined_at, "started_at": p.started_at,
                  "ends_at": p.ends_at, "claim_url": p.claim_url}
                 for p in self.store.list_players(comp.id)
+                if p.status != "removed"
             ]
             self._send_json(200, payload)
             return
@@ -753,8 +754,17 @@ class Handler(BaseHTTPRequestHandler):
     def _render_admin_dashboard(self, session) -> None:
         comps = self.store.list_competitions()
         counts = {c.id: self.store.count_players(c.id) for c in comps}
+        # Structural only (no portal read on the 30 s poll): a competition
+        # with no pool to clone from is flagged on its row before the operator
+        # opens it and presses Pre-deploy.
+        pool_warn = {}
+        for comp in comps:
+            if comp.status == "ended":
+                continue
+            if claims.predeploy_blocker(self.store, comp, check_pin=False):
+                pool_warn[comp.id] = claims.POOL_SOURCE_MISSING_SHORT
         self._send_html(200, web.admin_dashboard_page(
-            comps, counts, session.csrf_token))
+            comps, counts, session.csrf_token, pool_warn=pool_warn))
 
     def _render_admin_new_competition(self, session, error: str = "") -> None:
         sync_errors = scenario_mod.sync_box_scenarios(self.store)
@@ -774,10 +784,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         board = competition.leaderboard_payload(self.store, comp)
         players = self.store.list_players(comp.id)
+        pool = claims.live_pool_status(comp)
         self._send_html(200, web.admin_competition_page(
             comp, board, players, session.csrf_token, msg, error,
             warm=claims.warm_status(comp.id),
-            pool=claims.live_pool_status(comp),
+            pool=pool,
+            # Reuse the snapshot the card already renders, so the warning and
+            # the count never disagree and the page costs one portal GET.
+            predeploy_warn=claims.predeploy_blocker(
+                self.store, comp, pool=pool) or "",
             public_base=self._public_base()))
 
     # --- POST handlers --------------------------------------------------
@@ -1072,7 +1087,12 @@ class Handler(BaseHTTPRequestHandler):
                 if session is None:
                     self._send_json(400, {"error": message})
                 else:
-                    self._render_admin_competition(session, comp.id, error=message)
+                    # A refused click re-renders with the card's standing
+                    # warning already carrying this reason; repeating it in
+                    # the page-level error box would say it twice.
+                    self._render_admin_competition(
+                        session, comp.id,
+                        error="" if result.get("blocked") else message)
                 return
             self.store.add_audit(actor, "competition_warm", comp.id,
                                  details_json=json.dumps(
