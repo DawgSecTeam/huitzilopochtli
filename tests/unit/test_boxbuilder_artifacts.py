@@ -125,6 +125,10 @@ def test_on_box_files_ranked_omits_rubric(tmp_path):
     remotes = [f.remote for f in files]
     # No rubric placed in ranked mode (stays off-box).
     assert not any(r.endswith(f"/{artifacts.RUBRIC_BASENAME}") for r in remotes)
+    # The ranked config is published so `huitz readme`/`score` can explain an
+    # unjoined box to the player (the sealed dir is otherwise unreadable).
+    cfg_files = [f for f in files if f.remote.endswith("/agent_config.json")]
+    assert len(cfg_files) == 1 and cfg_files[0].mode == 0o644
 
 
 def test_on_box_files_honor_requires_rubric(tmp_path):
@@ -201,6 +205,18 @@ def test_motd_script_ranked_grade_line():
     s = artifacts.motd_script("X", None, "ranked")
     assert "sudo huitz grade" not in s, "ranked boxes cannot grade on-box"
     assert "scores arrive from the engine" in s
+
+
+def test_motd_script_ranked_leads_with_join():
+    """A ranked box is unbound until `huitz join`; the banner must teach that
+    before `huitz readme` (which has no report pre-join)."""
+    s = artifacts.motd_script("X", None, "ranked")
+    assert s.index("huitz join") < s.index("huitz readme")
+    assert "one-time code" in s
+    import subprocess
+    run = subprocess.run(["sh", "-c", s], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert "huitz join" in run.stdout
 
 
 def test_motd_script_escapes_single_quotes():

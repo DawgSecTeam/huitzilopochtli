@@ -444,13 +444,14 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             handle.put(f.local, f.remote, mode=f.mode)
             placed.append(f.remote)
         log(f"[boxbuilder] placed {len(placed)} file(s) under {install_dir}")
-        # Seal the dir back to admins-only. POSIX: root:root 0700 (the SFTP
-        # puts above could only run as the SSH login user -- why the dir was
-        # chowned at the top -- so this must come after them). Windows:
-        # strip inheritance, grant only SYSTEM + Administrators. The agent
-        # runs as SYSTEM, so nothing at runtime needs looser ACLs; the seal
-        # keeps the answer key (.score.dat) and, in ranked mode,
-        # identity.json invisible to ordinary accounts on the box.
+        # Seal the dir. POSIX: root:root, and honor stays 0700 because the
+        # rubric there is the answer key. A ranked install has no rubric, and
+        # its CLI must read agent_config.json + the signed manifest before the
+        # box joins (there is no report mirror yet), so ranked seals 0755 with
+        # a world-readable config -- identity.json (the box's private key)
+        # stays 0600 and the report mirror is unchanged. Windows: strip
+        # inheritance, grant only SYSTEM + Administrators. The agent runs as
+        # SYSTEM, so nothing at runtime needs looser ACLs there.
         if is_windows(os_name):
             # Also via run_ps: the /grant tokens contain parens cmd.exe could
             # mangle, and running inside PowerShell keeps the quoting native.
@@ -461,7 +462,8 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             )
         else:
             seal = handle.run(f"chown -R root:root {install_dir} "
-                              f"&& chmod 700 {install_dir}")
+                              f"&& chmod {755 if mode == 'ranked' else 700} "
+                              f"{install_dir}")
         if not seal.ok:
             raise RuntimeError(
                 f"could not seal {install_dir}: {seal.stderr.strip()}")

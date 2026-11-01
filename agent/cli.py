@@ -232,10 +232,61 @@ def locate_snapshot(explicit: str | None = None) -> tuple:
     return None, searched
 
 
+def _ranked_unjoined() -> bool:
+    """True for a ranked install whose box has not joined a competition yet.
+
+    A ranked box has no report until `huitz join` binds it to a player slot;
+    the generic "no grade" error sends a player to `sudo huitz grade` (honor
+    only) or to wait for a check-in that cannot arrive. This lets the reading
+    verbs say what is actually missing.
+    """
+    try:
+        import agent.config
+        config = agent.config.load_config(_install_config_path())
+    except Exception:
+        return False
+    return (config.mode.value == "ranked"
+            and not os.path.isfile(config.identity_path))
+
+
+def _installed_handbook() -> tuple:
+    """(readme_text, accent) from the installed signed manifest.
+
+    The report snapshot that `huitz readme` normally reads only exists after
+    the box joins/grades; the handbook ships in the manifest, so a fresh
+    ranked box can still show it before it is bound to a player slot.
+    """
+    try:
+        import agent.config
+        import agent.__main__ as agent_main
+        config = agent.config.load_config(_install_config_path())
+        manifest = agent_main._load_manifest(
+            config.manifest_path, config.authoring_public_key_path,
+            allow_unsigned=config.allow_unsigned_manifest)
+    except Exception:
+        return None, None
+    theme = getattr(manifest, "theme", None)
+    if theme is None and isinstance(manifest, dict):
+        theme = manifest.get("theme")
+    if not isinstance(theme, dict):
+        return None, None
+    text = theme.get("readme_text")
+    accent = theme.get("accent")
+    return (text if isinstance(text, str) and text.strip() else None,
+            accent if isinstance(accent, str) else None)
+
+
 def _load_snapshot(explicit: str | None) -> dict:
     path, searched = locate_snapshot(explicit)
     if path is None:
         detail = f" (looked in: {', '.join(searched)})" if searched else ""
+        if explicit is None and _ranked_unjoined():
+            raise CliError(
+                "this ranked box has not joined a competition yet — there is "
+                "no score to show" + detail + ".\n"
+                "Open your VM link from the competition page, then run "
+                "`huitz join` here and enter the one-time code it shows."
+            )
         raise CliError(
             "no grade found on this box yet — no report snapshot" + detail + ".\n"
             "Run `sudo huitz grade` (honor) or wait for the re-grade timer / "
@@ -981,7 +1032,19 @@ def cmd_readme(argv: list, outstream) -> int:
                                     {"--report", "--color"})
     if positional:
         raise UsageError(f"readme takes no arguments (got {positional[0]!r})")
-    snap = _load_snapshot(opts.get("--report"))
+    explicit = opts.get("--report")
+    try:
+        snap = _load_snapshot(explicit)
+    except CliError:
+        if explicit:
+            raise
+        # Before a ranked box joins there is no report, but the handbook is
+        # already on disk inside the signed manifest. The login banner tells
+        # players to start here, so it must work on a fresh box.
+        text, accent = _installed_handbook()
+        if not text:
+            raise
+        snap = {"readme": text, "accent": accent}
     text = snap.get("readme")
     if not text or not isinstance(text, str):
         raise CliError(
@@ -994,6 +1057,10 @@ def cmd_readme(argv: list, outstream) -> int:
     sym = Symbols(sty.utf8)
     width = agent.term.detect_width(outstream)
     page = render_readme(text, sty, sym, width) + "\n"
+    if explicit is None and _ranked_unjoined():
+        page += ("\nThis box has not joined a competition yet — open your VM "
+                 "link from the competition page, then run `huitz join` here "
+                 "with its one-time code.\n")
     if not opts.get("--no-pager") and _page(page, outstream):
         return _EXIT_OK
     outstream.write(page)

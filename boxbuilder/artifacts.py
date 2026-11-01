@@ -90,6 +90,28 @@ def motd_script(title: str, organization: Optional[str] = None,
                   if mode == "honor" else
                   "  '  (ranked) scores arrive from the engine at each"
                   " check-in' \\")
+    if mode == "honor":
+        intro = [
+            "  'This box is a hardening challenge: scored misconfigurations' \\",
+            "  'are hiding on this system. Find them, fix them properly, and' \\",
+            "  'keep them fixed. New here? Start with the handbook:' \\",
+            "  '' \\",
+            "  '  huitz readme               the handbook: objective, rules, login' \\",
+            "  '' \\",
+            "  'Then work from the terminal:' \\",
+        ]
+    else:
+        # A ranked box has no report until `huitz join` binds it, so the
+        # first command the banner teaches must be the bind, not readme.
+        intro = [
+            "  'Your box joins when you open the competition link. If it did' \\",
+            "  'not, run this here with the one-time code from your page:' \\",
+            "  '' \\",
+            "  '  huitz join                 bind this box to your competition slot' \\",
+            "  '' \\",
+            "  'Then work from the terminal:' \\",
+            "  '  huitz readme               the handbook: objective, rules, login' \\",
+        ]
     # The description column starts at character 29 in every command line.
     return "\n".join([
         "#!/bin/sh",
@@ -98,13 +120,7 @@ def motd_script(title: str, organization: Optional[str] = None,
         'printf \'%s\\n\' \\',
         f"  '{heading}' \\",
         "  '' \\",
-        "  'This box is a hardening challenge: scored misconfigurations' \\",
-        "  'are hiding on this system. Find them, fix them properly, and' \\",
-        "  'keep them fixed. New here? Start with the handbook:' \\",
-        "  '' \\",
-        "  '  huitz readme               the handbook: objective, rules, login' \\",
-        "  '' \\",
-        "  'Then work from the terminal:' \\",
+        *intro,
         "  '  huitz score                your current standing' \\",
         "  '  huitz watch                live board, re-grades as you work' \\",
         "  '  huitz forensics 1 \"text\"   answer forensics question 1' \\",
@@ -233,5 +249,9 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict,
         os.chmod(cfg_path, 0o600)
     except OSError:
         pass
-    files.append(OnBoxFile(cfg_path, f"{base}{sep}agent_config.json", mode=0o600))
+    # Ranked boxes publish the config so `huitz` can tell the player the box
+    # has not joined yet (and render the handbook from the manifest); it
+    # carries no key material. Honor keeps it inside the sealed answer-key dir.
+    cfg_mode = 0o644 if mode == "ranked" else 0o600
+    files.append(OnBoxFile(cfg_path, f"{base}{sep}agent_config.json", mode=cfg_mode))
     return files

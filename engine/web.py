@@ -668,9 +668,9 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
     codebox = (f'<div class="codebox"><code id="joincode">{esc(code)}</code>'
                f'{_copy_btn(code, "Copy code")}</div>' if code else
                '<p class="muted small">No fallback code is available.</p>')
-    fallback = f"""<li><h2>Join from the terminal (only if needed)</h2>
-<p class="small">You normally never need this — the VM joins itself when
-you open the link. If it doesn't, open a terminal in the VM and run:</p>
+    fallback = f"""<li><h2>Join the box from its terminal</h2>
+<p class="small">Open your VM, then run this in its terminal to bind the box
+to your slot. If the box already reports itself joined, you can skip this.</p>
 <pre><code>huitz join</code></pre>
 <p>When prompted, enter this code:</p>
 {codebox}
@@ -704,8 +704,8 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
                  f'<span>services {esc(row.get("service_points", 0))}</span></div>')
     else:
         score = ('<div class="bigscore muted">—</div>'
-                 '<div class="muted small">Your box hasn\'t joined yet — open your VM; '
-                 'it joins itself.</div>')
+                 '<div class="muted small">Your box hasn\'t joined yet — open your VM, '
+                 'then run <code>huitz join</code> with your code.</div>')
     if running:
         time_block = (f'<span data-remaining="{remaining}">{esc(_fmt_countdown(remaining))}</span>')
     elif player.status == "invited":
@@ -768,7 +768,7 @@ def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
         # The success page still holds the terminal fallback + one-time code;
         # it redirects to this dashboard as soon as the box is joined.
         fallback = (f'<p class="small"><a href="/c/{esc(comp.slug)}/join/success">'
-                    'Terminal fallback and join code</a></p>')
+                    'Join code and terminal instructions</a></p>')
     return f"""<section class="card home-card">
 <div class="card-head"><h2>Your VM</h2>{player_badge(player.status)}</div>
 {note}{action_html}{fallback}
@@ -830,8 +830,8 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                      if row.get("rank") else "On the board")
     else:
         score_block = ('<div class="stat-big muted">—</div>'
-                       '<div class="muted small">Your box hasn\'t joined yet — '
-                       'open your VM; it joins itself.</div>')
+                       '<div class="muted small">Your box hasn\'t joined yet — open '
+                       'your VM, then run <code>huitz join</code> with your code.</div>')
         rank_line = "Not on the board yet"
     board = (_board_table(rows[:8]) if rows else
              '<p class="empty">No scores on the board yet.</p>')

@@ -919,6 +919,45 @@ class TestReadme:
         assert cli.main(["readme", "--report", path2],
                         outstream=_FakeStream()) == 1
 
+    def test_readme_works_before_a_ranked_box_joins(self, tmp_path, monkeypatch):
+        """A fresh ranked box has no report yet; the login banner still sends
+        the player to `huitz readme`, so the handbook must come from the
+        installed signed manifest and the hint must point at `huitz join`."""
+        import types
+
+        import agent.config as config_mod
+        import agent.__main__ as agent_main
+
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.delenv(cli.ENV_REPORT, raising=False)
+        monkeypatch.setattr(cli, "_report_json_from_config",
+                            lambda p: str(tmp_path / "missing.json"))
+        monkeypatch.setattr(cli, "_desktop_report_paths", lambda: [])
+        monkeypatch.setattr(cli, "_install_config_path",
+                            lambda: str(tmp_path / "agent_config.json"))
+        config = types.SimpleNamespace(
+            mode=Mode.RANKED,
+            identity_path=str(tmp_path / "identity.json"),  # never written
+            manifest_path=str(tmp_path / "manifest.signed.json"),
+            authoring_public_key_path=str(tmp_path / "authoring_public_key.b64"),
+            allow_unsigned_manifest=False,
+        )
+        monkeypatch.setattr(config_mod, "load_config", lambda path: config)
+        monkeypatch.setattr(
+            agent_main, "_load_manifest",
+            lambda *a, **kw: _manifest(theme={
+                "title": "X", "readme_text": HANDBOOK, "accent": "#0a7ea4"}))
+
+        out = _FakeStream()
+        assert cli.main(["readme"], outstream=out) == 0
+        assert "Factory Handbook" in out.getvalue()
+        assert "huitz join" in out.getvalue()
+
+        # The score verbs say what is actually missing instead of sending a
+        # ranked player to `sudo huitz grade`.
+        with pytest.raises(cli.CliError, match="huitz join"):
+            cli._load_snapshot(None)
+
     def test_wrapped_prose_reflows_and_never_spills(self):
         # Source hard-wraps are an authoring artifact: the renderer folds the
         # paragraph and re-wraps it to the terminal width.
