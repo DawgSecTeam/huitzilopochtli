@@ -134,8 +134,10 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
     clock has run out is treated as finished even if no check-in has
     persisted that status yet.
     """
+    # A player is on the board only once a box is bound: a slot that has not
+    # connected yet must never look like a zero-point competitor.
     players = [p for p in store.list_players(comp.id)
-               if p.status in ("running", "finished")]
+               if p.status in ("running", "finished") and p.box_id]
     scored = []
     for p in players:
         status = p.status

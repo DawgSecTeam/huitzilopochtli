@@ -694,18 +694,38 @@ when it does.</p></li>"""
 
 def player_page(comp: CompetitionRecord, player: PlayerRecord,
                 board_row: Optional[dict], claim_url: Optional[str],
-                csrf: str = "", admin: bool = False) -> str:
+                csrf: str = "", admin: bool = False,
+                join_code: str = "") -> str:
     row = board_row or {}
+    joined = bool(player.box_id)
     running = player.status == "running"
     remaining = max(0, int(player.ends_at - time.time())) if (running and player.ends_at) else 0
     if row:
         score = (f'<div class="bigscore">{esc(row.get("total", 0))}</div>'
                  f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
                  f'<span>services {esc(row.get("service_points", 0))}</span></div>')
+    elif joined:
+        score = ('<div class="bigscore muted">—</div>'
+                 '<div class="muted small">Your box is joined — waiting for its '
+                 'first engine check-in.</div>')
     else:
         score = ('<div class="bigscore muted">—</div>'
-                 '<div class="muted small">Your box hasn\'t joined yet — open your VM, '
-                 'then run <code>huitz join</code> with your code.</div>')
+                 '<div class="muted small">Not scoring: your box has not joined yet.</div>')
+    join_panel = ""
+    if not joined:
+        code = (join_code or player.join_code_plain or "").strip()
+        code_block = (f'<div class="codebox" aria-label="one-time join code">'
+                      f'<code>{esc(code)}</code></div>' if code else
+                      '<p class="muted" id="code-wait">Your one-time code is being '
+                      'prepared — refresh this page in a moment.</p>')
+        join_panel = f'''<div class="warnmsg"><strong>You have not joined yet.</strong>
+Your box is not on the board, nothing is scoring, and your clock has not
+started. Open your VM, run <code>huitz join</code> in its terminal, and enter
+this code:</div>
+{code_block}
+<p class="small">1. Open your VM. 2. In its terminal run
+<code>huitz join</code>. 3. Enter the code above. This page updates when the
+box joins.</p>'''
     if running:
         time_block = (f'<span data-remaining="{remaining}">{esc(_fmt_countdown(remaining))}</span>')
     elif player.status == "invited":
@@ -713,10 +733,11 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
     else:
         time_block = '<span class="muted">—</span>'
     body = f"""<section class="page-head-row"><div>
-<div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}</div>
+<div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}{'' if joined else '<span class="fullflag">not joined</span>'}</div>
 <p class="meta">{esc(comp.name)}</p></div></section>
 <div id="run" data-poll="15000">
 <section class="card narrow">
+{join_panel}
 <div class="row me-top">
 <div>{score}</div>
 <div class="me-right"><div class="muted small">Time remaining</div>
@@ -729,7 +750,7 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
 </dl>
 {f'<p><a class="btn primary" href="{esc(claim_url)}" target="_blank" rel="noopener">Open my VM</a></p>' if claim_url else ''}
 {'' if player.box_id or player.claim_url or player.claim_ticket else _claim_retry_form(player, csrf)}
-{f'<p class="error">{esc(player.claim_error)}</p>' if player.claim_error else ''}
+{f'<p class="error">{esc(player.claim_error)}</p>' if player.claim_error and 'join code' not in player.claim_error.lower() else ''}
 <p><a href="/c/{esc(comp.slug)}">Leaderboard →</a></p>
 </section>
 </div>"""
@@ -764,14 +785,26 @@ def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
     action_html = (f'<div class="home-actions">{"".join(actions)}</div>'
                    if actions else "")
     fallback = ""
+    join_hint = ""
     if not player.box_id:
-        # The success page still holds the terminal fallback + one-time code;
-        # it redirects to this dashboard as soon as the box is joined.
+        # The code has to be visible where the player lands, not only on the
+        # success page: without it the VM looks joined but nothing is scoring.
+        code = (player.join_code_plain or "").strip()
+        code_block = (f'<div class="codebox"><code>{esc(code)}</code></div>'
+                      if code else
+                      '<p class="muted" id="code-wait">Your one-time code is '
+                      'being prepared — this page updates automatically.</p>')
+        join_hint = f'''<div class="warnmsg"><strong>Not joined yet.</strong> Open
+your VM, run <code>huitz join</code> in its terminal, and enter this code:</div>
+{code_block}
+<p class="small">Nothing is scoring and your clock has not started until the
+box joins.</p>'''
+        # The success page still holds the same code + instructions.
         fallback = (f'<p class="small"><a href="/c/{esc(comp.slug)}/join/success">'
-                    'Join code and terminal instructions</a></p>')
+                    'Join instructions</a></p>')
     return f"""<section class="card home-card">
 <div class="card-head"><h2>Your VM</h2>{player_badge(player.status)}</div>
-{note}{action_html}{fallback}
+{note}{join_hint}{action_html}{fallback}
 </section>"""
 
 

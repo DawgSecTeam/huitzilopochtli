@@ -360,6 +360,31 @@ def test_bound_join_success_hides_the_fallback_code():
     assert 'data-copy="ABCD2345"' not in page
 
 
+def test_unjoined_membership_makes_the_code_impossible_to_miss():
+    page = web.player_page(
+        _comp(), _player(status="invited", box_id=None, claim_url="http://g/x"),
+        None, "http://g/x", join_code="ABCD2345")
+    assert "You have not joined yet" in page
+    assert "not on the board" in page
+    assert 'class="codebox"' in page and "ABCD2345" in page
+    assert "huitz join" in page
+    assert '<span class="fullflag">not joined</span>' in page
+    # Once bound, neither the warning nor the code is rendered.
+    bound = web.player_page(_comp(), _player(box_id="box-1"),
+                            _board_row(), "http://g/x", join_code="ABCD2345")
+    assert "You have not joined yet" not in bound
+    assert "ABCD2345" not in bound
+    assert "not joined</span>" not in bound
+
+
+def test_home_card_shows_the_code_until_the_box_joins():
+    page = web.home_competition_page(
+        _comp(), _player(status="invited", box_id=None), None, [], "http://g/x",
+        csrf="c", leave_csrf="c", player_count=1, services=[])
+    assert "Not joined yet" in page and 'class="codebox"' in page
+    assert "ABCD2345" in page
+
+
 def test_player_page_hides_retry_once_a_vm_exists():
     vmed = _player(status="invited", box_id=None,
                    claim_url="http://portal/r/u1")

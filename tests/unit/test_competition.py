@@ -183,6 +183,20 @@ def test_run_expiry_freezes_and_marks_finished(store):
     assert row["status"] == "finished" and row["remaining_s"] == 0
 
 
+def test_unjoined_slot_never_appears_on_the_board(store):
+    """No box, no row: a slot that never connected must not look like a
+    zero-point competitor (and can never display a score)."""
+    comp = _comp(store)
+    player, _code, err = competition.create_player_with_code(
+        store, comp, "Ada", b"secret")
+    assert err is None
+    assert competition.leaderboard_payload(store, comp)["leaderboard"] == []
+    # Even if a stale/forced status says running, an unbound slot is hidden.
+    store.update_player(player.player_id, status="running", started_at=0,
+                        ends_at=10_000_000_000)
+    assert competition.leaderboard_payload(store, comp)["leaderboard"] == []
+
+
 def test_duplicate_name_and_max_players(store):
     comp = _comp(store)
     p1, _code, err = competition.create_player_with_code(store, comp, "Ada", b"s")

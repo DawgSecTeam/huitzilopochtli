@@ -823,8 +823,18 @@ def rotate_code_if_needed(store: Store, player: PlayerRecord,
         workshop.push_prebind(base, player.claim_uid, code, secret=secret,
                               back_url=back_url)
     except workshop.WorkshopError as exc:
-        # Keep the code the player may already have; a portal outage must not
-        # churn the fallback code out from under them.
+        if getattr(exc, "status", None) in (404, 405):
+            # This portal has no /api/prebind: it hands out a VM but never
+            # stores a code. The player still types the code by hand, so keep
+            # the fresh one (the old one may already be expired) and stop
+            # surfacing a portal-shape mismatch as a player-facing error.
+            store.add_audit(
+                "system", "prebind_unavailable", player.competition_id,
+                player.player_id,
+                details_json=json.dumps({"error": str(exc)[:200]}))
+            store.update_player(player.player_id, claim_error=None)
+            return True
+        # A real portal outage: keep the code the player may already have.
         store.update_player(
             player.player_id, join_code_hash=old[0], join_code_plain=old[1],
             join_code_expires_at=old[2])

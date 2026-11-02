@@ -446,6 +446,14 @@ class Handler(BaseHTTPRequestHandler):
             # gets the public list (admins also see non-live competitions).
             player, current = self._current_player()
             if competition.is_active_player(player, current):
+                if not player.box_id:
+                    # Keep the manual join code fresh even on a portal without
+                    # /api/prebind; the page below shows it.
+                    claims.rotate_code_if_needed(
+                        self.store, player, self.server_secret,
+                        back_url=(f"{self._public_base()}/c/{current.slug}"
+                                  "/join/success"))
+                    player = self.store.get_player(player.player_id)
                 data = competition.leaderboard_payload(self.store, current)
                 row = next((r for r in data["leaderboard"]
                             if r["player_id"] == player.player_id), None)
@@ -669,13 +677,18 @@ class Handler(BaseHTTPRequestHandler):
                     "Open the join page to enter this competition.",
                     f"/c/{comp.slug}/join"))
                 return
+            if not player.box_id:
+                claims.rotate_code_if_needed(
+                    self.store, player, self.server_secret,
+                    back_url=f"{self._public_base()}/c/{comp.slug}/join/success")
+                player = self.store.get_player(player.player_id)
             data = competition.leaderboard_payload(self.store, comp)
             row = next((r for r in data["leaderboard"]
                         if r["player_id"] == player.player_id), None)
             self._send_html(200, web.player_page(
                 comp, player, row, player.claim_url,
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
-                admin=is_admin))
+                admin=is_admin, join_code=player.join_code_plain or ""))
             return
         self._send_html(404, web.error_page(404, "Not found",
                                             "The page you requested does not exist.",

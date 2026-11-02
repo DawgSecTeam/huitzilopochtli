@@ -465,6 +465,30 @@ def test_near_expiry_code_is_rotated_and_pushed(store, comp, player,
     assert updated.join_code_expires_at > time.time() + 1700
 
 
+def test_portal_without_prebind_keeps_the_fresh_code(store, comp, player,
+                                                    monkeypatch):
+    """A portal with no /api/prebind still needs the player to see a valid
+    code; rotation must not restore an already-expired one or record a
+    player-facing error."""
+    _claim_ok(monkeypatch)
+    claims.start(store, comp, player)
+    store.update_player(player.player_id, join_code_expires_at=time.time() + 5,
+                        claim_error="could not update the VM's join code: HTTP 404")
+    original = store.get_player(player.player_id)
+
+    def no_prebind(*a, **kw):
+        exc = workshop.WorkshopError("HTTP 404")
+        exc.status = 404
+        raise exc
+
+    monkeypatch.setattr(claims.workshop, "push_prebind", no_prebind)
+    assert claims.rotate_code_if_needed(store, original, b"secret")
+    after = store.get_player(player.player_id)
+    assert after.join_code_plain != original.join_code_plain
+    assert after.join_code_expires_at > time.time() + 1700
+    assert after.claim_error is None
+
+
 # --- sweep (automatic dispensing) -----------------------------------------------
 
 
