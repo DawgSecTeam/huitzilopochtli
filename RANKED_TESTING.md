@@ -54,6 +54,7 @@ skips unless the suite runs as root.
 | Packaging | `test_zipapp.py` | The built `.pyz` ranked against a local engine; source-tree/zipapp equivalence |
 | Boxbuilder | `tests/integration/boxbuilder/`, `tests/unit/test_boxbuilder_*.py` | compile/plant/install/package, competition mode (no token, agent unit left stopped), mode flags, no deployment facts in specs, engine client |
 | Live VMs | `tests/proxmox/*` | Honor distribution, every check type on Ubuntu/Fedora, Windows checks + install, ranked across two real machines — see `tests/README.md` |
+| Live range campaign (manual) | — | Eight scenarios on one cluster, concurrent competitions, join storm, forensics answer scoring (wrong/blank/correct), disqualify + VM release, close-join, code reissue revocation, mid-run engine restarts, Windows break/fix score movement |
 
 ## Harness facts that change how you debug
 
@@ -116,6 +117,13 @@ matrix was written.
     that needs two rubrics needs a schema change.
 11. **No long-duration or scale soak.** Live runs have covered small fields for
     minutes to a couple of hours; nothing pins dozens of boxes for hours.
+ 12. **`close-join` is one-way.** Confirmed live: after a close, joins
+     answer 400 "This competition is not accepting joins." and no reopen
+     verb exists (`start` flips `join_open` only from `draft`). Reopening
+     means a raw DB write — an `open-join` action is the missing half.
+ 13. **The audit trail has no HTTP surface.** `store.list_audit()` has
+     zero callers; verifying who did what means reading `engine.db` on
+     the engine host.
 
 ## Backlog for the next ranked round
 
