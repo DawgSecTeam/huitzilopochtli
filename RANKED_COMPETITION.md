@@ -299,6 +299,23 @@ plain claim; with only the portal side set, nothing changes.
   of portal config fixes it — treat terminal fallback as the primary flow
   there, and note prebind was never the security boundary: the code is
   one-time, per-player, and rotates.
+- **A ranked pool template is only sealed AFTER its plant step.** An
+  install-only template (agent placed, `boxbuilder plant` skipped) binds,
+  scores, and accrues SLA perfectly while every vulnerable-state check passes
+  vacuously — there is nothing for players to harden, and several scenarios'
+  "is absent" checks silently award points. Verify plant evidence exists on
+  the box (a named planted user/file per `nakon.json` config) before
+  `seal-prepare`, and re-verify the installed `manifest.signed.json` carries
+  THIS scenario's `scenario_name` — a template sealed with the wrong
+  manifest rejects every player bind with 409 "built for a different
+  scenario". (Both failure modes were found in the 2026-11 range rehearsal.)
+- **Some forensics evidence is adversary-authored.** In scenarios whose
+  adversary actions plant or overwrite evidence (Broadneck: the
+  `mailchute` forward in `/home/postmaster/.forward` replaces a benign
+  seeded forwarder only when the replay action fires), an early answer that
+  reads the on-disk artifact is scored against the rubric's post-event truth.
+  Brief players that forensics may need a re-check later in the run, and
+  prefer answering after the run's midpoint.
 
 ## 4. Player join flow
 
