@@ -129,6 +129,32 @@ def render_template(questions: list) -> str:
     return "\n".join(lines)
 
 
+def extract_questions(content: str) -> dict:
+    """{ordinal: question text} for a rendered answers file."""
+    out = {}
+    for line in content.splitlines():
+        m = QUESTION_RE.match(line.strip())
+        if m:
+            out[int(m.group(1))] = line.strip()[len(m.group(0)):].strip()
+    return out
+
+
+def is_stale_blank_template(content: str, questions: list) -> bool:
+    """True when `content` is an UNTOUCHED answers file whose questions are
+    not `questions` — the signature of a sealed image that shipped the
+    previous scenario's Forensics-Questions.txt (rehearsal: Harborline
+    clones carried Saltmarsh's blank questions). Rewriting is safe only
+    while no team has typed an answer: one real answer anywhere and the
+    file belongs to them.
+    """
+    for ordinal, _text in questions:
+        answer, _found = extract_answer(content, ordinal)
+        if answer and not ANSWER_PLACEHOLDER_RE.match(answer):
+            return False
+    want = {int(ordinal): str(text) for ordinal, text in questions}
+    return extract_questions(content) != want
+
+
 # Runs in a child process that has already dropped to the file owner's uid/gid
 # (subprocess user=/group=), so a symlink planted in the owner's directory
 # can only redirect the write to somewhere that user could write anyway.

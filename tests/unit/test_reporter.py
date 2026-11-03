@@ -19,7 +19,12 @@ def _score(**overrides):
     return ScoreBreakdown(**defaults)
 
 
-def test_no_theme_arg_and_explicit_none_are_identical():
+def test_no_theme_arg_and_explicit_none_are_identical(monkeypatch):
+    # render_report embeds time.time() (countdown/now), so two renders at
+    # real wall-clock can differ across a second boundary — freeze the
+    # clock so the assertion compares the theme argument, not timing.
+    import time as _t
+    monkeypatch.setattr(_t, "time", lambda: 1_790_000_000.0)
     score = _score()
     assert render_report(score, Mode.HONOR, None) == render_report(score, Mode.HONOR, None, theme=None)
 

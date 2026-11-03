@@ -618,6 +618,16 @@ def _dir_owner(path: str):
 def _write_answers_file(path: str, content: str) -> None:
     """Replace the answers file, preserving mode + ownership (root editing a
     user's file must not seize it)."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    if not os.path.isdir(directory):
+        # Scenario-authored answer homes (…/Desktop) are missing on some
+        # base images; creating the parent beats a raw mkstemp traceback.
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError as e:
+            raise CliError(
+                f"cannot create the answers directory {directory!r}: "
+                f"{e.strerror or e} — try again with sudo")
     try:
         st = os.stat(path)
         mode, uid, gid = st.st_mode & 0o7777, st.st_uid, st.st_gid
@@ -632,8 +642,13 @@ def _write_answers_file(path: str, content: str) -> None:
                 path, content, owner[0], owner[1],
                 mode if mode is not None else 0o666)
             return
-    directory = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".huitz-answers-")
+    try:
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".huitz-answers-")
+    except PermissionError:
+        raise CliError(
+            f"no write access to {directory!r} — the Desktop directory is "
+            f"owned by root on this image; answer with: "
+            f"sudo huitz forensics N \"answer\"")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
@@ -658,12 +673,22 @@ def _write_answers_file(path: str, content: str) -> None:
 
 
 def _ensure_answers_file(path: str, entries: list) -> None:
-    if os.path.exists(path):
-        return
     questions = [
         (_entry_ordinal(e, i), str(e.get("question", "")))
         for i, e in enumerate(entries)
     ]
+    if os.path.exists(path):
+        # Same stale-image guard as the boot writer: an untouched file with
+        # another scenario's questions is replaced; anything a team touched
+        # is left alone.
+        try:
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                current = f.read(agent.answers.CONTENT_LIMIT + 1)
+        except OSError:
+            return
+        if not (len(current) <= agent.answers.CONTENT_LIMIT
+                and agent.answers.is_stale_blank_template(current, questions)):
+            return
     _write_answers_file(path, agent.answers.render_template(questions))
 
 

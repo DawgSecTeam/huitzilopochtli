@@ -324,12 +324,32 @@ def _prepare_forensics(manifest, config_dir: str) -> None:
         by_path.setdefault(path, []).append(spec)
 
     for path, specs in by_path.items():
-        if os.path.exists(path):
-            continue
         specs.sort(key=lambda s: s.collect_params.get("ordinal", 0))
         questions = [
             (s.collect_params.get("ordinal", 0), s.display_title) for s in specs
         ]
+        if os.path.exists(path):
+            # The file belongs to the team once they type in it — keep it.
+            # Exception: an untouched template that shipped with a sealed
+            # image from ANOTHER scenario (stale questions score nothing and
+            # mislead players); replace only that.
+            try:
+                with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                    current = f.read(agent.answers.CONTENT_LIMIT + 1)
+            except OSError:
+                continue
+            if not (len(current) <= agent.answers.CONTENT_LIMIT
+                    and agent.answers.is_stale_blank_template(current, questions)):
+                continue
+        parent = os.path.dirname(path)
+        if parent:
+            # Explicit scenario paths live in scenario-authored homes that a
+            # base image may not carry at all (rehearsal: /home/librarian/…
+            # was missing, silently killing every forensics file).
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError:
+                pass  # the write below reports it
         try:
             _write_forensics_template(path, questions)
         except OSError as e:
