@@ -33,13 +33,21 @@ def pools_path() -> str:
 
 
 def source_stamp() -> tuple:
-    """(path, mtime_ns, size) for the scan cache; missing file is (path, 0, 0)."""
+    """(path, mtime_ns, size, mode, uid) for the scan cache.
+
+    Missing file is (path, 0, 0, 0, 0). Mode and owner ride the key on
+    purpose: chown/chmod move neither mtime nor size, so a pools file that
+    becomes unreadable (or readable again) mid-run would otherwise never
+    invalidate the cached scan -- the engine would keep serving a stale
+    mirror in total silence, which is exactly how this file's permission
+    failure stayed invisible once already.
+    """
     path = pools_path()
     try:
         st = os.stat(path)
     except OSError:
-        return (path, 0, 0)
-    return (path, st.st_mtime_ns, st.st_size)
+        return (path, 0, 0, 0, 0)
+    return (path, st.st_mtime_ns, st.st_size, st.st_mode, st.st_uid)
 
 
 def load_overrides(path: str = None) -> dict:

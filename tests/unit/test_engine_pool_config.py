@@ -131,3 +131,46 @@ def test_unreadable_pool_map_says_who_must_read_it(tmp_path, monkeypatch):
         os.chmod(pools, 0o600)
     assert found is None and errors
     assert "readable by" in errors[0], errors
+
+
+def test_stamp_moves_on_mode_and_owner_changes(tmp_path, monkeypatch):
+    """chmod/chown move neither mtime nor size -- the stamp must see them.
+
+    An unreadable-chmod of the pools file mid-run is the real deployment
+    failure; the scan cache only revalidates when source_stamp() moves, so
+    mode and owner have to ride the key.
+    """
+    pools = _pools(tmp_path, {"Pool Box": {
+        "template_vm_id": 4242, "template_vm_access_method": "ssh",
+        "template_vm_username": "u", "template_vm_password": "p",
+        "vm_count": 1}})
+    monkeypatch.setenv("HUITZILOPOCHTLI_POOLS_FILE", str(pools))
+    before = pool_config.source_stamp()
+    os.chmod(pools, 0o600)
+    assert pool_config.source_stamp() != before
+    os.chmod(pools, 0o000)
+    assert pool_config.source_stamp() != before
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_mid_run_unreadable_chmod_is_caught(tmp_path, monkeypatch):
+    """A good scan followed by a bad chmod must surface on the next scan."""
+    root = tmp_path / "boxes"
+    root.mkdir()
+    _box(root)
+    pools = _pools(tmp_path, {"Pool Box": {
+        "template_vm_id": 4242, "template_vm_access_method": "ssh",
+        "template_vm_username": "u", "template_vm_password": "p",
+        "vm_count": 1}})
+    monkeypatch.setenv("HUITZILOPOCHTLI_POOLS_FILE", str(pools))
+    monkeypatch.setattr(scenario, "boxes_dir", lambda: str(root))
+    _reset_scan()
+    found, errors = scenario._scan_box_folder()
+    assert errors == () and found
+    os.chmod(pools, 0o000)
+    try:
+        found2, errors2 = scenario._scan_box_folder()
+    finally:
+        os.chmod(pools, 0o600)
+    assert found2 is None and errors2
+    assert any("readable by" in e for e in errors2), errors2
