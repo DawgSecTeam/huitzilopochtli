@@ -1232,6 +1232,13 @@ class Handler(BaseHTTPRequestHandler):
             claims.cleanup_pool(self.store, self.store.get_competition(comp.id))
         elif action == "close-join":
             self.store.set_join_open(comp.id, False)
+        else:
+            # Every real branch above answers and returns; falling through
+            # here means the verb does not exist. Silence-with-ok:true let
+            # typos (and probe junk) write audit rows that looked like they
+            # did something.
+            self._send_json(400, {"error": f"unknown competition action: {action}"})
+            return
         self.store.add_audit(actor, f"competition_{action}", comp.id,
                              remote_addr=self.client_address[0] if self.client_address else None)
         if session is None:
@@ -1315,8 +1322,24 @@ class Handler(BaseHTTPRequestHandler):
             self.store.set_player_status(player.player_id, "disqualified")
         elif action == "remove":
             self.store.remove_player(player.player_id)
+        else:
+            self._send_json(400, {"error": f"unknown player action: {action}"})
+            return
+        # Losing the seat means losing the box. Player-initiated leave has
+        # always released the VM; an admin disqualify/remove must not leave
+        # it running until the portal's lease happens to expire. Best
+        # effort, exactly like leave: the portal reaper collects a miss.
+        released = False
+        base, _secret = claims.config()
+        if base and player.claim_uid:
+            try:
+                workshop.release_vm(base, player.claim_uid)
+                released = True
+            except workshop.WorkshopError:
+                pass
         self.store.add_audit(actor, f"player_{action}",
-                             comp.id if comp else None, player.player_id)
+                             comp.id if comp else None, player.player_id,
+                             details_json=json.dumps({"released_vm": released}))
         if session is None:
             self._send_json(200, {"ok": True, "action": action})
             return
