@@ -202,6 +202,13 @@ the scheduled task instead.
   them with the template so a later rebuild can prove which key it descends
   from, and back the private key up — `artifacts/` is gitignored, and without
   it the lineage can be verified but never re-signed.
+- **An install-only lineage (`compile --no-bundle`) is a plumbing template,
+  not a playable one.** With nothing planted, most vuln checks pass against
+  the bare base image, so fresh-box scores look near-full and a break/fix
+  cycle (fail a check, watch the score drop at the next check-in, repair it,
+  watch it return) is the honest way to prove scoring works. A competition
+  real enough to play needs the planted lineage: catalog access at build time
+  (`vendor/nakon/.env`, vulndb reachable).
 
 ## Windows differences
 
@@ -224,6 +231,14 @@ the scheduled task instead.
   (`shutdown /s` — a hard stop sets the dirty bit and shows every clone the
   Shutdown Event Tracker modal), then convert and rename. Strip build-only
   shared folders and grants; whatever ACLs and shares remain are baked in.
+- **Clones share the template's machine identity unless you sysprep.** Windows
+  has no machine-id, so nothing in `seal-prepare` neutralizes it: every clone
+  boots with the same SID and (on domain members) the same secure channel.
+  Scoring and enrollment are unaffected — box identity here is the signed
+  `identity.json` minted at `huitz join`, not the OS's — but if a scenario
+  leans on per-machine Windows identity, run `sysprep /generalize /oobe /quit`
+  on a disposable clone and re-template from it; never generalize a clone
+  that has already joined a domain.
 - **Domain controllers**: authentication can fail or reset for the first
   minutes after boot while AD initialises. Wait with bounded, spaced retries
   and make checks fail closed during the window; never loop credentials. Shut

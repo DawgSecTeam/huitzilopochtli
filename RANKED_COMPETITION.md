@@ -205,6 +205,15 @@ back to the committed `${VAR}` expansion (single-box deployments). The
 installer creates an empty map if none is supplied and copies one from
 `HUITZ_POOLS_FILE` when given.
 
+**The file must be readable by the engine's own user** (`huitz` under the
+reference install — `chown huitz:huitz`, `chmod 640`). A root-owned 0600 file
+fails the scan exactly like a malformed one: the store keeps serving the last
+good mirror, claims answer *"the scenario has no pool provisioning block"*,
+and nothing else looks wrong. The admin competition picker shows the error,
+and the sweep loop now repeats it to stderr on first sight and on every
+change (`scenario sync: …` / `scenario sync: recovered`); a `Permission denied`
+there names the user that must be granted read.
+
 Add the block after the template is sealed (the VM id only exists then), then
 recompile and upload. `compile` fails on an unset variable rather than
 shipping an empty id or password:
@@ -243,6 +252,11 @@ does with it:
   pool the portal no longer lists is not a dead end: the next pre-deploy or
   join re-clones one from the scenario's template (audit
   `competition_pool_stale`).
+- **Seat sizing.** `vm_count` is the pool's pre-provisioned size. A claim that
+  finds every seat spoken waits in `invited` (retry tickets) until one frees —
+  a player leaving or a run clock expiring releases its VM promptly — or until
+  the portal's dispenser adds one. Size it to expected concurrency; joining
+  into a saturated pool is not an error, but the player sees a wait.
 
 ### 3.2 Pre-bound joins (no terminal, no code)
 
@@ -273,6 +287,18 @@ plain claim; with only the portal side set, nothing changes.
   `python C:\ProgramData\huitzilopochtli\agent.pyz join --code <code>` for
   `rdp` pools (`HUITZ_WIN_PYTHON` / `HUITZ_WIN_AGENT`); the join enables the
   `HuitzilopochtliAgent` task, shipped registered but disabled.
+- **Prebind fires on *open*, never on claim.** The join command runs inside
+  the guest only when the player opens their VM link. A claimed box nobody
+  opens — headless `ssh`-method boxes whose Guacamole session has nothing to
+  show are the usual case — sits bound-to-nobody indefinitely. Nothing is
+  broken: the player's page carries the code, and `huitz join --code <code>`
+  run any way the operator can reach the box completes the same bind.
+- **`guest-exec` is a hard dependency of prebind.** A hypervisor whose QEMU
+  guest agent API does not implement `guest-exec` (stripped or shimmed PVE
+  installs answer 501) fails every prebind, Windows included, and no amount
+  of portal config fixes it — treat terminal fallback as the primary flow
+  there, and note prebind was never the security boundary: the code is
+  one-time, per-player, and rotates.
 
 ## 4. Player join flow
 
@@ -297,7 +323,19 @@ new session; if the VM is gone, the portal says so and links back.
 
 **Leaving is a forfeit.** **Leave competition** releases the VM, removes the
 slot and its score from the board, clears the player cookie, and frees the
-player to join another competition. It cannot be undone.
+player to join another competition. It cannot be undone. ("The board" is the
+competition page. `GET /leaderboard?scenario=…` is the scenario's historical
+view: it lists every score ever submitted, and a forfeited box simply stops
+checking in — rows age out by silence, they are not deleted.)
+
+**Scripted players.** The join POST is a PRG: it answers 303 with the
+`huitz_player` cookie *on the redirect*, and every later call needs it.
+Browsers carry it across redirects; HTTP clients that follow redirects
+without storing `Set-Cookie` (urllib's default opener is the classic) end up
+cookie-less and see `/c/<slug>/join/success` 404 "No player session" — even
+though the join itself created the invited player and started the claim.
+Suppress redirects (or capture the cookie jar on the 303) and replay the
+Location by hand.
 
 **Fallback.** The join page's "Join from the terminal" section carries
 `huitz join` and the code; an admin can reissue it (rotating the portal's copy)

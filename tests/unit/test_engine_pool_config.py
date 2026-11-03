@@ -1,6 +1,7 @@
 """Per-box pool deployment map for the engine's box-folder source."""
 import os
 
+import pytest
 import yaml
 
 from engine import pool_config, scenario
@@ -106,3 +107,27 @@ def test_malformed_pool_map_is_a_scan_error(tmp_path, monkeypatch):
     _reset_scan()
     found, errors = scenario._scan_box_folder()
     assert found is None and errors and "scenarios" in errors[0]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_unreadable_pool_map_says_who_must_read_it(tmp_path, monkeypatch):
+    """A root-owned 0600 pools file must name the readable-by problem.
+
+    The engine runs as an unprivileged user; when the file exists but that
+    user cannot read it, the error has to say so -- a bare errno left
+    operators staring at a perfectly valid file.
+    """
+    root = tmp_path / "boxes"
+    root.mkdir()
+    _box(root)
+    pools = _pools(tmp_path, {})
+    os.chmod(pools, 0o000)
+    monkeypatch.setenv("HUITZILOPOCHTLI_POOLS_FILE", str(pools))
+    monkeypatch.setattr(scenario, "boxes_dir", lambda: str(root))
+    _reset_scan()
+    try:
+        found, errors = scenario._scan_box_folder()
+    finally:
+        os.chmod(pools, 0o600)
+    assert found is None and errors
+    assert "readable by" in errors[0], errors

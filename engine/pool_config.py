@@ -51,7 +51,14 @@ def load_overrides(path: str = None) -> dict:
     except FileNotFoundError:
         return {}
     except OSError as exc:
-        raise PoolConfigError(f"{path}: {exc}") from exc
+        # A root-owned 0600 file on a huitz-run engine is the classic case:
+        # the engine can see the path but not read it, so say who must be
+        # able to read it instead of leaving a bare errno behind.
+        hint = ""
+        if isinstance(exc, PermissionError):
+            hint = (f" (the engine runs as {os.environ.get('USER', '?')}; "
+                    f"make the file readable by that user)")
+        raise PoolConfigError(f"{path}: {exc}{hint}") from exc
     except yaml.YAMLError as exc:
         raise PoolConfigError(f"{path}: {exc}") from exc
     if data is None:

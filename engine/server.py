@@ -41,6 +41,23 @@ def _load_engine_record(path: str) -> dict:
         return json.load(f)
 
 
+def _sync_report(errors, previous: Optional[str]) -> tuple:
+    """(message, current_text) for one sweep's sync errors, deduplicated.
+
+    A scan failure (unreadable pools file, malformed box) makes
+    ``sync_box_scenarios`` fail safe -- the store mirror keeps serving the
+    last good pass -- so the only symptom is stale configuration unless the
+    error is reported. The sweep runs every ~15 s, so log only when the
+    error text changes: first sight, each new failure, and once on recovery.
+    """
+    text = "; ".join(str(error) for error in (errors or ()))
+    if text == (previous or ""):
+        return None, previous
+    if not text:
+        return "recovered", ""
+    return text, text
+
+
 def _require_str(d: dict, key: str) -> str:
     v = d.get(key)
     if not isinstance(v, str) or not v:
@@ -1741,10 +1758,18 @@ def main() -> None:
         sweep_interval = 15
 
     def _sweep_loop() -> None:
+        previous_sync: Optional[str] = None
         while True:
             time.sleep(sweep_interval)
             try:
-                scenario_mod.sync_box_scenarios(store)
+                # A failed scan (unreadable pools file, broken box) fails
+                # safe: the mirror keeps serving the last good pass. Without
+                # this the failure is invisible after startup, so report it
+                # -- once per distinct error, not every tick.
+                message, previous_sync = _sync_report(
+                    scenario_mod.sync_box_scenarios(store), previous_sync)
+                if message:
+                    print(f"scenario sync: {message}", file=sys.stderr)
             except Exception as exc:  # one bad sweep must not kill the loop
                 print(f"scenario sync error: {exc}", file=sys.stderr)
             if not claims.enabled():
