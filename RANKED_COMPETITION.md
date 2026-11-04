@@ -316,6 +316,19 @@ plain claim; with only the portal side set, nothing changes.
   reads the on-disk artifact is scored against the rubric's post-event truth.
   Brief players that forensics may need a re-check later in the run, and
   prefer answering after the run's midpoint.
+- **A big Windows rubric takes minutes for its first score.** A 90-check
+  Windows scenario runs each check as a PowerShell invocation, so the first
+  scored check-in can land 3-5 minutes after `huitz join` says "the ranked
+  agent is starting". A freshly bound Windows box that shows no score yet is
+  not broken — watch the engine until the first check-in arrives before
+  calling a template dead. (Verification mistake made in the 2026-11
+  rehearsal: Windows templates were marked unscored after a 90-second wait.)
+- **`--competition` is what makes a pool template installable.** A plain
+  `install --mode ranked` uploads the scenario record and demands the
+  engine's admin token; pool templates carry no token (`--competition`),
+  because the engine already serves the box folder and every player binds
+  with `huitz join`. Missing the flag fails the install *after* plant and
+  compile have succeeded, which looks like a plant problem.
 
 ## 4. Player join flow
 
