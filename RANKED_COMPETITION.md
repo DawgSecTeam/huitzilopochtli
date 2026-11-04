@@ -381,3 +381,36 @@ CSRF applies to session forms only. A sweeper
 (`$HUITZILOPOCHTLI_SWEEP_INTERVAL_S`, 15s) retries failed claims, rotates
 expiring codes, and cleans ended pools. Engine install, upgrade, and
 backup/restore are in `engine/deploy/README.md`.
+
+## AD scenarios: build order that actually works
+
+Meridian and Harborline are domain-controller scenarios, and three things must
+be true before the plant runs or the template is worthless:
+
+1. **Set the local Administrator password first.** `Install-ADDSForest` refuses
+   to promote while the built-in Administrator password is blank
+   ("Verification of prerequisites for Domain Controller promotion failed").
+   The base image ships it blank, so run `net user Administrator "<pw>"` before
+   promoting.
+2. **Promote, then wait for real DC health.** The promotion reboots and the AD
+   PowerShell cmdlets only work once AD Web Services is up. Gate on all three:
+   `Get-ADDomain` returns the expected DNSRoot, `Get-Service NTDS` is Running,
+   and `C:\Windows\NTDS\ntds.dit` exists. Checking only for a substring like
+   "DOMAIN=" is not a gate — PowerShell echoes the failing command line, so the
+   marker matches its own error text (this shipped two domain-less templates).
+3. **Plant only on a healthy DC, and require every `ad-*` step to pass.** With
+   ADWS down, all 13 (Meridian) / 18 (Harborline) domain steps fail with
+   "Unable to find a default server with Active Directory Web Services
+   running" while the theme steps still succeed — a template that looks built
+   and has no domain vulnerabilities at all.
+
+Two consequences worth knowing:
+
+- **After promotion, the local `sysadmin` account no longer authenticates.**
+  The local Administrator becomes the domain Administrator; SSH and
+  `boxbuilder install` must use `Administrator` with the password set in step 1
+  (re-set `sysadmin`'s password afterwards so players can still log in).
+- **A correctly-promoted DC template clones fine.** Verified on the range: a
+  clone of the rebuilt Meridian template comes up with `meridian.local`, NTDS
+  and ADWS running, and the planted AD accounts present. The failures seen
+  before the rebuild were the broken promotion, not clone detection.
