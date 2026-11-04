@@ -39,6 +39,16 @@
         {
           "name": "ad-user-win",
           "vars": {
+            "USERNAME": "rcastillo",
+            "PASSWORD": "PayrollSpring2026!",
+            "FULLNAME": "Renata Castillo",
+            "DESCRIPTION": "Payroll administrator (current staff)",
+            "NEVER_EXPIRES": "1"
+          }
+        },
+        {
+          "name": "ad-user-win",
+          "vars": {
             "USERNAME": "svc_sched",
             "PASSWORD": "SchedSpring2026!",
             "FULLNAME": "Scheduling Integration",
