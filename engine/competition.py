@@ -189,6 +189,9 @@ def leaderboard_payload(store: Store, comp: CompetitionRecord,
             "total": total,
             "hardening_points": score["hardening_points"] if score else 0,
             "service_points": score["service_points"] if score else 0,
+            # Checks the agent reported `unavailable` at the last check-in
+            # (required software missing); 0 keeps healthy rows unchanged.
+            "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
             "started_at": p.started_at,
             "ends_at": p.ends_at,
             "remaining_s": _remaining(p, now) if status == "running" else 0,
@@ -350,6 +353,15 @@ def create_competition(store: Store, *, slug: str, name: str,
         raise ValueError(
             f"Scenario {scenario_name} v{scenario_version} is not on the "
             f"engine; sync the box folder or upload the record.")
+    # The box is on the engine and its rubric is fine; only its pool block
+    # failed to expand. Say that -- "no such scenario" sends the operator
+    # hunting for a file that is sitting right there, and the real fix is an
+    # environment variable or a pools-file entry.
+    problem = scenario_mod.pool_problem(scenario_name)
+    if problem:
+        raise ValueError(
+            f"Scenario {scenario_name} cannot start a competition yet: its "
+            f"ranked pool block failed to expand ({problem})")
     return store.create_competition(
         slug=slug, name=name.strip(), scenario_name=scenario_name,
         scenario_version=scenario_version, max_players=max_players,

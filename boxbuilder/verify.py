@@ -107,8 +107,10 @@ echo "##key-sha"
 sha256sum {d}/authoring_public_key.b64 2>/dev/null | cut -d' ' -f1
 echo "##config"
 cat {d}/agent_config.json 2>/dev/null
+echo
 echo "##machine-id"
 cat /etc/machine-id 2>/dev/null
+echo
 echo "##motd"
 test -f {artifacts_mod.MOTD_PATH} && echo yes || echo no
 echo "##theme"
@@ -242,7 +244,15 @@ def _desktop_pixels(handle) -> Optional[int]:
 
 
 def _collect_windows(handle, install_dir: str) -> dict:
-    """The subset of facts a Windows guest can report cheaply."""
+    """The subset of facts a Windows guest can report cheaply.
+
+    Player-facing state lives in shared locations on Windows (theme.py's
+    MIRROR_DIR_WINDOWS + the Public Desktop), so the Public mirror is probed
+    as the one artifact owner and reported as the synthetic "Public" user --
+    per-user homes have no mirrors to check. The wallpaper lands under
+    C:\\ProgramData\\huitz-theme (theme-wallpaper-win). What genuinely cannot
+    be measured stays skipped upstream: journal, machine-id, X framebuffer.
+    """
     ps = (
         f"$d='{install_dir}'; "
         f"if (Test-Path $d) {{ Get-ChildItem -LiteralPath $d -Force | "
@@ -254,12 +264,56 @@ def _collect_windows(handle, install_dir: str) -> dict:
         "\"##key-sha\"; if (Test-Path \"$d\\authoring_public_key.b64\") "
         "{(Get-FileHash -LiteralPath \"$d\\authoring_public_key.b64\" -Algorithm SHA256).Hash}; "
         "\"##task\"; (Get-ScheduledTask -TaskName 'HuitzilopochtliAgent' "
-        "-ErrorAction SilentlyContinue).State"
+        "-ErrorAction SilentlyContinue).State; "
+        "\"##theme\"; if (Test-Path 'C:\\ProgramData\\huitz-theme') "
+        "{ Get-ChildItem -LiteralPath 'C:\\ProgramData\\huitz-theme' -Force "
+        "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name }; "
+        "\"##mirror\"; $m = Join-Path $env:PUBLIC 'Documents\\huitzilopochtli'; "
+        "'report=' + (Test-Path (Join-Path $m 'report.json')); "
+        "'readme=' + (Test-Path (Join-Path $m 'README.html')); "
+        "\"##report\"; if (Test-Path (Join-Path $m 'report.json')) "
+        "{ Get-Content -LiteralPath (Join-Path $m 'report.json') -Raw }; "
+        "\"##desktop\"; (Get-ChildItem -LiteralPath (Join-Path $env:PUBLIC "
+        "'Desktop') -Filter *.lnk -ErrorAction SilentlyContinue | "
+        "Measure-Object).Count"
     )
     out = handle.run_ps(ps).stdout
     findings = _parse_kv_sections("##files\n" + out)
     files = [n.strip() for n in (findings.get("files") or "").splitlines() if n.strip()]
     task_state = (findings.get("task") or "").strip().lower() or None
+    theme_files = [n.strip() for n in (findings.get("theme") or "").splitlines()
+                   if n.strip()]
+
+    mirror = {}
+    for line in (findings.get("mirror") or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            mirror[key.strip()] = value.strip().lower() == "true"
+    report_text = (findings.get("report") or "").strip()
+    report = None
+    report_error = None
+    if report_text:
+        try:
+            report = json.loads(report_text)
+            if not isinstance(report, dict):
+                report, report_error = None, "report.json is not a JSON object"
+        except ValueError as exc:
+            report_error = f"report.json is not valid JSON: {exc}"
+    elif mirror.get("report"):
+        report_error = "report.json in the Public mirror read empty"
+    else:
+        report_error = "no report.json in the Public mirror"
+
+    try:
+        desktop_entries = int((findings.get("desktop") or "").strip() or 0)
+    except ValueError:
+        desktop_entries = 0
+    per_user = {}
+    if mirror or desktop_entries:
+        per_user["Public"] = {"desktop_entries": desktop_entries,
+                              "report_mirror": bool(mirror.get("report")),
+                              "readme_mirror": bool(mirror.get("readme"))}
+
     return {
         "os": "windows",
         "install_dir": install_dir,
@@ -269,15 +323,15 @@ def _collect_windows(handle, install_dir: str) -> dict:
         "agent_config": _parse_agent_config(findings.get("config") or ""),
         "machine_id": None,
         "motd": False,
-        "theme_files": [],
+        "theme_files": theme_files,
         "legacy_dir": False,
         "init": {"active": task_state, "enabled": task_state,
                  "timer_active": None, "timer_enabled": None},
         "journal": None,
-        "report": None,
-        "report_error": "not collected on Windows",
+        "report": report,
+        "report_error": report_error,
         "users": [],
-        "user_artifacts": {},
+        "user_artifacts": per_user,
         "desktop_pixels": None,
     }
 
@@ -370,7 +424,21 @@ def evaluate(facts: dict, exp: Expectations) -> list:
         checks.append(_check("init.state", active in ("inactive", "stopped", "ready", "disabled"),
                              f"unit is {active or 'absent'} (started by `huitz join`)"))
     else:
-        checks.append(_check("init.state", active == "active",
+        # A Windows scheduled task is the healthy steady state when Ready
+        # (Running = mid-grade); it never reports the systemd word "active".
+        enabled = str(init.get("enabled") or "").strip().lower()
+        if is_win:
+            healthy = active in ("ready", "running", "queued")
+        elif exp.mode == "honor":
+            # Honor-mode's agent is a one-shot: it grades once and exits 0, so
+            # systemd reports "inactive (exited)" between timer runs (the unit
+            # has Restart=on-failure, which does not restart a clean exit). The
+            # timer-driving service being enabled and the timer itself active
+            # is the real health signal; "active" is only ranked's steady state.
+            healthy = active in ("active", "inactive") and enabled == "enabled"
+        else:
+            healthy = active == "active"
+        checks.append(_check("init.state", healthy,
                              f"unit is {active or 'absent'}"))
     if exp.mode == "honor" and not is_win:
         timer = str(init.get("timer_active") or "").strip().lower()
@@ -572,9 +640,13 @@ wc -c < /etc/machine-id 2>/dev/null
 
 def prepare_seal(handle, spec, artifacts_dir: str = "artifacts",
                  skip_verify: bool = False, expect_total: Optional[int] = None,
-                 log=print) -> dict:
+                 competition: bool = False, log=print) -> dict:
     """Remove per-player state and neutralize the box so it can be sealed."""
-    exp = expectations_from(spec, artifacts_dir, competition=True,
+    # The pre-seal gate must use the box's own expectations. Hardcoding
+    # competition here made an honor box unsealable: it demanded the very
+    # "unit stopped" state that seal-prepare itself is about to create (and
+    # skipped the report/mirror checks the box had just been verified for).
+    exp = expectations_from(spec, artifacts_dir, competition=competition,
                              expect_total=expect_total, for_seal=True)
     verify_report = None
     if not skip_verify:

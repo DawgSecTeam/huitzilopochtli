@@ -35,6 +35,12 @@ class CollectorStatus(str, Enum):
     OK = "ok"
     ERROR = "error"
     TIMEOUT = "timeout"
+    # A check's `requires` entry was missing on this host: the check was
+    # never collected, so it is neither solved nor failed. It scores 0 and
+    # is excluded from the solved count. Backward compatible in both
+    # directions that matter: an older agent never sends this value, and a
+    # check without `requires` can never produce it.
+    UNAVAILABLE = "unavailable"
 
 
 # --- §6.1 CheckSpec (in Manifest — safe to ship to box) ---------------------
@@ -50,6 +56,11 @@ class CheckSpec:
     display_max_points: int
     timeout_s: float = 5.0
     is_sla: bool = False
+    # Optional prerequisites: bare binary names (looked up on PATH) and/or
+    # absolute paths. The collector checks these BEFORE running the check;
+    # anything missing yields status=UNAVAILABLE evidence instead of a
+    # collect (and instead of a scripted "assume hardened" escape hatch).
+    requires: list = field(default_factory=list)
 
 
 # --- §6.2 Evidence (collector output — no verdict, no points) --------------
@@ -362,6 +373,21 @@ def validate_manifest(obj: dict) -> list:
             is_sla = check.get("is_sla")
             if is_sla is not None and not isinstance(is_sla, bool):
                 errors.append(f"{ref}.is_sla must be a boolean")
+            # Optional prerequisites (see CheckSpec.requires). Compiled
+            # manifests always carry the key -- an empty list means "nothing
+            # required", exactly today's behavior -- so absence is fine and
+            # [] is fine; anything else must be well-formed.
+            requires = check.get("requires")
+            if requires is not None:
+                if not isinstance(requires, list):
+                    errors.append(f"{ref}.requires must be a list")
+                elif not all(isinstance(r, str) and r.strip()
+                             and ("/" not in r or r.startswith("/"))
+                             for r in requires):
+                    errors.append(
+                        f"{ref}.requires entries must be non-empty bare command "
+                        "names or absolute paths"
+                    )
             if "category" in check and check["category"] not in (
                 Category.VULN.value, Category.PENALTY.value, Category.PROHIBITED.value
             ):

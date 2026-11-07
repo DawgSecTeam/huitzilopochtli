@@ -388,11 +388,24 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         final_total = hardening_total + sla_accrued_total
         score.total = final_total
 
+        # Checks the agent could not grade because a `requires` prerequisite
+        # was absent on this host: they score 0 and are excluded from the
+        # solved count (the evaluator already marks them not passed); the
+        # count rides the score row so the admin roster and the player
+        # dashboard read a mis-provisioned box as broken, not healthy.
+        rubric_check_ids = {entry.check_id for entry in rubric.entries}
+        ungraded = len({
+            e.check_id for e in bundle.evidence
+            if e.status == CollectorStatus.UNAVAILABLE
+            and e.check_id in rubric_check_ids
+        })
+
         store.upsert_score(
             bundle.box_id, rubric.scenario_name, final_total,
             hardening_points=hardening_total,
             service_points=sla_accrued_total,
             score_json=json.dumps(dataclasses.asdict(score), default=str),
+            ungraded_count=ungraded,
         )
 
     # §2.4: matcher reasons embed expected values (the answer key), and a

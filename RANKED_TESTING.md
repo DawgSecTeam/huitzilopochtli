@@ -117,13 +117,40 @@ matrix was written.
     that needs two rubrics needs a schema change.
 11. **No long-duration or scale soak.** Live runs have covered small fields for
     minutes to a couple of hours; nothing pins dozens of boxes for hours.
- 12. **`close-join` is one-way.** Confirmed live: after a close, joins
-     answer 400 "This competition is not accepting joins." and no reopen
-     verb exists (`start` flips `join_open` only from `draft`). Reopening
-     means a raw DB write — an `open-join` action is the missing half.
- 13. **The audit trail has no HTTP surface.** `store.list_audit()` has
-     zero callers; verifying who did what means reading `engine.db` on
-     the engine host.
+
+## Fixed this round (pinned by `tests/integration/test_ranked_general_use_gaps.py`)
+
+- **An unresolvable `ranked.pool` no longer takes the picker down.** A box
+  whose `${...}` placeholders cannot expand is listed, disabled, with the
+  reason stated, instead of 400ing `GET`/`POST /admin/competitions/new` for
+  every box in the folder.
+- **A pool-block failure says so.** Creating a competition on such a scenario
+  answers 400 naming the pool expansion failure, never "scenario 'X' is not
+  in the engine's box folder" about a file that is sitting right there.
+- **`start` on a non-draft competition answers 409** with the reason and
+  audits `competition_start_refused`, instead of `{"ok": true, "action":
+  "start"}` plus a success audit row while the competition stays `ended`.
+  `close-join`/`open-join` refuse the same way when the run is not live.
+- **`/api/public/me` 404s for a removed player.** The tombstone row exists to
+  free the display name; it is not a session.
+- **The CSV export reads.** `started_at`/`ends_at`/`last_checkin` are
+  ISO-8601 local (they were raw epoch floats), and a display name starting
+  with `=`, `+`, `-` or `@` is apostrophe-neutralised so the results file
+  cannot execute a formula when an operator opens it.
+- **`open-join` exists** as the counterpart of `close-join` (verb plus a
+  "Reopen joins" button), so closing joins by mistake is reversible.
+
+## Fixed this round (audit surface, pinned by `tests/integration/test_admin_audit_page.py`)
+
+- **`/admin/audit` renders the audit trail.** `store.list_audit()` now has a
+  production caller: the admin console links to it, gated by the same session
+  cookie (or `X-HUITZILOPOCHTLI-Admin-Token` header path) as its sibling
+  pages, newest first -- engine-local time, actor and the address the call
+  came from, action, the competition and player it touched, and the logged
+  detail. `?competition=<slug or id>` and `?limit=<n>` are query strings, so a
+  filtered view is a URL. Columns are exactly what `audit_log` stores; the
+  one gap against an ideal trail is that a row records ids, so a competition
+  removed since then shows its bare id rather than a name.
 
 ## Backlog for the next ranked round
 

@@ -376,7 +376,13 @@ or URL.
 
 Console `/admin` (competitions, counts, audit), `/admin/competitions/<id>`
 (start/end/close joins/rerun, roster, reissue, disqualify/remove, CSV; ended
-competitions add **Remove**), `/admin/audit`. API: `/admin/api/competitions` and `/admin/players/<id>`;
+competitions add **Remove**), `/admin/audit` (every admin and system action,
+newest first: engine-local time, actor plus the address it came from, action,
+the competition/player it touched, and the logged detail; query strings
+`?competition=<slug or id>` and `?limit=<n>` (default 200, max 1000,
+clamped). A filtered view searches the newest 2000 entries -- `list_audit()`
+reads a bounded window of the append-only table -- and the page says which
+window it searched). API: `/admin/api/competitions` and `/admin/players/<id>`;
 CSRF applies to session forms only. A sweeper
 (`$HUITZILOPOCHTLI_SWEEP_INTERVAL_S`, 15s) retries failed claims, rotates
 expiring codes, and cleans ended pools. Engine install, upgrade, and

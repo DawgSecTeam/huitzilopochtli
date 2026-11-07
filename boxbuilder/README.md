@@ -121,6 +121,17 @@ leak into an honor manifest or rubric — structurally.
   scenario names no deployment specifics.
 - `services` / `adversary` / `pool` belong under `ranked:`; a ranked-only file
   (`scenario.mode: ranked`) may also carry them at top level.
+- A check may carry `requires: [<binary|absolute path>, ...]`: the software the
+  check grades only if it is installed. Bare names are resolved on the box's
+  `PATH`; absolute paths must exist. When any entry is missing the agent runs
+  nothing and reports the check as *unavailable*: 0 points, not counted as
+  solved or failed. The engine then shows "N checks ungraded: required software
+  missing" on the roster and the player dashboard. This is the honest
+  replacement for the old `command -v <tool> || { echo true; exit 0; }` guard,
+  which scored a machine with no mail stack as "hardened". Author the binary
+  each script actually probes and drop the guard: without the tool the script
+  would fail closed anyway, and with `requires` it now reads as broken rather
+  than healthy.
 
 ### The spec that ties them
 

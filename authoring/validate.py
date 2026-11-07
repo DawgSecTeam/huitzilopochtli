@@ -32,7 +32,8 @@ _POOL_KEYS = frozenset({
 
 # Required keys on each `checks[]` entry, per architecture.md §8.
 _REQUIRED_CHECK_KEYS = ("id", "type", "category", "display", "max_points", "collect", "expect")
-_CHECK_KEYS = frozenset(set(_REQUIRED_CHECK_KEYS) | {"host_id", "timeout_s", "is_sla", "solution"})
+_CHECK_KEYS = frozenset(set(_REQUIRED_CHECK_KEYS) |
+                        {"host_id", "timeout_s", "is_sla", "requires", "solution"})
 
 # Minimal collect_params each check implementation reads. Extra keys are
 # allowed (future/specialized options), missing required keys are not.
@@ -330,6 +331,26 @@ def _validate_checks(checks: list, source_path: str, prefix: str,
         is_sla = check.get("is_sla")
         if is_sla is not None and not isinstance(is_sla, bool):
             errors.append(f"{source_path}: {ref}.is_sla must be a boolean")
+
+        requires = check.get("requires")
+        if requires is not None:
+            if not isinstance(requires, list) or not requires:
+                errors.append(
+                    f"{source_path}: {ref}.requires must be a non-empty list "
+                    f"of binary names or absolute paths, got {requires!r}"
+                )
+            else:
+                for req in requires:
+                    if not isinstance(req, str) or not req.strip():
+                        errors.append(
+                            f"{source_path}: {ref}.requires entries must be "
+                            f"non-empty strings, got {req!r}"
+                        )
+                    elif "/" in req and not req.startswith("/"):
+                        errors.append(
+                            f"{source_path}: {ref}.requires entry {req!r} must "
+                            f"be a bare command name or an absolute path"
+                        )
 
         collect = check.get("collect")
         if collect is not None and not isinstance(collect, dict):

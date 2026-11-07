@@ -8,6 +8,9 @@ dist/
 *.swp
 .pytest_cache/
 tests/proxmox/.env
+# deployment credential file (PROXMOX_* tokens etc.) -- per AGENTS.md these
+# values are supplied at invoke time and must never reach the index
+/.env
 
 # boxbuilder artifacts: contain the authoring private key (signs manifests),
 # compiled rubric, and the agent zipapp -- all build outputs, never source.
@@ -17,3 +20,12 @@ boxes/*/artifacts*/
 
 # local ZCode CLI session state (plans/scratch), never source
 .zcode/
+
+# harness/test-run scratch directories. Each run leaves a manifest-signing
+# private key (box/.authoring_private.b64) and a pools.yaml next to its
+# captures and engines -- same reason artifacts/ above is ignored, and ~950
+# files a bare `git add -A` would sweep in. The wildcard covers the
+# .manual-run<suffix> variants a second concurrent run makes for itself.
+/.manual-run/
+/.manual-run*/
+/.testrun/

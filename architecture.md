@@ -78,11 +78,11 @@ The collector path is identical; only the evaluator's and rubric's location chan
 
 ## 6. Data Model
 
-All types live in `common/schema.py` as stdlib `@dataclass`; serialization is JSON (no Pydantic; validation is explicit, §6.7). `SCHEMA_VERSION = 1`; enums are `Mode` (`honor`, `ranked`), `Category` (`vuln`, `penalty`, `prohibited`), and `CollectorStatus` (`ok`, `error`, `timeout`).
+All types live in `common/schema.py` as stdlib `@dataclass`; serialization is JSON (no Pydantic; validation is explicit, §6.7). `SCHEMA_VERSION = 1`; enums are `Mode` (`honor`, `ranked`), `Category` (`vuln`, `penalty`, `prohibited`), and `CollectorStatus` (`ok`, `error`, `timeout`, `unavailable`).
 
 ### 6.1 CheckSpec (in Manifest — safe to ship to box)
 
-`id`, `type`, `category`, `host_id` (`localhost` for single-host), `collect_params` (type-specific: **what to read**), `display_title`, `display_max_points` (UI only; points are rubric-side), `timeout_s` (5.0), `is_sla`. **Invariant:** `collect_params` must be sufficient to collect but never contain the expected/correct value — a `file_regex` spec carries the path and extraction pattern, not whether the extracted value is correct.
+`id`, `type`, `category`, `host_id` (`localhost` for single-host), `collect_params` (type-specific: **what to read**), `display_title`, `display_max_points` (UI only; points are rubric-side), `timeout_s` (5.0), `is_sla`, optional `requires` (list of bare binary names and/or absolute paths: what must be on the host for the check to be gradeable at all; when anything is missing the collector reports `unavailable` evidence and runs nothing, §9.1). **Invariant:** `collect_params` must be sufficient to collect but never contain the expected/correct value — a `file_regex` spec carries the path and extraction pattern, not whether the extracted value is correct.
 
 ### 6.2 Evidence (collector output — no verdict, no points)
 
@@ -135,7 +135,7 @@ this section pins the behaviour it must have.
 
 ### 8.2 Build pipeline
 
-`authoring/compile.py`: (1) parse and validate with actionable, path/index-referenced errors; (2) merge the target — honor strips ranked content, ranked appends `ranked.checks` and resolves the engine URL; (3) split into **manifest** (public collection instructions + display metadata), **rubric** (expected values + points + SLA params), and **engine record** (rubric + adversary + services + optional pool; never distributed to boxes); (4) sign the manifest with the authoring key; (5) emit `manifest.signed.json`, `rubric.json` (honor only, `0600`), `engine_record.json` (`0600`), and `authoring_public_key.b64`, surfacing `readme_warnings` from the spoiler lint.
+`authoring/compile.py`: (1) parse and validate with actionable, path/index-referenced errors; (2) merge the target — honor strips ranked content, ranked appends `ranked.checks` and resolves the engine URL; (3) split into **manifest** (public collection instructions + display metadata), **rubric** (expected values + points + SLA params), and **engine record** (rubric + adversary + services + optional `requires` map of check id to prerequisites + optional pool; never distributed to boxes); (4) sign the manifest with the authoring key; (5) emit `manifest.signed.json`, `rubric.json` (honor only, `0600`), `engine_record.json` (`0600`), and `authoring_public_key.b64`, surfacing `readme_warnings` from the spoiler lint.
 
 ### 8.3 Deployment facts
 
@@ -149,6 +149,7 @@ Ships as a `.pyz` zipapp; entry point `agent/__main__.py`. Reads a local config 
 
 - A **registry** maps `type_key -> Check` subclass; `@register` makes a new type one self-contained file.
 - `Check.collect(spec, ctx) -> Evidence`. Checks run **concurrently** (thread pool), each wrapped in its `timeout_s`; a hung check yields `Evidence(status=TIMEOUT)` and never stalls the run.
+- A spec's optional `requires` prerequisites (bare binary names resolved on PATH, absolute paths that must exist) are evaluated **before** `collect()` runs: anything missing yields `Evidence(status=UNAVAILABLE)` with a short reason (e.g. `postconf not present`). The collect script never runs, so a check cannot "pass" via a fail-open `command -v <tool> || { echo true; }` escape on a host where the graded software is not installed. The probe never crashes a run, and `unavailable` is counted neither as solved nor failed (§10.1).
 - Collection is **read-only** with respect to the scored system; the adversary is the only component allowed to mutate state (§12).
 
 ### 9.2 Concrete check types
@@ -199,7 +200,7 @@ For each non-SLA entry, match the corresponding evidence's `raw` against the ent
 - `PENALTY`: award `points` (negative) if the required state is **broken** (match fails), else 0.
 - `PROHIBITED`: award `points` (negative) if the forbidden state **is present** (match succeeds), else 0.
 
-`passed` and a `reason` are recorded per check. Missing/`ERROR`/`TIMEOUT` evidence scores as "not satisfied" for every category (VULN 0, PENALTY/PROHIBITED no negatives): a collector fault is never a confirmed observation.
+`passed` and a `reason` are recorded per check. Missing/`ERROR`/`TIMEOUT`/`UNAVAILABLE` evidence scores as "not satisfied" for every category (VULN 0, PENALTY/PROHIBITED no negatives): a collector fault is never a confirmed observation, and neither is a check whose `requires` prerequisite was absent. The engine additionally tallies the `UNAVAILABLE` checks of each check-in as *ungraded* (§11.4) so a mis-provisioned box reads as broken instead of merely low-scoring.
 
 ### 10.2 Matchers
 
@@ -247,7 +248,7 @@ Counters reset on the opposite observation; a single flap does not change state.
 
 ### 11.4 Leaderboard / aggregation
 
-`GET /leaderboard` returns ranked rows per scenario. On each check-in `scores.total` is the point-in-time total plus accrued SLA points (split into `hardening_points`/`service_points`). An adversary outage costs points only through the SLA it forces down; there is no separate penalty channel. Live rank is derived after the score write.
+`GET /leaderboard` returns ranked rows per scenario. On each check-in `scores.total` is the point-in-time total plus accrued SLA points (split into `hardening_points`/`service_points`). The check-in also stores how many checks the agent reported `UNAVAILABLE` (`scores.ungraded_count`, 0 for every pre-existing row); the admin roster, the leaderboard, and the player dashboard render "N checks ungraded: required software missing" when it is non-zero. An adversary outage costs points only through the SLA it forces down; there is no separate penalty channel. Live rank is derived after the score write.
 
 ## 12. The Adversary
 

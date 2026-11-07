@@ -407,6 +407,7 @@ def cmd_seal_prepare(args) -> int:
             lambda _provider, handle: prepare_seal(
                 handle, spec, out, skip_verify=args.skip_verify,
                 expect_total=args.expect_total,
+                competition=getattr(args, "competition", False),
             ),
         )
     except Exception as exc:

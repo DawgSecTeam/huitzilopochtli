@@ -1,11 +1,12 @@
 """Admin action guards: unknown verbs refuse, seat loss releases the VM.
 
-Found on the range: `POST /admin/api/competitions/<id>/open-join` (and three
-more bogus verbs) answered {"ok": true} and wrote audit rows while doing
-nothing -- a typo on end/close-join would have read as success. Disqualify
-and remove likewise left the player's VM powered until the portal lease
-expired on its own. Both run against the real HTTP surface with the shared
-fake workshop portal.
+Found on the range: bogus verbs answered {"ok": true} and wrote audit rows
+while doing nothing -- a typo on end/close-join would have read as success.
+"open-join" was one of those typos back then; it is a real verb now (the
+counterpart of close-join), so it is asserted as working below and the
+remaining bogus verbs still have to refuse. Disqualify and remove likewise
+left the player's VM powered until the portal lease expired on its own. Both
+run against the real HTTP surface with the shared fake workshop portal.
 """
 import json
 import os
@@ -83,13 +84,28 @@ def test_unknown_admin_verbs_are_refused_without_audit(tmp_path):
         _http("POST", base + f"/admin/api/competitions/{comp_id}/start", {}, auth)
 
         before = _audit_rows(db)
-        for verb in ("open-join", "reopen-join", "frobnicate"):
+        for verb in ("reopen-join", "frobnicate"):
             status, body = _http("POST",
                                  base + f"/admin/api/competitions/{comp_id}/{verb}",
                                  {}, auth)
             assert status == 400, (verb, status, body)
             assert "unknown competition action" in body, (verb, body)
         assert _audit_rows(db) == before  # refused verbs write no audit row
+
+        # "open-join" used to be in the bogus list above: close-join had no
+        # counterpart, so a competition closed too early could never accept
+        # joins again. It is a real verb now (see
+        # test_ranked_general_use_gaps.test_open_join_verb_restores_join_open).
+        status, body = _http("POST",
+                             base + f"/admin/api/competitions/{comp_id}/close-join",
+                             {}, auth)
+        assert status == 200, body
+        status, body = _http("POST",
+                             base + f"/admin/api/competitions/{comp_id}/open-join",
+                             {}, auth)
+        assert status == 200, body
+        assert json.loads(body)["competition"]["join_open"] is True
+        before = _audit_rows(db)  # the toggles above did write rows
 
         # Same guard on the player side.
         status, body = _http("POST", base + "/admin/players/nope/teleport", {}, auth)

@@ -251,6 +251,11 @@ class Store:
                 ("hardening_points", "INTEGER NOT NULL DEFAULT 0"),
                 ("service_points", "INTEGER NOT NULL DEFAULT 0"),
                 ("score_json", "TEXT"),
+                # Checks the agent could not grade this check-in (a `requires`
+                # prerequisite was absent). Carried on the score row so the
+                # roster and the player dashboard can show "N checks ungraded"
+                # instead of reading a mis-provisioned box as merely low-score.
+                ("ungraded_count", "INTEGER NOT NULL DEFAULT 0"),
             )),
             ("scenarios", (
                 ("services_json", "TEXT NOT NULL DEFAULT '[]'"),
@@ -491,25 +496,29 @@ class Store:
     def upsert_score(self, box_id: str, scenario_name: str, total: int,
                      hardening_points: Optional[int] = None,
                      service_points: int = 0,
-                     score_json: Optional[str] = None) -> None:
+                     score_json: Optional[str] = None,
+                     ungraded_count: int = 0) -> None:
         import time
 
         now = time.time()
         hardening = total if hardening_points is None else hardening_points
+        ungraded = ungraded_count if isinstance(ungraded_count, int) else 0
         with self._lock:
             self._conn.execute(
                 "INSERT INTO scores (box_id, scenario_name, total, updated_at, "
-                "first_scored_at, hardening_points, service_points, score_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "first_scored_at, hardening_points, service_points, score_json, "
+                "ungraded_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(box_id) DO UPDATE SET "
                 "scenario_name = excluded.scenario_name, "
                 "total = excluded.total, "
                 "updated_at = excluded.updated_at, "
                 "hardening_points = excluded.hardening_points, "
                 "service_points = excluded.service_points, "
-                "score_json = excluded.score_json",
+                "score_json = excluded.score_json, "
+                "ungraded_count = excluded.ungraded_count",
                 (box_id, scenario_name, total, now, now, hardening,
-                 service_points, score_json),
+                 service_points, score_json, ungraded),
             )
             self._commit()
 
@@ -517,7 +526,7 @@ class Store:
         with self._lock:
             row = self._conn.execute(
                 "SELECT box_id, scenario_name, total, updated_at, first_scored_at, "
-                "hardening_points, service_points, score_json "
+                "hardening_points, service_points, score_json, ungraded_count "
                 "FROM scores WHERE box_id = ?", (box_id,)
             ).fetchone()
         if row is None:
@@ -529,6 +538,7 @@ class Store:
             "hardening_points": row["hardening_points"],
             "service_points": row["service_points"],
             "score_json": row["score_json"],
+            "ungraded_count": row["ungraded_count"],
         }
 
     # --- sla.py --------------------------------------------------------------

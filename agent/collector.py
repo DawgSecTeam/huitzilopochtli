@@ -10,6 +10,8 @@ could with an unkillable check; the daemon flag keeps a one-shot honor run
 exitable).
 """
 import math
+import os
+import shutil
 import threading
 import time
 
@@ -80,6 +82,44 @@ def _error_evidence(spec: CheckSpec, reason: str) -> Evidence:
     )
 
 
+def _unavailable_evidence(spec: CheckSpec, missing: list) -> Evidence:
+    """The check was never collected: a `requires` prerequisite is absent."""
+    return Evidence(
+        check_id=spec.id,
+        check_type=spec.type,
+        host_id=spec.host_id,
+        status=CollectorStatus.UNAVAILABLE,
+        raw={},
+        reason=f"{', '.join(missing)} not present",
+        collected_monotonic=time.monotonic(),
+        collected_wall_claim=time.time(),
+    )
+
+
+def _missing_requires(spec: CheckSpec) -> list:
+    """Prerequisites from ``spec.requires`` that this host lacks.
+
+    Bare names resolve on PATH; absolute paths must exist. A malformed
+    entry counts as missing (fail closed: an ungradeable prerequisite is
+    reported ungraded, never as a pass). This function must never raise.
+    """
+    try:
+        missing = []
+        for entry in spec.requires or []:
+            if not isinstance(entry, str) or not entry.strip():
+                missing.append(repr(entry))
+                continue
+            entry = entry.strip()
+            if "/" in entry:
+                if not entry.startswith("/") or not os.path.exists(entry):
+                    missing.append(entry)
+            elif shutil.which(entry) is None:
+                missing.append(entry)
+        return missing
+    except Exception as exc:  # noqa: BLE001 - requires probe must never crash a run
+        return [f"requires probe failed: {exc}"]
+
+
 def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
     """Run checks concurrently; a hung check yields TIMEOUT after its own
     ``timeout_s`` and never stalls the run."""
@@ -129,6 +169,15 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
         if spec.type not in CHECKS:
             results[idx] = _error_evidence(
                 spec, f"unknown check type: {spec.type!r}")
+            state[idx]["done"] = True
+            continue
+        missing = _missing_requires(spec)
+        if missing:
+            # Prerequisite absent: report `unavailable` (not solved, not
+            # failed) without touching the collect script, so a check can
+            # never score its scripted fail-open way to a pass on a host
+            # where the software it grades is not even installed.
+            results[idx] = _unavailable_evidence(spec, missing)
             state[idx]["done"] = True
             continue
         thread = threading.Thread(

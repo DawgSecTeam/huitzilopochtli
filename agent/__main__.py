@@ -66,6 +66,7 @@ def _check_spec_from_dict(d: dict) -> CheckSpec:
         display_max_points=d["display_max_points"],
         timeout_s=d.get("timeout_s", 5.0),
         is_sla=d.get("is_sla", False),
+        requires=d.get("requires") or [],
     )
 
 

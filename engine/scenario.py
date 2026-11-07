@@ -285,6 +285,39 @@ def boxes_dir() -> str:
 _SCAN_LOCK = threading.Lock()
 _SCAN_CACHE = {"key": None, "result": (None, ())}
 
+#: scenario name -> why its ``ranked.pool`` block could not be expanded.
+#: Replaced whole with every full scan (the cache key covers the boxes
+#: folder and the pools file, so it can never outlive the scan that
+#: produced it). The box is listed anyway: the pool is what is unusable,
+#: not the rubric, and silently dropping a committed scenario used to send
+#: operators hunting for a file that was right there.
+_SCAN_POOL_PROBLEMS: dict = {}
+
+
+def _pool_expansion_error(message: str) -> bool:
+    """True when a build failure is exactly "a pool placeholder stayed ${}".
+
+    ``expand_pool`` is the only env expansion in the ranked build, but match
+    both halves anyway: an unrelated error must never be repaired by
+    dropping the pool."""
+    return "unset environment variable" in message and "pool" in message
+
+
+def _pool_stripped(parsed: dict):
+    """The document with the ranked pool block removed; None when there is none."""
+    block = parsed.get("ranked")
+    if isinstance(block, dict) and block.get("pool"):
+        out = dict(parsed)
+        out_ranked = dict(block)
+        out_ranked.pop("pool", None)
+        out["ranked"] = out_ranked
+        return out
+    if parsed.get("pool"):
+        out = dict(parsed)
+        out.pop("pool", None)
+        return out
+    return None
+
 
 def _scan_box_folder() -> tuple:
     """(scenarios, errors) from one boxes/ pass, cached on file mtimes.
@@ -297,6 +330,15 @@ def _scan_box_folder() -> tuple:
     the admin picker; a broken box never shadows anything. A missing or
     unreadable folder yields ``(None, ())`` -- distinct from an existing but
     empty one, so sync can fail safe instead of purging.
+
+    A box whose ``ranked.pool`` placeholders cannot be expanded is the one
+    exception to "broken means dropped": its record is built without the
+    pool and the problem is filed under :data:`_SCAN_POOL_PROBLEMS`, so the
+    picker can show the scenario as unusable with the reason instead of
+    failing the whole folder scan. Competitions cannot be created on it
+    (competition.create_competition refuses) until deployment supplies the
+    values; a live competition that already provisioned its pool keeps
+    running (the pin, not the spec, drives an existing pool).
 
     The cache key stats the folder and every scenario.yaml, so an in-place
     edit invalidates without re-parsing YAML on every call (the sweep loop
@@ -334,6 +376,7 @@ def _scan_box_folder() -> tuple:
     scenarios = {}
     declared = set()
     errors = []
+    pool_problems = {}
     for box_path, source in sources:
         try:
             with open(source, "r", encoding="utf-8") as f:
@@ -348,11 +391,24 @@ def _scan_box_folder() -> tuple:
         name = scenario.get("name")
         if isinstance(name, str) and name:
             declared.add(name)
+        pool_problem = None
         try:
             parts = build_scenario_parts(parsed, "ranked", source=source)
         except (ScenarioModeError, ValueError, KeyError, TypeError) as exc:
-            errors.append(f"{source}: {exc}")
-            continue
+            message = str(exc)
+            parts = None
+            if _pool_expansion_error(message):
+                stripped = _pool_stripped(parsed)
+                if stripped is not None:
+                    try:
+                        parts = build_scenario_parts(stripped, "ranked",
+                                                     source=source)
+                    except (ScenarioModeError, ValueError, KeyError, TypeError):
+                        parts = None  # something else is broken too
+            if parts is None:
+                errors.append(f"{source}: {exc}")
+                continue
+            pool_problem = message
         record = parts["engine_record"]
         rubric = record["rubric"]
         problems = validate_scenario_record(
@@ -371,6 +427,10 @@ def _scan_box_folder() -> tuple:
                     f"{source}: scenario {name!r} v{version} shadows v"
                     f"{previous[0]} from {previous[1]} (older fork)")
             scenarios[name] = entry
+            if pool_problem:
+                pool_problems[name] = pool_problem
+            else:
+                pool_problems.pop(name, None)
         elif version == previous[0]:
             errors.append(
                 f"{source}: scenario {name!r} v{version} is also declared by "
@@ -383,6 +443,8 @@ def _scan_box_folder() -> tuple:
     with _SCAN_LOCK:
         _SCAN_CACHE["key"] = key
         _SCAN_CACHE["result"] = result
+        _SCAN_POOL_PROBLEMS.clear()
+        _SCAN_POOL_PROBLEMS.update(pool_problems)
     return result
 
 
@@ -427,6 +489,34 @@ def list_admin_scenarios() -> list:
     historically, uploads); they never add picker entries.
     """
     return list_box_scenarios()
+
+
+def pool_problem(scenario_name: str) -> Optional[str]:
+    """Why this scenario's ``ranked.pool`` block is unusable, or None.
+
+    Set when the committed ``${VAR}`` placeholders could not be expanded and
+    no pools-file entry covers them: the scenario is listed, but no
+    competition can be created on it until deployment supplies the values.
+    """
+    scenarios, _errors = _scan_box_folder()
+    if not scenarios or scenario_name not in scenarios:
+        # Nothing is known about this scenario right now (failed or empty
+        # scan): never refuse on a problem recorded against a pass that no
+        # longer stands.
+        return None
+    with _SCAN_LOCK:
+        return _SCAN_POOL_PROBLEMS.get(scenario_name)
+
+
+def admin_picker_rows() -> list:
+    """(name, version, source, pool_problem) for the admin picker.
+
+    ``pool_problem`` is None whenever a competition may be created on the
+    scenario; when set, the page must show the entry as unusable with that
+    reason rather than hiding the scenario or failing the whole form.
+    """
+    return [(name, version, path, pool_problem(name))
+            for name, version, path in list_admin_scenarios()]
 
 
 def sync_box_scenarios(store: Store) -> list:

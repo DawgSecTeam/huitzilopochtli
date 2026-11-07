@@ -78,8 +78,15 @@ def test_scan_uses_the_per_box_pool_map(tmp_path, monkeypatch):
     assert record[3]["template_vm_id"] == 4242
 
 
-def test_scan_reports_an_unset_placeholder_without_a_map_entry(
+def test_scan_reports_an_unset_placeholder_as_an_unusable_scenario(
         tmp_path, monkeypatch):
+    """An unresolvable pool marks the scenario unusable -- it does not delete it.
+
+    The scan used to drop the box from the folder pass entirely, which turned
+    the admin picker into a 400 and made the API claim the box folder held no
+    such scenario. Now the scenario is listed, its pool is None, and the
+    reason rides on it so the page can say what to fix.
+    """
     root = tmp_path / "boxes"
     root.mkdir()
     _box(root)
@@ -92,8 +99,13 @@ def test_scan_reports_an_unset_placeholder_without_a_map_entry(
     monkeypatch.setattr(scenario, "boxes_dir", lambda: str(root))
     _reset_scan()
     found, errors = scenario._scan_box_folder()
-    assert found is None or found == {}
-    assert any("unset environment variable" in e for e in errors), errors
+    assert errors == (), errors
+    assert found and "Pool Box" in found
+    version, _path, record = found["Pool Box"]
+    assert version == 1
+    assert record[3] is None  # pool unusable: nothing to clone from
+    problem = scenario.pool_problem("Pool Box")
+    assert problem and "unset environment variable" in problem
 
 
 def test_malformed_pool_map_is_a_scan_error(tmp_path, monkeypatch):

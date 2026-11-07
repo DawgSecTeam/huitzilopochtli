@@ -13,6 +13,7 @@ Endpoints:
 """
 import base64
 import dataclasses
+import datetime
 import hmac
 import json
 import math
@@ -173,6 +174,35 @@ def _jsonable(obj):
     if isinstance(obj, (list, tuple)):
         return [_jsonable(v) for v in obj]
     return obj
+
+
+def _csv_cell(value) -> str:
+    """Neutralise a spreadsheet formula in an exported cell.
+
+    A display name is player-typed, so it can start with ``=``, ``+``, ``-``
+    or ``@``; written raw, Excel/Sheets execute it the moment the results
+    file is opened (CSV injection). The leading apostrophe keeps the cell
+    text and is stripped by the spreadsheet, so the name still reads right.
+    """
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+def _csv_time(value) -> str:
+    """Epoch float -> ISO-8601 local time for the CSV export.
+
+    Raw epoch numbers made the results file useless without a calculator:
+    "when did this run end?" should read off the row. The engine's local
+    zone is the operator's own, so a naive local timestamp is the honest
+    rendering. Missing stays empty rather than becoming 1970.
+    """
+    if value is None:
+        return ""
+    try:
+        return datetime.datetime.fromtimestamp(float(value)).isoformat(
+            timespec="seconds")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(value)
 
 
 class _RateLimiter:
@@ -511,6 +541,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_html(200, web.styleguide_page())
             return
+        if path == "/admin/audit":
+            # Documented in RANKED_COMPETITION.md section 5: the console view
+            # over store.list_audit(). Gated and rendered exactly like the
+            # other admin pages (session cookie, or the admin-token header,
+            # which mints a page session on the way through).
+            session = self._admin_page_session()
+            if session is None:
+                self._send_html(401, web.login_page("Sign in to continue."))
+                return
+            self._render_admin_audit(parse_qs(parts.query))
+            return
         if path == "/admin/api/competitions":
             ok, _actor, _session, _via = self._admin_actor()
             if not ok:
@@ -534,9 +575,10 @@ class Handler(BaseHTTPRequestHandler):
             rows = [["rank", "player", "status", "total", "hardening", "services",
                      "started_at", "ends_at", "last_checkin"]]
             for r in board["leaderboard"]:
-                rows.append([r["rank"], r["name"], r["status"], r["total"],
-                             r["hardening_points"], r["service_points"],
-                             r["started_at"], r["ends_at"], r["last_checkin"]])
+                rows.append([r["rank"], _csv_cell(r["name"]), r["status"],
+                             r["total"], r["hardening_points"],
+                             r["service_points"], _csv_time(r["started_at"]),
+                             _csv_time(r["ends_at"]), _csv_time(r["last_checkin"])])
             self._send_csv(f"{comp.slug}-results.csv", rows)
             return
         if path.startswith("/admin/api/competitions/"):
@@ -717,6 +759,13 @@ class Handler(BaseHTTPRequestHandler):
         if player is None:
             self._send_json(404, {"error": "no player session"})
             return
+        if player.status == "removed":
+            # A removed slot is a tombstone that only exists to free the
+            # display name. It is not a session: answering 200 handed a
+            # former competitor their identity and the live competition
+            # payload after their run was cancelled.
+            self._send_json(404, {"error": "no player session"})
+            return
         comp = self.store.get_competition(player.competition_id)
         self._send_json(200, {
             "player": {
@@ -796,12 +845,57 @@ class Handler(BaseHTTPRequestHandler):
         self._send_html(200, web.admin_dashboard_page(
             comps, counts, session.csrf_token, pool_warn=pool_warn))
 
+    # audit_log is append-only and store.list_audit() reads a bounded window
+    # of it, so a filtered view searches a window too: wider than the page,
+    # fixed in size, and stated on the page.
+    _AUDIT_LIMIT_DEFAULT = 200
+    _AUDIT_LIMIT_MAX = 1000
+    _AUDIT_FILTER_SCAN = 2000
+
+    def _render_admin_audit(self, query: dict) -> None:
+        raw_limit = (query.get("limit") or [""])[0]
+        try:
+            limit = int(raw_limit) if raw_limit else self._AUDIT_LIMIT_DEFAULT
+        except ValueError:
+            limit = self._AUDIT_LIMIT_DEFAULT
+        limit = max(1, min(limit, self._AUDIT_LIMIT_MAX))
+        wanted = (query.get("competition") or [""])[0].strip()[:120]
+        comp = None
+        if wanted:
+            # Operators paste either the slug (the join URL, the dashboard's
+            # second line) or the id the console links carry -- same page.
+            comp = (self.store.get_competition_by_slug(wanted)
+                    or self.store.get_competition(wanted))
+        comps = self.store.list_competitions()
+        scan = self._AUDIT_FILTER_SCAN if wanted else None
+        rows = self.store.list_audit(limit=scan or limit)
+        if wanted:
+            # Rows outlive their competition: a deleted one still owns its
+            # history, and an unmatched filter just shows nothing.
+            keep = comp.id if comp is not None else wanted
+            rows = [r for r in rows if r.competition_id == keep][:limit]
+        player_names = {}
+        for r in rows:
+            if r.player_id and r.player_id not in player_names:
+                player = self.store.get_player(r.player_id)
+                if player is not None:
+                    player_names[r.player_id] = player.display_name
+        self._send_html(200, web.admin_audit_page(
+            rows, comps,
+            competition_id=(comp.id if comp is not None else ""),
+            limit=limit, limit_max=self._AUDIT_LIMIT_MAX, scan=scan,
+            unknown_filter=(wanted if (wanted and comp is None) else ""),
+            player_names=player_names))
+
     def _render_admin_new_competition(self, session, error: str = "") -> None:
         sync_errors = scenario_mod.sync_box_scenarios(self.store)
         if sync_errors:
             error = error or "; ".join(sync_errors[:3])
+        # A pool block that cannot expand is a per-box problem, never a
+        # scan failure: the picker renders and marks that scenario unusable
+        # with the stated reason (scenario.admin_picker_rows).
         self._send_html(200 if not error else 400, web.admin_new_competition_page(
-            scenario_mod.list_admin_scenarios(), session.csrf_token,
+            scenario_mod.admin_picker_rows(), session.csrf_token,
             error))
 
     def _render_admin_competition(self, session, comp_id: str,
@@ -1225,13 +1319,50 @@ class Handler(BaseHTTPRequestHandler):
                         409, "Scenario version moved on", message,
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
+            # A start that changes nothing must not answer ok: an ended (or
+            # already live) competition stays exactly where it was, and the
+            # operator has to be told, not shown a green audit row.
+            if comp.status != "draft":
+                message = (f"Only a draft competition can be started; this one "
+                           f"is {comp.status}.")
+                self.store.add_audit(
+                    actor, "competition_start_refused", comp.id,
+                    details_json=json.dumps({"status": comp.status,
+                                             "refused": True}),
+                    remote_addr=self.client_address[0] if self.client_address else None)
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._send_html(409, web.error_page(
+                        409, "Cannot start", message,
+                        f"/admin/competitions/{comp.id}", admin=True))
+                return
             self.store.start_competition(comp.id)
         elif action == "end":
             self.store.end_competition(comp.id)
             # Best effort: hand the pool's VMs back and drop the pool config.
             claims.cleanup_pool(self.store, self.store.get_competition(comp.id))
-        elif action == "close-join":
-            self.store.set_join_open(comp.id, False)
+        elif action in ("close-join", "open-join"):
+            # Joins can only be toggled while the run is live: open-join is
+            # the counterpart of close-join (a competition closed too early
+            # used to be unjoinable for good), and neither verb means
+            # anything on a draft or an ended competition.
+            if comp.status != "live":
+                message = (f"Joins can only be changed while the competition is "
+                           f"live; this one is {comp.status}.")
+                self.store.add_audit(
+                    actor, f"competition_{action}_refused", comp.id,
+                    details_json=json.dumps({"status": comp.status,
+                                             "refused": True}),
+                    remote_addr=self.client_address[0] if self.client_address else None)
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._send_html(409, web.error_page(
+                        409, "Cannot change joins", message,
+                        f"/admin/competitions/{comp.id}", admin=True))
+                return
+            self.store.set_join_open(comp.id, action == "open-join")
         else:
             # Every real branch above answers and returns; falling through
             # here means the verb does not exist. Silence-with-ok:true let

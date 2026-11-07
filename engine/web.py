@@ -310,11 +310,29 @@ def _service_history(services: list) -> str:
     return '<div class="svc-history">' + "".join(rows) + "</div>"
 
 
+def _ungraded_note(row: dict) -> str:
+    """How many checks the agent could not grade, when that is not zero.
+
+    A box missing required software (a check's ``requires`` entry was
+    absent) scores 0 for those checks -- it must not read as a healthy
+    low-scoring run. The roster, leaderboard, and player dashboard all say
+    how much of the board went ungraded."""
+    try:
+        count = int(row.get("ungraded_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return ""
+    noun = "check" if count == 1 else "checks"
+    return (f'<span class="ungraded">{esc(count)} {noun} ungraded: '
+            'required software missing</span>')
+
+
 def _score_cell(row: dict) -> str:
     """Total with the spelled-out breakdown under it (leaderboard + roster)."""
     return (f'<div class="score-cell"><span class="score">{esc(row.get("total", 0))}</span>'
             f'<span class="muted small">hardening {esc(row.get("hardening_points", 0))} · '
-            f'services {esc(row.get("service_points", 0))}</span></div>')
+            f'services {esc(row.get("service_points", 0))}</span>{_ungraded_note(row)}</div>')
 
 
 def _time_cell(row: dict) -> str:
@@ -703,7 +721,8 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
     if row:
         score = (f'<div class="bigscore">{esc(row.get("total", 0))}</div>'
                  f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
-                 f'<span>services {esc(row.get("service_points", 0))}</span></div>')
+                 f'<span>services {esc(row.get("service_points", 0))}</span></div>'
+                 + _ungraded_note(row))
     elif joined:
         score = ('<div class="bigscore muted">—</div>'
                  '<div class="muted small">Your box is joined — waiting for its '
@@ -858,7 +877,8 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
         score_block = (f'<div class="stat-big">{esc(row.get("total", 0))}</div>'
                        f'<div class="scoresplit"><span>hardening '
                        f'{esc(row.get("hardening_points", 0))}</span>'
-                       f'<span>services {esc(row.get("service_points", 0))}</span></div>')
+                       f'<span>services {esc(row.get("service_points", 0))}</span></div>'
+                       + _ungraded_note(row))
         rank_line = (f'Rank {esc(row.get("rank"))} of {esc(len(rows))} on the board'
                      if row.get("rank") else "On the board")
     else:
@@ -954,7 +974,8 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
 <td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a></td></tr>""")
     body = f"""<section class="page-head-row"><div><h1>Admin console</h1></div>
-<div class="actions"><a class="btn primary" href="/admin/competitions/new">New competition</a></div></section>
+<div class="actions"><a class="btn" href="/admin/audit">Audit log</a>
+<a class="btn primary" href="/admin/competitions/new">New competition</a></div></section>
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}
 <div id="dash" data-poll="30000">
 <section class="card"><div class="card-head"><h2>Competitions</h2>
@@ -964,13 +985,117 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
     return layout("Admin", body, admin=True, current="admin")
 
 
+def _audit_detail_cell(details_json) -> str:
+    """Detail column: the logged JSON as ``key value`` pairs, raw on hover.
+
+    Whoever logged the action chose the payload's shape, so nothing here
+    pretends to a schema -- dict or not, the stored text is shown, and the
+    untouched JSON stays in the cell's tooltip.
+    """
+    if not details_json:
+        return '<span class="muted">&mdash;</span>'
+    try:
+        parsed = json.loads(details_json)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and parsed:
+        pairs = []
+        for key in sorted(parsed):
+            value = parsed[key]
+            text = (value if isinstance(value, str)
+                    else json.dumps(value, sort_keys=True))
+            pairs.append(f"{esc(key)} {esc(text)}")
+        shown = " &middot; ".join(pairs)
+    else:
+        shown = esc(details_json)
+    return f'<span class="small" title="{esc(details_json)}">{shown}</span>'
+
+
+def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
+                     limit: int = 200, limit_max: int = 1000,
+                     scan: Optional[int] = None, unknown_filter: str = "",
+                     player_names: Optional[dict] = None) -> str:
+    """The admin audit trail: who did what to which competition, newest first.
+
+    One card, one table -- the same shell the console and the roster use. The
+    filter is a GET form so a filtered view is a URL an operator can paste
+    into a ticket; ``/admin/audit?competition=&limit=``. Times render through
+    ``_fmt_ts`` like every other page in the console (engine-local, with the
+    zone spelled out) and the column header says so. Rows are
+    ``store.AuditRecord``s; nothing here invents a column the store does not
+    keep.
+    """
+    player_names = player_names or {}
+    by_id = {c.id: c for c in comps}
+    opts = ['<option value="">All competitions</option>']
+    for c in comps:
+        selected = " selected" if c.id == competition_id else ""
+        opts.append(f'<option value="{esc(c.slug)}"{selected}>{esc(c.name)}</option>')
+    out = []
+    for r in rows:
+        comp = by_id.get(r.competition_id)
+        if comp is not None:
+            target = (f'<a href="/admin/competitions/{esc(comp.id)}">'
+                      f'{esc(comp.name)}</a>'
+                      f'<div class="muted small">/c/{esc(comp.slug)}</div>')
+        elif r.competition_id:
+            # A competition that has since been removed still owns its rows;
+            # the id is all the record has, so the id is what shows.
+            target = f'<span class="small">{esc(r.competition_id)}</span>'
+        else:
+            target = '<span class="muted">&mdash;</span>'
+        if r.player_id:
+            target += (f'<div class="muted small">player '
+                       f'{esc(player_names.get(r.player_id) or r.player_id)}</div>')
+        actor = esc(r.actor)
+        if r.remote_addr:
+            actor += f'<div class="muted small">{esc(r.remote_addr)}</div>'
+        out.append(f"""<tr><td class="num">{esc(_fmt_ts(r.ts))}</td><td>{actor}</td>
+<td><code>{esc(r.action)}</code></td><td>{target}</td>
+<td>{_audit_detail_cell(r.details_json)}</td></tr>""")
+    empty = ("No matching audit entries." if competition_id or unknown_filter
+             else "Nothing logged yet.")
+    meta = "Newest first &middot; times are engine-local"
+    if scan is not None:
+        # The store keeps one append-only table, so a filtered view searches a
+        # bounded window of it; say which window rather than implying "all".
+        meta += f" &middot; filter searched the newest {esc(scan)} entries"
+    filters = f"""<form method="get" action="/admin/audit" class="filter-form">
+<label class="small">Competition<select name="competition">{"".join(opts)}</select></label>
+<label class="small">Rows<input name="limit" type="number" min="1" max="{esc(limit_max)}" value="{esc(limit)}" style="width:6rem"></label>
+<button class="btn" type="submit">Apply</button></form>"""
+    body = f"""{_page_head("Audit log")}
+{f'<p class="warnmsg">No competition matches <code>{esc(unknown_filter)}</code>.</p>' if unknown_filter else ''}
+<section class="card"><div class="card-head"><h2>Entries</h2>
+{filters}</div>
+<p class="meta">{meta}</p>
+<div class="table-wrap"><table><thead><tr><th>Time (local)</th><th>Actor</th><th>Action</th><th>Competition</th><th>Detail</th></tr></thead><tbody>{"".join(out) or f'<tr><td colspan="5" class="empty">{empty}</td></tr>'}</tbody></table></div></section>"""
+    return layout("Audit log", body, admin=True, current="admin")
+
+
 def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> str:
-    opts = "".join(
+    opts, unusable = [], []
+    for row in scenarios:
+        name, version, _path = row[0], row[1], row[2]
+        problem = row[3] if len(row) > 3 else None
         # The version stays in the value as invisible plumbing; it is never
         # rendered as a label.
-        f'<option value="{esc(name)}|{esc(version)}">{esc(name)}</option>'
-        for name, version, _path in scenarios
-    )
+        if problem:
+            # A committed box whose pool block cannot expand stays on the
+            # list -- disabled, with the reason stated -- so the operator
+            # sees the box exists and what to fix, instead of the whole
+            # picker failing or the scenario silently vanishing.
+            opts.append(f'<option value="{esc(name)}|{esc(version)}" disabled>'
+                        f'{esc(name)} — pool not configured</option>')
+            unusable.append(f'<li><strong>{esc(name)}</strong>: {esc(problem)}</li>')
+        else:
+            opts.append(f'<option value="{esc(name)}|{esc(version)}">'
+                        f'{esc(name)}</option>')
+    unusable_block = (
+        '<p class="warnmsg small">These boxes are in the folder but cannot '
+        'start a competition until their pool is configured:</p>'
+        f'<ul class="small muted">{"".join(unusable)}</ul>'
+        if unusable else "")
     body = f"""<div class="form-page">
 {_page_head("New competition")}
 {f'<p class="error">{esc(error)}</p>' if error else ''}
@@ -978,8 +1103,9 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <div class="form-grid form-lead">
 <label>Name<input name="name" required placeholder="Friday Night Ranked" autofocus></label>
-<label>Scenario<select name="scenario" required>{opts or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
+<label>Scenario<select name="scenario" required>{"".join(opts) or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
 </div>
+{unusable_block}
 <div class="form-grid form-cols">
 <label>Max players<input name="max_players" type="number" min="1" value="32"></label>
 <label>Run duration (minutes)<input name="duration_min" type="number" min="1" value="120"></label>
@@ -1049,7 +1175,12 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/start" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Start competition</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'Discard this draft and release any pre-deployed boxes?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Discard draft</button></form>')
     if comp.status == "live":
-        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
+        if comp.join_open:
+            controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
+        else:
+            # Joins closed by mistake used to be permanent: close-join had no
+            # counterpart verb, so the only way back was a new competition.
+            controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/open-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Reopen joins</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'End the competition for everyone?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">End competition</button></form>')
     if comp.status == "ended":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/rerun" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Rerun competition</button></form>')
@@ -1407,6 +1538,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-text);out
 /* The pre-deploy row: caption+input sit in one column, the button base-aligns
 with the input (flex-end, both --control tall), so nothing stacks crooked. */
 .warm-form{display:flex;gap:var(--s2);align-items:flex-end;flex-wrap:wrap}
+/* The audit filter row is the same shape as the pre-deploy row; one line so
+the page keeps the button/field baseline without a rule of its own. */
+.filter-form{display:flex;gap:var(--s2);align-items:flex-end;flex-wrap:wrap}
 code{background:var(--surface-2);border-radius:0;padding:.08rem .35rem;font-size:.9em}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:0;padding:var(--pad-card);overflow:auto}
 pre code{background:none;padding:0}
@@ -1420,6 +1554,7 @@ pre code{background:none;padding:0}
 .fullnote{display:inline-flex;align-items:center;gap:var(--s2);margin:0;color:var(--warn);background:var(--warn-bg);padding:var(--s2) var(--s3);font-size:.78rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
 .fullflag{color:var(--warn);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:.82em}
 .stale{color:var(--warn)}
+.ungraded{color:var(--warn);font-size:.78rem;font-weight:600}
 .steps{list-style:none;counter-reset:step;padding:0;margin:0}
 .steps>li{position:relative;padding:0 0 1.7rem 2.7rem;margin:0}
 .steps>li:last-child{padding-bottom:.2rem}

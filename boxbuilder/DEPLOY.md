@@ -214,7 +214,12 @@ the scheduled task instead.
 
 - **`verify` covers less on Windows**: the guest has no journald, no
   `/etc/machine-id` and no X root window, so those checks report `skip`. The
-  install, lineage, config and scheduled-task state are still checked.
+  install, lineage, config and scheduled-task state are still checked — a
+  `Ready` task is active (it reports `Running` only mid-grade). Report and
+  theme checks read the shared Windows locations: `report.json` / README
+  mirror under `%PUBLIC%\Documents\huitzilopochtli`, shortcuts on the Public
+  Desktop, and installed wallpaper under `C:\ProgramData\huitz-theme`
+  (registered per-user).
 - **Guest agent exec** is convenient but not guaranteed: some Windows images
   cannot `guest-exec`. Keep an out-of-band bootstrap (set an admin password via
   the agent, bring up OpenSSH, stage the Python installer), then prefer SSH.
@@ -239,6 +244,13 @@ the scheduled task instead.
   leans on per-machine Windows identity, run `sysprep /generalize /oobe /quit`
   on a disposable clone and re-template from it; never generalize a clone
   that has already joined a domain.
+- **Evaluation licenses enforce shutdowns.** An evaluation Windows guest that
+  fails to activate on first boot (the clone had no network yet) keeps
+  shutting itself down roughly hourly (`User32` event 1074 attributed to
+  `wlms.exe`, "Other (Planned)") until activation succeeds. Check
+  `slmgr /dli` and `slmgr /xpr` on the first clone from a new template, and
+  treat a mystery power-off on a young Windows clone as licensing, not as a
+  crash — the event log names `wlms.exe` as the initiator.
 - **Domain controllers**: authentication can fail or reset for the first
   minutes after boot while AD initialises. Wait with bounded, spaced retries
   and make checks fail closed during the window; never loop credentials. Shut

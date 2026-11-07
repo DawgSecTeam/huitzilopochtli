@@ -8,6 +8,9 @@ from boxbuilder.providers.base import RunResult
 from boxbuilder.verify import (
     FAIL, PASS, SKIP, WARN,
     Expectations,
+    _parse_agent_config,
+    _parse_kv_sections,
+    _posix_state_script,
     collect_facts,
     evaluate,
     expectations_from,
@@ -153,6 +156,48 @@ def test_competition_box_that_is_running_fails():
                                  "timer_active": None, "timer_enabled": None})
     exp = _exp(mode="ranked", competition=True, expect_total=None)
     assert _statuses(evaluate(facts, exp))["init.state"] == FAIL
+
+
+def test_honor_one_shot_unit_is_healthy_when_inactive_and_enabled():
+    # Honor's agent grades once and exits 0; systemd then reports "inactive"
+    # between timer runs. The enabled unit plus the active re-grade timer is
+    # the steady state, not a failure.
+    facts = _healthy_facts(init={"active": "inactive", "enabled": "enabled",
+                                 "timer_active": "active", "timer_enabled": "enabled"})
+    statuses = _statuses(evaluate(facts, _exp()))
+    assert statuses["init.state"] == PASS
+    assert statuses["init.timer"] == PASS
+
+
+def test_honor_inactive_unit_that_is_disabled_fails():
+    facts = _healthy_facts(init={"active": "inactive", "enabled": "disabled",
+                                 "timer_active": "active", "timer_enabled": "enabled"})
+    assert _statuses(evaluate(facts, _exp()))["init.state"] == FAIL
+
+
+def test_honor_failed_unit_fails():
+    facts = _healthy_facts(init={"active": "failed", "enabled": "enabled",
+                                 "timer_active": "active", "timer_enabled": "enabled"})
+    assert _statuses(evaluate(facts, _exp()))["init.state"] == FAIL
+
+
+def test_posix_state_script_separates_sections_after_a_newline_less_file():
+    # agent_config.json is written without a trailing newline; a bare `cat`
+    # glued the next "##machine-id" header onto the JSON and made it
+    # unparsable. The script must emit a separator after the cat.
+    script = _posix_state_script("/opt/.huitzilopochtli")
+    lines = [line.strip() for line in script.splitlines()]
+    idx = lines.index("cat /opt/.huitzilopochtli/agent_config.json 2>/dev/null")
+    assert lines[idx + 1] == "echo"
+    # and the parser round-trips a section dump whose last line has no newline
+    fake_stdout = (
+        "##files\nagent.pyz\n"
+        '##config\n{\n  "mode": "honor"\n}'  # no trailing newline, as the box writes it
+        "\n##machine-id\nabc123\n"
+    )
+    sections = _parse_kv_sections(fake_stdout)
+    assert _parse_agent_config(sections.get("config") or "") == {"mode": "honor"}
+    assert sections.get("machine-id") == "abc123"
 
 
 def test_theme_artifacts_are_checked_when_the_scenario_has_them():
@@ -302,6 +347,186 @@ def test_collect_treats_missing_xwd_as_unmeasurable():
     facts["desktop_pixels"] = None  # xwd absent branch
     checks = evaluate(facts, _exp())
     assert _statuses(checks)["desktop.renders"] == SKIP
+
+
+# --- Windows collection + evaluation ----------------------------------------
+# The Windows path was long untested (FakeHandle had no run_ps at all), which
+# is how init.state ("unit is ready" -- a healthy scheduled task) and the
+# always-FAIL theme/report checks survived. These pin the fixed behavior.
+
+def _win_state_output(files=("agent.pyz", "manifest.signed.json",
+                             "authoring_public_key.b64", "agent_config.json",
+                             ".score.dat"),
+                      task="Ready", theme=("0728abf4133718da-wallpaper.png",),
+                      report='{"snapshot_version": 1, "mode": "honor",'
+                             ' "scenario_name": "Demo", "total": 0,'
+                             ' "max_possible": 200}',
+                      mirror_report=True, mirror_readme=True, desktop=2,
+                      config=None):
+    cfg = config if config is not None else {
+        "mode": "honor",
+        "rubric_path": "C:\\ProgramData\\huitzilopochtli\\.score.dat"}
+    return "\n".join([
+        *files,
+        "##config", json.dumps(cfg),
+        "##manifest-sha", "a" * 64,
+        "##key-sha", "b" * 64,
+        "##task", task,
+        "##theme", *theme,
+        "##mirror", f"report={'True' if mirror_report else 'False'}",
+        f"readme={'True' if mirror_readme else 'False'}",
+        "##report", report,
+        "##desktop", str(desktop),
+    ])
+
+
+class FakeWinHandle:
+    os_name = "windows"
+    addr = "192.0.2.20"
+    user = "sysadmin"
+    password = "p"
+    port = 22
+
+    def __init__(self, ps_output):
+        self.ps_output = ps_output
+        self.ps_commands = []
+
+    def run_ps(self, script, *, timeout=1800):
+        self.ps_commands.append(script)
+        return RunResult(0, stdout=self.ps_output)
+
+    def run(self, cmd, *, timeout=1800, sudo=True):
+        raise AssertionError("windows collect must not use run()")
+
+
+def _win_facts(**overrides):
+    facts = {
+        "os": "windows",
+        "install_dir": "C:\\ProgramData\\huitzilopochtli",
+        "files": ["agent.pyz", "manifest.signed.json",
+                  "authoring_public_key.b64", "agent_config.json", ".score.dat"],
+        "manifest_sha": "a" * 64,
+        "key_sha": "b" * 64,
+        "agent_config": {"mode": "honor",
+                         "rubric_path": "C:\\ProgramData\\huitzilopochtli\\.score.dat"},
+        "machine_id": None,
+        "motd": False,
+        "theme_files": ["0728abf4133718da-wallpaper.png"],
+        "legacy_dir": False,
+        "init": {"active": "ready", "enabled": "ready",
+                 "timer_active": None, "timer_enabled": None},
+        "journal": None,
+        "report": {"snapshot_version": 1, "mode": "honor",
+                   "scenario_name": "Demo", "total": 0, "max_possible": 200},
+        "report_error": None,
+        "users": [],
+        "user_artifacts": {"Public": {"desktop_entries": 2,
+                                      "report_mirror": True,
+                                      "readme_mirror": True}},
+        "desktop_pixels": None,
+    }
+    facts.update(overrides)
+    return facts
+
+
+def test_collect_parses_a_windows_box():
+    facts = collect_facts(FakeWinHandle(_win_state_output()), _Spec(), "artifacts")
+    assert facts["os"] == "windows"
+    assert facts["agent_config"]["mode"] == "honor"
+    assert facts["init"]["active"] == "ready"
+    assert facts["theme_files"] == ["0728abf4133718da-wallpaper.png"]
+    assert facts["report"]["snapshot_version"] == 1
+    assert facts["user_artifacts"]["Public"] == {
+        "desktop_entries": 2, "report_mirror": True, "readme_mirror": True}
+
+
+def test_healthy_windows_box_passes_everything():
+    report = summarise(evaluate(_win_facts(), _exp()))
+    statuses = {c["id"]: c["status"] for c in report["checks"]}
+    assert report["ok"], [c for c in report["checks"] if c["status"] == FAIL]
+    assert statuses["init.state"] == PASS       # Ready == active on Windows
+    assert statuses["report.state"] == PASS     # from the Public mirror
+    assert statuses["theme.wallpaper"] == PASS
+    assert statuses["theme.readme"] == PASS
+    assert statuses["theme.shortcuts"] == PASS
+    assert statuses["agent.journal"] == SKIP    # genuinely unmeasurable
+    assert statuses["desktop.renders"] == SKIP
+
+
+def test_windows_disabled_task_fails_init_state():
+    facts = _win_facts(init={"active": "disabled", "enabled": "disabled",
+                             "timer_active": None, "timer_enabled": None})
+    assert _statuses(evaluate(facts, _exp()))["init.state"] == FAIL
+
+
+def test_windows_missing_mirror_report_fails():
+    facts = _win_facts(report=None,
+                       report_error="no report.json in the Public mirror",
+                       user_artifacts={})
+    statuses = _statuses(evaluate(facts, _exp()))
+    assert statuses["report.state"] == FAIL
+    # with no mirror and no shortcuts at all there is no artifact owner:
+    # user-scoped checks skip rather than blame a phantom user
+    assert statuses["report.mirror"] == SKIP
+    assert statuses["theme.readme"] == FAIL
+
+
+def test_windows_invalid_mirror_json_is_reported():
+    handle = FakeWinHandle(_win_state_output(report="{not json"))
+    facts = collect_facts(handle, _Spec(), "artifacts")
+    assert facts["report"] is None
+    assert "not valid JSON" in facts["report_error"]
+
+
+def test_windows_competition_seal_gate_accepts_ready_task():
+    # seal-prepare gates on verify; a Ready scheduled task is the pre-join
+    # state a competition Windows template must ship (and it must pass the
+    # gate, since seal-prepare aborts unless verify passes)
+    handle = FakeWinHandle(_win_state_output(
+        files=("agent.pyz", "manifest.signed.json",
+               "authoring_public_key.b64", "agent_config.json"),
+        config={"mode": "ranked", "engine_url": "https://engine.test",
+                "rubric_path": None, "enrollment_token": None}))
+    result = prepare_seal(handle, _Spec(mode="ranked"), "artifacts",
+                          competition=True)
+    assert result["verify"]["ok"], [
+        c for c in result["verify"]["checks"] if c["status"] == FAIL]
+    assert result["ok"] is True
+
+
+def test_honor_seal_gate_accepts_a_live_unit(tmp_path):
+    # seal-prepare's pre-seal gate ran with competition expectations even for
+    # an honor box, demanding a stopped unit (which the seal script creates
+    # afterwards) and skipping the report checks -- so an honor box could not
+    # be sealed whenever its timer had the one-shot service running.
+    (tmp_path / "build-state.json").write_text(json.dumps({
+        "manifest_sha256": "a" * 64,
+        "authoring_public_key_sha256": "b" * 64,
+    }))
+    state = _state_output()
+    report = json.dumps({"snapshot_version": 1, "mode": "honor",
+                         "scenario_name": "Demo", "total": 0,
+                         "max_possible": 200})
+    seal = "\n".join(["##stop", "ok", "##purge", "ok", "##mirrors", "ok",
+                      "##machine-id", "ok", "##size", "0"])
+
+    class SealHandle(FakeHandle):
+        def __init__(self):
+            super().__init__({
+                "##stop": seal,
+                "ls -1A /opt/.huitzilopochtli": state,
+                "systemctl is-active": "active",      # live one-shot at gate time
+                "systemctl is-enabled": "enabled",
+                "journalctl": "",
+                "report.json": report,
+                "awk -F:": "player|/home/player\n##artifacts\n"
+                           "player|/home/player|2|yes|yes\n",
+            })
+
+    result = prepare_seal(SealHandle(), _Spec(mode="honor"), str(tmp_path))
+    assert result["verify"]["ok"], [
+        c for c in result["verify"]["checks"] if c["status"] == FAIL]
+    assert result["ok"] is True
 
 
 # --- seal ------------------------------------------------------------------

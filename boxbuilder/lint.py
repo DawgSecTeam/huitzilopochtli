@@ -156,6 +156,33 @@ def _forensics_blobs(spec) -> list:
     return blobs
 
 
+
+def _guard_covers(guard: str, token: str) -> bool:
+    """Whether a `requires` guard explains a scored token.
+
+    Both may carry shell variables (`/home/$u/Maildir` from a check's loop, or a concrete path from
+    the requires list). A `$var` segment is a wildcard on either side; the guard matches when its
+    segments line up with the token's first N segments, or when the paths are equal. That covers
+    "the guard names the directory the token lives in" and "the guard names the artefact itself" —
+    the two ways a requires-guarded check refers to prep-owned state.
+    """
+    def segments(value):
+        return [s for s in value.strip().rstrip("/").split("/") if s]
+
+    g, t = segments(guard), segments(token)
+    if not g or not t:
+        return False
+
+    def same(a, b):
+        return a == b or a.startswith("$") or b.startswith("$")
+
+    if len(g) <= len(t) and all(same(x, y) for x, y in zip(g, t)):
+        return True
+    if len(t) <= len(g) and all(same(x, y) for x, y in zip(g, t)):
+        return True
+    return False
+
+
 def _catalog_errors(spec, nakon_dir: str = None) -> tuple:
     """Ask nakon to validate the authored config against the catalog.
 
@@ -226,11 +253,18 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
     if not checks:
         errors.append("scenario has no checks")
 
+    advisories = []
     check_ids = [c.get("id") for c in checks if isinstance(c, dict)]
     if len(check_ids) != len(set(check_ids)):
         errors.append("duplicate check ids in the effective scenario")
 
     blobs = [(c.get("id"), _check_text(c)) for c in checks if isinstance(c, dict)]
+    # A check may declare `requires:` (binaries/absolute paths the agent must find before
+    # it will run the collect script; absent -> `unavailable`, 0 points). A requires-guarded
+    # check whose state nothing plants is guarded, not a free-points bug, so the reverse
+    # pass below reports it separately.
+    requires_guards = {c.get("id"): list(c.get("requires") or [])
+                       for c in checks if isinstance(c, dict)}
     evidence = blobs + _forensics_blobs(spec)
     machine = spec.nakon_machines()[0] if spec.nakon_machines() else {}
     planted = []
@@ -285,6 +319,14 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
                 continue
             if any(token in blob for blob in seed_text):
                 continue  # a bundled seed hardcodes this artefact
+            guards = requires_guards.get(cid) or []
+            if any(_guard_covers(g, token) for g in guards if g.startswith('/')):
+                # `requires` already makes this check fail closed when the state is absent, so
+                # this is prep-owned state that is graded honestly — an advisory, not a bug.
+                advisories.append(
+                    f"{cid}: scores {token} — prep-owned, guarded by requires {guards} "
+                    f"(reports unavailable when absent)")
+                continue
             warnings.append(f"{cid}: scores {token} but nothing plants it")
 
     theme = spec.theme
@@ -315,6 +357,7 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
         "planted": len(planted),
         "errors": errors,
         "warnings": warnings,
+        "advisories": advisories,
     }
 
 

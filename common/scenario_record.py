@@ -173,6 +173,41 @@ def merge_effective(parsed: dict, mode: str, engine_url: str = None,
     return effective
 
 
+def _compile_requires(check: dict) -> list:
+    """Validate and normalize one check's optional ``requires`` list.
+
+    Entries are bare binary names (resolved on PATH by the agent collector)
+    or absolute paths. The collector refuses to run the check -- reporting
+    status ``unavailable``, 0 points, never a pass -- when any entry is
+    missing, which is what keeps a collect script from "succeeding" via a
+    ``command -v <tool> || { echo true; }`` escape hatch on an
+    un-provisioned host. Absent (the common case) compiles to an empty
+    list, so every other check behaves exactly as before.
+    """
+    requires = check.get("requires")
+    if requires is None:
+        return []
+    if not isinstance(requires, list) or not requires:
+        raise ValueError(
+            f"check {check.get('id')!r}: requires must be a non-empty list "
+            f"of binary names or absolute paths, got {requires!r}"
+        )
+    out = []
+    for entry in requires:
+        if not isinstance(entry, str) or not entry.strip() or entry != entry.strip():
+            raise ValueError(
+                f"check {check.get('id')!r}: requires entries must be "
+                f"non-empty strings without surrounding whitespace, got {entry!r}"
+            )
+        if "/" in entry and not entry.startswith("/"):
+            raise ValueError(
+                f"check {check.get('id')!r}: requires entry {entry!r} must be "
+                f"a bare command name or an absolute path"
+            )
+        out.append(entry)
+    return out
+
+
 def _build_check_spec(check: dict) -> CheckSpec:
     expect = check.get("expect", {}) or {}
     return CheckSpec(
@@ -185,6 +220,7 @@ def _build_check_spec(check: dict) -> CheckSpec:
         display_max_points=check["max_points"],
         timeout_s=check.get("timeout_s", _DEFAULT_TIMEOUT_S),
         is_sla=bool(check.get("is_sla") or ("sla" in expect)),
+        requires=_compile_requires(check),
     )
 
 
@@ -339,8 +375,9 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
     - ``forensics_questions``: manifest-side question metadata
     - ``service_specs``: public service metadata
     - ``rubric``: the assembled ``Rubric`` object
-    - ``engine_record``: the ``{rubric, adversary, services, mode, pool?}``
-      dict the engine stores and serves
+    - ``engine_record``: the ``{rubric, adversary, services, mode,
+      requires?, pool?}`` dict the engine stores and serves (``requires`` is
+      present only when some check declares prerequisites)
 
     Raises ``ScenarioModeError``/``ValueError`` on authored content that
     cannot compile. Structural validation of the produced record is the
@@ -406,6 +443,15 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
         # honor records simply carry "honor".
         "mode": scenario["mode"],
     }
+    # Optional per-check prerequisites (see CheckSpec.requires): recorded so
+    # the engine-side artefact says which checks are gated on which binaries
+    # or paths -- grading itself reacts to them through the agent's
+    # ``unavailable`` evidence, never from this map. Omitted when no check
+    # declares requires, so existing records are byte-identical.
+    requires_map = {spec.id: list(spec.requires)
+                    for spec in check_specs if spec.requires}
+    if requires_map:
+        engine_record["requires"] = requires_map
     # Workshop pool provisioning spec (ranked only; validation rejects a pool
     # block on honor scenarios). Passed through to the engine, which provisions
     # one pool per competition from it.
