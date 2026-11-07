@@ -347,8 +347,10 @@ def create_competition(store: Store, *, slug: str, name: str,
     if current is not None and scenario_version != current[0]:
         raise ValueError(
             f"Scenario {scenario_name} v{scenario_version} is not current "
-            f"(engine has v{current[0]}); migrate the competition to the "
-            f"current version.")
+            f"(engine has v{current[0]}); versions are not migrated in "
+            f"place -- discard this draft on its admin page and recreate it "
+            f"from the current scenario with 'New competition' on the admin "
+            f"console (/admin).")
     if store.get_scenario(scenario_name, scenario_version) is None:
         raise ValueError(
             f"Scenario {scenario_name} v{scenario_version} is not on the "

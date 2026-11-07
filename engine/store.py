@@ -997,6 +997,15 @@ class Store:
         return True
 
     def count_players(self, comp_id: str, include_removed: bool = False) -> int:
+        """Player slots that occupy the competition's capacity.
+
+        ``removed`` rows are tombstones and ``disqualified`` rows have lost
+        their seat: the disqualify handler releases the VM and audit-logs
+        ``released_vm``, so a disqualified player must not keep counting
+        against ``max_players`` and block a new join. The roster/board still
+        render the disqualified row (only ``removed`` is filtered there); the
+        exclusion is about the seat, not about the record.
+        """
         with self._lock:
             if include_removed:
                 row = self._conn.execute(
@@ -1006,7 +1015,7 @@ class Store:
             else:
                 row = self._conn.execute(
                     "SELECT COUNT(*) AS n FROM players WHERE competition_id = ? "
-                    "AND status != 'removed'", (comp_id,),
+                    "AND status NOT IN ('removed', 'disqualified')", (comp_id,),
                 ).fetchone()
         return int(row["n"]) if row is not None else 0
 

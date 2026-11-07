@@ -643,11 +643,18 @@ def test_admin_roster_rows_are_single_line():
     assert 'class="roster"' in page
 
 
-def test_admin_roster_disqualified_player_has_no_actions():
+def test_admin_roster_disqualified_player_offers_remove_only():
+    # Regression (defect 3): a disqualified row used to render no actions at
+    # all, so the only recovery was ending the whole competition. Remove is
+    # the exit; reinstate does not exist (the VM was released and checkin
+    # treats the run as terminal).
     dq = _player(status="disqualified")
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [dq], "csrf")
-    assert "Retry VM" not in page and "Remove</button>" not in page
-    assert '<span class="muted">—</span></td></tr>' in page
+    assert f'action="/admin/players/{dq.player_id}/remove"' in page
+    assert 'class="btn danger">Remove</button>' in page
+    assert "Disqualify" not in page
+    assert "Retry VM" not in page and "Reissue code" not in page
+    assert '<span class="muted">—</span></td></tr>' not in page
 
 
 # --- round 2: form automation + de-chroming ---------------------------------------

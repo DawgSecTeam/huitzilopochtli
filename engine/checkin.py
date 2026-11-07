@@ -235,7 +235,10 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
                 store, box.scenario_name, box.scenario_version)
         except scenario_mod.ScenarioNotFound as exc:
             # The message distinguishes "unknown scenario" from "version no
-            # longer current (engine has vN); migrate the competition".
+            # longer current (engine has vN)". There is no migrate verb: the
+            # scenario version moved on, so the operator's exit is to
+            # discard this competition on its admin page and recreate it
+            # from the current scenario with 'New competition' (/admin).
             raise CheckinError(409, str(exc), last_seq=box.last_seq)
         except scenario_mod.ScenarioError:
             raise CheckinError(

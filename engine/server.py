@@ -1094,8 +1094,10 @@ class Handler(BaseHTTPRequestHandler):
             self._render_admin_new_competition(
                 session,
                 f"Scenario {scenario_name} v{scenario_version} is not current "
-                f"(engine has v{current[0]}); migrate the competition to the "
-                f"current version.")
+                f"(engine has v{current[0]}); versions are not migrated in "
+                f"place -- discard this submission and recreate the "
+                f"competition from the current scenario with "
+                f"'New competition' on the admin console (/admin).")
             return
         if self.store.get_scenario(scenario_name, scenario_version) is None:
             err = (f"Scenario {scenario_name} v{scenario_version} is not on the "
@@ -1404,12 +1406,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(409, {"error": "reissue is only for players without a bound box"})
                 return
             code = competition.generate_join_code()
+            # The claim_error stays: a reissue hands the player a new code,
+            # it does not fix whatever made the claim fail. Clearing it here
+            # hid the reason from the roster while the failure was still live.
             self.store.update_player(
                 player.player_id, status="invited", box_id=None,
                 join_code_hash=competition.hash_join_code(self.server_secret, code),
                 join_code_plain=code,
-                join_code_expires_at=time.time() + 1800,
-                claim_error=None)
+                join_code_expires_at=time.time() + 1800)
             base, secret = claims.config()
             if comp and player.claim_uid and base and secret:
                 try:

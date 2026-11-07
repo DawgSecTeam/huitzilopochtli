@@ -1156,7 +1156,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                           f' onsubmit="return confirm(\'Disqualify this player?\')">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Disqualify</button></form>')
-        if p.status in ("invited", "running", "finished"):
+        # A disqualified row must not be a dead end: Remove is the operator's
+        # way to clear it from the roster (and free the name). No reinstate --
+        # disqualification released the VM and checkin treats the run as
+        # terminal, so there is no store transition back into the run.
+        if p.status in ("invited", "running", "finished", "disqualified"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/remove" class="inline"'
                           f' onsubmit="return confirm(\'Remove this player from the competition?\')">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
