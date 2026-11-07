@@ -696,6 +696,11 @@ def test_stale_version_checkin_is_refused_with_migration_message(tmp_path):
             eng, priv, _bundle_dict(box_id, 2, name, 1, {"matched": "no"}))
         assert status == 409, parsed
         assert "not current" in parsed["error"], parsed
-        assert "v2" in parsed["error"] and "migrat" in parsed["error"], parsed
+        assert "v2" in parsed["error"], parsed
+        # The refusal must name the real exit. There is no migrate verb anywhere in the
+        # engine, so a message saying "migrate" sent the operator looking for a command
+        # that does not exist; the exit is to discard and recreate from the current scenario.
+        assert "discarded and recreated" in parsed["error"], parsed
+        assert "migrat" not in parsed["error"], parsed
     finally:
         eng.stop()

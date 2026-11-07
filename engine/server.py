@@ -1312,8 +1312,10 @@ class Handler(BaseHTTPRequestHandler):
             current = scenario_mod.current_box_scenario(comp.scenario_name)
             if current is not None and comp.scenario_version != current[0]:
                 message = (f"Scenario {comp.scenario_name} v{comp.scenario_version} "
-                           f"is not current (engine has v{current[0]}); migrate "
-                           f"the competition before starting it.")
+                           f"is not current (engine has v{current[0]}). There is no "
+                           f"migrate step: discard this competition and create it "
+                           f"again from the current scenario (New competition on the "
+                           f"admin console at /admin), then start that one.")
                 if session is None:
                     self._send_json(409, {"error": message})
                 else:
@@ -1592,8 +1594,10 @@ class Handler(BaseHTTPRequestHandler):
                     if current is not None and scenario_version != current[0]:
                         raise ValueError(
                             f"Scenario {scenario_name} v{scenario_version} is not "
-                            f"current (engine has v{current[0]}); migrate the "
-                            f"competition to the current version.")
+                            f"current (engine has v{current[0]}). There is no migrate "
+                            f"step: discard this competition and create it again from the "
+
+                            f"current scenario (New competition on the admin console at /admin).")
                 if self.store.get_scenario(scenario_name, scenario_version) is None:
                     raise ValueError(
                         f"Scenario {scenario_name} v{scenario_version} is not on "

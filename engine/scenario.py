@@ -209,7 +209,7 @@ def load_scenario(store: Store, scenario_name: str,
             raise ScenarioNotFound(
                 f"scenario {scenario_name!r} version {scenario_version} is not "
                 f"current (engine has v{current[0]}); the competition must be "
-                f"migrated to the current version"
+                f"discarded and recreated from the current scenario"
             )
         raise ScenarioNotFound(
             f"no engine record for {scenario_name!r} version {scenario_version}"
