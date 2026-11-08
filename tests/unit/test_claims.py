@@ -562,8 +562,9 @@ def test_sweep_does_nothing_without_a_portal(store, comp, player, monkeypatch):
     monkeypatch.setattr(claims.workshop, "claim_vm",
                         lambda *a, **kw: (_ for _ in ()).throw(
                             AssertionError("no portal")))
-    assert claims.sweep(store, b"secret") == {"retried": 0, "polled": 0,
-                                              "rotated": 0, "cleaned": 0}
+    assert claims.sweep(store, b"secret") == {
+        "retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
+        "auto_ended": 0, "deferred": 0}
 
 
 def test_sweep_skips_bound_and_running_players(store, comp, player,
@@ -576,8 +577,9 @@ def test_sweep_skips_bound_and_running_players(store, comp, player,
     monkeypatch.setattr(claims.workshop, "claim_vm", boom)
     monkeypatch.setattr(claims.workshop, "poll_ticket", boom)
     monkeypatch.setattr(claims.workshop, "push_prebind", boom)
-    assert claims.sweep(store, b"secret") == {"retried": 0, "polled": 0,
-                                              "rotated": 0, "cleaned": 0}
+    assert claims.sweep(store, b"secret") == {
+        "retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
+        "auto_ended": 0, "deferred": 0}
 
 
 # --- pool cleanup (competition end) --------------------------------------------
@@ -1108,3 +1110,156 @@ def test_destroy_vms_waits_out_a_running_destroy_job(monkeypatch):
     out = workshop.destroy_vms("http://portal", "pw", [1, 2])
     assert out["status"] == "done"
     assert len(calls) == 2
+
+
+# --- multi-competition isolation ---------------------------------------------
+
+
+def _live(store, slug, name, scenario="ClaimCompPool", auto_end=False):
+    c = competition.create_competition(
+        store, slug=slug, name=name, scenario_name=scenario,
+        scenario_version=1, max_players=8, duration_s=3600, auto_end=auto_end)
+    store.start_competition(c.id)
+    return store.get_competition(c.id)
+
+
+def test_cleanup_pool_never_destroys_a_sibling_slug_pool(store, monkeypatch):
+    """Ending ``demo`` must not destroy ``demo-2``'s clones.
+
+    The portal names clones ``<pool name>-<n>``; a slug prefix match made
+    End-then-Rerun (``demo`` -> ``demo-2``) a live-event data loss bug.
+    """
+    comp = _live(store, "demo", "Demo")
+    store.update_competition(comp.id, workshop_pool_code="PA",
+                             workshop_pool_name="huitz-ranked-demo")
+    monkeypatch.setattr(claims.workshop, "list_pools",
+                        lambda *a, **kw: [
+                            _portal_pool("PA", "huitz-ranked-demo"),
+                            _portal_pool("PB", "huitz-ranked-demo-2")])
+    monkeypatch.setattr(claims.workshop, "release_vm", lambda *a, **kw: None)
+    deleted = []
+    monkeypatch.setattr(claims.workshop, "delete_pool",
+                        lambda base, pw, code, **kw: deleted.append(code))
+    destroyed = _patch_vm_teardown(monkeypatch, vms=[
+        {"vmid": 301, "pool": "PA", "student_id": "huitz-ranked-demo-1"},
+        {"vmid": 302, "pool": "PB", "student_id": "huitz-ranked-demo-2-1"},
+        {"vmid": 303, "pool": "PB", "student_id": "huitz-ranked-demo-2-2"},
+    ])
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    stats = claims.cleanup_pool(store, store.get_competition(comp.id))
+    assert destroyed == [301]
+    assert stats["destroyed"] == 1 and deleted == ["PA"]
+
+
+def test_cleanup_pool_trusts_the_stored_pool_name(store, monkeypatch):
+    """A renamed pool is still ours: ownership follows the stored name."""
+    comp = _live(store, "renamed", "Renamed")
+    store.update_competition(comp.id, workshop_pool_code="PX",
+                             workshop_pool_name="huitz-ranked-renamed-v2")
+    monkeypatch.setattr(claims.workshop, "list_pools",
+                        lambda *a, **kw: [
+                            _portal_pool("PX", "huitz-ranked-renamed-v2")])
+    monkeypatch.setattr(claims.workshop, "release_vm", lambda *a, **kw: None)
+    deleted = []
+    monkeypatch.setattr(claims.workshop, "delete_pool",
+                        lambda base, pw, code, **kw: deleted.append(code))
+    _patch_vm_teardown(monkeypatch, vms=[
+        {"vmid": 401, "pool": "PX",
+         "student_id": "huitz-ranked-renamed-v2-1"},
+    ])
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    stats = claims.cleanup_pool(store, store.get_competition(comp.id))
+    assert stats["legacy"] is False
+    assert stats["destroyed"] == 1 and deleted == ["PX"]
+
+
+def test_pool_locks_are_per_competition():
+    assert claims._pool_lock("a") is claims._pool_lock("a")
+    assert claims._pool_lock("a") is not claims._pool_lock("b")
+
+
+def test_warm_gate_is_sized_by_env(monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_MAX_WARM_JOBS", "2")
+    monkeypatch.setattr(claims, "_WARM_GATE", None)
+    gate = claims._warm_gate()
+    assert gate.acquire(blocking=False)
+    assert gate.acquire(blocking=False)
+    assert not gate.acquire(blocking=False)
+    gate.release()
+    gate.release()
+
+
+def test_max_warm_jobs_tolerates_garbage(monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_MAX_WARM_JOBS", "nope")
+    assert claims.max_warm_jobs() == claims.MAX_WARM_JOBS_DEFAULT
+    monkeypatch.setenv("HUITZILOPOCHTLI_MAX_WARM_JOBS", "0")
+    assert claims.max_warm_jobs() == 1
+
+
+def test_finished_warm_jobs_are_pruned(monkeypatch):
+    jobs = {
+        "old": {"status": "ready", "finished_at": 1.0},
+        "new": {"status": "ready", "finished_at": time.time()},
+        "live": {"status": "queued", "started_at": 1.0},
+    }
+    monkeypatch.setattr(claims, "_WARM_JOBS", jobs)
+    claims._prune_warm_jobs_locked()
+    assert "old" not in jobs
+    assert "new" in jobs and "live" in jobs
+
+
+def test_sweep_isolates_one_failing_competition(store, monkeypatch):
+    _live(store, "bad", "Bad")
+    _live(store, "good", "Good")
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_URL", "http://portal")
+    monkeypatch.setattr(claims, "_SWEEP_BACKOFF", {})
+    seen = []
+
+    def fake(store_arg, comp, secret, now, stats):
+        seen.append(comp.slug)
+        if comp.slug == "bad":
+            raise RuntimeError("portal meltdown")
+
+    monkeypatch.setattr(claims, "_sweep_one", fake)
+    out = claims.sweep(store, b"secret")
+    assert set(seen) == {"bad", "good"}
+    assert out["deferred"] == 0
+    seen.clear()
+    out2 = claims.sweep(store, b"secret")
+    assert seen == ["good"] and out2["deferred"] == 1
+
+
+def test_sweep_auto_ends_and_releases_when_opted_in(store, monkeypatch):
+    comp = _live(store, "auto", "Auto", auto_end=True)
+    player, _code, _err = competition.create_player_with_code(
+        store, comp, "Ada", b"secret")
+    store.update_player(player.player_id, status="finished",
+                        finished_at=time.time() - 100)
+    store.set_join_open(comp.id, False)
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_URL", "http://portal")
+    monkeypatch.setenv("HUITZILOPOCHTLI_AUTO_END_GRACE_S", "0")
+    monkeypatch.setattr(claims, "_SWEEP_BACKOFF", {})
+    cleaned = []
+    monkeypatch.setattr(claims, "cleanup_pool",
+                        lambda s, c: cleaned.append(c.slug) or {})
+    out = claims.sweep(store, b"secret")
+    assert out["auto_ended"] == 1
+    assert store.get_competition(comp.id).status == "ended"
+    assert cleaned == ["auto"]
+
+
+def test_auto_end_does_not_fire_while_joins_are_open(store, monkeypatch):
+    comp = _live(store, "open", "Open", auto_end=True)
+    player, _code, _err = competition.create_player_with_code(
+        store, comp, "Ada", b"secret")
+    store.update_player(player.player_id, status="finished",
+                        finished_at=time.time() - 100)
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_URL", "http://portal")
+    monkeypatch.setenv("HUITZILOPOCHTLI_AUTO_END_GRACE_S", "0")
+    monkeypatch.setattr(claims, "_SWEEP_BACKOFF", {})
+    cleaned = []
+    monkeypatch.setattr(claims, "cleanup_pool",
+                        lambda s, c: cleaned.append(c.slug) or {})
+    claims.sweep(store, b"secret")
+    assert store.get_competition(comp.id).status == "live"
+    assert cleaned == []

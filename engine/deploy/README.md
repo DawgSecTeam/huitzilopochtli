@@ -42,7 +42,10 @@ the committed `${VAR}` placeholders.
 
 `install.sh` refuses to run while `/health` reports a live competition; set
 `HUITZ_DEPLOY_FORCE=1` only for an explicit emergency. A mid-run code swap can
-orphan End-time pool cleanup.
+orphan End-time pool cleanup. The refusal names the live competitions
+(`/health` carries a bounded `live_competitions` list alongside the `live`
+count); it is engine-wide on purpose — any live run can be orphaned, not just
+the one being touched.
 
 Generated admin credentials are written to
 `/root/huitz-engine-credentials.txt` (0600). Change them in `engine.env` and

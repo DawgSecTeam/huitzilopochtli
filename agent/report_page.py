@@ -247,6 +247,11 @@ th { border-bottom: 2px solid var(--ink); font-size: 0.72rem; text-transform: up
                 font-size: 0.95rem; border-left: 3px solid; background: #f0f0ec; }
 .delta-banner.up { color: #1a7f37; border-color: #1a7f37; }
 .delta-banner.down { color: #cf222e; border-color: #cf222e; }
+/* §7.1: a disqualified box keeps playing its full clock; the report says so
+   in its own voice, above the event bar, in the alarm red of a penalty. */
+.dq-banner { margin: 1.25rem 0 0; padding: 0.6rem 0.9rem; font-weight: 700;
+             font-size: 0.95rem; border-left: 3px solid #cf222e;
+             background: #ffebe9; color: #cf222e; }
 .pending { font-size: 1rem; padding: 3rem 2rem; border: 1px dashed #c9c9c2; text-align: center;
            margin: 2rem 0 0; color: var(--muted); }
 

@@ -149,6 +149,32 @@ def _frozen_score(store: Store, box_id: str, scenario_name: str,
     )
 
 
+def run_state_for(player, comp, now: float) -> "tuple[bool, str]":
+    """(finished, run_status) for a check-in from ``player`` right now.
+
+    §7.1 (boss directive, 2026-11-08): disqualification is a board
+    exclusion, not an eviction. A disqualified run keeps its VM, keeps its
+    clock and keeps checking in -- it is told via the response's
+    ``disqualified`` flag while ``run_status`` stays ``running``. Only a
+    Remove (tombstone), the run's own clock, or the competition ending
+    terminates it. The order of the remaining checks is preserved verbatim
+    from the inline chain this replaces.
+    """
+    if player is None:
+        return False, "running"
+    if player.status == "removed":
+        return True, "disqualified"
+    if comp is not None and comp.status == "ended":
+        return True, "ended"
+    if player.status == "finished":
+        return True, "finished"
+    if player.ends_at is not None and now >= player.ends_at:
+        return True, "finished"
+    if comp is not None and comp.status != "live":
+        return True, "ended"
+    return False, "running"
+
+
 def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
                     rubric: Optional[Rubric] = None,
                     server_secret: bytes = b"", event_pool: Optional[list] = None,
@@ -214,16 +240,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     run_status = "running"
     run_ends_at = player.ends_at if player is not None else None
     if player is not None:
-        if player.status in ("disqualified", "removed"):
-            finished, run_status = True, "disqualified"
-        elif comp is not None and comp.status == "ended":
-            finished, run_status = True, "ended"
-        elif player.status == "finished":
-            finished, run_status = True, "finished"
-        elif player.ends_at is not None and now_for_run >= player.ends_at:
-            finished, run_status = True, "finished"
-        elif comp is not None and comp.status != "live":
-            finished, run_status = True, "ended"
+        finished, run_status = run_state_for(player, comp, now_for_run)
 
     # Load the rubric only after signature verification: an unauthenticated
     # caller must not learn whether a scenario exists or force a JSON parse of
@@ -284,6 +301,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             competition_name=comp.name if comp is not None else None,
             rank=rank,
             rank_total=rank_total,
+            disqualified=(player is not None
+                          and player.status == "disqualified"),
         )
 
     # Steps 4-9 are one transaction (§14.2): a failure part-way (e.g. a
@@ -442,4 +461,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         competition_name=comp.name if comp is not None else None,
         rank=rank,
         rank_total=rank_total,
+        disqualified=(player is not None
+                      and player.status == "disqualified"),
     )

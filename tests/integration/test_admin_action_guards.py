@@ -116,7 +116,12 @@ def test_unknown_admin_verbs_are_refused_without_audit(tmp_path):
         proc.wait(timeout=10)
 
 
-def test_disqualify_releases_the_claimed_vm(tmp_path):
+def test_disqualify_keeps_the_box_and_remove_releases_it(tmp_path):
+    """§7.1 (boss directive): disqualification is a board exclusion, not an
+    eviction -- no release fires, the audit row records that the player
+    keeps playing, and Reinstate walks them back onto the board. Remove is
+    the only verb that hands the VM back (exactly once, this player's uid).
+    """
     import http.client
     import urllib.parse
     proc, base, db = _engine(tmp_path)
@@ -143,28 +148,67 @@ def test_disqualify_releases_the_claimed_vm(tmp_path):
             "SELECT * FROM players WHERE display_name='Cheater'").fetchone()
         sconn.close()
         assert player is not None and player["claim_uid"]
+        pid = player["player_id"]
 
         releases_before = sum(1 for r in _Workshop.requests
                               if r[0] == "/api/release")
+
+        # Disqualify: status flips, nothing is released, audit says so.
         status, body = _http("POST",
-                             base + f"/admin/players/{player['player_id']}/disqualify",
+                             base + f"/admin/players/{pid}/disqualify", {}, auth)
+        assert status == 200, body
+        releases = [r for r in _Workshop.requests if r[0] == "/api/release"]
+        assert len(releases) == releases_before, (
+            "disqualify must NOT release the VM; the player keeps playing")
+
+        def _row_and_audit(action):
+            sconn = sqlite3.connect(db)
+            sconn.row_factory = sqlite3.Row
+            row = sconn.execute("SELECT status FROM players WHERE player_id=?",
+                                (pid,)).fetchone()
+            audit = sconn.execute(
+                "SELECT details_json FROM audit_log WHERE action=? "
+                "AND player_id=? ORDER BY ts DESC LIMIT 1",
+                (action, pid)).fetchone()
+            sconn.close()
+            return row, audit
+
+        row, audit = _row_and_audit("player_disqualify")
+        assert row["status"] == "disqualified"
+        assert json.loads(audit["details_json"]) == {"released_vm": False,
+                                                     "keeps_playing": True}
+
+        # Reinstate: the run was never stopped, so it resumes ranked play.
+        status, body = _http("POST", base + f"/admin/players/{pid}/reinstate",
+                             {}, auth)
+        assert status == 200, body
+        row, audit = _row_and_audit("player_reinstate")
+        assert row["status"] == "running"
+        assert json.loads(audit["details_json"]) == {"released_vm": False,
+                                                     "keeps_playing": False}
+
+        # Reinstate is only for the disqualified.
+        status, _ = _http("POST", base + f"/admin/players/{pid}/reinstate",
+                          {}, auth)
+        assert status == 409
+
+        # Disqualify again, then Remove: the box hands back exactly once.
+        status, _ = _http("POST", base + f"/admin/players/{pid}/disqualify",
+                          {}, auth)
+        assert status == 200
+        status, body = _http("POST", base + f"/admin/players/{pid}/remove",
                              {}, auth)
         assert status == 200, body
         releases = [r for r in _Workshop.requests if r[0] == "/api/release"]
         assert len(releases) == releases_before + 1, _Workshop.requests
         # the release carried THIS player's claim uid
         assert releases[-1][2].get("uid") == player["claim_uid"]
-
-        sconn = sqlite3.connect(db)
-        sconn.row_factory = sqlite3.Row
-        row = sconn.execute("SELECT status FROM players WHERE player_id=?",
-                            (player["player_id"],)).fetchone()
-        audit = sconn.execute(
-            "SELECT details_json FROM audit_log WHERE action='player_disqualify' "
-            "ORDER BY ts DESC LIMIT 1").fetchone()
-        sconn.close()
-        assert row["status"] == "disqualified"
-        assert json.loads(audit["details_json"]) == {"released_vm": True}
+        row, audit = _row_and_audit("player_remove")
+        assert row["status"] == "removed"
+        assert json.loads(audit["details_json"]) == {"released_vm": True,
+                                                     "keeps_playing": False}
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+

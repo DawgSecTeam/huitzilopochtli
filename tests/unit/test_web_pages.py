@@ -598,7 +598,9 @@ def test_error_page_is_styled_with_back_link():
 def test_admin_roster_confirmations_on_destructive_actions():
     board = _payload()
     page = web.admin_competition_page(_comp(), board, [_player()], "csrf")
-    assert "Disqualify this player?" in page
+    assert "Disqualify: keeps their box and clock, drops them from the board. Continue?" in page
+    # §7.1: a running row gets no Reinstate (only the disqualified do).
+    assert "/reinstate" not in page
     assert "Remove this player from the competition?" in page
     # The csrf hidden input keeps its exact shape (tests parse it with a regex).
     assert '<input type="hidden" name="csrf" value="csrf">' in page
@@ -619,6 +621,31 @@ def test_admin_roster_actions_are_spaced_and_danger_set_apart():
     # The join code is plumbing: never rendered in the roster, copyable or not.
     assert 'data-copy="ABCD2345"' not in page
     assert "ABCD2345" not in page
+
+
+def test_disqualified_row_offers_reinstate_and_pages_tell_the_player():
+    """§7.1 (boss directive): disqualification drops the score from the
+    board but the run keeps its box, its clock and its check-ins. The
+    operator row must offer Reinstate (back onto the board) plus Remove
+    (the only verb that releases), and every player-facing surface must
+    say the disqualification in plain words."""
+    dq = _player(status="disqualified")
+    page = web.admin_competition_page(_comp(), {"leaderboard": []}, [dq], "csrf")
+    assert 'action="/admin/players/p1/reinstate"' in page
+    assert 'action="/admin/players/p1/remove"' in page
+    assert 'action="/admin/players/p1/disqualify"' not in page
+    # Player pages: told, and told what stays true (box + clock).
+    me = web.player_page(_comp(), dq, None, "http://guac/x", csrf="csrf")
+    assert "Disqualified." in me
+    assert "will not appear on the leaderboard" in me
+    # The board closed to this run says so instead of the stale
+    # "waiting for its first engine check-in" line.
+    assert "off-board" in me and "waiting for its" not in me
+    ok = web.join_success_page(_comp(), dq, csrf="csrf")
+    assert "Disqualified." in ok
+    # A reinstated (running) player sees none of it.
+    assert "Disqualified." not in web.player_page(
+        _comp(), _player(), _board_row(), "http://guac/x", csrf="csrf")
 
 
 def test_admin_roster_marks_unstarted_players():
@@ -987,3 +1014,28 @@ def test_ended_competition_has_no_pre_deploy_form():
     page = web.admin_competition_page(_comp(status="ended"),
                                       {"leaderboard": []}, [], "csrf")
     assert "/warm" not in page
+
+
+def test_admin_dashboard_shows_live_count_and_per_pool_readiness():
+    comp = _comp(workshop_pool_code="P1")
+    second = _comp(id="c2", slug="demo-2", name="Demo Two",
+                   status="ended", workshop_pool_code="P2")
+    dash = web.admin_dashboard_page(
+        [comp, second], {"c1": 1, "c2": 0}, "csrf",
+        pool_counts={"P1": {"available": 2, "total": 5},
+                     "P2": {"available": 0, "total": 0}})
+    assert "1 competition live right now" in dash
+    assert "2/5" in dash and "0/0" in dash
+    assert "Pool ready" in dash
+
+
+def test_auto_end_is_opt_in_and_toggleable_before_end():
+    off = web.admin_competition_page(_comp(auto_end=False), {"leaderboard": []},
+                                     [], "csrf")
+    assert "Auto-end" in off and ">Enable<" in off
+    on = web.admin_competition_page(_comp(auto_end=True), {"leaderboard": []},
+                                    [], "csrf")
+    assert ">Disable<" in on
+    ended = web.admin_competition_page(_comp(status="ended", auto_end=True),
+                                       {"leaderboard": []}, [], "csrf")
+    assert "toggle-auto-end" not in ended

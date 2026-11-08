@@ -19,12 +19,14 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 from typing import Optional
 
 from engine import competition, scenario as scenario_mod, workshop
-from engine.store import CompetitionRecord, PlayerRecord, Store
+from engine.store import (CompetitionRecord, JoinCodeCollision, PlayerRecord,
+                          Store)
 
 POLL_MIN_INTERVAL = 3.0
 MAX_POLL_BACKOFF = 30.0
@@ -46,14 +48,53 @@ WARM_WAIT_S = 2400.0
 _WARM_JOBS = {}
 _WARM_LOCK = threading.Lock()
 
-#: One provisioning attempt per engine process at a time. Concurrent first
+#: One provisioning attempt per **competition** at a time. Concurrent first
 #: claims on a fresh competition used to race the portal's single provision
 #: job; the losers could pin a pool whose config another call had just
 #: deleted (live load test: 15 simultaneous joins produced a permanently
-#: stale pool pin and "Unknown code." for every later claim).
-_POOL_LOCK = threading.Lock()
+#: stale pool pin and "Unknown code." for every later claim). The lock is per
+#: competition, not process-wide: a slow pre-deploy in one event must not
+#: block the first join in another.
+_POOL_LOCKS = {}
+_POOL_LOCKS_LOCK = threading.Lock()
+
+#: How many pre-deploy jobs may talk to the portal at once. The portal accepts
+#: one provision job at a time, so letting every competition warm in parallel
+#: only produces 409s; the rest queue as ``status: "queued"``.
+MAX_WARM_JOBS_DEFAULT = 2
+_WARM_GATE = None
+_WARM_GATE_LOCK = threading.Lock()
+
 _PIN_CACHE = {}
 _PIN_CACHE_LOCK = threading.Lock()
+
+
+def _pool_lock(comp_id: str) -> threading.Lock:
+    with _POOL_LOCKS_LOCK:
+        lock = _POOL_LOCKS.get(comp_id)
+        if lock is None:
+            lock = threading.Lock()
+            _POOL_LOCKS[comp_id] = lock
+        return lock
+
+
+def max_warm_jobs() -> int:
+    """Concurrent pre-deploy cap (env: HUITZILOPOCHTLI_MAX_WARM_JOBS)."""
+    try:
+        return max(1, int(os.environ.get("HUITZILOPOCHTLI_MAX_WARM_JOBS",
+                                         MAX_WARM_JOBS_DEFAULT)))
+    except (TypeError, ValueError):
+        return MAX_WARM_JOBS_DEFAULT
+
+
+def _warm_gate() -> threading.BoundedSemaphore:
+    """Semaphore sized by the current env value (rebuilt when it changes)."""
+    global _WARM_GATE
+    size = max_warm_jobs()
+    with _WARM_GATE_LOCK:
+        if _WARM_GATE is None or _WARM_GATE[0] != size:
+            _WARM_GATE = (size, threading.BoundedSemaphore(size))
+        return _WARM_GATE[1]
 
 
 def config() -> tuple:
@@ -82,8 +123,12 @@ def _back_url(comp: CompetitionRecord) -> str:
 
 
 def ensure_pool(store: Store, comp: CompetitionRecord) -> tuple:
-    """Serialize first-claim pool provisioning within the engine process."""
-    with _POOL_LOCK:
+    """Serialize first-claim pool provisioning for one competition.
+
+    Per-competition, not process-wide: two events starting at once must not
+    queue behind each other, and each already has its own portal pool.
+    """
+    with _pool_lock(comp.id):
         return _ensure_pool_locked(store, comp)
 
 
@@ -125,7 +170,8 @@ def _ensure_pool_locked(store: Store, comp: CompetitionRecord) -> tuple:
         if not base or not password or _pin_is_alive(
                 base, password, comp.workshop_pool_code):
             return comp.workshop_pool_code, None
-        store.update_competition(comp.id, workshop_pool_code=None)
+        store.update_competition(comp.id, workshop_pool_code=None,
+                                 workshop_pool_name=None)
         store.add_audit("system", "competition_pool_stale", comp.id,
                         details_json=json.dumps(
                             {"pool": comp.workshop_pool_code}))
@@ -186,12 +232,27 @@ def _ensure_pool_locked(store: Store, comp: CompetitionRecord) -> tuple:
 
 def _pin_pool(store: Store, comp: CompetitionRecord, pool_code: str,
               source: str) -> None:
-    store.update_competition(comp.id, workshop_pool_code=pool_code)
+    pool_name = workshop.competition_pool_name(comp.slug)
+    store.update_competition(comp.id, workshop_pool_code=pool_code,
+                             workshop_pool_name=pool_name)
     store.add_audit("system", "competition_pool", comp.id,
                     details_json=json.dumps({"pool": pool_code,
+                                             "pool_name": pool_name,
                                              "source": source}))
-    print(f"competition {comp.slug}: workshop pool {pool_code} ({source})",
-          flush=True)
+    print(f"competition {comp.slug}: workshop pool {pool_code} "
+          f"({pool_name}, {source})", flush=True)
+
+
+def pool_name_for(comp: Optional[CompetitionRecord]) -> Optional[str]:
+    """The portal pool name this competition owns (legacy rows derive it).
+
+    Stored so teardown can match the exact pool, not a slug prefix. Rows
+    written before the column existed were always named after the slug, so the
+    derived fallback is exact for them.
+    """
+    if comp is None:
+        return None
+    return comp.workshop_pool_name or workshop.competition_pool_name(comp.slug)
 
 
 def _warm_job_update(comp_id: str, **fields) -> None:
@@ -229,6 +290,39 @@ def live_pool_status(comp: CompetitionRecord) -> dict:
     return {"status": "ok",
             "available": int(snap.get("available") or 0),
             "total": int(snap.get("total") or 0)}
+
+
+#: Dashboard pool counts: one portal read for every row, cached briefly.
+_POOL_COUNTS_CACHE = {"at": 0.0, "data": {}}
+
+
+def portal_pool_counts(max_age: float = 10.0) -> dict:
+    """portal pool code -> {"available", "total"} for the admin dashboard.
+
+    The console renders every competition on one page; asking the portal once
+    (short timeout, short cache) keeps that a single read instead of one per
+    row. Portal trouble is an empty map, never a page error.
+    """
+    now = time.time()
+    with _PIN_CACHE_LOCK:
+        if now - _POOL_COUNTS_CACHE["at"] < max_age:
+            return dict(_POOL_COUNTS_CACHE["data"])
+    base, _secret = config()
+    password = _admin_password()
+    data = {}
+    if base and password:
+        try:
+            pools = workshop.list_pools(base, password, timeout=3.0)
+        except workshop.WorkshopError:
+            pools = []
+        for p in pools:
+            if isinstance(p, dict) and p.get("code"):
+                data[p["code"]] = {"available": int(p.get("available") or 0),
+                                   "total": int(p.get("total") or 0)}
+    with _PIN_CACHE_LOCK:
+        _POOL_COUNTS_CACHE["at"] = now
+        _POOL_COUNTS_CACHE["data"] = data
+    return dict(data)
 
 
 #: Standing reasons a competition has nothing to pre-deploy from, phrased for
@@ -320,8 +414,10 @@ def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
         return {"status": "error",
                 "error": f"Box count must be between 1 and {WARM_MAX}."}
     with _WARM_LOCK:
+        _prune_warm_jobs_locked()
         existing = _WARM_JOBS.get(comp.id)
-        if existing is not None and existing.get("status") == "running":
+        if existing is not None and existing.get("status") in ("running",
+                                                               "queued"):
             return dict(existing)
     # Outside the lock: the blocker may read the portal, and the worker takes
     # the same lock for its progress updates. The registration below re-checks
@@ -334,11 +430,13 @@ def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
         return {"status": "error", "requested": count, "blocked": True,
                 "error": blocker}
     with _WARM_LOCK:
+        _prune_warm_jobs_locked()
         existing = _WARM_JOBS.get(comp.id)
-        if existing is not None and existing.get("status") == "running":
+        if existing is not None and existing.get("status") in ("running",
+                                                               "queued"):
             return dict(existing)
         job = {
-            "status": "running", "requested": count,
+            "status": "queued", "requested": count,
             "pool_code": comp.workshop_pool_code,
             "available": 0, "total": 0, "in_use": 0,
             "started_at": time.time(), "finished_at": None, "error": None,
@@ -349,8 +447,22 @@ def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
     return dict(job)
 
 
+def _prune_warm_jobs_locked(max_age: float = 3600.0) -> None:
+    """Drop finished job records older than ``max_age`` (caller holds the lock)."""
+    now = time.time()
+    for cid, job in list(_WARM_JOBS.items()):
+        if job.get("status") in ("running", "queued"):
+            continue
+        done = job.get("finished_at") or job.get("started_at") or 0
+        if now - float(done) > max_age:
+            _WARM_JOBS.pop(cid, None)
+
+
 def _warm_worker(store: Store, comp_id: str, count: int) -> None:
+    gate = _warm_gate()
+    gate.acquire()
     try:
+        _warm_job_update(comp_id, status="running", started_at=time.time())
         comp = store.get_competition(comp_id)
         if comp is None:
             raise RuntimeError("competition disappeared before pre-deploy")
@@ -361,6 +473,8 @@ def _warm_worker(store: Store, comp_id: str, count: int) -> None:
         _warm_job_update(comp_id, status="error", error=str(exc)[:300],
                          finished_at=time.time())
         print(f"competition {comp_id}: pre-deploy failed: {exc}", flush=True)
+    finally:
+        gate.release()
 
 
 def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
@@ -398,7 +512,8 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
         # Topping up a pool that is gone can only fail, and the scenario can
         # still clone a fresh one from its own template, so recover the same
         # way a first claim does instead of reporting a dead end.
-        store.update_competition(comp.id, workshop_pool_code=None)
+        store.update_competition(comp.id, workshop_pool_code=None,
+                                 workshop_pool_name=None)
         store.add_audit("system", "competition_pool_stale", comp.id,
                         details_json=json.dumps({"pool": pool_code}))
         print(f"competition {comp.slug}: pinned pool {pool_code} is gone; "
@@ -406,7 +521,7 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
         comp = store.get_competition(comp.id) or comp
         pool_code = None
     if not pool_code:
-        with _POOL_LOCK:
+        with _pool_lock(comp.id):
             # Re-read under the lock: a claim or another warm call may have
             # provisioned the pool while this one was waiting.
             fresh = store.get_competition(comp.id)
@@ -516,23 +631,33 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
         time.sleep(3.0)
 
 
-def _pool_vmids(base: str, password: str, prefix: str, pool_code: str,
+def _pool_vmids(base: str, password: str, pool_name: str, pool_code: str,
                 expected: int, attempts: Optional[int] = None) -> list:
-    """VMIDs the portal lists for this competition's pool.
+    """VMIDs the portal lists for exactly this competition's pool.
 
     Pre-provisioned clones register asynchronously, so an operator who ends a
     competition immediately after its first claim can race the portal. When
     the pool reports a non-zero size, poll briefly before concluding there is
     nothing to destroy. ``attempts`` overrides that decision for the
     pool-config-already-gone case, where the expected count is unknown.
+
+    The match is the pool code, or the portal's ``<pool name>-<n>`` student id
+    **anchored on the full pool name**. A bare ``startswith`` used to make
+    competition ``demo`` destroy ``demo-2``'s clones at End -- exactly what
+    End followed by Rerun creates.
     """
+    student_re = re.compile(re.escape(pool_name) + r"-\d+\Z") if pool_name else None
     tries = attempts if attempts is not None else (5 if expected else 1)
     for attempt in range(tries):
         vms = workshop.list_vms(base, password)
-        vmids = [v.get("vmid") for v in vms
-                 if isinstance(v, dict)
-                 and (str(v.get("student_id") or "").startswith(prefix)
-                      or v.get("pool") == pool_code)]
+        vmids = []
+        for v in vms:
+            if not isinstance(v, dict):
+                continue
+            student = str(v.get("student_id") or "")
+            if v.get("pool") == pool_code or (
+                    student_re is not None and student_re.match(student)):
+                vmids.append(v.get("vmid"))
         if vmids:
             return vmids
         if attempt + 1 < tries:
@@ -569,10 +694,11 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
             return stats  # portal unreachable; the sweeper retries
         entry = next((p for p in pools if isinstance(p, dict)
                       and p.get("code") == pinned), None)
-        if entry is not None and entry.get("name") != \
-                workshop.competition_pool_name(comp.slug):
+        owned_name = pool_name_for(comp)
+        if entry is not None and entry.get("name") != owned_name:
             stats["legacy"] = True
-            store.update_competition(comp.id, workshop_pool_code=None)
+            store.update_competition(comp.id, workshop_pool_code=None,
+                                     workshop_pool_name=None)
             store.add_audit("system", "competition_pool_cleanup", comp.id,
                             details_json=json.dumps({"pool": pinned, **stats}))
             return stats
@@ -585,11 +711,10 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
                     stats["released"] += 1
                 except workshop.WorkshopError:
                     pass  # the portal expires it; do not block cleanup
-        prefix = workshop.competition_pool_name(comp.slug) + "-"
         expected = int((entry or {}).get("count")
                        or (entry or {}).get("total") or 0)
         try:
-            vmids = _pool_vmids(base, password, prefix, pinned, expected,
+            vmids = _pool_vmids(base, password, owned_name, pinned, expected,
                                 attempts=None if entry is not None else 3)
         except workshop.WorkshopError:
             return stats  # keep the pin; the sweeper retries
@@ -621,7 +746,7 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
         # more now that the pool is gone; the portal keeps the VM entry (and
         # its pool code) even without a saved config.
         try:
-            late = _pool_vmids(base, password, prefix, pinned, expected=0,
+            late = _pool_vmids(base, password, owned_name, pinned, expected=0,
                                attempts=1)
         except workshop.WorkshopError:
             late = []
@@ -638,7 +763,8 @@ def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
                 print(f"competition {comp.slug}: pool {pinned} late destroy "
                       f"pending {stats}", flush=True)
                 return stats
-    store.update_competition(comp.id, workshop_pool_code=None)
+    store.update_competition(comp.id, workshop_pool_code=None,
+                             workshop_pool_name=None)
     store.add_audit("system", "competition_pool_cleanup", comp.id,
                     details_json=json.dumps({"pool": pinned, **stats}))
     print(f"competition {comp.slug}: pool {pinned} cleaned up {stats}",
@@ -707,7 +833,8 @@ def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
         # pool, and retry once instead of leaving the player failing forever.
         if (comp.workshop_pool_code
                 and "unknown code" in str(exc).lower()):
-            store.update_competition(comp.id, workshop_pool_code=None)
+            store.update_competition(comp.id, workshop_pool_code=None,
+                                     workshop_pool_name=None)
             store.add_audit("system", "competition_pool_stale", comp.id,
                             player.player_id,
                             details_json=json.dumps(
@@ -795,6 +922,29 @@ def poll(store: Store, player: PlayerRecord, *, now: Optional[float] = None,
     return store.get_player(player.player_id)
 
 
+def mint_join_code(store: Store, player: PlayerRecord, server_secret: bytes,
+                   expires_at: float) -> str:
+    """Assign a fresh unique join code to ``player``; returns the plain code.
+
+    The store enforces a unique index on ``join_code_hash`` (a code resolving
+    to two players across concurrent competitions would bind a box to the
+    wrong run), so a collision is retried here rather than surfacing as a
+    failed assignment.
+    """
+    for _ in range(5):
+        code = competition.generate_join_code()
+        try:
+            store.update_player(
+                player.player_id,
+                join_code_hash=competition.hash_join_code(server_secret, code),
+                join_code_plain=code,
+                join_code_expires_at=expires_at)
+            return code
+        except JoinCodeCollision:
+            continue
+    raise RuntimeError("could not mint a unique join code")
+
+
 def rotate_code_if_needed(store: Store, player: PlayerRecord,
                           server_secret: bytes, *, back_url: str = "",
                           now: Optional[float] = None) -> bool:
@@ -813,12 +963,13 @@ def rotate_code_if_needed(store: Store, player: PlayerRecord,
         return False
     old = (player.join_code_hash, player.join_code_plain,
            player.join_code_expires_at)
-    code = competition.generate_join_code()
-    store.update_player(
-        player.player_id,
-        join_code_hash=competition.hash_join_code(server_secret, code),
-        join_code_plain=code,
-        join_code_expires_at=now + CODE_TTL_S)
+    try:
+        code = mint_join_code(store, player, server_secret, now + CODE_TTL_S)
+    except RuntimeError as exc:
+        # Five collisions in a row is practically impossible; if it happens,
+        # the page must still render and the sweeper retries later.
+        _record_error(store, player, str(exc))
+        return False
     try:
         workshop.push_prebind(base, player.claim_uid, code, secret=secret,
                               back_url=back_url)
@@ -835,9 +986,14 @@ def rotate_code_if_needed(store: Store, player: PlayerRecord,
             store.update_player(player.player_id, claim_error=None)
             return True
         # A real portal outage: keep the code the player may already have.
-        store.update_player(
-            player.player_id, join_code_hash=old[0], join_code_plain=old[1],
-            join_code_expires_at=old[2])
+        try:
+            store.update_player(
+                player.player_id, join_code_hash=old[0],
+                join_code_plain=old[1], join_code_expires_at=old[2])
+        except JoinCodeCollision:
+            # Another slot took the old code while this one held the new one;
+            # the fresh code is still the better answer for this player.
+            pass
         _record_error(store, player, f"could not update the VM's join code: {exc}")
         return False
     return True
@@ -854,12 +1010,104 @@ def _refresh_expired_code(store: Store, server_secret: bytes,
     late-dispensed VM still joins itself on first open."""
     if player.join_code_plain and (player.join_code_expires_at or 0) > now + 60:
         return
-    code = competition.generate_join_code()
-    store.update_player(
-        player.player_id,
-        join_code_hash=competition.hash_join_code(server_secret, code),
-        join_code_plain=code,
-        join_code_expires_at=now + CODE_TTL_S)
+    mint_join_code(store, player, server_secret, now + CODE_TTL_S)
+
+
+#: comp id -> (retry_after, consecutive_failures) for the sweeper. A portal
+#: error in one competition must not starve the others, so the failing one is
+#: backed off instead of being retried on every tick (and instead of the whole
+#: loop being skipped).
+_SWEEP_BACKOFF = {}
+_SWEEP_BACKOFF_LOCK = threading.Lock()
+SWEEP_MAX_BACKOFF_S = 600.0
+SWEEP_BASE_BACKOFF_S = 30.0
+#: Players processed per competition per tick, rotated across ticks so a huge
+#: roster cannot monopolize one sweep.
+SWEEP_PLAYERS_PER_TICK = 200
+_SWEEP_CURSOR = {}
+
+
+def _sweep_deferred(comp_id: str, now: float) -> bool:
+    with _SWEEP_BACKOFF_LOCK:
+        retry_at = _SWEEP_BACKOFF.get(comp_id, (0.0, 0))[0]
+    return now < retry_at
+
+
+def _sweep_failed(comp_id: str, exc: Exception) -> None:
+    with _SWEEP_BACKOFF_LOCK:
+        _failures = _SWEEP_BACKOFF.get(comp_id, (0.0, 0))[1] + 1
+        delay = min(SWEEP_BASE_BACKOFF_S * (2 ** (_failures - 1)),
+                    SWEEP_MAX_BACKOFF_S)
+        _SWEEP_BACKOFF[comp_id] = (time.time() + delay, _failures)
+    print(f"competition {comp_id}: sweep error ({exc}); retrying in "
+          f"{int(delay)}s", flush=True)
+
+
+def _sweep_ok(comp_id: str) -> None:
+    with _SWEEP_BACKOFF_LOCK:
+        _SWEEP_BACKOFF.pop(comp_id, None)
+
+
+def _sweep_players(comp_id: str, players: list) -> list:
+    """A rotating window of ``SWEEP_PLAYERS_PER_TICK`` players for this comp."""
+    if len(players) <= SWEEP_PLAYERS_PER_TICK:
+        _SWEEP_CURSOR.pop(comp_id, None)
+        return players
+    start = _SWEEP_CURSOR.get(comp_id, 0) % len(players)
+    window = players[start:start + SWEEP_PLAYERS_PER_TICK]
+    if len(window) < SWEEP_PLAYERS_PER_TICK:
+        window += players[:SWEEP_PLAYERS_PER_TICK - len(window)]
+    _SWEEP_CURSOR[comp_id] = (start + len(window)) % len(players)
+    return window
+
+
+def _sweep_one(store: Store, comp: CompetitionRecord, server_secret: bytes,
+               now: float, stats: dict) -> None:
+    if comp.status == "ended" and comp.workshop_pool_code:
+        # A pool outlives its competition only until the next sweep.
+        cleanup_pool(store, comp)
+        stats["cleaned"] += 1
+        return
+    if comp.status != "live":
+        return
+    back = _back_url(comp)
+    for p in _sweep_players(comp.id, store.list_players(comp.id)):
+        if p.status != "invited" or p.box_id:
+            continue
+        if p.claim_url:
+            if rotate_code_if_needed(store, p, server_secret,
+                                     back_url=back, now=now):
+                stats["rotated"] += 1
+            continue
+        if p.claim_ticket:
+            poll(store, p, now=now)
+            stats["polled"] += 1
+            continue
+        if now - (p.claim_last_attempt_at or 0) < _retry_backoff(p.claim_attempts):
+            continue
+        _refresh_expired_code(store, server_secret, p, now)
+        fresh = store.get_player(p.player_id)
+        out = start(store, comp, fresh, back_url=back)
+        if out.get("ok"):
+            stats["retried"] += 1
+    # Auto-release (opt-in per competition): joins closed, every run terminal
+    # for a grace period -> end it here so its pool is torn down by the next
+    # sweep instead of pinning VMs until an operator notices.
+    if comp.auto_end and not comp.join_open:
+        players = store.list_players(comp.id)
+        terminal = all(p.status in ("finished", "disqualified", "removed")
+                       for p in players)
+        last_end = max((p.finished_at or p.ends_at or 0) for p in players) \
+            if players else (comp.started_at or 0)
+        grace = float(os.environ.get("HUITZILOPOCHTLI_AUTO_END_GRACE_S", "300"))
+        if terminal and now - float(last_end) >= grace:
+            store.end_competition(comp.id)
+            store.add_audit("system", "competition_auto_end", comp.id,
+                            details_json=json.dumps(
+                                {"grace_s": grace,
+                                 "players": len(players)}))
+            cleanup_pool(store, store.get_competition(comp.id))
+            stats["auto_ended"] = stats.get("auto_ended", 0) + 1
 
 
 def sweep(store: Store, server_secret: bytes, *,
@@ -870,41 +1118,25 @@ def sweep(store: Store, server_secret: bytes, *,
     exponential backoff, refreshing an expired join code first), advance
     provisioning tickets left behind by closed join pages, and rotate the
     portal's join code on claimed VMs before it expires. Ended competitions
-    get their pool released and deleted. Best effort; never raises. Returns
-    small counters for logging/tests.
+    get their pool released and deleted. Every competition is isolated: one
+    failing (portal down, corrupt row) is backed off and never skips the rest.
+    Best effort; never raises. Returns small counters for logging/tests.
     """
     now = time.time() if now is None else now
-    stats = {"retried": 0, "polled": 0, "rotated": 0, "cleaned": 0}
+    stats = {"retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
+             "auto_ended": 0, "deferred": 0}
     if not enabled():
         return stats
     for comp in store.list_competitions():
-        if comp.status == "ended" and comp.workshop_pool_code:
-            # A pool outlives its competition only until the next sweep.
-            cleanup_pool(store, comp)
-            stats["cleaned"] += 1
+        if _sweep_deferred(comp.id, now):
+            stats["deferred"] += 1
             continue
-        if comp.status != "live":
+        try:
+            _sweep_one(store, comp, server_secret, now, stats)
+        except Exception as exc:  # isolate one competition's failure
+            _sweep_failed(comp.id, exc)
             continue
-        back = _back_url(comp)
-        for p in store.list_players(comp.id):
-            if p.status != "invited" or p.box_id:
-                continue
-            if p.claim_url:
-                if rotate_code_if_needed(store, p, server_secret,
-                                         back_url=back, now=now):
-                    stats["rotated"] += 1
-                continue
-            if p.claim_ticket:
-                poll(store, p, now=now)
-                stats["polled"] += 1
-                continue
-            if now - (p.claim_last_attempt_at or 0) < _retry_backoff(p.claim_attempts):
-                continue
-            _refresh_expired_code(store, server_secret, p, now)
-            fresh = store.get_player(p.player_id)
-            out = start(store, comp, fresh, back_url=back)
-            if out.get("ok"):
-                stats["retried"] += 1
+        _sweep_ok(comp.id)
     return stats
 
 

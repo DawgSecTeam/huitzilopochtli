@@ -523,14 +523,20 @@ def sync_box_scenarios(store: Store) -> list:
     """Mirror the box folder into the store; returns error strings.
 
     Upserts every current record and purges every other stored version of
-    that scenario. Scenario names the folder no longer declares at all are
-    purged too -- but only when the scan was fully clean, so a vanished
-    folder (fail-safe) or a box broken mid-edit never wipes a record a live
-    run might still be serving. Returns error strings.
+    that scenario -- except versions a **live** competition is still serving.
+    Several competitions can be live at once, so a version bump must not
+    strand a run under way; create/start/rerun still refuse a non-current
+    version, and the retained row is purged on the first sync after that
+    competition ends. Scenario names the folder no longer declares at all are
+    purged too -- but only when the scan was fully clean and no live
+    competition is still serving them, so a vanished folder (fail-safe) or a
+    box broken mid-edit never wipes a record a live run might still be using.
+    Returns error strings.
     """
     scenarios, errors = _scan_box_folder()
     if scenarios is None:
         return list(errors)
+    in_use = store.versions_in_use()
     for name, (version, _path, record) in sorted(scenarios.items()):
         rubric, adversary, services, pool = record
         try:
@@ -538,10 +544,17 @@ def sync_box_scenarios(store: Store) -> list:
         except ScenarioError as exc:
             errors.append(f"{name} v{version}: {exc}")
             continue
-        store.delete_scenario_versions(name, keep_version=version)
+        retained = {v for (n, v) in in_use if n == name and v != version}
+        store.delete_scenario_versions(name, keep_version=version,
+                                       keep_versions=retained)
+        if retained:
+            print(f"scenario {name!r}: keeping v{sorted(retained)} on the "
+                  f"engine while live competition(s) still serve it; the "
+                  f"folder's current version is v{version}", flush=True)
     if not errors:
         # Orphan purge: rows for scenarios the folder does not declare at all.
+        held = {name for (name, _v) in in_use}
         for stored_name, _version, _ts in store.list_scenarios():
-            if stored_name not in scenarios:
+            if stored_name not in scenarios and stored_name not in held:
                 store.delete_scenario(stored_name)
     return list(errors)

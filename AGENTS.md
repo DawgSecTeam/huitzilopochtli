@@ -52,6 +52,11 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
   cloned from the ranked template named in the scenario record's `pool:` block
   (`RANKED_COMPETITION.md` §3.1); the engine never picks among the portal's
   pre-existing pools, so a ranked competition can never hand out an honor box.
+  Teardown destroys **only this competition's clones** — exact pool code, or the
+  portal's `<pool name>-<digits>` student id anchored on the stored pool name,
+  never a slug prefix (`demo` must never destroy `demo-2`). **Any number of
+  competitions may be live at once**; per-competition state (pool, clock, board,
+  locks) must never be globalized.
 - **Competition run clocks are per-player** (start at join, fixed duration, no
   pause) and all scoring timestamps remain engine receipt time. Self-reported
   service checks are explicitly not independent uptime verification.

@@ -631,6 +631,10 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
     err = (player.claim_error or "").strip()
 
     parts = []
+    if player.status == "disqualified":
+        parts.append('<p class="warnmsg"><strong>Disqualified.</strong> You '
+                     'keep your box and your clock — work on until the end — '
+                     'but your score will not appear on the leaderboard.</p>')
     if url:
         parts.append(
             f'<div class="vm-actions"><a class="btn primary" href="{esc(url)}" '
@@ -723,6 +727,10 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
                  f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
                  f'<span>services {esc(row.get("service_points", 0))}</span></div>'
                  + _ungraded_note(row))
+    elif joined and player.status == "disqualified":
+        score = ('<div class="bigscore muted">off-board</div>'
+                 '<div class="muted small">Disqualified: the box keeps '
+                 'scoring its own report; the board is closed to this run.</div>')
     elif joined:
         score = ('<div class="bigscore muted">—</div>'
                  '<div class="muted small">Your box is joined — waiting for its '
@@ -757,6 +765,7 @@ box joins.</p>'''
 <div id="run" data-poll="15000">
 <section class="card narrow">
 {join_panel}
+{f'<p class="warnmsg"><strong>Disqualified.</strong> You keep your box and your clock — work on until the end — but your score will not appear on the leaderboard.</p>' if player.status == "disqualified" else ''}
 <div class="row me-top">
 <div>{score}</div>
 <div class="me-right"><div class="muted small">Time remaining</div>
@@ -957,8 +966,11 @@ def login_page(error: str = "") -> str:
 
 def admin_dashboard_page(comps: list, players_by_comp: dict,
                          csrf: str, msg: str = "",
-                         pool_warn: Optional[dict] = None) -> str:
+                         pool_warn: Optional[dict] = None,
+                         pool_counts: Optional[dict] = None) -> str:
     pool_warn = pool_warn or {}
+    pool_counts = pool_counts or {}
+    live = sum(1 for c in comps if c.status == "live")
     cards = []
     for c in comps:
         n = players_by_comp.get(c.id, 0)
@@ -967,20 +979,31 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
         # button (the page itself carries the full reason and the fix).
         warn = pool_warn.get(c.id)
         warn_line = (f'<div class="fullflag">{esc(warn)}</div>' if warn else "")
+        # Two competitions can hold pools at once; the row says how much of
+        # this one's pool is warm (one portal read feeds every row).
+        counts = pool_counts.get(c.workshop_pool_code) \
+            if c.workshop_pool_code else None
+        pool_cell = (f'{esc(counts["available"])}/{esc(counts["total"])}'
+                     if counts else '<span class="muted">&mdash;</span>')
         # The whole row is one click target (the name link stays for
         # keyboard/middle-click use); the JS delegates so polling can swap
         # rows freely.
         cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
+<td class="num r">{pool_cell}</td>
 <td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a></td></tr>""")
+    live_note = (f'<p class="meta">{live} competition{"s" if live != 1 else ""} '
+                 f'live right now &middot; each holds its own VM pool.</p>'
+                 if live else "")
     body = f"""<section class="page-head-row"><div><h1>Admin console</h1></div>
 <div class="actions"><a class="btn" href="/admin/audit">Audit log</a>
 <a class="btn primary" href="/admin/competitions/new">New competition</a></div></section>
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}
+{live_note}
 <div id="dash" data-poll="30000">
 <section class="card"><div class="card-head"><h2>Competitions</h2>
 </div>
-<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="5" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Pool ready</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="6" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
     return layout("Admin", body, admin=True, current="admin")
 
@@ -1111,6 +1134,7 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 <label>Run duration (minutes)<input name="duration_min" type="number" min="1" value="120"></label>
 <label>Accent color<input name="accent" type="color" value="#5f4a38"></label>
 </div>
+<label class="check"><input type="checkbox" name="auto_end" value="1"> End automatically once joins are closed and every run has finished<span class="help">Releases the competition's VM pool without an operator pressing End. Off by default; you can flip it on the competition page.</span></label>
 <div class="form-foot"><button class="btn primary" type="submit">Create draft</button></div>
 </form></div>"""
     return layout("New competition", body, admin=True, current="admin")
@@ -1153,13 +1177,17 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            f'<button class="btn">Reissue code</button></form>')
         if p.status in ("running", "finished"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/disqualify" class="inline"'
-                          f' onsubmit="return confirm(\'Disqualify this player?\')">'
+                          f' onsubmit="return confirm(\'Disqualify: keeps their box and clock, drops them from the board. Continue?\')">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Disqualify</button></form>')
-        # A disqualified row must not be a dead end: Remove is the operator's
-        # way to clear it from the roster (and free the name). No reinstate --
-        # disqualification released the VM and checkin treats the run as
-        # terminal, so there is no store transition back into the run.
+        if p.status == "disqualified":
+            # §7.1: disqualification is a board exclusion and the run is
+            # still alive, so the row offers Reinstate (back on the board)
+            # and Remove -- the only verb that releases the box and frees
+            # the seat.
+            neutral.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/reinstate" class="inline">'
+                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+                           f'<button class="btn">Reinstate</button></form>')
         if p.status in ("invited", "running", "finished", "disqualified"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/remove" class="inline"'
                           f' onsubmit="return confirm(\'Remove this player from the competition?\')">'
@@ -1206,6 +1234,9 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         state = warm.get("status")
         if state == "running":
             note = f'<p class="meta">Pre-deploying {requested} boxes…</p>'
+        elif state == "queued":
+            note = ('<p class="meta">Queued: another competition is filling its '
+                    'pool first (the portal provisions one pool at a time).</p>')
         elif state == "ready":
             # A completed pre-deploy is news for a few seconds; the standing
             # count line above carries the state after that, across reloads.
@@ -1265,6 +1296,14 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
     # The pool code is portal plumbing (audit log / journal carry it for
     # debugging); the UI stays quiet about pools unless a claim actually fails,
     # in which case the error text lands on the player row.
+    auto_end_btn = ""
+    if comp.status in ("draft", "live"):
+        verb = "Disable" if comp.auto_end else "Enable"
+        auto_end_btn = (
+            f' <form method="post" action="/admin/api/competitions/'
+            f'{esc(comp.id)}/toggle-auto-end" class="inline">'
+            f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+            f'<button class="btn">{verb}</button></form>')
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp.name)}</h1>{comp_status_tag(comp.status)}</div>
 <p class="meta">/c/{esc(comp.slug)} · {esc(comp.scenario_name)}</p></div>
@@ -1275,6 +1314,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <div class="fact"><span class="fact-label">Status</span><span class="fact-value">{esc(comp_status_label(comp.status))} {comp_badge(comp.status)}</span></div>
 <div class="fact"><span class="fact-label">Players</span><span class="fact-value">{esc(len(players))} / {esc(comp.max_players)} joined</span></div>
 <div class="fact"><span class="fact-label">Run duration</span><span class="fact-value">{_fmt_duration(comp.duration_s)} runs</span></div>
+<div class="fact"><span class="fact-label">Auto-end</span><span class="fact-value">{'On' if comp.auto_end else 'Off'}{auto_end_btn}</span></div>
 <div class="fact wide"><span class="fact-label">Join URL</span>
 <span class="fact-value"><code>{esc(join_url)}</code> {_copy_btn(join_url, "Copy")}
 {csv_btn}</span></div>

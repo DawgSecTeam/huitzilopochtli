@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from engine.store import SlaStateRecord, Store
+from engine.store import JoinCodeCollision, SlaStateRecord, Store
 
 
 @pytest.fixture
@@ -502,3 +502,34 @@ def test_leaderboard_tie_break_uses_first_scored_at(store):
     store._conn.execute("UPDATE scores SET updated_at = 999 WHERE box_id='late'")
     store._conn.commit()
     assert [r.box_id for r in store.get_scores("sc")] == ["early", "late"]
+
+
+# --- multi-competition bookkeeping -------------------------------------------
+
+
+def test_versions_in_use_tracks_only_live_competitions(store):
+    store.create_competition(slug="draft-c", name="Draft",
+                             scenario_name="sc", scenario_version=1,
+                             max_players=2, duration_s=60)
+    live = store.create_competition(slug="live-c", name="Live",
+                                    scenario_name="sc", scenario_version=2,
+                                    max_players=2, duration_s=60)
+    store.start_competition(live.id)
+    assert store.versions_in_use() == {("sc", 2)}
+
+
+def test_delete_scenario_versions_keeps_pinned_versions(store):
+    for version in (1, 2, 3):
+        store.save_scenario("sc", version, "{}", "{}")
+    store.delete_scenario_versions("sc", keep_version=3, keep_versions={1})
+    assert store.get_scenario("sc", 1) is not None
+    assert store.get_scenario("sc", 2) is None
+    assert store.get_scenario("sc", 3) is not None
+
+
+def test_join_code_hash_is_unique(store):
+    store.create_player("c1", "Ada", "ada", "same-hash", 999.0)
+    with pytest.raises(JoinCodeCollision):
+        store.create_player("c2", "Bob", "bob", "same-hash", 999.0)
+    # The rejected insert must not have left a slot behind.
+    assert store.get_player_by_join_hash("same-hash").display_name == "Ada"

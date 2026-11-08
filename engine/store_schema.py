@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS competitions (
     max_players INTEGER NOT NULL,
     duration_s INTEGER NOT NULL,
     workshop_pool_code TEXT,
+    -- The portal pool name this competition provisioned ("huitz-ranked-<slug>").
+    -- Stored rather than derived so teardown ownership survives a slug change
+    -- and a sibling slug (demo vs demo-2) can never match by prefix.
+    workshop_pool_name TEXT,
+    -- End automatically once joins are closed and every run has finished
+    -- (multi-event hygiene: a forgotten live competition pins a whole pool).
+    auto_end INTEGER NOT NULL DEFAULT 0,
     theme_json TEXT,
     join_instructions TEXT,
     created_at REAL NOT NULL,

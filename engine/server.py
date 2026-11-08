@@ -473,17 +473,58 @@ class Handler(BaseHTTPRequestHandler):
         path = parts.path
         if path == "/health":
             comps = self.store.list_competitions()
+            live = [c for c in comps if c.status == "live"]
             self._send_json(200, {
                 "ok": True, "engine": "huitzilopochtli",
                 "competitions": len(comps),
-                "live": sum(1 for c in comps if c.status == "live"),
+                # Kept as an integer for engine/deploy/guard.py (a deploy is
+                # refused while any competition is live).
+                "live": len(live),
+                # Detail for monitoring and for the guard's operator message:
+                # which competitions, not just how many.
+                "live_competitions": [
+                    {"id": c.id, "slug": c.slug, "name": c.name,
+                     "scenario_name": c.scenario_name,
+                     "scenario_version": c.scenario_version,
+                     "players": self.store.count_players(c.id),
+                     "max_players": c.max_players,
+                     "join_open": bool(c.join_open),
+                     "started_at": c.started_at}
+                    for c in live[:50]
+                ],
             })
             return
         if path == "/leaderboard":
             qs = parse_qs(parts.query)
             scenario = qs.get("scenario", [None])[0]
+            slug = qs.get("competition", [None])[0]
+            if slug:
+                comp = self.store.get_competition_by_slug(slug)
+                if comp is None:
+                    self._send_json(404, {"error": "competition not found"})
+                    return
+                self._send_json(200,
+                                leaderboard.get_competition_leaderboard(
+                                    self.store, comp))
+                return
             if not scenario:
                 self._send_json(400, {"error": "missing scenario query param"})
+                return
+            comps = leaderboard.competitions_for_scenario(self.store, scenario)
+            if len(comps) > 1:
+                # Several competitions share this scenario: a scenario-wide
+                # board would silently merge them, so name the choices.
+                self._send_json(400, {
+                    "error": ("several competitions run this scenario; pick one "
+                              "with ?competition=<slug>"),
+                    "competitions": [{"slug": c.slug, "name": c.name,
+                                      "status": c.status} for c in comps],
+                })
+                return
+            if comps:
+                self._send_json(200,
+                                leaderboard.get_competition_leaderboard(
+                                    self.store, comps[0]))
                 return
             self._send_json(200, leaderboard.get_leaderboard(self.store, scenario))
             return
@@ -843,7 +884,8 @@ class Handler(BaseHTTPRequestHandler):
             if claims.predeploy_blocker(self.store, comp, check_pin=False):
                 pool_warn[comp.id] = claims.POOL_SOURCE_MISSING_SHORT
         self._send_html(200, web.admin_dashboard_page(
-            comps, counts, session.csrf_token, pool_warn=pool_warn))
+            comps, counts, session.csrf_token, pool_warn=pool_warn,
+            pool_counts=claims.portal_pool_counts()))
 
     # audit_log is append-only and store.list_audit() reads a bounded window
     # of it, so a filtered view searches a window too: wider than the page,
@@ -1114,7 +1156,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.store, slug=slug, name=name,
                 scenario_name=scenario_name, scenario_version=scenario_version,
                 max_players=max_players, duration_s=max(60, duration_min * 60),
-                theme_json=theme, join_instructions=None)
+                theme_json=theme, join_instructions=None,
+                auto_end=form.get("auto_end") in ("1", "on", "true"))
         except (ValueError, TypeError) as exc:
             self._render_admin_new_competition(session, str(exc))
             return
@@ -1173,9 +1216,13 @@ class Handler(BaseHTTPRequestHandler):
                     name=comp.name, scenario_name=comp.scenario_name,
                     scenario_version=comp.scenario_version,
                     max_players=comp.max_players, duration_s=comp.duration_s,
-                    workshop_pool_code=comp.workshop_pool_code,
+                    # A rerun is a new competition: it provisions its own pool.
+                    # Inheriting the old pin could hand out last event's clones
+                    # (and the old pool is normally deleted at End anyway).
+                    workshop_pool_code=None,
                     theme_json=comp.theme_json,
-                    join_instructions=comp.join_instructions)
+                    join_instructions=comp.join_instructions,
+                    auto_end=comp.auto_end)
             except (ValueError, TypeError) as exc:
                 if session is None:
                     self._send_json(400, {"error": str(exc)})
@@ -1242,7 +1289,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._render_admin_competition(session, comp.id, error=message)
                 return
-            self.store.update_competition(comp.id, workshop_pool_code=None)
+            self.store.update_competition(comp.id, workshop_pool_code=None,
+                                          workshop_pool_name=None)
             comp = self.store.get_competition(comp.id)
             back = f"{self._public_base()}/c/{comp.slug}/join/success"
             claimed = 0
@@ -1346,6 +1394,25 @@ class Handler(BaseHTTPRequestHandler):
             self.store.end_competition(comp.id)
             # Best effort: hand the pool's VMs back and drop the pool config.
             claims.cleanup_pool(self.store, self.store.get_competition(comp.id))
+        elif action == "toggle-auto-end":
+            # Auto-end only means something before or during a run; an ended
+            # competition is already frozen and its pool already released.
+            if comp.status not in ("draft", "live"):
+                message = (f"Auto-end can only be changed for a draft or live "
+                           f"competition; this one is {comp.status}.")
+                self.store.add_audit(
+                    actor, "competition_toggle_auto_end_refused", comp.id,
+                    details_json=json.dumps({"status": comp.status,
+                                             "refused": True}),
+                    remote_addr=self.client_address[0] if self.client_address else None)
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._send_html(409, web.error_page(
+                        409, "Cannot change auto-end", message,
+                        f"/admin/competitions/{comp.id}", admin=True))
+                return
+            self.store.update_competition(comp.id, auto_end=not comp.auto_end)
         elif action in ("close-join", "open-join"):
             # Joins can only be toggled while the run is live: open-join is
             # the counterpart of close-join (a competition closed too early
@@ -1407,15 +1474,21 @@ class Handler(BaseHTTPRequestHandler):
             if player.status != "invited" or player.box_id:
                 self._send_json(409, {"error": "reissue is only for players without a bound box"})
                 return
-            code = competition.generate_join_code()
             # The claim_error stays: a reissue hands the player a new code,
             # it does not fix whatever made the claim fail. Clearing it here
             # hid the reason from the roster while the failure was still live.
             self.store.update_player(
-                player.player_id, status="invited", box_id=None,
-                join_code_hash=competition.hash_join_code(self.server_secret, code),
-                join_code_plain=code,
-                join_code_expires_at=time.time() + 1800)
+                player.player_id, status="invited", box_id=None)
+            try:
+                code = claims.mint_join_code(self.store, player,
+                                             self.server_secret,
+                                             time.time() + 1800)
+            except RuntimeError as exc:
+                self._send_html(500, web.error_page(
+                    500, "Could not reissue a code", str(exc),
+                    f"/admin/competitions/{comp.id}" if comp else "/admin",
+                    admin=True))
+                return
             base, secret = claims.config()
             if comp and player.claim_uid and base and secret:
                 try:
@@ -1457,26 +1530,39 @@ class Handler(BaseHTTPRequestHandler):
             return
         if action == "disqualify":
             self.store.set_player_status(player.player_id, "disqualified")
+        elif action == "reinstate":
+            if player.status != "disqualified":
+                self._send_json(409, {"error": "only a disqualified player "
+                                               "can be reinstated"})
+                return
+            self.store.set_player_status(player.player_id, "running")
         elif action == "remove":
             self.store.remove_player(player.player_id)
         else:
             self._send_json(400, {"error": f"unknown player action: {action}"})
             return
-        # Losing the seat means losing the box. Player-initiated leave has
-        # always released the VM; an admin disqualify/remove must not leave
-        # it running until the portal's lease happens to expire. Best
-        # effort, exactly like leave: the portal reaper collects a miss.
+        # §7.1 (boss directive): disqualification is a board exclusion, not
+        # an eviction. The disqualified player keeps the VM, keeps their
+        # clock and keeps checking in (excluded from the board, told on the
+        # box report and their pages), so nothing is released here. Remove
+        # is the only verb that gives the box back: player-initiated leave
+        # has always released the VM; an admin remove must not leave it
+        # running until the portal's lease happens to expire. Best effort,
+        # exactly like leave: the portal reaper collects a miss.
         released = False
-        base, _secret = claims.config()
-        if base and player.claim_uid:
-            try:
-                workshop.release_vm(base, player.claim_uid)
-                released = True
-            except workshop.WorkshopError:
-                pass
+        if action == "remove":
+            base, _secret = claims.config()
+            if base and player.claim_uid:
+                try:
+                    workshop.release_vm(base, player.claim_uid)
+                    released = True
+                except workshop.WorkshopError:
+                    pass
         self.store.add_audit(actor, f"player_{action}",
                              comp.id if comp else None, player.player_id,
-                             details_json=json.dumps({"released_vm": released}))
+                             details_json=json.dumps({
+                                 "released_vm": released,
+                                 "keeps_playing": action == "disqualify"}))
         if session is None:
             self._send_json(200, {"ok": True, "action": action})
             return

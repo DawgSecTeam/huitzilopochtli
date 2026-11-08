@@ -90,6 +90,11 @@ class CompetitionRecord:
     created_at: float
     started_at: Optional[float]
     ended_at: Optional[float]
+    #: Portal pool name provisioned for this competition; None for a legacy
+    #: row (fall back to ``competition_pool_name(slug)``) or an unpinned one.
+    workshop_pool_name: Optional[str] = None
+    #: End automatically when joins are closed and every run has finished.
+    auto_end: bool = False
 
 
 @dataclass
@@ -138,6 +143,14 @@ class AdminSessionRecord:
     expires_at: float
 
 
+
+
+class JoinCodeCollision(Exception):
+    """A generated join code collided with an existing one (unique index).
+
+    Raised instead of a bare IntegrityError so a caller can mint another code
+    rather than confusing the failure with a duplicate display name.
+    """
 
 
 class Store:
@@ -246,6 +259,13 @@ class Store:
 
         # --- ranked competition mode (v1.1) -------------------------------
         for table, columns in (
+            ("competitions", (
+                # Pool identity is stored, not just the code: teardown must
+                # match this competition's pool exactly, never by slug prefix
+                # ("demo" used to match "demo-2").
+                ("workshop_pool_name", "TEXT"),
+                ("auto_end", "INTEGER NOT NULL DEFAULT 0"),
+            )),
             ("boxes", (("competition_id", "TEXT"), ("player_id", "TEXT"))),
             ("scores", (
                 ("hardening_points", "INTEGER NOT NULL DEFAULT 0"),
@@ -296,6 +316,33 @@ class Store:
             "|| char(31) || player_id "
             "WHERE status = 'removed' "
             "AND instr(display_name_norm, char(31)) = 0"
+        )
+
+        # A join code must resolve to exactly one player. The lookup was a
+        # global SELECT with no constraint; concurrent fields raise the odds
+        # of a collision, whose failure mode is binding a box to another
+        # competition's player. Null out any pre-existing duplicate (keeping
+        # the newest) before the index can be created.
+        dupes = self._conn.execute(
+            "SELECT join_code_hash FROM players "
+            "WHERE join_code_hash IS NOT NULL "
+            "GROUP BY join_code_hash HAVING COUNT(*) > 1"
+        ).fetchall()
+        for row in dupes:
+            keep = self._conn.execute(
+                "SELECT player_id FROM players WHERE join_code_hash = ? "
+                "ORDER BY joined_at DESC, rowid DESC LIMIT 1",
+                (row["join_code_hash"],),
+            ).fetchone()
+            self._conn.execute(
+                "UPDATE players SET join_code_hash = NULL, join_code_plain = NULL, "
+                "join_code_expires_at = NULL "
+                "WHERE join_code_hash = ? AND player_id <> ?",
+                (row["join_code_hash"], keep["player_id"]),
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_players_join_code "
+            "ON players(join_code_hash) WHERE join_code_hash IS NOT NULL"
         )
 
     def _commit(self) -> None:
@@ -805,19 +852,38 @@ class Store:
             ).fetchone()
         return row["version"] if row is not None else None
 
-    def delete_scenario_versions(self, scenario_name: str,
-                                 keep_version: int) -> None:
-        """Purge every stored version of a scenario except ``keep_version``.
+    def versions_in_use(self) -> set:
+        """(scenario_name, version) pairs a **live** competition is serving.
 
-        The box folder is the source of truth and holds exactly one version;
-        this carries that rule into the serving cache (no backwards
-        compatibility: stale-version check-ins fail until the competition is
-        migrated).
+        The box folder holds one current version, but several competitions can
+        be live at once and a version bump must not strand a run that is
+        already under way. The serving cache keeps these versions until their
+        competitions end; create/start/rerun still refuse anything non-current.
         """
         with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT scenario_name, scenario_version FROM competitions "
+                "WHERE status = 'live'"
+            ).fetchall()
+        return {(r["scenario_name"], r["scenario_version"]) for r in rows}
+
+    def delete_scenario_versions(self, scenario_name: str,
+                                 keep_version: int,
+                                 keep_versions: Optional[set] = None) -> None:
+        """Purge every stored version of a scenario except the kept ones.
+
+        ``keep_version`` is the box folder's current version; ``keep_versions``
+        adds versions pinned by still-live competitions (see
+        :meth:`versions_in_use`). Everything else goes: the serving cache is
+        not a backlog of old rubrics.
+        """
+        keep = {keep_version} | set(keep_versions or ())
+        placeholders = ",".join("?" * len(keep))
+        with self._lock:
             self._conn.execute(
-                "DELETE FROM scenarios WHERE scenario_name = ? AND scenario_version <> ?",
-                (scenario_name, keep_version),
+                f"DELETE FROM scenarios WHERE scenario_name = ? "
+                f"AND scenario_version NOT IN ({placeholders})",
+                (scenario_name, *sorted(keep)),
             )
             self._commit()
 
@@ -841,6 +907,8 @@ class Store:
             status=row["status"], join_open=bool(row["join_open"]),
             max_players=row["max_players"], duration_s=row["duration_s"],
             workshop_pool_code=row["workshop_pool_code"],
+            workshop_pool_name=row["workshop_pool_name"],
+            auto_end=bool(row["auto_end"]),
             theme_json=row["theme_json"],
             join_instructions=row["join_instructions"],
             created_at=row["created_at"], started_at=row["started_at"],
@@ -872,17 +940,20 @@ class Store:
                            duration_s: int, workshop_pool_code: Optional[str] = None,
                            theme_json: Optional[str] = None,
                            join_instructions: Optional[str] = None,
-                           status: str = "draft", join_open: bool = False) -> CompetitionRecord:
+                           status: str = "draft", join_open: bool = False,
+                           auto_end: bool = False) -> CompetitionRecord:
         comp_id = uuid.uuid4().hex
         now = time.time()
         with self._lock:
             self._conn.execute(
                 "INSERT INTO competitions (id, slug, name, scenario_name, "
                 "scenario_version, status, join_open, max_players, duration_s, "
-                "workshop_pool_code, theme_json, join_instructions, created_at, "
-                "started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+                "workshop_pool_code, auto_end, theme_json, join_instructions, "
+                "created_at, started_at, ended_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
                 (comp_id, slug, name, scenario_name, scenario_version, status,
-                 1 if join_open else 0, max_players, duration_s, workshop_pool_code,
+                 1 if join_open else 0, max_players, duration_s,
+                 workshop_pool_code, 1 if auto_end else 0,
                  theme_json, join_instructions, now),
             )
             self._commit()
@@ -912,13 +983,15 @@ class Store:
     def update_competition(self, comp_id: str, **fields) -> None:
         allowed = {"slug", "name", "scenario_name", "scenario_version", "status",
                    "join_open", "max_players", "duration_s", "workshop_pool_code",
+                   "workshop_pool_name", "auto_end",
                    "theme_json", "join_instructions", "started_at", "ended_at"}
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed:
                 continue
             sets.append(f"{k} = ?")
-            vals.append(int(v) if k == "join_open" and isinstance(v, bool) else v)
+            vals.append(int(v) if k in ("join_open", "auto_end")
+                        and isinstance(v, bool) else v)
         if not sets:
             return
         vals.append(comp_id)
@@ -999,12 +1072,12 @@ class Store:
     def count_players(self, comp_id: str, include_removed: bool = False) -> int:
         """Player slots that occupy the competition's capacity.
 
-        ``removed`` rows are tombstones and ``disqualified`` rows have lost
-        their seat: the disqualify handler releases the VM and audit-logs
-        ``released_vm``, so a disqualified player must not keep counting
-        against ``max_players`` and block a new join. The roster/board still
-        render the disqualified row (only ``removed`` is filtered there); the
-        exclusion is about the seat, not about the record.
+        §7.1 (boss directive): a disqualified run keeps its VM and keeps
+        playing its full clock, so it keeps occupying its seat -- capacity
+        is about boxes handed out, not about who is still ranked. Only the
+        ``removed`` tombstone frees a seat, because only Remove gives the
+        box back. The roster/board render the disqualified row; the board
+        excludes its score, the seat count does not.
         """
         with self._lock:
             if include_removed:
@@ -1015,7 +1088,7 @@ class Store:
             else:
                 row = self._conn.execute(
                     "SELECT COUNT(*) AS n FROM players WHERE competition_id = ? "
-                    "AND status NOT IN ('removed', 'disqualified')", (comp_id,),
+                    "AND status != 'removed'", (comp_id,),
                 ).fetchone()
         return int(row["n"]) if row is not None else 0
 
@@ -1035,8 +1108,12 @@ class Store:
                     (player_id, comp_id, display_name, display_name_norm,
                      join_code_hash, join_code_plain, join_code_expires_at, now),
                 )
-            except sqlite3.IntegrityError:
+            except sqlite3.IntegrityError as exc:
                 self._conn.rollback()
+                if "join_code_hash" in str(exc):
+                    # A code collision, not a duplicate display name: let the
+                    # caller mint another code instead of reporting "taken".
+                    raise JoinCodeCollision() from exc
                 return None
             self._commit()
         return self.get_player(player_id)
@@ -1107,9 +1184,15 @@ class Store:
             return
         vals.append(player_id)
         with self._lock:
-            self._conn.execute(
-                f"UPDATE players SET {', '.join(sets)} WHERE player_id = ?", vals
-            )
+            try:
+                self._conn.execute(
+                    f"UPDATE players SET {', '.join(sets)} WHERE player_id = ?", vals
+                )
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                if "join_code_hash" in str(exc):
+                    raise JoinCodeCollision() from exc
+                raise
             self._commit()
 
     def set_player_claim(self, player_id: str, url: Optional[str],

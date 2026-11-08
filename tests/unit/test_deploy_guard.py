@@ -21,3 +21,12 @@ def test_force_allows_deploy_with_live_competition(monkeypatch):
 def test_malformed_health_reads_as_zero():
     assert guard.live_count("not json") == 0
     assert guard.live_count(None) == 0
+
+
+def test_refusal_names_the_live_competitions(monkeypatch, capsys):
+    monkeypatch.delenv("HUITZ_DEPLOY_FORCE", raising=False)
+    payload = json.dumps({"live": 2, "live_competitions": [
+        {"slug": "demo", "name": "Demo"}, {"slug": "demo-2", "name": "Demo Two"}]})
+    assert guard.main(["guard", payload]) == 1
+    err = capsys.readouterr().err
+    assert "Demo" in err and "Demo Two" in err

@@ -235,6 +235,13 @@ class CheckinResponse:
     # or a box that is not tied to a competition.
     rank: Optional[int] = None
     rank_total: Optional[int] = None
+    # §7.1: a disqualified run keeps playing its full clock. This flag tells
+    # the box (report banner + stderr notice) that the disqualification
+    # stands while ``run_status`` stays ``running``; only a removal or the
+    # clock ending the run changes that. Absent from engines that predate
+    # the flag, so old agents simply keep playing and see the exclusion on
+    # the web pages.
+    disqualified: bool = False
 
 
 @dataclass

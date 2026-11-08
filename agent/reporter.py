@@ -359,7 +359,8 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                    score_delta: int | None = None,
                    rank: int | None = None,
                    rank_total: int | None = None,
-                   run_ends_at: float | None = None) -> str:
+                   run_ends_at: float | None = None,
+                   disqualified: bool = False) -> str:
     """Render ScoreBreakdown to a self-contained HTML string.
 
     Dashboard: total, point-in-time results, SLA status, and in ranked mode a
@@ -452,6 +453,10 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             # total, then the two-tab detail (config/forensics vs uptime).
             event_bar_html, event_countdown_script = _render_event_bar(
                 rank, rank_total, run_ends_at, last_confirmed_at)
+            dq_html = ('<div class="dq-banner" role="alert">DISQUALIFIED — '
+                       'your score is excluded from the leaderboard; you may '
+                       'keep working until your clock ends.</div>'
+                       if disqualified else "")
             # Total = hardening + service accrual, both derived once in
             # agent/board.py (ranked_split) — never re-split here.
             split_html = ""
@@ -463,6 +468,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                         s=html.escape(str(_rb.service_points))))
             body_main = f"""
 {_render_delta_banner(score_delta)}
+{dq_html}
 {event_bar_html}
 <div class="score-header">
   <div class="total">Total: {html.escape(str(score.total))}<span class="total-suffix"> pts</span></div>

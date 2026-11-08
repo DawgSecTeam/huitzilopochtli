@@ -790,6 +790,12 @@ def _run_ranked(config, manifest, ctx) -> None:
             # different box identity).
             _mark_enrolled(config.identity_path)
             _run_directives(response, config.identity_path, ctx)
+            if getattr(response, "disqualified", False):
+                # §7.1: told, not ejected. The run keeps its clock and the
+                # loop keeps going; only the leaderboard drops this score.
+                print("DISQUALIFIED: you may keep working until your clock "
+                      "ends, but your score is excluded from the "
+                      "leaderboard.", file=sys.stderr)
             if getattr(response, "run_status", "running") in ("finished", "ended", "disqualified"):
                 print(
                     f"run {response.run_status}: {response.player_name or 'player'}"
@@ -812,6 +818,7 @@ def _run_ranked(config, manifest, ctx) -> None:
                     rank=getattr(last_response, "rank", None),
                     rank_total=getattr(last_response, "rank_total", None),
                     run_ends_at=getattr(last_response, "run_ends_at", None),
+                    disqualified=getattr(last_response, "disqualified", False),
                 )
                 snap = agent.snapshot.build_snapshot(
                     last_response.score, manifest, mode="ranked",

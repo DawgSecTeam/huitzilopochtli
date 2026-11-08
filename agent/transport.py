@@ -108,6 +108,7 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         competition_name=data.get("competition_name"),
         rank=_optional_int(data.get("rank")),
         rank_total=_optional_int(data.get("rank_total")),
+        disqualified=bool(data.get("disqualified", False)),
     )
 
 

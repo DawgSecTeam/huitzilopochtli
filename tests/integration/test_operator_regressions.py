@@ -1,13 +1,15 @@
 """Regression tests for four operator-facing defects found in the live UI.
 
-1. A disqualified player kept burning a join seat: ``count_players`` only
-   excluded ``removed``, so a full competition stayed full after a DQ even
-   though the disqualify handler releases the VM (audit ``released_vm``).
+1. Seat math for disqualified players. First fix (2026-11-06) freed the
+   seat because disqualify released the VM; the boss directive of
+   2026-11-08 (§7.1) supersedes it: disqualified players keep playing
+   their full clock, so they keep their box AND seat, and only Remove
+   frees both. The test below pins the directive.
 2. Reissuing a join code cleared ``claim_error``, so the roster stopped
    explaining why the claim kept failing while it still was failing.
-3. A disqualified roster row rendered no actions at all; Remove is the
-   operator's exit (no reinstate: the VM was released and checkin treats
-   the run as terminal).
+3. A disqualified roster row rendered no actions at all; the row now
+   offers Reinstate (the run is still alive) and Remove, the one verb
+   that releases the box and frees the name.
 4. "migrate the competition" named a verb that does not exist; the stale-
    version refusals must name the real exit (discard and recreate from the
    current scenario via the admin console's New competition page).
@@ -140,10 +142,14 @@ def _api_players(port, auth, comp_id):
     return json.loads(body)
 
 
-# --- defect 1: a disqualified player must not hold a seat ---------------------
+# --- defect 1 (§7.1 directive): DQ keeps seat+box; Remove frees them ------
 
 
-def test_disqualify_frees_the_join_seat(tmp_path):
+def test_disqualified_player_keeps_the_seat_until_removed(tmp_path):
+    """§7.1 (boss directive): the disqualified keep playing the normal time,
+    so their seat -- a box handed out -- stays theirs. The count frees only
+    on Remove. Their score is excluded from the board (separate assertion)
+    and the roster row offers Reinstate plus Remove."""
     proc, port = _launch(tmp_path)
     try:
         auth, comp_id = _live_comp(port, max_players=2)
@@ -164,25 +170,23 @@ def test_disqualify_frees_the_join_seat(tmp_path):
                                {}, auth)
         assert status == 200, body
 
-        # The DQ must not count against max_players any more ...
+        # The run keeps its seat: Ada still holds her box and clock.
         data = _api_players(port, auth, comp_id)
-        assert data["competition"]["player_count"] == 1, (
-            "a disqualified player still occupies a join slot")
+        assert data["competition"]["player_count"] == 2, (
+            "a disqualified run that keeps playing keeps its seat")
         status, body, _ = _join(port, "Eve")
-        assert status == 303, (
-            f"a new player must be able to join after a disqualification; "
-            f"got {status}: {body[:300]}")
+        assert status == 400 and "full" in body.lower(), (
+            "the seat Ada keeps playing on must not be double-booked")
 
-        # ... but the record stays: the roster still shows Ada's row with a
-        # Disqualified badge.
+        # Roster: the row wears the Disqualified badge, offers Reinstate
+        # and Remove, and never a second Disqualify.
         cookie = _admin_login(port)
         status, roster, _ = _req(port, "GET", f"/admin/competitions/{comp_id}",
                                  headers={"Cookie": cookie})
         assert status == 200
         assert "Ada" in roster
         assert 'data-tip="Disqualified"' in roster
-        # Defect 3, checked end to end: the disqualified row is not a dead
-        # end -- it offers Remove, and no second Disqualify.
+        assert f'action="/admin/players/{ada["player_id"]}/reinstate"' in roster
         assert f'action="/admin/players/{ada["player_id"]}/remove"' in roster
         assert f'/admin/players/{ada["player_id"]}/disqualify' not in roster
         # A live row still gets its normal action set (Bob never claimed a
@@ -190,6 +194,27 @@ def test_disqualify_frees_the_join_seat(tmp_path):
         bob = next(p for p in _api_players(port, auth, comp_id)["players"]
                    if p["name"] == "Bob")
         assert f'/admin/players/{bob["player_id"]}/reissue' in roster
+
+        # Reinstate puts Ada back on the board with the same box.
+        status, body, _ = _req(port, "POST",
+                               f"/admin/players/{ada['player_id']}/reinstate",
+                               {}, auth)
+        assert status == 200, body
+        ada = next(p for p in _api_players(port, auth, comp_id)["players"]
+                   if p["name"] == "Ada")
+        assert ada["status"] == "running"
+
+        # Remove is the exit that frees the seat (and the box).
+        status, body, _ = _req(port, "POST",
+                               f"/admin/players/{ada['player_id']}/remove",
+                               {}, auth)
+        assert status == 200, body
+        data = _api_players(port, auth, comp_id)
+        assert data["competition"]["player_count"] == 1
+        status, body, _ = _join(port, "Eve")
+        assert status == 303, (
+            f"Remove must free the seat for a new join; got {status}: "
+            f"{body[:300]}")
     finally:
         proc.terminate()
         try:

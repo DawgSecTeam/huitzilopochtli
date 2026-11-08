@@ -18,7 +18,8 @@ from common.crypto import signing
 from common.schema import SCHEMA_VERSION
 from engine import scenario as scenario_mod
 from engine import verify_gate
-from engine.store import CompetitionRecord, PlayerRecord, Store
+from engine.store import (CompetitionRecord, JoinCodeCollision, PlayerRecord,
+                          Store)
 
 # Unambiguous alphabet (no 0/O/1/I/L) for codes that get typed off a screen.
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -329,7 +330,8 @@ def create_competition(store: Store, *, slug: str, name: str,
                        max_players: int, duration_s: int,
                        workshop_pool_code: Optional[str] = None,
                        theme_json: Optional[str] = None,
-                       join_instructions: Optional[str] = None):
+                       join_instructions: Optional[str] = None,
+                       auto_end: bool = False):
     err = validate_slug(slug)
     if err:
         raise ValueError(err)
@@ -369,6 +371,7 @@ def create_competition(store: Store, *, slug: str, name: str,
         scenario_version=scenario_version, max_players=max_players,
         duration_s=duration_s, workshop_pool_code=workshop_pool_code,
         theme_json=theme_json, join_instructions=join_instructions,
+        auto_end=auto_end,
     )
 
 
@@ -384,12 +387,21 @@ def create_player_with_code(store: Store, comp: CompetitionRecord,
     count = store.count_players(comp.id)
     if comp.max_players and count >= comp.max_players:
         return None, None, "This competition is full."
-    code = generate_join_code()
-    player = store.create_player(
-        comp.id, _WS_RE.sub(" ", display_name.strip()),
-        normalize_name(display_name), hash_join_code(server_secret, code),
-        time.time() + ttl_s, join_code_plain=code,
-    )
-    if player is None:
-        return None, None, "That name is already taken in this competition."
-    return player, code, None
+    cleaned = _WS_RE.sub(" ", display_name.strip())
+    norm = normalize_name(display_name)
+    for _ in range(5):
+        code = generate_join_code()
+        try:
+            player = store.create_player(
+                comp.id, cleaned, norm,
+                hash_join_code(server_secret, code),
+                time.time() + ttl_s, join_code_plain=code,
+            )
+        except JoinCodeCollision:
+            # A 40-bit code collision across concurrent fields. Mint another;
+            # this must not surface as "name already taken".
+            continue
+        if player is None:
+            return None, None, "That name is already taken in this competition."
+        return player, code, None
+    return None, None, "Could not allocate a join code; try again."

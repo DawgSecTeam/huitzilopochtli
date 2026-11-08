@@ -148,6 +148,35 @@ def test_sync_mirrors_folder_and_purges_other_versions(tmp_path, monkeypatch):
     assert store.get_scenario("Orphan", 3) is None  # undeclared name purged
 
 
+def test_sync_keeps_a_version_a_live_competition_still_serves(tmp_path,
+                                                              monkeypatch):
+    """A version bump must not strand a run that is already under way.
+
+    Several competitions can be live at once; create/start/rerun still refuse
+    a non-current version, but the serving cache holds the pinned one until
+    that competition ends.
+    """
+    boxes = _boxes(tmp_path, monkeypatch)
+    (boxes / "alpha").mkdir()
+    (boxes / "alpha" / "scenario.yaml").write_text(_ranked_yaml("Demo", 2))
+    store = _store(tmp_path)
+    scenario_mod.save_scenario_record(
+        store, {"schema_version": SCHEMA_VERSION, "scenario_name": "Demo",
+                "scenario_version": 1, "entries": []}, {}, [])
+    comp = store.create_competition(
+        slug="live-old", name="Live Old", scenario_name="Demo",
+        scenario_version=1, max_players=2, duration_s=60)
+    store.start_competition(comp.id)
+
+    assert scenario_mod.sync_box_scenarios(store) == []
+    assert store.get_scenario("Demo", 1) is not None
+    assert store.get_scenario("Demo", 2) is not None
+
+    store.end_competition(comp.id)
+    assert scenario_mod.sync_box_scenarios(store) == []
+    assert store.get_scenario("Demo", 1) is None
+
+
 def test_sync_never_purges_when_box_folder_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(scenario_mod, "boxes_dir", lambda: "")
     store = _store(tmp_path)

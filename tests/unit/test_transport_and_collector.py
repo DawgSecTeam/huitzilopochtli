@@ -450,6 +450,15 @@ def test_parse_checkin_response_tolerates_legacy_engine_fields():
     assert resp.score.sla_status[0].history == []
 
 
+def test_parse_checkin_response_carries_the_disqualified_flag():
+    """§7.1: the flag rides alongside a still-running status; payloads
+    without the key (older engines) parse as False, True survives."""
+    from agent.transport import _parse_checkin_response
+    assert _parse_checkin_response(_response_payload()).disqualified is False
+    resp = _parse_checkin_response(_response_payload(disqualified=True))
+    assert resp.disqualified is True and resp.run_status == "running"
+
+
 def test_parse_checkin_response_sanitizes_history_and_rank():
     from agent.transport import _parse_checkin_response
     payload = _response_payload(rank=True, rank_total="6")

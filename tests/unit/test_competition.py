@@ -294,3 +294,48 @@ def test_end_competition_accepts_a_draft_so_its_pool_can_be_cleaned(store):
     assert store.end_competition(comp.id) is False
     # An ended draft is removable like any other ended competition.
     assert store.delete_competition(comp.id) is True
+
+
+# --- multiple live competitions ----------------------------------------------
+
+
+def _second(store, slug="second-comp", name="Second Comp"):
+    c = competition.create_competition(
+        store, slug=slug, name=name, scenario_name="TestComp",
+        scenario_version=1, max_players=8, duration_s=3600)
+    store.start_competition(c.id)
+    return store.get_competition(c.id)
+
+
+def test_two_live_competitions_score_independently(store):
+    a = _comp(store)
+    b = _second(store)
+    pa, _c, _e = competition.create_player_with_code(store, a, "Ada", b"secret")
+    pb, _c, _e = competition.create_player_with_code(store, b, "Bob", b"secret")
+    store.update_player(pa.player_id, status="running", box_id="box-a",
+                        started_at=time.time(), ends_at=time.time() + 3600)
+    store.update_player(pb.player_id, status="running", box_id="box-b",
+                        started_at=time.time(), ends_at=time.time() + 3600)
+    store.upsert_score("box-a", "TestComp", 10)
+    store.upsert_score("box-b", "TestComp", 30)
+
+    board_a = competition.leaderboard_payload(store, store.get_competition(a.id))
+    board_b = competition.leaderboard_payload(store, store.get_competition(b.id))
+    assert [r["name"] for r in board_a["leaderboard"]] == ["Ada"]
+    assert [r["name"] for r in board_b["leaderboard"]] == ["Bob"]
+    assert board_a["leaderboard"][0]["total"] == 10
+    assert board_b["leaderboard"][0]["total"] == 30
+
+
+def test_join_codes_stay_unique_across_competitions(store, monkeypatch):
+    """A collision is retried, never allowed to bind another competition."""
+    a = _comp(store)
+    b = _second(store)
+    codes = iter(["AAAAAAAA", "AAAAAAAA", "BBBBBBBB"])
+    monkeypatch.setattr(competition, "generate_join_code", lambda: next(codes))
+    first, code_a, err = competition.create_player_with_code(store, a, "Ada", b"secret")
+    assert err is None and code_a == "AAAAAAAA"
+    second, code_b, err = competition.create_player_with_code(store, b, "Bob", b"secret")
+    assert err is None and second is not None
+    assert code_b == "BBBBBBBB"
+    assert code_b != code_a

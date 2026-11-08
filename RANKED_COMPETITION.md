@@ -120,6 +120,51 @@ pool config is already gone, it still enumerates the portal's VMs by pool
 code/student_id and destroys the clones; a DELETE 404 is success, and the pin
 survives until a fresh listing shows zero VMs.
 
+## 2.1 Running several competitions at once
+
+Any number of competitions can be live on one engine. Each owns its own
+players, clock, board, portal pool (`huitz-ranked-<slug>`), and teardown; the
+engine serializes pool work **per competition**, not process-wide.
+
+What to know before a day of back-to-back events:
+
+- **Stagger the pre-deploys.** The portal accepts one provision job and one
+  destroy job at a time. A second pre-deploy is queued (the admin page shows
+  "Queued") and a second End waits for the running destroy job; neither fails,
+  but both are slow. Warm the first pool, open its joins, then warm the next.
+- **Avoid sibling slugs.** `demo` and `demo-2` are fine and isolated (teardown
+  matches the exact pool code / anchored pool name), but a slug that is a
+  prefix of another makes operator cross-checks harder for no benefit. Rerun
+  derives `-2` automatically.
+- **End before rerunning.** A rerun is a new competition with a new pool. Its
+  predecessor's pool should already be gone (`GET /api/admin/pools` shows no
+  `huitz-ranked-<old-slug>`); if End was interrupted, run
+  `python3 -m engine.cleanup --slug <old-slug>` (or `--all-ended`) first.
+- **A version bump keeps live runs alive.** The serving cache retains the
+  version a live competition pins; create/start/rerun still refuse anything but
+  the folder's current version, and the retained row is purged after that
+  competition ends.
+- **Auto-end.** Tick it on the new-competition form (or toggle it on the
+  competition page) and the sweeper ends the competition once joins are closed
+  and every run has finished, releasing the pool without an operator.
+- **A player is in one competition at a time** (by cookie and by live display
+  name). Overlapping rosters produce "already competing in X" join failures;
+  that is intentional, not a bug.
+- **`/leaderboard?scenario=` is ambiguous with several competitions.** It
+  answers `400` with the candidate slugs; use `?competition=<slug>`. The
+  competition pages and `/api/public/competitions/<slug>/leaderboard` are
+  always per-competition.
+- **Deploys are still engine-wide.** `/health` lists the live competitions and
+  the deploy guard refuses while any is running (`HUITZ_DEPLOY_FORCE=1` to
+  override); a mid-run code swap can orphan End-time cleanup.
+- **`/join` is rate-limited by client IP.** Several events joining at once
+  behind one NAT can exhaust the default budget and answer `429`; raise
+  `$HUITZILOPOCHTLI_RATE_LIMIT_PER_MIN` / `$HUITZILOPOCHTLI_RATE_BURST` on the
+  engine for the event window.
+- **Recovering a stuck teardown:** `python3 -m engine.cleanup --all-ended
+  --dry-run` lists every ended competition still holding a pool pin; drop
+  `--dry-run` to release them in one pass (`--slug` still tears down one).
+
 **Ties share a rank.** Equal totals get the same rank on the board, the
 per-box report, and the CSV (standard competition ranking: `1, 2, 2, 4`).
 Rows keep a stable display order, but that order does not change a tied
@@ -374,8 +419,13 @@ or URL.
 
 ## 5. Admin and engine ops
 
+Disqualification (§7.1) is a board exclusion, not an eviction: the
+disqualified player keeps their VM and their full clock, keeps checking
+in (told via the box report banner and their pages), and their score is
+simply absent from the board; only Remove releases the box and frees the
+seat, and Reinstate walks a disqualified run back onto the board.
 Console `/admin` (competitions, counts, audit), `/admin/competitions/<id>`
-(start/end/close joins/rerun, roster, reissue, disqualify/remove, CSV; ended
+(start/end/close joins/rerun, roster, reissue, disqualify/reinstate/remove, CSV; ended
 competitions add **Remove**), `/admin/audit` (every admin and system action,
 newest first: engine-local time, actor plus the address it came from, action,
 the competition/player it touched, and the logged detail; query strings

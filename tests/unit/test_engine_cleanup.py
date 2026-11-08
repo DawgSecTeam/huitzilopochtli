@@ -45,3 +45,37 @@ def test_missing_slug_is_an_error(tmp_path, capsys):
     rc = cleanup.main(["--slug", "nope", "--db", str(tmp_path / "engine.db")])
     assert rc == 1
     assert "no competition" in capsys.readouterr().out
+
+
+def test_all_ended_sweeps_only_ended_competitions_with_a_pin(tmp_path, capsys,
+                                                             monkeypatch):
+    store, first = _store(tmp_path)
+    second = competition.create_competition(
+        store, slug="also-clean", name="Also Clean", scenario_name="S",
+        scenario_version=1, max_players=4, duration_s=600,
+        workshop_pool_code="POOL2")
+    store.start_competition(second.id)
+    store.end_competition(first.id)   # draft -> ended
+    # `second` is still live: it must not be swept.
+
+    seen = []
+
+    def fake(store_arg, comp_arg):
+        seen.append(comp_arg.slug)
+        return {"released": 0, "destroyed": 1, "deleted": True}
+
+    monkeypatch.setattr(cleanup.claims, "cleanup_pool", fake)
+    rc = cleanup.main(["--all-ended", "--db", str(tmp_path / "engine.db")])
+    assert rc == 0 and seen == ["clean-me"]
+    out = json.loads(capsys.readouterr().out)
+    assert [c["slug"] for c in out["competitions"]] == ["clean-me"]
+
+
+def test_no_arguments_is_an_error(tmp_path):
+    _store(tmp_path)
+    try:
+        cleanup.main(["--db", str(tmp_path / "engine.db")])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover - argparse always exits
+        raise AssertionError("expected SystemExit")
