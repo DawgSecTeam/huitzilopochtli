@@ -743,6 +743,60 @@ class TestCliCommands:
                         instream=_FakeStream()) == 1
 
 
+class TestJoinCodeArg:
+    """`huitz join [CODE]`: the code may arrive positionally, via --code,
+    by tty prompt, or on stdin — exactly one of them actually harms."""
+
+    @staticmethod
+    def _capture_join(monkeypatch):
+        captured = {}
+
+        def fake_join(config_path, code, start_service=True):
+            captured["config_path"] = config_path
+            captured["code"] = code
+            captured["start_service"] = start_service
+            return {"player_name": "bot", "competition_name": "Test Comp"}
+
+        monkeypatch.setattr("agent.join.join", fake_join)
+        monkeypatch.setattr(cli, "_install_config_path",
+                            lambda: "/tmp/join-test-config.json")
+        return captured
+
+    def test_positional_code(self, monkeypatch):
+        captured = self._capture_join(monkeypatch)
+        out = _FakeStream()
+        assert cli.main(["join", "AB2C-XZ9Y"], outstream=out) == 0
+        assert captured["code"] == "AB2C-XZ9Y"
+        assert "joined: bot" in out.getvalue()
+
+    def test_positional_code_with_no_start(self, monkeypatch):
+        captured = self._capture_join(monkeypatch)
+        cli.main(["join", "AB2C-XZ9Y", "--no-start"], outstream=_FakeStream())
+        assert captured["start_service"] is False
+
+    def test_flag_still_works(self, monkeypatch):
+        captured = self._capture_join(monkeypatch)
+        cli.main(["join", "--code", "AB2C-XZ9Y"],
+                 outstream=_FakeStream(), instream=_FakeStream())
+        assert captured["code"] == "AB2C-XZ9Y"
+
+    def test_piped_stdin_still_works(self, monkeypatch):
+        captured = self._capture_join(monkeypatch)
+        cli.main(["join"], outstream=_FakeStream(),
+                 instream=io.StringIO("AB2C-XZ9Y\n"))
+        assert captured["code"] == "AB2C-XZ9Y"
+
+    def test_positional_and_flag_conflict(self, monkeypatch):
+        self._capture_join(monkeypatch)
+        assert cli.main(["join", "AB2C-XZ9Y", "--code", "ZZZZ"],
+                        outstream=_FakeStream()) == 2
+
+    def test_multiple_positionals_rejected(self, monkeypatch):
+        self._capture_join(monkeypatch)
+        assert cli.main(["join", "AB2C", "XZ9Y"],
+                        outstream=_FakeStream()) == 2
+
+
 # --- dispatch (agent/__main__ verb routing) ----------------------------------------
 
 class TestDispatch:

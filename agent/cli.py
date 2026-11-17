@@ -58,7 +58,7 @@ usage:
   huitz readme --raw             ... as raw markdown, printed flat
   huitz forensics                list forensics questions + your answers
   huitz forensics N "answer"     answer question N (interactive if TEXT omitted)
-  huitz join                     bind this ranked box to a competition slot
+  huitz join [CODE]              bind this ranked box to a competition slot
   huitz grade                    re-grade right now (root; honor boxes)
 
 options:
@@ -1360,10 +1360,18 @@ def cmd_forensics(argv: list, outstream, instream) -> int:
 def cmd_join(argv: list, outstream, instream) -> int:
     positional, opts = _split_flags(
         argv, {"--no-start"}, {"--code", "--config", "--color"})
-    if positional:
-        raise UsageError(f"join takes no positional arguments (got {positional[0]!r})")
     import agent.join as join_mod
     code = opts.get("--code")
+    if positional:
+        if code:
+            raise UsageError(
+                "join: give the code once — as the argument or via --code, "
+                "not both")
+        if len(positional) > 1:
+            raise UsageError(
+                f"join: expected one join code, got {len(positional)} words\n"
+                '  quote the code if it contains spaces: huitz join "AB2C-XZ9Y"')
+        code = positional[0]
     if not code:
         if instream is not None and instream.isatty():
             code = input("Join code from the competition page: ")

@@ -15,7 +15,7 @@ Two command surfaces: `huitz`, the on-box terminal console, and `boxbuilder`, th
 | `huitz forensics N` | Answer question N interactively (Enter keeps, `-` clears). |
 | `huitz forensics N "text"` | Answer question N directly. |
 | `huitz grade` | Re-grade now, then show the scorecard. Privileged, honor only; ranked boxes refuse and point at the engine. `--config PATH` selects a non-default `agent_config.json`; `--quiet` prints one summary line. |
-| `huitz join` | Ranked competition only: sign a `/join` with the box key and bind this box to a player slot. `--code CODE` for scripted joins, `--no-start` to enroll without starting the agent unit, `--config PATH` for a non-default config. |
+| `huitz join [CODE]` | Ranked competition only: sign a `/join` with the box key and bind this box to a player slot. `huitz join CODE` takes the code as an argument, `--code CODE` for scripted joins; bare `huitz join` prompts (stdin when piped). `--no-start` to enroll without starting the agent unit, `--config PATH` for a non-default config. |
 | `huitz help` | Usage (also `-h`, `--help`). |
 
 Flags shared by reading commands: `--report PATH` (or `$HUITZ_REPORT`) pins a snapshot; `--color auto|always|never` overrides detection (`NO_COLOR` is always honored). `--answers PATH` (forensics) overrides the answers file the snapshot names. Paging never engages on a non-interactive stream, so piped output is byte-identical to a plain print. `--config PATH` (or `$HUITZ_CONFIG`) pins a config for `grade`/`join`.
