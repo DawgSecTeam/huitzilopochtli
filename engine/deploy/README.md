@@ -57,7 +57,12 @@ keeps an existing `engine.env`, and restarts the unit.
 To upgrade a running engine: build a new tarball, extract to `/tmp`, copy
 `common/` and `engine/` into `/opt/huitzilopochtli/engine/`, copy
 `engine/deploy/` to `/opt/huitzilopochtli/engine/deploy/`, then
-`systemctl restart huitzilopochtli-engine`.
+`systemctl restart huitzilopochtli-engine`. The bundle carries a stamped
+`build_info.json` at its root — copy it to `/opt/huitzilopochtli/engine/`
+alongside `common/` so the admin dashboard (`/admin`, `GET /admin/api/build`)
+can report the exact deployed commit. A git-based deploy writes its own
+`build_info.json` from the pulled checkout (`{"commit": "<full sha>",
+"built_at": "<UTC ISO>", "source": "git"}`).
 
 Backups run daily at 03:15 and keep 14. Run one now with
 `systemctl start huitzilopochtli-backup.service`.

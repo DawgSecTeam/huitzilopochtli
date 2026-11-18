@@ -29,7 +29,7 @@ from typing import Optional
 from urllib.parse import urlsplit, parse_qs
 
 from common.schema import Bundle, CollectorStatus, Evidence, SCHEMA_VERSION
-from engine import auth, claims, competition, enrollment, leaderboard, web, workshop
+from engine import auth, build as engine_build, claims, competition, enrollment, leaderboard, web, workshop
 from engine import scenario as scenario_mod
 from engine.checkin import CheckinError, handle_checkin
 from engine.enrollment import EnrollError
@@ -592,6 +592,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(401, web.login_page("Sign in to continue."))
                 return
             self._render_admin_audit(parse_qs(parts.query))
+        if path == "/admin/api/build":
+            ok, _actor, _session, _via = self._admin_actor()
+            if not ok:
+                self._send_json(403, {"error": "admin authentication required"})
+                return
+            info = dict(engine_build.build_info())
+            info["started_at"] = engine_build.STARTED_AT
+            self._send_json(200, info)
             return
         if path == "/admin/api/competitions":
             ok, _actor, _session, _via = self._admin_actor()

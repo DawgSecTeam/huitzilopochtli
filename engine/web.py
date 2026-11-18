@@ -33,6 +33,7 @@ import time
 from typing import Optional
 
 from common.schema import SLA_HISTORY_MAX
+from engine import build as engine_build
 from engine.store import AuditRecord, CompetitionRecord, PlayerRecord
 
 _ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -920,6 +921,23 @@ def login_page(error: str = "") -> str:
     return layout("Admin login", body, admin=False, body_class="login-body")
 
 
+def _build_line() -> str:
+    """The exact build the running engine process was loaded from.
+
+    Outside the poll div on purpose: this is process-static (it changes only
+    at restart), while the poll swaps the dashboard's inner content.
+    """
+    info = engine_build.build_info()
+    if not info["commit"]:
+        return ('<p class="muted small">Engine build unknown: this checkout '
+                'has no build_info.json (built dev checkout).</p>')
+    short = esc(info["commit"][:7])
+    built = f' · built {esc(_fmt_ts(info["built_at"]))}' if info["built_at"] else ""
+    src = f' ({esc(info["source"])})' if info["source"] else ""
+    started = esc(_fmt_ts(engine_build.STARTED_AT))
+    return f'<p class="muted small" title="{esc(info["commit"])}">Engine build <code>{short}</code>{src}{built} · process started {started}</p>'
+
+
 def admin_dashboard_page(comps: list, players_by_comp: dict,
                          csrf: str, msg: str = "") -> str:
     cards = []
@@ -938,7 +956,8 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
 <section class="card"><div class="card-head"><h2>Competitions</h2>
 </div>
 <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="5" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
-</div>"""
+</div>
+{_build_line()}"""
     return layout("Admin", body, admin=True, current="admin")
 
 

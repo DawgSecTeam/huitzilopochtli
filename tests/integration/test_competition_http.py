@@ -650,10 +650,10 @@ def test_leaderboard_visibility_toggle(tmp_path):
         conn.close()
 
         # Conceal: every read surface shows the quiet note, no standings.
-        status, _body = _http("POST",
-                              base + f"/admin/api/competitions/{vis['id']}/leaderboard-visibility",
-                              {"hidden": 1}, auth)
-        assert status in (200, 303), body
+        status, reason = _http("POST",
+                               base + f"/admin/api/competitions/{vis['id']}/leaderboard-visibility",
+                               {"hidden": 1}, auth)
+        assert status in (200, 303), reason
         status, page = _http("GET", base + "/c/vis-comp")
         assert "Standings are hidden by the organizers." in page
         assert "Ada" not in page
@@ -663,17 +663,7 @@ def test_leaderboard_visibility_toggle(tmp_path):
         assert json.loads(body)["leaderboard"] == []
 
         # The dashboard row flips to the reveal control, matching the
-        # concealed state.
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        conn.request("POST", "/admin/login",
-                     body=urllib.parse.urlencode(
-                         {"username": "admin", "password": "test-pw"}),
-                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-        resp = conn.getresponse()
-        resp.read()
-        assert resp.status == 303
-        dash_cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
-        conn.close()
+        # concealed state (the session cookie from the login above).
         status, page = _http("GET", base + "/admin",
                              headers={"Cookie": dash_cookie})
         assert "Show leaderboard" in page
@@ -693,6 +683,7 @@ def test_leaderboard_visibility_toggle(tmp_path):
         assert status == 200
         assert 'id="home" data-poll=' in page
     finally:
+        proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -892,6 +883,67 @@ def test_extend_overtime(tmp_path):
             "POST", base + f"/admin/api/competitions/{ot['id']}/extend",
             urllib.parse.urlencode({"minutes": "15"}), auth)
         assert status == 409 and "not live" in body
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        ws.shutdown()
+
+
+def test_admin_api_build_reports_deployment_identity(tmp_path):
+    """The admin build endpoint reports the deployment's build_info.json.
+
+    An unauthenticated call is refused; the token call returns the deployed
+    commit stamp (None here: the integration server runs from a checkout
+    without build_info.json) plus the process start time.
+    """
+    port = _free_port()
+    workshop_port = _free_port()
+    db = tmp_path / "engine.db"
+    boxes = tmp_path / "boxes" / "ot-comp-box"
+    boxes.mkdir(parents=True)
+    (boxes / "scenario.yaml").write_text(_scenario_yaml())
+    _Workshop.requests = []
+    _Workshop.pools = []
+    _Workshop.vms = []
+    env = dict(os.environ)
+    env.update({
+        "HUITZILOPOCHTLI_DB_PATH": str(db),
+        "HUITZILOPOCHTLI_PORT": str(port),
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": ADMIN,
+        "HUITZILOPOCHTLI_BIND": "127.0.0.1",
+        "HUITZILOPOCHTLI_WORKSHOP_URL": f"http://127.0.0.1:{workshop_port}",
+        "HUITZILOPOCHTLI_WORKSHOP_SECRET": "ws-secret",
+        "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD": "portal-pw",
+        "HUITZILOPOCHTLI_PUBLIC_URL": f"http://127.0.0.1:{port}",
+        "HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes"),
+        "PYTHONUNBUFFERED": "1",
+    })
+    ws = ThreadingHTTPServer(("127.0.0.1", workshop_port), _Workshop)
+    threading.Thread(target=ws.serve_forever, daemon=True).start()
+    proc = subprocess.Popen([sys.executable, "-m", "engine.server"], cwd=REPO_ROOT,
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    base = f"http://127.0.0.1:{port}"
+    started = time.time()
+    try:
+        for _ in range(100):
+            try:
+                if _http("GET", base + "/health")[0] == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        status, body = _http("GET", base + "/admin/api/build")
+        assert status == 403, body
+        status, body = _http("GET", base + "/admin/api/build",
+                             headers={"X-HUITZILOPOCHTLI-Admin-Token": ADMIN})
+        assert status == 200, body
+        info = json.loads(body)
+        assert info["commit"] is None  # honest unknown for a bare checkout
+        assert info["built_at"] is None
+        assert started - 5 <= info["started_at"] <= time.time()
     finally:
         try:
             proc.wait(timeout=5)
