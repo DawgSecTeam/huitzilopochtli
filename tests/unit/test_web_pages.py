@@ -1075,3 +1075,21 @@ def test_auto_end_is_opt_in_and_toggleable_before_end():
     ended = web.admin_competition_page(_comp(status="ended", auto_end=True),
                                        {"leaderboard": []}, [], "csrf")
     assert "toggle-auto-end" not in ended
+
+
+def test_admin_roster_offers_release_box_only_for_a_bound_claimed_box():
+    # The post-run lifecycle button: destroys the VM, ends the access window
+    # early; shows for any box still held (running, finished, disqualified).
+    claimed = _player(claim_uid="u-1")
+    page = web.admin_competition_page(_comp(), _payload(), [claimed], "csrf")
+    assert "release_box" in page
+    # A released or never-claimed box offers nothing to release.
+    gone = _player(claim_uid=None, box_released_at=123.0)
+    assert "release_box" not in web.admin_competition_page(
+        _comp(), _payload(), [gone], "csrf")
+
+
+def test_join_page_states_the_post_run_access_window():
+    page = web.join_success_page(_comp(), _player(claim_uid=None))
+    assert "Scoring stops when your clock ends" in page
+    assert "30 more minutes" in page

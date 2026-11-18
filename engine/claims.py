@@ -108,6 +108,21 @@ def enabled() -> bool:
     return bool(config()[0])
 
 
+#: How long a run's box stays accessible after the run clock ends, so the
+#: player can investigate the hardened state, before the sweeper releases
+#: (destroys + frees the seat) it (env: HUITZILOPOCHTLI_POST_RUN_GRACE_S).
+POST_RUN_GRACE_DEFAULT = 1800.0
+
+
+def post_run_grace_s() -> float:
+    """Post-run box access window in seconds (default 30 minutes)."""
+    try:
+        return max(0.0, float(os.environ.get(
+            "HUITZILOPOCHTLI_POST_RUN_GRACE_S", POST_RUN_GRACE_DEFAULT)))
+    except (TypeError, ValueError):
+        return POST_RUN_GRACE_DEFAULT
+
+
 def public_base() -> str:
     """Origin for back_url when there is no request to derive one from."""
     return os.environ.get("HUITZILOPOCHTLI_PUBLIC_URL", "").rstrip("/")
@@ -1130,6 +1145,36 @@ def _sweep_one(store: Store, comp: CompetitionRecord, server_secret: bytes,
         out = start(store, comp, fresh, back_url=back)
         if out.get("ok"):
             stats["retried"] += 1
+    # Post-run access windows: once a run's clock ends (score frozen — the
+    # governing receipt time is ``finished_at`` when a check-in confirmed it,
+    # else ``ends_at``), the box stays up ``post_run_grace_s`` so the player
+    # can investigate, then the sweeper releases it: destroy via the portal,
+    # seat freed for the next claim. The wall the player sees comes from the
+    # finishing check-in's directive (engine.checkin); a never-confirmed
+    # expiry releases on the same schedule — the clock is the truth. If the
+    # competition is ended before a window closes, the End path's pool teardown
+    # releases everything at once instead.
+    base, _secret = config()
+    release_grace = post_run_grace_s()
+    if base:
+        for p in store.list_players(comp.id):
+            if not (p.box_id and p.claim_uid) or p.box_released_at:
+                continue
+            run_end = max(p.finished_at or 0.0, p.ends_at or 0.0)
+            if not run_end or now < run_end + release_grace:
+                continue
+            try:
+                workshop.release_vm(base, p.claim_uid)
+            except workshop.WorkshopError:
+                stats["release_errors"] += 1
+                continue  # best effort; the next sweep retries
+            store.release_player_box(p.player_id, now)
+            store.add_audit("system", "player_box_released", comp.id,
+                            p.player_id,
+                            details_json=json.dumps(
+                                {"grace_s": release_grace, "ended_at": run_end,
+                                 "uid": p.claim_uid}))
+            stats["released_boxes"] += 1
     # Auto-release (opt-in per competition): joins closed, every run terminal
     # for a grace period -> end it here so its pool is torn down by the next
     # sweep instead of pinning VMs until an operator notices.
@@ -1139,7 +1184,12 @@ def _sweep_one(store: Store, comp: CompetitionRecord, server_secret: bytes,
                        for p in players)
         last_end = max((p.finished_at or p.ends_at or 0) for p in players) \
             if players else (comp.started_at or 0)
-        grace = float(os.environ.get("HUITZILOPOCHTLI_AUTO_END_GRACE_S", "300"))
+        # Option-in grace must not cut a post-run access window short:
+        # ending releases the whole pool, which would destroy boxes whose
+        # players are still inside their investigation time.
+        grace = max(
+            float(os.environ.get("HUITZILOPOCHTLI_AUTO_END_GRACE_S", "300")),
+            release_grace + 60.0)
         if terminal and now - float(last_end) >= grace:
             store.end_competition(comp.id)
             store.add_audit("system", "competition_auto_end", comp.id,
@@ -1156,15 +1206,18 @@ def sweep(store: Store, server_secret: bytes, *,
 
     For every live competition: retry claims that never got a VM (per-player
     exponential backoff, refreshing an expired join code first), advance
-    provisioning tickets left behind by closed join pages, and rotate the
-    portal's join code on claimed VMs before it expires. Ended competitions
-    get their pool released and deleted. Every competition is isolated: one
-    failing (portal down, corrupt row) is backed off and never skips the rest.
-    Best effort; never raises. Returns small counters for logging/tests.
+    provisioning tickets left behind by closed join pages, rotate the
+    portal's join code on claimed VMs before it expires, and release boxes
+    whose post-run access window (post_run_grace_s) has closed. Ended
+    competitions get their pool released and deleted. Every competition is
+    isolated: one failing (portal down, corrupt row) is backed off and never
+    skips the rest. Best effort; never raises. Returns small counters for
+    logging/tests.
     """
     now = time.time() if now is None else now
     stats = {"retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
-             "auto_ended": 0, "deferred": 0}
+             "auto_ended": 0, "deferred": 0, "released_boxes": 0,
+             "release_errors": 0}
     if not enabled():
         return stats
     for comp in store.list_competitions():

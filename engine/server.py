@@ -1616,6 +1616,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._redirect(f"/admin/competitions/{comp.id}" if comp else "/admin")
             return
+        released = False
         if action == "disqualify":
             self.store.set_player_status(player.player_id, "disqualified")
         elif action == "reinstate":
@@ -1626,6 +1627,27 @@ class Handler(BaseHTTPRequestHandler):
             self.store.set_player_status(player.player_id, "running")
         elif action == "remove":
             self.store.remove_player(player.player_id)
+        elif action == "release_box":
+            # Give one run's box back early: destroys the VM and frees the
+            # seat without touching the player's status, score or entry in
+            # the competition record. Used to cut a post-run access window
+            # short; like Remove, the portal OWNS the retry — here the admin
+            # is told to retry instead.
+            if not (player.box_id and player.claim_uid):
+                self._send_json(409, {"error": "no bound box to release"})
+                return
+            base, _secret = claims.config()
+            if not base:
+                self._send_json(409, {"error": "no workshop portal configured"})
+                return
+            try:
+                workshop.release_vm(base, player.claim_uid)
+            except workshop.WorkshopError:
+                self._send_json(502, {"error": "the portal did not accept the "
+                                               "release; try again"})
+                return
+            self.store.release_player_box(player.player_id)
+            released = True
         else:
             self._send_json(400, {"error": f"unknown player action: {action}"})
             return
@@ -1633,11 +1655,11 @@ class Handler(BaseHTTPRequestHandler):
         # an eviction. The disqualified player keeps the VM, keeps their
         # clock and keeps checking in (excluded from the board, told on the
         # box report and their pages), so nothing is released here. Remove
-        # is the only verb that gives the box back: player-initiated leave
-        # has always released the VM; an admin remove must not leave it
-        # running until the portal's lease happens to expire. Best effort,
-        # exactly like leave: the portal reaper collects a miss.
-        released = False
+        # and release_box are the verbs that give the box back:
+        # player-initiated leave has always released the VM; an admin remove
+        # must not leave it running until the portal's lease happens to
+        # expire. Best effort, exactly like leave: the portal reaper
+        # collects a miss.
         if action == "remove":
             base, _secret = claims.config()
             if base and player.claim_uid:

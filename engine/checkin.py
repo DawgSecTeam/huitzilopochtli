@@ -8,6 +8,7 @@ from typing import Optional
 
 import engine.sla as sla
 import engine.adversary_oracle as adversary_oracle
+import engine.claims as claims
 import engine.competition as competition
 from common import canon
 from common.evaluator import evaluate
@@ -149,6 +150,37 @@ def _frozen_score(store: Store, box_id: str, scenario_name: str,
     )
 
 
+def _run_over_message(grace_s: float) -> str:
+    """The wall text announcing the post-run access window (one line)."""
+    minutes = int(round(grace_s / 60))
+    if minutes < 1:
+        return ("Scoring has stopped. This box will be shut down and "
+                "deleted shortly.")
+    return (f"Scoring has stopped. You have {minutes} more minutes to "
+            "investigate this box; it will then be shut down and deleted "
+            "automatically. An admin can release it sooner.")
+
+
+def _run_over_wall_directive(store: Store, box_id: str, player, now: float
+                             ) -> Optional[Directive]:
+    """The one run-over wall notice for this run, or None if already issued.
+
+    A deterministic event_id keeps it at-most-once per run: the check-in
+    that first sees an expired clock (``now >= ends_at``) issues the
+    directive the box walls with; a lost response is re-delivered through
+    the same at-least-once ``issued_directives`` re-send any directive gets,
+    and the agent's event_id dedup stops double execution.
+    """
+    grace = claims.post_run_grace_s()
+    event_id = f"run-over-{player.player_id}"
+    params = {"message": _run_over_message(grace), "access_s": grace,
+              "access_ends_at": now + grace}
+    if store.log_adversary_event(box_id, event_id, "wall_message", now, params):
+        return Directive(event_id=event_id, action="wall_message",
+                         params=params)
+    return None
+
+
 def run_state_for(player, comp, now: float) -> "tuple[bool, str]":
     """(finished, run_status) for a check-in from ``player`` right now.
 
@@ -275,6 +307,19 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
                 and player.status == "running"):
             store.update_player(player.player_id, status="finished",
                                 finished_at=now_for_run)
+        # An expired run walls the operator notice (post-run access window)
+        # via the directive channel; never re-issued after the first.
+        wall = None
+        if player is not None and run_status == "finished":
+            wall = _run_over_wall_directive(store, bundle.box_id, player,
+                                            now_for_run)
+        # Re-send everything issued so far (the wall included) so a response
+        # lost after commit can't lose the notice either.
+        issued_directives = [
+            Directive(event_id=d["event_id"], action=d["action"],
+                      params=d["params"])
+            for d in store.get_issued_directives(bundle.box_id)
+        ]
         with store.atomic():
             if not store.update_box_seq(bundle.box_id, bundle.seq, bundle.boot_id):
                 fresh = store.get_box(bundle.box_id)
@@ -291,10 +336,10 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         return CheckinResponse(
             server_time=now_for_run,
             score=frozen,
-            directives=[],
+            directives=[wall] if wall is not None else [],
             next_checkin_s=max(1, int(next_checkin_s)),
             last_seq=bundle.seq,
-            issued_directives=[],
+            issued_directives=issued_directives,
             run_status=run_status,
             run_ends_at=run_ends_at,
             player_name=player.display_name if player is not None else None,

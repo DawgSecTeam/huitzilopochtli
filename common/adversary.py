@@ -9,6 +9,8 @@ import re
 
 #: The closed action vocabulary (architecture §12.2). Adding an action means
 #: adding an executor implementation and a validation branch here, together.
+#: ``wall_message`` is deliberately absent: it is engine-issued only (the
+#: run-over post-run access notice) and a scenario may not author it.
 ADVERSARY_ACTIONS = frozenset({
     "flush_firewall",
     "kill_service",

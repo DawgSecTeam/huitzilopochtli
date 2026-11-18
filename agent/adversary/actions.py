@@ -2,6 +2,10 @@
 
 No action may open an outbound connection — there is no network-egress
 primitive in this module. Do not add a generic "run command" primitive.
+
+Actions registered here that are absent from
+``common.adversary.ADVERSARY_ACTIONS`` are engine-issued only: a scenario
+cannot pass compile with them (the run-over ``wall_message`` notice).
 """
 import os
 import shutil
@@ -214,5 +218,42 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
         with open(target, "w", encoding="utf-8") as f:
             f.write(content)
         os.chmod(target, 0o644)
+    except Exception:
+        pass
+
+
+@register("wall_message")
+def _wall_message(params: dict, ctx: "agent.platform.base.PlatformContext") -> None:
+    """Broadcast an engine-issued notice to every logged-in session (wall).
+
+    params = {"message": <text>}. The engine composes the message itself at
+    run end (post-run access notice); the box only renders it. This action
+    is engine-reserved — deliberately absent from
+    ``common.adversary.ADVERSARY_ACTIONS`` so no scenario can author it.
+    Control characters are stripped and the text is capped so a bad param
+    cannot inject terminal escapes beyond the message itself. Best effort:
+    no logged-in session means wall succeeds silently, which is fine.
+    """
+    message = params.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return
+    clean = "".join(ch for ch in message if ord(ch) >= 32 and ord(ch) != 127)[:2000]
+    if _IS_WINDOWS:
+        try:
+            subprocess.run(["msg", "*", clean], check=False,
+                           capture_output=True, timeout=15)
+        except Exception:
+            pass
+        return
+    if shutil.which("wall") is None:
+        print(f"NOTICE: {clean}", file=sys.stderr)
+        return
+    try:
+        # -n drops the "<hostname> broadcast message" banner where supported.
+        posted = subprocess.run(["wall", "-n"], input=clean, check=False,
+                                capture_output=True, timeout=10)
+        if posted.returncode != 0:
+            subprocess.run(["wall"], input=clean, check=False,
+                           capture_output=True, timeout=10)
     except Exception:
         pass

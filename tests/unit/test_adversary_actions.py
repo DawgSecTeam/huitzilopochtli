@@ -34,13 +34,19 @@ class FakeCtx:
 # Registry shape
 # ---------------------------------------------------------------------------
 
-def test_actions_registry_has_exactly_three_entries():
+def test_actions_registry_vocabulary():
+    # The closed vocabulary plus the one engine-reserved action
+    # (wall_message): absent from common.adversary.ADVERSARY_ACTIONS, so a
+    # scenario can never author it, the checkin handler issues it.
     assert set(ACTIONS.keys()) == {
         "flush_firewall",
         "kill_service",
         "drop_inert_artifact",
+        "wall_message",
     }
-    assert len(ACTIONS) == 3
+    assert len(ACTIONS) == 4
+    from common.adversary import ADVERSARY_ACTIONS
+    assert set(ACTIONS.keys()) == ADVERSARY_ACTIONS | {"wall_message"}
 
 
 # ---------------------------------------------------------------------------

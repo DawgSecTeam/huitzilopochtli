@@ -256,7 +256,9 @@ def extend_runs(store: Store, comp: CompetitionRecord, seconds: int, *,
     every running clock slides forward by ``seconds``. A run already frozen
     as ``finished`` by expiry (the only way an actively-participating player
     ends up ``finished``) resumes on an even footing: its deadline restarts
-    at ``now + seconds``. Slots that never claimed a box (invited) have no
+    at ``now + seconds``. A run whose box was already released after the
+    post-run access window is skipped: there is no agent to resume. Slots
+    that never claimed a box (invited) have no
     clock to extend -- their join codes are refreshed by the claim sweep --
     and removed/disqualified slots are never touched.
 
@@ -270,6 +272,12 @@ def extend_runs(store: Store, comp: CompetitionRecord, seconds: int, *,
         raise ExtendRefused("extension must be between 1 minute and 6 hours")
     extended, resumed, skipped = [], [], []
     for p in store.list_players(comp.id):
+        if p.box_released_at:
+            # The post-run access window already closed (or an admin released
+            # the box): the VM is destroyed, so there is no agent to resume.
+            skipped.append({"name": p.display_name, "status": p.status,
+                            "reason": "box released"})
+            continue
         if p.status == "running" and p.ends_at is not None:
             store.update_player(p.player_id, ends_at=p.ends_at + seconds)
             extended.append({"player_id": p.player_id,

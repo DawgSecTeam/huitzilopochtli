@@ -486,6 +486,46 @@ def test_scenarios_are_keyed_by_name_and_version(store):
     assert store.get_latest_scenario_version("sc") == 2
 
 
+def test_pre_box_released_players_table_is_migrated_in_place(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old-players.db")
+    conn = sqlite3.connect(path)
+    # The 1.1 players table exactly as it shipped (before box_released_at):
+    # the migration must add the new column and keep reading the row.
+    conn.executescript("""
+        CREATE TABLE players (
+            player_id TEXT PRIMARY KEY,
+            competition_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            display_name_norm TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'invited',
+            join_code_hash TEXT,
+            join_code_expires_at REAL,
+            joined_at REAL NOT NULL,
+            started_at REAL,
+            ends_at REAL,
+            finished_at REAL,
+            box_id TEXT,
+            claim_url TEXT,
+            claim_uid TEXT,
+            claim_ticket TEXT,
+            claim_expires_at REAL,
+            UNIQUE (competition_id, display_name_norm)
+        );
+        INSERT INTO players (player_id, competition_id, display_name,
+                             display_name_norm, status, joined_at)
+        VALUES ('p1', 'c1', 'Ada', 'ada', 'finished', 100.0);
+    """)
+    conn.commit()
+    conn.close()
+
+    store = Store(path)
+    player = store.get_player("p1")
+    assert player.box_released_at is None  # migrated column reads NULL
+    store.release_player_box("p1", now=123.0)
+    assert store.get_player("p1").box_released_at == 123.0
+
+
 def test_get_or_set_t0_is_authoritative(store):
     store.create_box("b", "pk", "sc")
     assert store.get_or_set_t0("b", 100.0) == 100.0

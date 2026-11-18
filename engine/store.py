@@ -121,6 +121,11 @@ class PlayerRecord:
     claim_attempts: int = 0
     claim_last_attempt_at: Optional[float] = None
     claim_last_poll_at: Optional[float] = None
+    # When the run's VM was released (engine-side teardown after the run
+    # ended + its post-run access window, or an admin release). Set means
+    # the box is gone: the sweeper will not release again and Extend must
+    # not try to resume a headless run.
+    box_released_at: Optional[float] = None
 
 
 @dataclass
@@ -296,6 +301,7 @@ class Store:
                 ("claim_attempts", "INTEGER NOT NULL DEFAULT 0"),
                 ("claim_last_attempt_at", "REAL"),
                 ("claim_last_poll_at", "REAL"),
+                ("box_released_at", "REAL"),
             )),
             ("competitions", (("leaderboard_hidden", "INTEGER NOT NULL DEFAULT 0"),)),
         ):
@@ -936,6 +942,7 @@ class Store:
             claim_attempts=row["claim_attempts"] or 0,
             claim_last_attempt_at=row["claim_last_attempt_at"],
             claim_last_poll_at=row["claim_last_poll_at"],
+            box_released_at=row["box_released_at"],
         )
 
     def create_competition(self, slug: str, name: str, scenario_name: str,
@@ -1193,7 +1200,8 @@ class Store:
                    "ends_at", "finished_at", "box_id", "claim_url", "claim_uid",
                    "claim_ticket", "claim_expires_at", "claim_error",
                    "claim_attempts", "claim_last_attempt_at",
-                   "claim_last_poll_at", "display_name", "display_name_norm"}
+                   "claim_last_poll_at", "box_released_at",
+                   "display_name", "display_name_norm"}
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed:
@@ -1284,6 +1292,32 @@ class Store:
 
     def set_player_status(self, player_id: str, status: str) -> None:
         self.update_player(player_id, status=status)
+
+    def release_player_box(self, player_id: str,
+                           now: Optional[float] = None) -> None:
+        """Record that this run's VM is gone (destroyed via the portal).
+
+        Marks the release, drops the claim bookkeeping (same shape the leave
+        path uses) and unbinds the player_boxes row with reason 'released'.
+        Keeps the players row, box_id and scores intact for the leaderboard
+        and history; get_player_by_box keeps resolving so a late check-in is
+        still accepted unscored instead of 403'ing.
+        """
+        now = time.time() if now is None else now
+        player = self.get_player(player_id)
+        if player is None:
+            return
+        self.update_player(
+            player_id, claim_url=None, claim_uid=None, claim_ticket=None,
+            claim_expires_at=None, box_released_at=now)
+        if player.box_id:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE player_boxes SET unbound_at = ?, reason = 'released' "
+                    "WHERE player_id = ? AND box_id = ? AND unbound_at IS NULL",
+                    (now, player_id, player.box_id),
+                )
+                self._commit()
 
     def remove_player(self, player_id: str) -> None:
         player = self.get_player(player_id)

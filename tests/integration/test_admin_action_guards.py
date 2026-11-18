@@ -212,3 +212,84 @@ def test_disqualify_keeps_the_box_and_remove_releases_it(tmp_path):
         proc.wait(timeout=10)
 
 
+
+
+def test_release_box_destroys_the_run_vm_without_tombstoning(tmp_path):
+    """The post-run lifecycle verb: release_box ends a run's access window
+    early (the VM is destroyed, the uid's claim goes with it) while the
+    player keeps their status, score and entry. A second call refuses."""
+    import http.client
+    import urllib.parse
+    proc, base, db = _engine(tmp_path)
+    auth = {"X-HUITZILOPOCHTLI-Admin-Token": ADMIN}
+    try:
+        status, body = _http("POST", base + "/admin/api/competitions", {
+            "slug": "release-comp", "name": "Release Comp",
+            "scenario_name": "HTTPComp", "scenario_version": 1,
+            "max_players": 4, "duration_s": 3600}, auth)
+        comp_id = json.loads(body)["id"]
+        _http("POST", base + f"/admin/api/competitions/{comp_id}/start",
+              {}, auth)
+        conn = http.client.HTTPConnection("127.0.0.1", int(base.rsplit(":", 1)[1]),
+                                          timeout=10)
+        conn.request("POST", "/c/release-comp/join",
+                     body=urllib.parse.urlencode({"name": "Gone"}),
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        conn.close()
+
+        sconn = sqlite3.connect(db)
+        sconn.row_factory = sqlite3.Row
+        player = sconn.execute(
+            "SELECT * FROM players WHERE display_name='Gone'").fetchone()
+        sconn.close()
+        assert player is not None and player["claim_uid"]
+        pid = player["player_id"]
+        # release_box is for a held, bound box (a bound run); the join flow
+        # alone leaves the claim unbound until the agent joins, so bind the
+        # box the way the agent would (bind starts the player's run clock).
+        now = time.time()
+        sconn = sqlite3.connect(db)
+        sconn.execute(
+            "UPDATE players SET box_id='box-gone', status='running', "
+            "started_at=?, ends_at=? WHERE player_id=?",
+            (now, now + 3600, pid))
+        sconn.commit()
+        sconn.close()
+
+        releases_before = sum(1 for r in _Workshop.requests
+                              if r[0] == "/api/release")
+        status, body = _http("POST", base + f"/admin/players/{pid}/release_box",
+                             {}, auth)
+        assert status == 200, body
+        releases = [r for r in _Workshop.requests if r[0] == "/api/release"]
+        assert len(releases) == releases_before + 1
+        assert releases[-1][2].get("uid") == player["claim_uid"]
+
+        sconn = sqlite3.connect(db)
+        sconn.row_factory = sqlite3.Row
+        row = sconn.execute(
+            "SELECT status, box_id, claim_uid, claim_url, box_released_at "
+            "FROM players WHERE player_id=?", (pid,)).fetchone()
+        audit = sconn.execute(
+            "SELECT details_json FROM audit_log WHERE action=? AND player_id=? "
+            "ORDER BY ts DESC LIMIT 1",
+            ("player_release_box", pid)).fetchone()
+        sconn.close()
+        assert row["status"] == "running"       # not tombstoned
+        assert row["box_id"] == "box-gone"      # history survives the release
+        assert row["claim_uid"] is None and row["claim_url"] is None
+        assert row["box_released_at"] is not None
+        assert json.loads(audit["details_json"]) == {"released_vm": True,
+                                                     "keeps_playing": False}
+
+        # Nothing left to release: a second call refuses.
+        status, body = _http("POST", base + f"/admin/players/{pid}/release_box",
+                             {}, auth)
+        assert status == 409, body
+        assert "no bound box" in body, body
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

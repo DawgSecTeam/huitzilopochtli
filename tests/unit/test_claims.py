@@ -564,7 +564,8 @@ def test_sweep_does_nothing_without_a_portal(store, comp, player, monkeypatch):
                             AssertionError("no portal")))
     assert claims.sweep(store, b"secret") == {
         "retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
-        "auto_ended": 0, "deferred": 0}
+        "auto_ended": 0, "deferred": 0, "released_boxes": 0,
+        "release_errors": 0}
 
 
 def test_sweep_skips_bound_and_running_players(store, comp, player,
@@ -579,7 +580,8 @@ def test_sweep_skips_bound_and_running_players(store, comp, player,
     monkeypatch.setattr(claims.workshop, "push_prebind", boom)
     assert claims.sweep(store, b"secret") == {
         "retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
-        "auto_ended": 0, "deferred": 0}
+        "auto_ended": 0, "deferred": 0, "released_boxes": 0,
+        "release_errors": 0}
 
 
 # --- pool cleanup (competition end) --------------------------------------------
@@ -1238,6 +1240,8 @@ def test_sweep_auto_ends_and_releases_when_opted_in(store, monkeypatch):
     store.set_join_open(comp.id, False)
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_URL", "http://portal")
     monkeypatch.setenv("HUITZILOPOCHTLI_AUTO_END_GRACE_S", "0")
+    # Collapse the post-run access window too: auto-end must out-wait it.
+    monkeypatch.setenv("HUITZILOPOCHTLI_POST_RUN_GRACE_S", "0")
     monkeypatch.setattr(claims, "_SWEEP_BACKOFF", {})
     cleaned = []
     monkeypatch.setattr(claims, "cleanup_pool",

@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS players (
     claim_attempts INTEGER NOT NULL DEFAULT 0,
     claim_last_attempt_at REAL,
     claim_last_poll_at REAL,
+    -- When this run's VM was released (post-run access window expired or an
+    -- admin release). NULL while the box is still out.
+    box_released_at REAL,
     UNIQUE (competition_id, display_name_norm)
 );
 

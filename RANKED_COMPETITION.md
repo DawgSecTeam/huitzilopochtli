@@ -120,6 +120,23 @@ portal's reclaim clock is bumped alongside when the new deadline closes on it.
 Slots that never claimed a box have no clock to move; removed and disqualified
 slots are never resurrected.
 
+**When a run's clock ends, the box gets a wall and a 30-minute window.** The
+first check-in past the run's `ends_at` freezes the score and issues an
+engine-issued `wall_message` directive (agent-reserved action; a scenario
+cannot author it) that walls every terminal on the box: scoring has stopped,
+the box stays up for the post-run access window to investigate, and is shut
+down and deleted when it closes. The window is `HUITZILOPOCHTLI_POST_RUN_GRACE_S`
+(default 1800 s); the claim sweeper closes it — a bound box whose run end
+(receipt clock: `finished_at` when a check-in confirmed expiry, else
+`ends_at`) is past the window is released, which destroys the clone and
+frees the seat for the next claim. Within the window the player keeps the
+box but nothing scores; an admin can end the window early on the roster
+(**Release box**), and ending the competition (End, or auto-end — which now
+waits until the last window would have closed before releasing the pool)
+tears every box down as before. A window that has closed is final: Extend
+skips such slots (`reason: box released`) because there is no agent left to
+resume.
+
 **End also tears the pool down.** It releases claimed VMs, destroys the pool's
 remaining pre-provisioned clones, and deletes the pool configuration. If the
 portal is unreachable the pool pin is kept and the sweeper retries. Ending
@@ -155,7 +172,8 @@ What to know before a day of back-to-back events:
   competition ends.
 - **Auto-end.** Tick it on the new-competition form (or toggle it on the
   competition page) and the sweeper ends the competition once joins are closed
-  and every run has finished, releasing the pool without an operator.
+  and every run has finished *plus its post-run access window has closed*,
+  releasing the pool without an operator.
 - **A player is in one competition at a time** (by cookie and by live display
   name). Overlapping rosters produce "already competing in X" join failures;
   that is intentional, not a bug.
@@ -308,9 +326,10 @@ does with it:
   `competition_pool_stale`).
 - **Seat sizing.** `vm_count` is the pool's pre-provisioned size. A claim that
   finds every seat spoken waits in `invited` (retry tickets) until one frees —
-  a player leaving or a run clock expiring releases its VM promptly — or until
-  the portal's dispenser adds one. Size it to expected concurrency; joining
-  into a saturated pool is not an error, but the player sees a wait.
+  a player leaving, a run clock expiring with its post-run access window, or
+  the competition ending releases its VM promptly — or until the portal's
+  dispenser adds one. Size it to expected concurrency; joining into a
+  saturated pool is not an error, but the player sees a wait.
 
 ### 3.2 Pre-bound joins (no terminal, no code)
 

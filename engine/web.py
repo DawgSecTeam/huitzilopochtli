@@ -34,6 +34,7 @@ from typing import Optional
 
 from common.schema import SLA_HISTORY_MAX
 from engine import build as engine_build
+from engine import claims
 from engine.store import AuditRecord, CompetitionRecord, PlayerRecord
 
 _ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -634,6 +635,18 @@ def _claim_retry_form(player: PlayerRecord, csrf: str) -> str:
 <button class="btn" type="submit">Get a new VM</button></form>"""
 
 
+def _post_run_phrase() -> str:
+    """The access-window sentence for player pages (engine-receipt wording)."""
+    grace = claims.post_run_grace_s()
+    minutes = int(round(grace / 60)) if grace >= 30 else 0
+    if minutes < 1:
+        return ("Scoring stops when your clock ends; the box is shut down "
+                "and deleted right after.")
+    return (f"Scoring stops when your clock ends; the box then stays up "
+            f"for {minutes} more minutes to investigate before it is shut "
+            f"down and deleted.")
+
+
 def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
                       join_code: str = "", csrf: str = "",
                       admin: bool = False) -> str:
@@ -659,7 +672,7 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
             parts.append(
                 f'<p class="muted small">Run ends {esc(_fmt_ts(player.ends_at))} '
                 f'· hard stop {esc(_fmt_ts(player.ends_at - 300))} '
-                f'(five minutes before).</p>')
+                f'(five minutes before). {_post_run_phrase()}</p>')
         parts.append(f'<p class="actions"><a class="btn" href="/c/{esc(comp.slug)}/me">My status</a> '
                      f'<a class="btn" href="/c/{esc(comp.slug)}">Leaderboard</a></p>')
     elif url:
@@ -1237,6 +1250,14 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                           f' onsubmit="return confirm(\'Remove this player from the competition?\')">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Remove</button></form>')
+        if p.box_id and p.claim_uid:
+            # The post-run lifecycle: ends this run's access window now by
+            # destroying the VM (the seat frees for the next claim). Player
+            # status, score and history stay.
+            neutral.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/release_box" class="inline"'
+                           f' onsubmit="return confirm(\'Release (destroy) this player\\\'s box now? Their run is over even if their clock says otherwise. Continue?\')">'
+                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+                           f'<button class="btn">Release box</button></form>')
         sep = '<span class="act-sep" aria-hidden="true"></span>' if neutral and danger else ""
         actions = "".join(neutral) + sep + "".join(danger)
         claim_note = (f'<div class="small error">{esc(p.claim_error)}</div>'
