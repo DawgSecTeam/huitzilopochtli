@@ -1,0 +1,175 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "birchwood-srv01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "port": 22,
+      "configurations": [
+        "IIS HTTP",
+        "iis-webshell",
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\inetpub\\wwwroot\\index.html",
+            "FILE_CONTENT": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Birchwood Academy &mdash; Homework Portal</title>\n<style>body{font-family:Georgia,serif;background:#f4f1e8;color:#1f2937;margin:0;padding:2.5rem}h1{color:#1f4e79;margin-bottom:.2rem}table{border-collapse:collapse;margin-top:1rem}th,td{padding:.4rem 1rem;text-align:left;border-bottom:1px solid #d6d0c0}th{color:#1f4e79}</style>\n</head>\n<body>\n<h1>BIRCHWOOD ACADEMY</h1>\n<p><em>Homework portal &mdash; class pages and study resources.</em></p>\n<table>\n<tr><th>Class</th><th>Teacher</th><th>Room</th></tr>\n<tr><td>Algebra II</td><td>M. Alvarez</td><td>12</td></tr>\n<tr><td>World History</td><td>T. Okafor</td><td>7</td></tr>\n<tr><td>Biology</td><td>S. Lindqvist</td><td>Lab 2</td></tr>\n<tr><td>English Literature</td><td>R. Chen</td><td>3</td></tr>\n</table>\n<footer style=\"margin-top:2rem;color:#8a8471;font-size:.8rem\">Birchwood Academy front office &mdash; portal hosted on the school records server.</footer>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "name": "local-user-win",
+          "vars": {
+            "USERNAME": "registrar",
+            "PASSWORD": "Birchwood2026!",
+            "FULLNAME": "School Registrar",
+            "DESCRIPTION": "Front office IT and records",
+            "ADMIN_ADD": "1"
+          }
+        },
+        {
+          "name": "local-user-win",
+          "vars": {
+            "USERNAME": "frontdesk",
+            "PASSWORD": "FrontDesk2026!",
+            "FULLNAME": "Front Desk",
+            "DESCRIPTION": "Attendance window"
+          }
+        },
+        {
+          "name": "local-user-win",
+          "vars": {
+            "USERNAME": "svc_gradebook",
+            "PASSWORD": "GradeSync2026!",
+            "FULLNAME": "GradeSync Remote Support",
+            "DESCRIPTION": "Gradebook vendor support (temporary)",
+            "ADMIN_ADD": "1"
+          }
+        },
+        {
+          "name": "local-user-win",
+          "vars": {
+            "USERNAME": "jvester",
+            "PASSWORD": "Vester2026!",
+            "FULLNAME": "J. Vester",
+            "DESCRIPTION": "Student worker",
+            "PASSWORD_NEVER_EXPIRES": "1"
+          }
+        },
+        {
+          "name": "local-group-member-win",
+          "vars": {
+            "GROUP": "Remote Desktop Users",
+            "USERNAME": "jvester"
+          }
+        },
+        {
+          "name": "never-expires-service-account-win",
+          "vars": {
+            "USERNAME": "svc-attendance",
+            "PASSWORD": "AttendSync2026!"
+          }
+        },
+        "guest-enabled-win",
+        {
+          "name": "weak-password-policy-win",
+          "vars": {
+            "MINPWLEN": "4",
+            "LOCKOUT_THRESHOLD": "0"
+          }
+        },
+        "smb1-enabled-win",
+        {
+          "name": "insecure-smb-share-win",
+          "vars": {
+            "SHARE_NAME": "StudentRecords",
+            "SHARE_PATH": "C:\\Shares\\StudentRecords",
+            "DESCRIPTION": "Student records archive"
+          }
+        },
+        "anonymous-enumeration-win",
+        "rdp-no-nla-win",
+        "uac-toggles-off-win",
+        {
+          "name": "defender-off-win",
+          "vars": {
+            "EXCLUSION_PATH": "C:\\inetpub\\wwwroot"
+          }
+        },
+        "ps-logging-off-win",
+        "audit-policy-off-win",
+        "wdigest-cleartext-win",
+        "ntlm-downgrade-win",
+        "always-install-elevated-win",
+        "Enable WinRM",
+        {
+          "name": "firewall-allow-rule-win",
+          "vars": {
+            "RULE_NAME": "GradebookSync",
+            "LOCAL_PORT": "8443",
+            "PROTOCOL": "TCP",
+            "DESCRIPTION": "GradeSync vendor channel"
+          }
+        },
+        {
+          "name": "hosts-redirect-win",
+          "vars": {
+            "IP": "198.51.100.77",
+            "HOSTNAME": "grades.birchwoodacademy.example"
+          }
+        },
+        {
+          "name": "runkey-persistence-win",
+          "vars": {
+            "RUN_VALUE_NAME": "GradeBookSync",
+            "PAYLOAD_PATH": "C:\\ProgramData\\GradeSync\\sync.ps1",
+            "PAYLOAD_BODY": "# gradesync vendor sync\nStart-Sleep -Seconds 3600"
+          }
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "AttendanceRepair",
+            "PAYLOAD_PATH": "C:\\ProgramData\\GradeSync\\repair.ps1",
+            "PAYLOAD_BODY": "# attendance sync repair\nStart-Sleep -Seconds 60"
+          }
+        },
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "HallPassSvc",
+            "DESCRIPTION": "Hall pass monitoring",
+            "PAYLOAD_PATH": "C:\\ProgramData\\GradeSync\\hallpass.ps1",
+            "PAYLOAD_BODY": "# hall pass monitor loop\nwhile ($true) { Start-Sleep -Seconds 30 }",
+            "STARTUP": "Automatic"
+          }
+        },
+        {
+          "name": "mutual-watchdog-tasks-win",
+          "vars": {
+            "WATCH_DIR": "C:\\ProgramData\\Microsoft\\Help",
+            "TASK_A": "HelpDeskMon",
+            "TASK_B": "HelpDeskUpd"
+          }
+        },
+        "remote-admin-duplication-win",
+        {
+          "name": "autologin-win",
+          "vars": {
+            "USERNAME": "frontdesk",
+            "PASSWORD": "FrontDesk2026!"
+          }
+        },
+        {
+          "name": "zip-archive-win",
+          "vars": {
+            "ZIP_PATH": "C:\\ProgramData\\GradeSync\\records-export.zip",
+            "ENTRY_NAME": "records.csv",
+            "ENTRY_CONTENT": "student_id,last_name,first_name,gpa\n10241,Alderman,Quinn,3.40\n10242,Brozek,Mira,3.85\n10243,Okafor,Dami,3.10\n"
+          }
+        }
+      ]
+    }
+  ]
+}

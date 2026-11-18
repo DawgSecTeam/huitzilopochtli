@@ -1,0 +1,138 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "rosemoor-glassboard",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "debian-13-cli",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "ssh-max-auth-retries-high"
+        },
+        {
+          "name": "weak-login-defs",
+          "vars": {
+            "PASS_MAX_DAYS": "99999",
+            "ENCRYPT_METHOD": "MD5"
+          }
+        },
+        {
+          "name": "empty-password-account"
+        },
+        {
+          "name": "weak-password-account"
+        },
+        {
+          "name": "uid0-backdoor-account"
+        },
+        {
+          "name": "dup-uid",
+          "vars": {
+            "USERNAME": "seedarchive",
+            "CLONE_OF": "propagator"
+          }
+        },
+        {
+          "name": "attacker-authorized-keys"
+        },
+        {
+          "name": "sudoers-rule",
+          "vars": {
+            "DROPIN_NAME": "95-glasshouse-helpers",
+            "RULE": "%sudo ALL=(ALL:ALL) NOPASSWD: /usr/bin/vim, /usr/bin/nano, /usr/bin/less, /usr/bin/find, /usr/bin/awk, /usr/bin/python3, /usr/bin/perl, /usr/bin/env, /usr/bin/cp, /usr/bin/tar"
+          }
+        },
+        {
+          "name": "systemd-service-writable"
+        },
+        {
+          "name": "cron-d-persistence",
+          "vars": {
+            "CRON_FILE": "glasshouse-sync",
+            "SCHEDULE": "*/10 * * * *",
+            "PAYLOAD_PATH": "/opt/.glasshouse/sync-fetch",
+            "PAYLOAD_BODY": "printf '%s\\n' \"glasshouse sync ran\" >> /var/log/glasshouse-sync.log"
+          }
+        },
+        {
+          "name": "journald-vacuum-cron",
+          "vars": {
+            "CRON_NAME": "journal-maintenance"
+          }
+        },
+        {
+          "name": "journal-disk-full"
+        },
+        {
+          "name": "bashrc-command-hijack",
+          "vars": {
+            "SCANNER_IP": "192.0.2.111"
+          }
+        },
+        {
+          "name": "secrets-in-webroot-env"
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/opt/glassboard/.env",
+            "FILE_MODE": "0666",
+            "FILE_CONTENT": "DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=glassapp\nDB_PASS=GlassDB-2026!\nDB_NAME=glassboard\nREDIS_URL=redis://127.0.0.1:6379/0\n"
+          }
+        },
+        {
+          "name": "insecure-file-mode",
+          "vars": {
+            "FILE_PATH": "/var/backups/collections-export.sql",
+            "FILE_MODE": "0644",
+            "FILE_CONTENT": "-- night shift copy -- nightbloom -- do not leave on the host\nCREATE TABLE collections (\n  id INT PRIMARY KEY,\n  species VARCHAR(160),\n  house VARCHAR(60),\n  rarity VARCHAR(40),\n  accession_no VARCHAR(32)\n);\nINSERT INTO collections VALUES\n  (1,'Ghost Orchid','Dendrophylax lindenii','Tropical High House','RO-2026-001'),\n  (2,'Corpse Flower','Amorphophallus titanum','Tropical High House','RO-2026-002'),\n  (3,'Lady Slipper','Cypripedium reginae','Temperate House','RO-2026-003'),\n  (4,'Black Bat Flower','Tacca chantrieri','Tropical Low House','RO-2026-004'),\n  (5,'Jade Vine','Strongylodon macrobotrys','Tropical Low House','RO-2026-005'),\n  (6,'Blue Poppy','Meconopsis grandis','Alpine House','RO-2026-006'),\n  (7,'Edelweiss','Leontopodium nivale','Alpine House','RO-2026-007'),\n  (8,'Venus Flytrap','Dionaea muscipula','Carnivore Bench','RO-2026-008');\n-- patrons table follows in the full export\n"
+          }
+        },
+        {
+          "name": "world-writable-dir",
+          "vars": {
+            "DIR": "/opt/glassboard/plugins",
+            "MODE": "0777"
+          }
+        },
+        {
+          "name": "hosts-redirect-linux",
+          "vars": {
+            "IP": "203.0.113.7",
+            "HOSTS": "cdn.rosemoor-gardens.org"
+          }
+        },
+        {
+          "name": "ufw-insecure",
+          "vars": {
+            "ROGUE_PORT": "31337"
+          }
+        },
+        {
+          "name": "ufw-attacker-allow-rule"
+        },
+        {
+          "name": "redis-no-auth"
+        },
+        {
+          "name": "mysql-remote-root"
+        },
+        {
+          "name": "mysql-anon-user"
+        },
+        {
+          "name": "immutable-kill-shim"
+        },
+        {
+          "name": "world-readable-shadow-adjacent"
+        },
+        {
+          "name": "unauthorized-ftp-server"
+        }
+      ]
+    }
+  ]
+}

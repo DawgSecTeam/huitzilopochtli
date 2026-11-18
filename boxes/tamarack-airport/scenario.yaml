@@ -1,0 +1,1324 @@
+scenario:
+  name: "Tamarack Regional Airport"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+
+  # --------------------------------------------------------------------- SSH
+
+  - id: sshd_root_login_closed
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer permits direct password login as the superuser account"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Grade the effective config, not the file.** sshd reads a main
+      config plus drop-ins, so ask the daemon itself:
+
+      ```
+      sshd -T | grep -i permitrootlogin
+      ```
+
+      It reports `permitrootlogin yes` — prepended to the main config by
+      whoever set this box up in a hurry. The guessing run in the journal
+      attacked the superuser account directly before it landed on the
+      field account; with direct login open, the next run starts at the
+      front door.
+
+      **2. Shut it.** A hardening drop-in beats editing the stock file
+      (a package upgrade cannot quietly undo you):
+
+      ```
+      printf 'PermitRootLogin no\n' > /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm.** `sshd -T | grep -i permitrootlogin` reports `no` —
+      that effective value is what the check grades.
+
+  - id: sshd_empty_passwords_off
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer permits empty passwords"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="permitemptypasswords"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the whole weakened config, not just the famous lines:**
+
+      ```
+      sshd -T | grep -i permitemptypasswords
+      ```
+
+      `PermitEmptyPasswords yes` means any account with a blank password
+      logs in with NO password at all — the quiet cousin of the brute
+      force, and not in most admins' mental checklist.
+
+      **2. Countermand it** in the same hardening drop-in (first match in
+      sshd wins, and `00-` sorts first):
+
+      ```
+      printf 'PermitRootLogin no\nPermitEmptyPasswords no\n' \
+          > /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm.** `sshd -T | grep -i permitemptypasswords` reports
+      `no`.
+
+  - id: sshd_max_auth_tries_low
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH gives a guessing attacker the default number of tries, not fifty"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="maxauthtries"{print $2}')
+        v="${v:-6}"
+        case "$v" in *[!0-9]*|'') echo false; exit 0;; esac
+        if [ "$v" -le 6 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask the daemon how patient it is:**
+
+      ```
+      sshd -T | grep -i maxauthtries
+      ```
+
+      `50` — someone prepended `MaxAuthTries 50` to the main config.
+      Every connection gets fifty password guesses before the disconnect;
+      the journal's guessing run was happy about that.
+
+      **2. Put it back.** Remove the prepended line (it sits at the very
+      top of `/etc/ssh/sshd_config`, before the stock content) or
+      countermand it from the hardening drop-in:
+
+      ```
+      printf 'MaxAuthTries 4\n' >> /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm.** `sshd -T | grep -i maxauthtries` reports `4` (or
+      the default 6 — anything at or below 6 passes).
+
+  # --------------------------------------------------------------- accounts
+
+  - id: display_renderer_no_shell
+    type: command_json
+    category: vuln
+    display: "EASY: The display renderer service identity can no longer open a login shell"
+    max_points: 5
+    collect:
+      script: |
+        line=$(getent passwd svc-boards || true)
+        [ -n "$line" ] || { echo false; exit 0; }
+        shell=$(printf '%s' "$line" | cut -d: -f7)
+        case "$shell" in
+          */nologin|*/false) echo true;;
+          *) echo false;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Compare the account to its job.** The display renderer needs to
+      own files and run one daemon — nothing else:
+
+      ```
+      getent passwd svc-boards
+      ```
+
+      Its shell is `/bin/bash`. A service identity with an interactive
+      shell is a front door wearing a maintenance uniform.
+
+      **2. Take the shell away** (the account itself is legitimate — keep
+      it, the boards run as it):
+
+      ```
+      usermod -s /usr/sbin/nologin svc-boards
+      ```
+
+      **3. Confirm.** `getent passwd svc-boards` now ends in
+      `/usr/sbin/nologin` (or `/bin/false`).
+
+  - id: gateadmin_removed
+    type: user_group
+    category: vuln
+    display: "EASY: The account sharing the operations desk's numeric identity is removed"
+    max_points: 5
+    collect: {}
+    expect:
+      user_absent: true
+      username: gateadmin
+      points: 5
+    solution: |
+      **1. Audit for shared identities, not just extra names:**
+
+      ```
+      awk -F: '$3 >= 1000 {print $1, $3}' /etc/passwd
+      id flightops; id gateadmin
+      ```
+
+      `gateadmin` carries the SAME uid as `flightops` — two names, one
+      identity. Every "flightops-only" rule on this box silently trusts
+      the second name, and passwords for it never expire against the
+      first.
+
+      **2. Remove the second name entirely:**
+
+      ```
+      userdel -r gateadmin
+      ```
+
+      **3. Confirm.** `id gateadmin` errors with "no such user", and each
+      authorized uid appears exactly once in /etc/passwd.
+
+  - id: fieldsvc_evicted
+    type: command_json
+    category: vuln
+    display: "HARD: The contractor account is gone for good — along with the machinery that regrows it"
+    max_points: 20
+    collect:
+      script: |
+        if id fieldsvc >/dev/null 2>&1; then echo false; exit 0; fi
+        if systemctl is-active user-account-helper.timer >/dev/null 2>&1; then echo false; exit 0; fi
+        if systemctl is-enabled user-account-helper.timer 2>/dev/null | grep -q '^enabled'; then echo false; exit 0; fi
+        if [ -e /usr/local/sbin/user-account-helper.sh ]; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Delete the account and watch it come back.**
+
+      ```
+      userdel -r fieldsvc
+      sleep 60; id fieldsvc
+      ```
+
+      It returns. Somewhere a "desired state" loop re-asserts the
+      decommissioned account every minute — find the machinery before
+      fighting the symptom:
+
+      ```
+      systemctl list-timers | grep -i user
+      systemctl cat user-account-helper.service
+      ```
+
+      **2. Remove the loop, then the account** (order matters; killing
+      only the timer leaves the helper armed for the next boot):
+
+      ```
+      systemctl disable --now user-account-helper.timer
+      rm -f /etc/systemd/system/user-account-helper.timer \
+            /etc/systemd/system/user-account-helper.service \
+            /usr/local/sbin/user-account-helper.sh
+      systemctl daemon-reload
+      userdel -r fieldsvc
+      ```
+
+      **3. Confirm all three graded conditions:** the account is gone
+      (`id fieldsvc` fails), the timer is neither active nor enabled,
+      and the helper script no longer exists. Wait a minute and re-check
+      — a clean minute means it is over.
+
+  - id: root_authorized_keys_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: The superuser's authorized_keys no longer trusts the intruder's key"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        f=/root/.ssh/authorized_keys
+        [ -e "$f" ] || { echo true; exit 0; }
+        n=$(grep -c '^[^#]' "$f" 2>/dev/null || true)
+        [ "${n:-0}" -eq 0 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the superuser's keyring to the end of every line:**
+
+      ```
+      cat /root/.ssh/authorized_keys
+      ```
+
+      One line, and it is not the airport's — its comment names the
+      intruder and their address. While it sits there, the whole brute
+      force was decoration: the key is passwordless root, forever.
+
+      **2. Remove the line** (read the comment first — it is a forensics
+      answer). The check grades an EMPTY file: the superuser has no
+      business carrying trusted keys on this box at all.
+
+      ```
+      : > /root/.ssh/authorized_keys    # or delete the file entirely
+      ```
+
+      **3. Confirm.** `grep -c '^[^#]' /root/.ssh/authorized_keys`
+      prints 0.
+
+  # ----------------------------------------------------------- persistence
+
+  - id: rogue_timer_neutralized
+    type: command_json
+    category: vuln
+    display: "MODERATE: The intruder's recurring display-sync timer is disabled"
+    max_points: 10
+    collect:
+      script: |
+        if systemctl is-active board-sync.timer >/dev/null 2>&1; then echo false; exit 0; fi
+        if systemctl is-enabled board-sync.timer 2>/dev/null | grep -q '^enabled'; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. List the timers and ask who shipped this one:**
+
+      ```
+      systemctl list-timers --all
+      systemctl cat board-sync.timer board-sync.service
+      ```
+
+      A "display board content sync" nobody at the airport ordered, on a
+      ten-minute cadence, running a payload from a directory no package
+      owns. That is a scheduled walk back in.
+
+      **2. Disable and remove it:**
+
+      ```
+      systemctl disable --now board-sync.timer
+      rm -f /etc/systemd/system/board-sync.timer \
+            /etc/systemd/system/board-sync.service
+      systemctl daemon-reload
+      ```
+
+      (The payload under `/opt/skylark/` is the intruder's staging
+      directory — clearing the whole directory is good hygiene and the
+      cron finding below will point there too.)
+
+      **3. Confirm.** `systemctl list-timers` no longer lists it, and
+      `systemctl cat board-sync.timer` finds no unit.
+
+  - id: exfil_cron_removed
+    type: permission
+    category: vuln
+    display: "MODERATE: The cron job staging the password file is removed"
+    max_points: 10
+    collect:
+      path: /etc/cron.d/feed-cache
+    expect:
+      equals: false
+      field: exists
+      points: 10
+    solution: |
+      **1. Read every entry in the system cron directory:**
+
+      ```
+      ls -l /etc/cron.d/
+      cat /etc/cron.d/feed-cache
+      cat /opt/skylark/feed-cache
+      ```
+
+      Every ten minutes, root copies `/etc/shadow` to a world-readable
+      staging file in /var/tmp. The airport's password hashes, gift
+      wrapped on a schedule.
+
+      **2. Remove the entry and its payload:**
+
+      ```
+      rm /etc/cron.d/feed-cache /opt/skylark/feed-cache
+      rm -f /var/tmp/.feed-cache
+      ```
+
+      **3. Confirm.** The file is gone — its absence is what the check
+      grades.
+
+  - id: staging_dir_removed
+    type: permission
+    category: vuln
+    display: "MODERATE: The intruder's staging directory under /opt is removed"
+    max_points: 10
+    collect:
+      path: /opt/skylark
+    expect:
+      equals: false
+      field: exists
+      points: 10
+    solution: |
+      **1. Ask who owns the odd directory:**
+
+      ```
+      ls -la /opt/skylark/
+      dpkg -S /opt/skylark 2>/dev/null || echo "no package owns it"
+      ```
+
+      No package claims it. The timer payload, the cron payload, and
+      the "tooling" the PATH snippet injects all live here — the
+      intruder's working directory on this box.
+
+      **2. Once the timer, cron, and PATH findings are neutralized,
+      remove the whole directory:**
+
+      ```
+      rm -rf /opt/skylark
+      ```
+
+      **3. Confirm.** The directory is gone — its absence is what the
+      check grades.
+
+  - id: profile_snippet_removed
+    type: permission
+    category: vuln
+    display: "EASY: The login-shell snippet pointing PATH at the intruder's directory is removed"
+    max_points: 5
+    collect:
+      path: /etc/profile.d/fids-path.sh
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Read what every login shell sources:**
+
+      ```
+      ls -l /etc/profile.d/
+      cat /etc/profile.d/fids-path.sh
+      ```
+
+      "fids tooling" — a one-line PATH addition that quietly puts the
+      intruder's staging directory ahead of your expectations in EVERY
+      interactive login. `ls`, `ps`… any name they leave there wins.
+
+      **2. Remove it:**
+
+      ```
+      rm /etc/profile.d/fids-path.sh
+      ```
+
+      **3. Confirm.** A fresh login's `$PATH` no longer mentions the
+      staging directory; the file's absence is what the check grades.
+
+  - id: root_rhosts_removed
+    type: permission
+    category: vuln
+    display: "EASY: The legacy trust file in the superuser's home is removed"
+    max_points: 5
+    collect:
+      path: /root/.rhosts
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Look for legacy r-services trust:**
+
+      ```
+      ls -la /root/
+      cat /root/.rhosts
+      ```
+
+      `+ +` — two wildcards: trust every host, every user, as root. The
+      r-services it feeds are older than most of the staff, but the file
+      costs nothing to plant and nothing to keep.
+
+      **2. Remove it:**
+
+      ```
+      rm /root/.rhosts
+      ```
+
+      **3. Confirm.** The file is gone — its absence is what the check
+      grades.
+
+  - id: bashrc_filter_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: Interactive shells no longer filter the intruder's address out of process and socket listings"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        if grep -qF 'scan-noise filter' /root/.bashrc 2>/dev/null; then echo false; exit 0; fi
+        if grep -qF 'scan-noise filter' /etc/skel/.bashrc 2>/dev/null; then echo false; exit 0; fi
+        for f in /home/*/.bashrc; do
+          [ -e "$f" ] || continue
+          if grep -qF 'scan-noise filter' "$f" 2>/dev/null; then echo false; exit 0; fi
+        done
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Watch what your own shell is hiding.** Process and socket
+      listings that look quiet in an interactive shell may be lying:
+
+      ```
+      tail -n 12 /root/.bashrc
+      grep -rF 'scan-noise filter' /root/.bashrc /etc/skel/.bashrc /home/*/.bashrc
+      ```
+
+      A "helpdesk ticket" block redefines `ps` and `ss` as wrappers that
+      grep out ONE address — the intruder's. Their listener never shows
+      up in an interactive session; you have been roommates with it.
+
+      **2. Strip the block from every copy** — root, the skeleton for
+      future accounts, and every existing home:
+
+      ```
+      for f in /root/.bashrc /etc/skel/.bashrc /home/*/.bashrc; do
+          [ -f "$f" ] && sed -i '/scan-noise filter/,/end scan-noise filter/d' "$f"
+      done
+      ```
+
+      **3. Confirm.** The grep from step 1 finds nothing, and `type ps`
+      reports the real binary.
+
+  - id: listener_gone
+    type: command_json
+    category: vuln
+    display: "HARD: The disguised remote-shell listener is disabled and silent"
+    max_points: 20
+    collect:
+      script: |
+        if ss -tln 2>/dev/null | grep -q ':4444 '; then echo false; exit 0; fi
+        if systemctl is-enabled system-update.service 2>/dev/null | grep -q '^enabled'; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Trust port listings over service names.** The bashrc finding
+      (fix that first) may have been hiding this from you:
+
+      ```
+      ss -tlnp | grep -v 127.0.0.1
+      systemctl cat system-update.service
+      ```
+
+      "System Update Check" — a oneshot unit that starts a raw shell
+      listener on a high port, answering ANY connection with a root
+      shell. Enabled at boot, named to look boring in a unit list.
+
+      **2. Disable and remove it:**
+
+      ```
+      systemctl disable --now system-update.service
+      rm -f /etc/systemd/system/system-update.service
+      systemctl daemon-reload
+      ```
+
+      **3. Confirm both graded conditions:** the port no longer listens
+      (`ss -tln`) and the unit is not enabled — masked, disabled, and
+      not-found all count.
+
+  # -------------------------------------------------------------- services
+
+  - id: telnet_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The legacy cleartext terminal service is gone"
+    max_points: 10
+    collect:
+      script: |
+        if ss -tln 2>/dev/null | grep -q ':23 '; then echo false; exit 0; fi
+        if dpkg -l 2>/dev/null | grep -q 'telnetd'; then echo false; exit 0; fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask what is listening on the classic port:**
+
+      ```
+      ss -tlnp | grep ':23 '
+      dpkg -l | grep -i telnet
+      ```
+
+      A telnet server — credentials and sessions in cleartext, from the
+      era when the display controllers were installed. The controllers
+      are gone; the open door stayed.
+
+      **2. Remove it:**
+
+      ```
+      apt-get remove --purge -y telnetd
+      ```
+
+      **3. Confirm.** Port 23 is closed AND the package is gone — the
+      check grades both.
+
+  - id: redis_auth_required
+    type: command_json
+    category: vuln
+    display: "MODERATE: The board message queue requires a password and no longer listens on every address"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        conf=/etc/redis/redis.conf
+        [ -f "$conf" ] || { echo true; exit 0; }
+        pw=$(grep -cE '^[[:space:]]*requirepass[[:space:]]+\S' "$conf" || true)
+        wide=$(grep -cE '^[[:space:]]*bind[[:space:]].*0\.0\.0\.0' "$conf" || true)
+        if [ "${pw:-0}" -ge 1 ] && [ "${wide:-0}" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the queue's own config:**
+
+      ```
+      grep -E '^(bind|requirepass|protected-mode)' /etc/redis/redis.conf
+      redis-cli -h 127.0.0.1 ping
+      ```
+
+      It answers `PONG` with no password, and it listens on every
+      address the box has. An unauthenticated queue like this is a
+      well-known road to remote code execution — it will happily write
+      files (cron jobs, ssh keys) on the intruder's behalf.
+
+      **2. Put a password on it and bring it home:**
+
+      ```
+      grep -vE '^[[:space:]]*bind' /etc/redis/redis.conf > /tmp/r && mv /tmp/r /etc/redis/redis.conf
+      printf 'bind 127.0.0.1 ::1\nrequirepass <a-long-queue-password>\n' >> /etc/redis/redis.conf
+      systemctl restart redis-server
+      ```
+
+      (The boards talk to it over loopback — they keep working.)
+
+      **3. Confirm.** The config carries a non-empty `requirepass`, no
+      `bind 0.0.0.0` remains, and `redis-cli -a <password> ping` still
+      answers PONG on loopback — the SLA service stays up.
+
+  - id: pg_hba_no_trust
+    type: command_json
+    category: vuln
+    display: "MODERATE: The schedule database no longer authenticates with 'trust'"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        n=$(grep -hE '^(local|host)' /etc/postgresql/*/main/pg_hba.conf 2>/dev/null | grep -cE 'trust[[:space:]]*$' || true)
+        [ "${n:-0}" -eq 0 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the database's authentication rules:**
+
+      ```
+      grep -vE '^[[:space:]]*#' /etc/postgresql/*/main/pg_hba.conf
+      sudo -u postgres psql -c "select 1"
+      ```
+
+      Every rule ends in `trust` — the airport's schedule database, its
+      tables, everything, open to any local user AS the database
+      superuser with no password at all.
+
+      **2. Restore real authentication** — peer for local unix sockets,
+      scram for network (the stock Debian rules are exactly this):
+
+      ```
+      sed -i -E 's/([[:space:]])trust([[:space:]]*)$/\1scram-sha-256\2/' \
+          /etc/postgresql/*/main/pg_hba.conf
+      systemctl restart postgresql
+      ```
+
+      **3. Confirm.** No active rule ends in `trust`, and
+      `sudo -u postgres psql` still works (peer auth covers the local
+      superuser). The SLA service keeps answering on loopback.
+
+  - id: pg_loopback_only
+    type: command_json
+    category: vuln
+    display: "MODERATE: The schedule database listens on loopback only"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        wide=$(grep -hE '^[[:space:]]*listen_addresses' /etc/postgresql/*/main/postgresql.conf 2>/dev/null | grep -c "'\*'" || true)
+        [ "${wide:-0}" -eq 0 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask the database where it is listening:**
+
+      ```
+      grep -E '^[[:space:]]*listen_addresses' /etc/postgresql/*/main/postgresql.conf
+      ss -tlnp | grep 5432
+      ```
+
+      `'*'` — every address the box owns. Combined with the trust rules
+      (the previous finding), any host on the segment is the database
+      superuser now.
+
+      **2. Bring it back to loopback** (the portal talks to it locally):
+
+      ```
+      sed -i "s/^[[:space:]]*listen_addresses.*/listen_addresses = 'localhost'/" \
+          /etc/postgresql/*/main/postgresql.conf
+      systemctl restart postgresql
+      ```
+
+      **3. Confirm.** `ss -tlnp | grep 5432` shows loopback only, and no
+      active `listen_addresses` line names `'*'`.
+
+  # ------------------------------------------------------------- web root
+
+  - id: webroot_leaks_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The web root no longer carries a source repository, a database backup, or a diagnostics page"
+    max_points: 10
+    collect:
+      script: |
+        n=0
+        [ -e /var/www/html/.git ] && n=$((n+1))
+        [ -e /var/www/html/db-backup.sql ] && n=$((n+1))
+        [ -e /var/www/html/phpinfo.php ] && n=$((n+1))
+        [ "$n" -eq 0 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. List EVERYTHING the portal publishes — including dotfiles:**
+
+      ```
+      ls -la /var/www/html/
+      ```
+
+      Three things beyond the portal page: a `.git` directory (source
+      history), a database backup (the take from the intruder's harvest
+      — the nginx access log shows it being downloaded), and a phpinfo
+      page (full server configuration). All public.
+
+      **2. Remove all three:**
+
+      ```
+      rm -rf /var/www/html/.git /var/www/html/db-backup.sql /var/www/html/phpinfo.php
+      ```
+
+      **3. Confirm.** Only the portal page (and its assets) remain —
+      the check grades all three gone.
+
+  - id: webroot_env_removed
+    type: permission
+    category: vuln
+    display: "EASY: The environment file with live credentials is out of the web root"
+    max_points: 5
+    collect:
+      path: /var/www/html/.env
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Read the dotfile the web server happily serves:**
+
+      ```
+      curl -s http://127.0.0.1/.env
+      ```
+
+      A database password, an API token, a cloud key — staged where
+      anyone with a browser can fetch it. (The access log shows exactly
+      that happening.)
+
+      **2. Move it out of the web root and rotate everything inside it**
+      — the file's contents are burned:
+
+      ```
+      rm /var/www/html/.env
+      ```
+
+      **3. Confirm.** `curl -s http://127.0.0.1/.env` returns the
+      not-found page — the file's absence is what the check grades.
+
+  - id: server_tokens_off
+    type: file_regex
+    category: vuln
+    display: "EASY: The web server no longer advertises its version"
+    max_points: 5
+    collect:
+      path: /etc/nginx/nginx.conf
+      extract: '(?m)^\s*server_tokens\s+(\w+)\s*;'
+    expect:
+      equals: "off"
+      field: matched
+      points: 5
+    solution: |
+      **1. Watch what the server tells strangers:**
+
+      ```
+      curl -sI http://127.0.0.1/ | grep -i server
+      grep -n server_tokens /etc/nginx/nginx.conf
+      ```
+
+      The Server header names the exact web server version — free
+      reconnaissance for anyone choosing an exploit.
+
+      **2. Turn the billboard off** (inside the `http {` block, where the
+      intruder-style `on` line was added):
+
+      ```
+      sed -i 's/^[[:space:]]*server_tokens[[:space:]]*on;/    server_tokens off;/' /etc/nginx/nginx.conf
+      nginx -t && systemctl reload nginx
+      ```
+
+      **3. Confirm.** The config line reads `server_tokens off` — the
+      check grades that exact effective setting.
+
+  # -------------------------------------------------------- system hygiene
+
+  - id: firewall_backdoor_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: No firewall rule admits the intruder's address any more"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        hit=0
+        iptables-save 2>/dev/null | grep -q '203\.0\.113\.44' && hit=1
+        grep -q '203\.0\.113\.44' /etc/iptables/rules.v4 2>/dev/null && hit=1
+        [ "$hit" -eq 0 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the whole ruleset, live AND persisted:**
+
+      ```
+      iptables-save | grep -n 203.0.113.44
+      grep -n 203.0.113.44 /etc/iptables/rules.v4
+      ```
+
+      One INPUT ACCEPT rule, source-locked to a single outside address,
+      aimed straight at the unauthenticated queue. Whoever holds that
+      address walks past the firewall; the address appears all over this
+      incident's other evidence too.
+
+      **2. Remove the rule** from the live ruleset and the persisted
+      file (both are graded — a live-only fix dies at reboot):
+
+      ```
+      iptables-save > /tmp/rules.v4
+      grep -v '203.0.113.44' /tmp/rules.v4 > /etc/iptables/rules.v4
+      iptables-restore /etc/iptables/rules.v4
+      ```
+
+      **3. Confirm.** The address appears in neither the live ruleset
+      nor the persisted file.
+
+  - id: hosts_redirect_removed
+    type: file_regex
+    category: vuln
+    display: "EASY: The hosts file no longer redirects airport hostnames to the intruder's address"
+    max_points: 5
+    collect:
+      path: /etc/hosts
+      extract: '(?m)^\s*203\.0\.113\.44\b.*$'
+    expect:
+      equals: null
+      points: 5
+    solution: |
+      **1. Read local resolution end to end:**
+
+      ```
+      cat /etc/hosts
+      ```
+
+      Two airport hostnames — the display update source among them —
+      pinned to the intruder's address. DNS poisoning without touching
+      DNS: any box that trusts this file fetches its "updates" from the
+      intruder.
+
+      **2. Remove the lines:**
+
+      ```
+      sed -i '/203\.0\.113\.44/d' /etc/hosts
+      ```
+
+      **3. Confirm.** `grep 203.0.113.44 /etc/hosts` finds nothing —
+      the check grades the address absent from the file.
+
+  - id: auditd_running
+    type: service_state
+    category: vuln
+    display: "MODERATE: The audit daemon is running again"
+    max_points: 10
+    collect:
+      service: auditd
+    expect:
+      equals: true
+      field: active
+      points: 10
+    solution: |
+      **1. Ask the audit subsystem how it was left:**
+
+      ```
+      systemctl status auditd
+      auditctl -l
+      ```
+
+      Stopped, disabled, and MASKED — the mask is the tell. Someone did
+      not just stop the audit trail, they made a casual `systemctl
+      start` impossible so it stayed stopped.
+
+      **2. Unmask and restore it:**
+
+      ```
+      systemctl unmask auditd
+      systemctl enable --now auditd
+      ```
+
+      **3. Confirm.** `systemctl is-active auditd` reports `active` —
+      that is what the check grades.
+
+  - id: password_policy_restored
+    type: command_json
+    category: vuln
+    display: "MODERATE: The password policy expires passwords and hashes them with a modern method"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        maxd=$(awk -F: '$1=="PASS_MAX_DAYS"{print $2}' /etc/login.defs | tail -n 1)
+        enc=$(awk -F: '$1=="ENCRYPT_METHOD"{print tolower($2)}' /etc/login.defs | tail -n 1)
+        ok=0
+        case "${maxd:-}" in
+          *[!0-9]*|'') ;;
+          *) [ "$maxd" -ge 1 ] && [ "$maxd" -le 365 ] && ok=1;;
+        esac
+        if [ "$enc" = "yescrypt" ] || [ "$enc" = "sha512" ]; then :; else ok=0; fi
+        [ "$ok" -eq 1 ] && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the policy file:**
+
+      ```
+      grep -E '^(PASS_MAX_DAYS|ENCRYPT_METHOD)' /etc/login.defs
+      ```
+
+      `99999` (never expire) and `MD5` (dictionary-speed cracking).
+      Whichever predecessor set this wanted convenience; the intruder
+      got durability.
+
+      **2. Restore both** (this box's distribution ships yescrypt):
+
+      ```
+      sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/' /etc/login.defs
+      sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT_METHOD YESCRYPT/' /etc/login.defs
+      ```
+
+      **3. Confirm.** PASS_MAX_DAYS is between 1 and 365 and
+      ENCRYPT_METHOD is YESCRYPT (SHA512 also passes). Existing
+      passwords rehash at next change; `flightops`'s password does not
+      need changing today.
+
+  - id: intruder_toolkit_purged
+    type: package
+    category: vuln
+    display: "MODERATE: The intruder's network-audit toolkit is uninstalled"
+    max_points: 10
+    collect:
+      package: nmap
+    expect:
+      equals: false
+      field: installed
+      points: 10
+    solution: |
+      **1. Ask what the intruder left installed:**
+
+      ```
+      dpkg -l | grep -E 'nmap|hydra|netcat'
+      which ncat
+      ```
+
+      A scanner, a password guesser, and a raw netcat — the working kit
+      behind both the guessing run in the journal and the disguised
+      listener (which uses ncat itself).
+
+      **2. Remove all of it:**
+
+      ```
+      apt-get remove --purge -y nmap hydra netcat-traditional
+      ```
+
+      **3. Confirm.** `dpkg -l` lists none of them; the check grades
+      the scanner by package name (the listener's unit is its own
+      finding).
+
+  - id: feed_dir_perms
+    type: permission
+    category: vuln
+    display: "EASY: The display feed directory is no longer world-writable"
+    max_points: 5
+    collect:
+      path: /srv/fids/feed
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0775"
+      points: 5
+    solution: |
+      **1. Look at the directory every board pulls from:**
+
+      ```
+      stat -c '%a %U:%G' /srv/fids/feed
+      ```
+
+      `0777` — any local user can drop or replace board content. One
+      planted file and every display in the terminal renders the
+      intruder's choosing.
+
+      **2. Tighten it** (the renderers read as the service identity;
+      root writes):
+
+      ```
+      chmod 0755 /srv/fids/feed
+      chown root:root /srv/fids/feed
+      ```
+
+      **3. Confirm.** The mode is at most 0775 — no world-write bit.
+
+  - id: grub_cfg_private
+    type: permission
+    category: vuln
+    display: "EASY: The boot loader configuration is no longer writable by every user"
+    max_points: 5
+    collect:
+      path: /boot/grub/grub.cfg
+    expect:
+      mode_at_most: true
+      field: mode
+      max_mode: "0644"
+      points: 5
+    solution: |
+      **1. Check the file that boots the box:**
+
+      ```
+      stat -c '%a' /boot/grub/grub.cfg
+      ```
+
+      `0666` — any local user can rewrite how this server boots.
+      Persistence that survives reinstalls of everything else.
+
+      **2. Return it to root-only writing:**
+
+      ```
+      chmod 0600 /boot/grub/grub.cfg   # 0644 also passes
+      ```
+
+      **3. Confirm.** The mode shows no write bit outside root.
+
+  # --------------------------------------------------------------- penalties
+
+  - id: portal_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: The portal web server is not running (the boards' data page went with it)"
+    max_points: 10
+    collect:
+      service: nginx
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if the web server is not ACTIVE, 10
+      points come off. Stopping it does not fix any finding — the portal
+      is the airport's public face. `systemctl start nginx` puts it
+      back.
+
+  - id: db_reachable
+    type: db_query
+    category: penalty
+    display: "PENALTY: The schedule database is unreachable (the portal boards go stale)"
+    max_points: 10
+    collect:
+      host: 127.0.0.1
+      port: 5432
+    expect:
+      equals: true
+      field: ok
+      points: -10
+    solution: |
+      This only ever subtracts: if nothing answers on 127.0.0.1:5432, 10
+      points come off. Hardening the database's authentication is not
+      the same as stopping it — the portal reads it locally. If you
+      stopped it, `systemctl start postgresql`.
+
+forensics:
+  - id: fq-compromised-account
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "The guessing run survived in the login journal. Which account's password finally fell to it?"
+    answer: fieldsvc
+    points: 10
+    solution: |
+      `journalctl -u ssh` (or `journalctl _COMM=sshd`) walks the failed
+      passwords and ends with the accepted one: a run against the
+      operations account that never landed, then a handful of tries
+      against the contractor's field account — and the hit. The same
+      ledger survives in `lastb`.
+
+  - id: fq-source-ip
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "Type the IP address every line of that guessing run came from."
+    answer: 203.0.113.44
+    answers: ["203.0.113.44"]
+    points: 10
+    solution: |
+      Read the source field on the accepted-password line in the ssh
+      journal. The same address reappears across the whole incident: the
+      firewall rule, the hosts redirect, the key comment. It is a
+      documentation-range address, which is how you know the exercise
+      is staged.
+
+  - id: fq-key-comment
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "Someone planted an SSH public key for passwordless superuser access. Type the comment tag at the END of that key line."
+    answer: skylark@203.0.113.44
+    answers: ["skylark", "skylark@203.0.113.44"]
+    points: 10
+    solution: |
+      `cat /root/.ssh/authorized_keys` and read the line to the end.
+      Key lines close with a free-text comment naming the owner — the
+      planted one signs itself with the intruder's handle and address.
+      Note it before you remove the line; that is the same handle the
+      field account's history uses.
+
+  - id: fq-dump-name
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "A database backup was downloaded out of the public web root. What was that file's name?"
+    answer: db-backup.sql
+    points: 10
+    solution: |
+      The nginx access log (`/var/log/nginx/access.log`) records the
+      harvest: a handful of GETs from the intruder's address, one of
+      them a .sql file sitting where it never belonged. The name is in
+      the request line; the residue copy in the contractor history
+      names it too.
+
+  - id: fq-hosts-domain
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "The hosts file was edited to point airport hostnames at the intruder. Type the FIRST hostname on that line (the display update source)."
+    answer: fids-update.tamarackair.example
+    points: 10
+    solution: |
+      `cat /etc/hosts` — the non-stock line pins two airport hostnames
+      to the intruder's address. The first one is the name the display
+      system fetches its updates from; whoever controls that mapping
+      controls what the boards display next.
+
+  - id: fq-timer-name
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "A systemd TIMER re-runs the intruder's display-sync payload on a schedule. What is that timer's name (the part before the suffix)?"
+    answer: board-sync
+    points: 10
+    solution: |
+      `systemctl list-timers --all` shows a recurring job no package
+      owns; the unit files (`systemctl cat`) point at a payload in a
+      directory no package owns either. The name is the timer's, minus
+      its `.timer` suffix.
+
+  - id: fq-cron-file
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "A cron entry stages the password file every ten minutes. What is the FILENAME of that entry under /etc/cron.d?"
+    answer: feed-cache
+    points: 10
+    solution: |
+      `ls -l /etc/cron.d/` then read the odd one out. The name promises
+      cache maintenance; the payload copies `/etc/shadow` to a staging
+      file instead.
+
+  - id: fq-firewall-port
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "The intruder's firewall rule admits their address to one TCP port. Which port?"
+    answer: "6379"
+    points: 10
+    solution: |
+      `iptables-save` (or the persisted rules file) — find the ACCEPT
+      rule locked to the intruder's source address and read its
+      destination port. Cross-check with what actually listens there:
+      the port belongs to the unauthenticated queue.
+
+  - id: fq-listener-port
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "A disguised systemd unit starts a raw remote-shell listener. Which TCP port does it answer on?"
+    answer: "4444"
+    points: 10
+    solution: |
+      `systemctl cat system-update.service` — the "System Update Check"
+      whose ExecStart is a netcat listener wired to a shell. The port
+      is in the command line; `ss -tlnp` confirms it answering.
+
+  - id: fq-contractor-firm
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "Which outside company built (and apparently still fingers) the display system? Type the firm's full name as the portal's footer credits it."
+    answer: Skylark Field Services
+    answers: ["Skylark Field Services", "skylark field services"]
+    points: 10
+    solution: |
+      The portal page itself carries the credit in its footer — the
+      airport never took the integrator's name off the site. The key
+      comment's handle, the field account's naming, and the staging
+      directory all agree with it.
+
+  - id: fq-db-name
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "What is the NAME of the schedule database behind the portal (the one the intruder dumped)?"
+    answer: flightinfo
+    points: 10
+    solution: |
+      Ask the database itself: `sudo -u postgres psql -l` lists every
+      database by name. One of them is the airport's operating data;
+      the harvested backup in the web root was taken from it.
+
+  - id: fq-guess-count
+    path: /home/flightops/Desktop/Forensics-Questions.txt
+    question: "How many FAILED password attempts did the guessing run log before the one that worked? (A number.)"
+    answer: "4"
+    answers: ["4", "four"]
+    points: 10
+    solution: |
+      Count the "Failed password" lines in the ssh journal between the
+      run's start and the accepted line: two against the operations
+      account, two against the field account — then the hit. `lastb`
+      tells the same story.
+
+theme:
+  title: "Tamarack Regional Airport"
+  organization: "Tamarack Regional Airport — Operations"
+  accent: "#B45309"
+  readme: assets/README.md
+  motd: |
+    Welcome to the Tamarack Regional Airport flight information display
+    server. Authorized operations staff only. Run `huitz score` for your
+    standing and `huitz readme` for the handbook from Airport Operations.
+  issue: |
+    Tamarack Regional Airport flight information display server.
+    Unauthorized access will be reported to Airport Operations.
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+    - id: portal
+      display: Departures portal (web)
+      type: http_uptime
+      collect:
+        url: http://127.0.0.1/
+      expect:
+        equals: 200
+        field: status
+      interval_s: 30
+      points_per_interval: 2
+      max_intervals_per_checkin: 3
+    - id: ops
+      display: Operations access (SSH)
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 22
+      expect:
+        equals: true
+        field: open
+      interval_s: 30
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+    - id: sched-db
+      display: Schedule database (PostgreSQL)
+      type: db_query
+      collect:
+        host: 127.0.0.1
+        port: 5432
+      expect:
+        equals: true
+        field: ok
+      interval_s: 30
+      points_per_interval: 2
+      max_intervals_per_checkin: 3
+    - id: boards
+      display: Display board queue (Redis)
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 6379
+      expect:
+        equals: true
+        field: open
+      interval_s: 30
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+  adversary:
+    events:
+      - id: tam-drop-marker
+        action: drop_inert_artifact
+        params:
+          path: tamarack-marker.txt
+        window_s: [1500, 2400]
+      - id: tam-kill-portal
+        action: kill_service
+        params:
+          service: nginx
+        window_s: [2700, 3600]
+        affects_check: portal
+      - id: tam-kill-boards
+        action: kill_service
+        params:
+          service: redis-server
+        window_s: [3600, 5400]
+        affects_check: boards
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_TAMARACK_AIRPORT_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: ssh
+    template_vm_username: ${HUITZILOPOCHTLI_TAMARACK_AIRPORT_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_TAMARACK_AIRPORT_POOL_TEMPLATE_PASSWORD}
+    vm_count: 2
+    guac_link_ttl_seconds: 14400

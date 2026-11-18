@@ -175,6 +175,7 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
         "identity_path": None,
         "checkin_interval_s": None,
         "enrollment_token": None,
+        "engine_url": None,
         "notifications": True,
     }
     if mode == "honor":
@@ -182,6 +183,7 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
     elif mode == "ranked":
         if not engine_url:
             raise ValueError("ranked mode requires engine_url")
+        cfg["engine_url"] = engine_url
         if not checkin_interval_s or checkin_interval_s <= 0:
             raise ValueError("ranked mode requires a positive checkin_interval_s")
         # identity.json is created by the agent on first boot; we just point at it.

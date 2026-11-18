@@ -1,0 +1,130 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "kpz-portal01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "extra-admins-win",
+          "vars": {
+            "ADMIN_USER": "zkops_sync"
+          }
+        },
+        {
+          "name": "never-expires-service-account-win",
+          "vars": {
+            "USERNAME": "zksvc_ir"
+          }
+        },
+        {
+          "name": "guest-enabled-win"
+        },
+        {
+          "name": "autologin-win",
+          "vars": {
+            "USERNAME": "sysadmin",
+            "PASSWORD": "K3yKeeper2026!"
+          }
+        },
+        {
+          "name": "weak-password-policy-win",
+          "vars": {
+            "MINPWLEN": "4",
+            "LOCKOUT_THRESHOLD": "0"
+          }
+        },
+        {
+          "name": "powershell-execution-unrestricted"
+        },
+        {
+          "name": "insecure-interactive-logon"
+        },
+        {
+          "name": "uac-disabled-win"
+        },
+        {
+          "name": "defender-disabled-win"
+        },
+        {
+          "name": "smb-anon-token-win"
+        },
+        {
+          "name": "weak-lm-authentication"
+        },
+        {
+          "name": "wdigest-cleartext-win"
+        },
+        {
+          "name": "windows-appinit-hook-registry"
+        },
+        {
+          "name": "windows-ads-stored-payload"
+        },
+        {
+          "name": "windows-hidden-scheduled-task",
+          "vars": {
+            "TASK_NAME": "MpSyncHelper"
+          }
+        },
+        {
+          "name": "windows-scheduled-log-clear"
+        },
+        {
+          "name": "mutual-watchdog-tasks-win"
+        },
+        {
+          "name": "ifeo-tool-block-win"
+        },
+        {
+          "name": "active-setup-persistence-win",
+          "vars": {
+            "PAYLOAD_PATH": "C:\\ProgramData\\KestrelSync\\setup-init.ps1",
+            "PAYLOAD_BODY": "Add-Content -Path C:\\ProgramData\\KestrelSync\\setup-init.log -Value (\"ran \" + (Get-Date))"
+          }
+        },
+        {
+          "name": "windows-ssh-authorized-keys"
+        },
+        {
+          "name": "rdp-secondary-port-win",
+          "vars": {
+            "RDP_EXTRA_PORT": "3390"
+          }
+        },
+        {
+          "name": "iis-webshell"
+        },
+        {
+          "name": "insecure-smb-share-win",
+          "vars": {
+            "SHARE_NAME": "KeeperData",
+            "SHARE_PATH": "C:\\KeeperData",
+            "DESCRIPTION": "Keeper tablet drop"
+          }
+        },
+        {
+          "name": "insecure-file-acl-win",
+          "vars": {
+            "FILE_PATH": "C:\\KeeperData\\outgoing\\emergency-runbook.txt",
+            "FILE_CONTENT": "KESTREL POINT ZOO \u2014 EMERGENCY RUNBOOK (INTERNAL)\n\nMain gate override code: 4471-KPZ\nNight release pen code: 8820-KPZ\nVeterinary sedation cabinet: key from curator office\n\nIf an animal enclosure breaches, call the on-call zookeeper\nBEFORE using any code. Codes are rotated monthly; this copy\nwas staged for the vendor walkthrough and left behind.\n"
+          }
+        },
+        {
+          "name": "registry-run-key-win",
+          "vars": {
+            "KEY": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "VALUE_NAME": "KestrelTraySync",
+            "VALUE_DATA": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\\ProgramData\\KestrelTray\\tray-sync.ps1",
+            "PAYLOAD_PATH": "C:\\ProgramData\\KestrelTray\\tray-sync.ps1",
+            "PAYLOAD_BODY": "Set-Content -Path C:\\ProgramData\\KestrelTray\\tray-sync.log -Value (\"ran \" + (Get-Date))"
+          }
+        }
+      ]
+    }
+  ]
+}

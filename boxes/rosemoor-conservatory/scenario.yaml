@@ -1,0 +1,1561 @@
+scenario:
+  name: "Rosemoor Botanical Conservatory"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # ---------------------------------------------------------------- sshd ----
+  # The weak remote-access drop-in is prep-baked (the intrusion's root
+  # cause); all sshd checks grade the EFFECTIVE config via `sshd -T`, the
+  # way lantern-hill's do.
+  - id: sshd_root_login_closed
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer permits direct password login as the superuser account"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Grade the effective config, not the file.** sshd reads the main
+      config plus drop-ins, so ask the daemon itself:
+
+      ```
+      sshd -T | grep -i permitrootlogin
+      ```
+
+      It reports `permitrootlogin yes` -- set by a drop-in under
+      /etc/ssh/sshd_config.d. The login journal shows the guessing run
+      attacking the superuser account directly before it landed on the
+      staff account; with the front door open, the next run stops there.
+
+      **2. Shut it** in a hardening drop-in that sorts BEFORE the weak
+      one (first match in sshd wins):
+
+      ```
+      printf 'PermitRootLogin no\n' > /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm.** `sshd -T | grep -i permitrootlogin` now reports `no`
+      -- that effective value is what the check grades.
+
+  - id: sshd_empty_passwords_off
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer accepts accounts with no password at all"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="permitemptypasswords"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the whole weak drop-in**, not just one line of it:
+
+      ```
+      sshd -T | grep -i permitemptypasswords
+      ls /etc/ssh/sshd_config.d/
+      ```
+
+      An empty-password setting means any account with a blank password
+      field can be logged into with NO password -- the quiet cousin of
+      the brute force.
+
+      **2. Countermand it** in the hardening drop-in, then restart:
+
+      ```
+      printf 'PermitEmptyPasswords no\n' >> /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm** via `sshd -T` -- the effective value is what scores.
+
+  - id: sshd_x11_forwarding_off
+    type: command_json
+    category: vuln
+    display: "EASY: SSH no longer forwards X11 sessions"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="x11forwarding"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Check the effective value:** `sshd -T | grep -i x11forwarding`.
+      A headless greenhouse controller has no business forwarding X11
+      sessions -- it only widens the channel an intruder gets.
+
+      **2. Turn it off** in the same hardening drop-in:
+
+      ```
+      printf 'X11Forwarding no\n' >> /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm** via `sshd -T`.
+
+  - id: sshd_tcp_forwarding_off
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH no longer offers general TCP forwarding"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="allowtcpforwarding"{print $2}')
+        if [ "$v" = "no" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. TCP forwarding turns SSH into a tunnel through your perimeter.**
+      Anyone with a shell can pivot to hosts the box can reach:
+
+      ```
+      sshd -T | grep -i allowtcpforwarding
+      ```
+
+      **2. Close the tunnel** in the hardening drop-in:
+
+      ```
+      printf 'AllowTcpForwarding no\n' >> /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm** via `sshd -T`.
+
+  - id: sshd_max_auth_tries_low
+    type: command_json
+    category: vuln
+    display: "MODERATE: SSH caps the guesses a connection may attempt again"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
+        [ -x "$SSHD" ] || { echo true; exit 0; }
+        v=$("$SSHD" -T 2>/dev/null | awk '$1=="maxauthtries"{print $2}')
+        [ -n "$v" ] || { echo false; exit 0; }
+        if [ "$v" -le 4 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the cap.** The stock daemon allows six attempts per
+      connection; this one allows dozens:
+
+      ```
+      sshd -T | grep -i maxauthtries
+      ```
+
+      That is why the guessing run in the journal could keep trying long
+      after a stock server would have hung up.
+
+      **2. Set it low** in the hardening drop-in:
+
+      ```
+      printf 'MaxAuthTries 4\n' >> /etc/ssh/sshd_config.d/00-hardening.conf
+      systemctl restart ssh
+      ```
+
+      **3. Confirm** via `sshd -T` -- the check grades 4 or fewer.
+
+  # ------------------------------------------------------------- accounts ----
+  - id: guest_account_removed
+    type: user_group
+    category: vuln
+    display: "EASY: The passwordless visitor account is removed"
+    max_points: 5
+    collect: {}
+    expect:
+      user_absent: true
+      username: guest
+      points: 5
+    solution: |
+      **1. Compare the account list against the handbook roster.** One
+      account has no reason to exist on this box -- it was left with no
+      password at all, so anyone at the console or over SSH could step
+      straight in:
+
+      ```
+      awk -F: '$3 >= 1000 {print $1, $3, $7}' /etc/passwd
+      passwd -S guest 2>/dev/null
+      ```
+
+      **2. Remove it** (the account is the finding; there is nothing to
+      preserve):
+
+      ```
+      userdel -r <the account>
+      ```
+
+      **3. Confirm** `id <the account>` reports no such user.
+
+  - id: passwordless_accounts_none
+    type: command_json
+    category: vuln
+    display: "MODERATE: No local account authenticates with an empty password"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        n=$(awk -F: '$2 == "" {c++} END {print c+0}' /etc/shadow)
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Sweep the password field itself**, not just the roster. An
+      empty password field in the shadow database means the account needs
+      no credential at all:
+
+      ```
+      sudo awk -F: '$2 == "" {print $1}' /etc/shadow
+      ```
+
+      **2. Close each one** -- either set a real password or lock the
+      account (`passwd -l <name>`), then re-run the sweep until it prints
+      nothing.
+
+      **3. Confirm.** The sweep must come back empty; that empty sweep is
+      what the check grades.
+
+  - id: weak_password_account_neutralized
+    type: command_json
+    category: vuln
+    display: "MODERATE: The weakly-passworded staff account is disabled or removed"
+    max_points: 10
+    collect:
+      script: |
+        u=webadmin
+        if ! id "$u" >/dev/null 2>&1; then echo true; exit 0; fi
+        st=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
+        shell=$(getent passwd "$u" | cut -d: -f7)
+        if [ "$st" = "L" ] || [ "$shell" = "/usr/sbin/nologin" ] || [ "$shell" = "/bin/false" ]; then
+          echo true
+        else
+          echo false
+        fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Find the staff account whose password is a dictionary word
+      away from nothing.** It is not on the handbook roster, so whatever
+      it is, it does not belong:
+
+      ```
+      getent passwd | awk -F: '$3 >= 1000 {print $1}'
+      ```
+
+      **2. Neutralize it.** Removing the account is cleanest; if the
+      incident report needs the object kept, lock it instead:
+
+      ```
+      userdel -r <the account>        # or: passwd -l <the account>
+      ```
+
+      **3. Confirm.** The account is gone, locked (`passwd -S` shows L),
+      or its login shell is disabled -- any of those satisfies the check.
+
+  - id: uid0_backdoor_removed
+    type: command_json
+    category: vuln
+    display: "HARD: Only the real superuser carries the superuser's numeric identity"
+    max_points: 20
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        n=$(awk -F: '$3 == 0 {c++} END {print c+0}' /etc/passwd)
+        if [ "$n" -eq 1 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Count who holds UID 0.** A second account with the superuser's
+      numeric identity is a full-key duplicate under a different name:
+
+      ```
+      awk -F: '$3 == 0 {print $1, $3}' /etc/passwd
+      ```
+
+      Exactly one line may print: `root`. Anything else is a planted
+      second key to the whole box.
+
+      **2. Remove the duplicate account** (`userdel -r <name>`). If some
+      legitimate service really needed superuser rights, it would hold
+      them through sudo policy -- not through a shared identity.
+
+      **3. Confirm** the count is back to one.
+
+  - id: duplicate_uids_none
+    type: command_json
+    category: vuln
+    display: "HARD: No two named accounts share one numeric identity"
+    max_points: 20
+    collect:
+      script: |
+        # the planted shadow account is 'seedarchive', cloned off
+        # 'propagator' -- the sweep below is name-agnostic on purpose
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        n=$(awk -F: '$3 >= 1000 && $3 != 65534 {print $3}' /etc/passwd \
+            | sort -n | uniq -d | wc -l)
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Look for identities used twice.** Two names on one UID means
+      tools that audit by name see one honest account while logins on the
+      second name are the first one wearing a mask:
+
+      ```
+      awk -F: '$3 >= 1000 {print $3, $1}' /etc/passwd | sort -n
+      ```
+
+      Read it as a table: any UID that appears twice is the finding. (The
+      shared-identity trick is invisible to `ls /home` -- check the
+      third column, not the directories.)
+
+      **2. Remove the shadow account** -- `seedarchive` is the planted
+      one (it is not on the roster, and the honest account keeps its own
+      UID untouched):
+
+      ```
+      userdel seedarchive
+      ```
+
+      **3. Confirm** no UID among named accounts appears twice.
+
+  - id: root_authorized_keys_clean
+    type: command_json
+    category: vuln
+    display: "MODERATE: No planted key grants passwordless superuser access"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        f=/root/.ssh/authorized_keys
+        [ -f "$f" ] || { echo true; exit 0; }
+        n=$(grep -cvE '^\s*(#|$)' "$f")
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the superuser's authorized keys.** The roster holds no
+      reason for ANY key to admit passwordless superuser access:
+
+      ```
+      sudo cat /root/.ssh/authorized_keys 2>/dev/null
+      ```
+
+      **2. Read each key line to its end** -- the free-text comment names
+      who planted it. That comment is also a forensics answer; record it
+      BEFORE deleting the line.
+
+      **3. Remove the planted key** (empty the file or delete the planted
+      lines) and confirm nothing non-comment remains.
+
+  - id: sudoers_no_interpreter_nopasswd
+    type: command_json
+    category: vuln
+    display: "HARD: Sudo never hands out passwordless interpreters or file tools"
+    max_points: 20
+    collect:
+      script: |
+        # the planted drop-in is /etc/sudoers.d/95-glasshouse-helpers;
+        # the sweep below stays generic so re-plants are caught too
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        n=0
+        for f in /etc/sudoers /etc/sudoers.d/*; do
+          [ -f "$f" ] || continue
+          c=$(grep -E 'NOPASSWD' "$f" 2>/dev/null \
+              | grep -Ec '/usr/bin/(python3|perl|vim|vi|nano|less|more|find|awk|sed|env|cp|tar|bash|sh|ash|busybox|nmap|socat|openssl|ssh|scp|rsync)' || true)
+          n=$((n + c))
+        done
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Read every sudo drop-in** -- policy hiding there evades a
+      casual look at the main file:
+
+      ```
+      ls /etc/sudoers.d/
+      cat /etc/sudoers.d/*
+      ```
+
+      One drop-in (`95-glasshouse-helpers`) hands a whole group
+      passwordless rights to editors and interpreters. That looks like a
+      convenience list; every program on it can spawn a shell (editors
+      via `:!cmd`, interpreters directly), so the "allowlist" is a root
+      ladder with the rungs polished.
+
+      **2. Remove the drop-in** (or rewrite it to specific, harmless
+      binaries with full paths):
+
+      ```
+      rm /etc/sudoers.d/95-glasshouse-helpers
+      visudo -c    # confirm policy still parses
+      ```
+
+      **3. Confirm** no sudoers file grants NOPASSWD on any editor,
+      interpreter, or file-moving tool.
+
+  # --------------------------------------------------- persistence / cron ----
+  - id: rogue_cron_evicted
+    type: command_json
+    category: vuln
+    display: "MODERATE: The hidden sync job and its payload are gone"
+    max_points: 10
+    collect:
+      script: |
+        if [ -e /etc/cron.d/glasshouse-sync ] || [ -e /opt/.glasshouse/sync-fetch ]; then
+          echo false
+        else
+          echo true
+        fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the system cron drop-ins** -- jobs here run as root even
+      though no one logged in:
+
+      ```
+      ls -la /etc/cron.d/
+      cat /etc/cron.d/glasshouse-sync
+      ```
+
+      One entry re-fires a "sync" payload from a hidden directory on a
+      fixed cadence. Read the payload before deleting it: its path is a
+      forensics answer, and its own log shows how often it has been
+      running.
+
+      **2. Evict the pair** -- the drop-in AND the payload directory it
+      feeds:
+
+      ```
+      rm /etc/cron.d/glasshouse-sync
+      rm -r /opt/.glasshouse
+      ```
+
+      **3. Confirm** both paths are gone (the check grades both).
+
+  - id: journal_vacuum_job_removed
+    type: command_json
+    category: vuln
+    display: "HARD: Nothing keeps erasing the journal on a schedule"
+    max_points: 20
+    collect:
+      script: |
+        n=0
+        for f in /etc/cron.d/*; do
+          [ -f "$f" ] || continue
+          grep -q 'vacuum-time' "$f" 2>/dev/null && n=$((n+1))
+        done
+        [ -f /etc/cron.d/journal-maintenance ] && n=$((n+1))
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Notice what is missing from the journal.** History only goes
+      back minutes -- suspiciously exactly minutes. Something is deleting
+      it on a timer:
+
+      ```
+      ls -la /etc/cron.d/
+      grep -r 'vacuum-time' /etc/cron.d/
+      journalctl --disk-usage
+      ```
+
+      A "log maintenance" job runs the journal's own vacuum command with a
+      retention of ONE second -- a gaslighting eraser dressed as
+      housekeeping. Note the job's filename (a forensics answer) before
+      deleting it.
+
+      **2. Delete the job.** The vacuum already ran; whatever evidence the
+      journal still held is gone -- which is the point. Trust the records
+      the eraser does NOT touch (audit trail, wtmp/btmp).
+
+      **3. Confirm** no cron drop-in mentions the vacuum command.
+
+  - id: journal_quota_bounded
+    type: command_json
+    category: vuln
+    display: "MODERATE: The journal can no longer grow until it fills the disk"
+    max_points: 10
+    collect:
+      script: |
+        if [ -e /etc/systemd/journald.conf.d/90-diskfull.conf ]; then echo false; exit 0; fi
+        v=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null \
+            | awk '/^SystemMaxUse=/{print $1}')
+        case "$v" in
+          SystemMaxUse=100%|SystemMaxUse=50G|SystemMaxUse=*) : ;;
+        esac
+        if [ -z "$v" ] || [ "$v" = "SystemMaxUse=" ]; then echo true; exit 0; fi
+        val=${v#SystemMaxUse=}
+        case "$val" in
+          *100%|*50G|*infinite) echo false ;;
+          *) echo true ;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the journal's own limits:**
+
+      ```
+      ls /etc/systemd/journald.conf.d/
+      systemd-analyze cat-config systemd/journald.conf | grep -i maxuse
+      ```
+
+      A drop-in raises the journal ceiling to "as much as it wants" --
+      a slow-burn availability trap: weeks later the disk fills and every
+      service on the box starves, with nothing visibly broken today.
+
+      **2. Delete the drop-in** (or set a sane `SystemMaxUse=` bound in a
+      replacement drop-in), then `systemctl restart systemd-journald`.
+
+      **3. Confirm** the effective config carries no unbounded ceiling
+      and the planted drop-in is gone.
+
+  - id: scan_noise_filter_removed
+    type: command_json
+    category: vuln
+    display: "HARD: Interactive listings can no longer be filtered behind your back"
+    max_points: 20
+    collect:
+      script: |
+        n=0
+        for f in /root/.bashrc /etc/skel/.bashrc /home/*/.bashrc; do
+          [ -f "$f" ] || continue
+          grep -q 'scan-noise filter' "$f" 2>/dev/null && n=$((n+1))
+        done
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Question what your own terminal shows you.** If `ps` and `ss`
+      look oddly quiet, an interactive-shell function may be rewriting
+      them -- cron, scripts, and non-interactive SSH channels still see
+      the truth:
+
+      ```
+      tail -n 20 /root/.bashrc
+      ps aux | grep -c <suspicious>    # count differs between shells?
+      ```
+
+      One marked block appended to EVERY user's startup file (including
+      the skeleton, so new accounts inherit it) defines replacement `ps`
+      and `ss` functions that filter one address out of listings. Read
+      the address before deleting the block -- it is a forensics answer.
+
+      **2. Delete the marked block from all three places**: root's own
+      startup file, the skeleton copy new users get, and every existing
+      user's copy.
+
+      **3. Confirm** no startup file carries the marker line.
+
+  - id: housekeeping_files_no_write_bits
+    type: command_json
+    category: vuln
+    display: "HARD: The housekeeping unit and its script are not world-writable"
+    max_points: 20
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        bad=0
+        for f in /etc/systemd/system/housekeeping.service /opt/scripts/housekeeping.sh; do
+          [ -e "$f" ] || continue
+          a=$(stat -c '%A' "$f" 2>/dev/null)
+          case "$a" in
+            ?????w????|????????w?) bad=1 ;;
+          esac
+        done
+        if [ "$bad" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Audit the unit files you did not write.** A root-run
+      housekeeping service whose unit AND script are writable by anyone
+      is a standing invitation: the next file write is a scheduled root
+      command:
+
+      ```
+      systemctl cat housekeeping
+      ls -l /etc/systemd/system/housekeeping.service /opt/scripts/housekeeping.sh
+      ```
+
+      **2. Fix the modes** (or remove the unit entirely -- either settles
+      the risk):
+
+      ```
+      chmod 644 /etc/systemd/system/housekeeping.service
+      chmod 755 /opt/scripts/housekeeping.sh
+      systemctl daemon-reload
+      ```
+
+      **3. Confirm** neither file carries a group or other write bit.
+
+  # ------------------------------------------------------------ data/files ----
+  - id: webroot_env_removed
+    type: permission
+    category: vuln
+    display: "MODERATE: The stray environment file under the web root is removed"
+    max_points: 10
+    collect:
+      path: /var/www/html/.env
+    expect:
+      equals: false
+      field: exists
+      points: 10
+    solution: |
+      **1. Look at what the web root is really serving.** Static roots
+      are world-readable BY DESIGN -- anything dropped there is one GET
+      away from leaving the building:
+
+      ```
+      ls -la /var/www/html/
+      cat /var/www/html/.env
+      ```
+
+      **2. Read it first, then remove it.** The file carries live
+      credentials and a machine token; the token value is a forensics
+      answer. Remove the file (and rotate anything inside it).
+
+      **3. Confirm** the path no longer exists.
+
+  - id: appenv_world_readable_closed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The dashboard's environment file is not world-readable"
+    max_points: 10
+    collect:
+      script: |
+        f=/opt/glassboard/.env
+        [ -e "$f" ] || { echo true; exit 0; }
+        a=$(stat -c '%A' "$f" 2>/dev/null)
+        case "$a" in
+          ???????r??) echo false ;;
+          *) echo true ;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Check who can read the dashboard's own environment file.** It
+      carries the database credential the app needs -- every local user
+      does not:
+
+      ```
+      ls -l /opt/glassboard/.env
+      ```
+
+      **2. Tighten it** to the service identity that actually reads it:
+
+      ```
+      chown root:glasssvc /opt/glassboard/.env
+      chmod 640 /opt/glassboard/.env
+      ```
+
+      **3. Confirm** no world bits remain (the check grades the absence
+      of other-read), then verify the dashboard still serves.
+
+  - id: collections_export_closed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The staged collections export is not world-readable"
+    max_points: 10
+    collect:
+      script: |
+        f=/var/backups/collections-export.sql
+        [ -e "$f" ] || { echo true; exit 0; }
+        a=$(stat -c '%A' "$f" 2>/dev/null)
+        case "$a" in
+          ???????r??) echo false ;;
+          *) echo true ;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Inspect the backup directory.** Among the honest backups sits
+      a fresh SQL export whose header names who wrote it and why -- read
+      the header before you touch the file (it is forensics evidence AND
+      an answer source):
+
+      ```
+      ls -la /var/backups/
+      head /var/backups/collections-export.sql
+      ```
+
+      **2. Tighten the mode** (0600/0640) or remove the staged export if
+      the curators confirm it is not a scheduled job's product.
+
+      **3. Confirm** no world-read bit remains.
+
+  - id: plugins_dir_not_world_writable
+    type: command_json
+    category: vuln
+    display: "MODERATE: The dashboard's plugins directory is not world-writable"
+    max_points: 10
+    collect:
+      script: |
+        d=/opt/glassboard/plugins
+        [ -e "$d" ] || { echo true; exit 0; }
+        a=$(stat -c '%A' "$d" 2>/dev/null)
+        case "$a" in
+          ?????w????|????????w?) echo false ;;
+          *) echo true ;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Audit application directories, not just files.** A world-
+      writable plugins directory lets any local user drop code next to
+      the dashboard:
+
+      ```
+      ls -ld /opt/glassboard/plugins
+      ls -la /opt/glassboard/plugins/
+      ```
+
+      **2. Tighten the directory** to the service identity:
+
+      ```
+      chown -R root:glasssvc /opt/glassboard/plugins
+      chmod 750 /opt/glassboard/plugins
+      ```
+
+      **3. Confirm** no group/other write bits remain, and the dashboard
+      still runs.
+
+  - id: hosts_redirect_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: Name resolution points only where it should"
+    max_points: 10
+    collect:
+      script: |
+        n=$(grep -vE '^\s*(#|$)' /etc/hosts \
+            | awk '$1 !~ /^(127\.|::1|fe80:|ff[0-9a-f][0-9a-f]?:)/ {c++} END {print c+0}')
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the hosts file end to end.** The planted line may sit far
+      below a screenful of blank padding -- `cat` prints it all:
+
+      ```
+      cat /etc/hosts
+      ```
+
+      One appended line maps a trusted vendor hostname to an outside
+      address; anything on this box that trusts that name now trusts the
+      intruder's machine. The hostname is a forensics answer.
+
+      **2. Delete the planted line** (keep the localhost entries).
+
+      **3. Confirm** every remaining non-comment line maps to loopback
+      -- that is exactly what the check grades.
+
+  - id: sysctl_debug_reverted
+    type: command_json
+    category: vuln
+    display: "MODERATE: Kernel debug leakage is turned back off"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        dump=$(sysctl -n fs.suid_dumpable 2>/dev/null || echo 1)
+        kptr=$(sysctl -n kernel.kptr_restrict 2>/dev/null || echo 0)
+        if [ "$dump" = "0" ] && [ "$kptr" -ge 1 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the effective kernel debug settings** -- not just a config
+      file; the live values are what an exploit reads:
+
+      ```
+      sysctl fs.suid_dumpable kernel.kptr_restrict
+      ls /etc/sysctl.d/
+      ```
+
+      A planted debug drop-in makes setuid crash dumps world-readable and
+      exposes kernel pointers -- memory-disclosure scaffolding for a
+      local privilege escalation.
+
+      **2. Revert the values** (delete the planted drop-in, set both
+      values back to the hardened defaults, apply):
+
+      ```
+      rm /etc/sysctl.d/90-debug.conf
+      sysctl -w fs.suid_dumpable=0 kernel.kptr_restrict=1
+      ```
+
+      **3. Confirm** the live values: dumps disabled, pointers restricted.
+
+  # ------------------------------------------------------------- firewall ----
+  - id: ufw_enforced_default_deny
+    type: command_json
+    category: vuln
+    display: "MODERATE: The host firewall is enabled with a default-deny incoming policy"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v ufw >/dev/null 2>&1 || { echo false; exit 0; }
+        st=$(ufw status verbose 2>/dev/null)
+        echo "$st" | grep -q 'Status: active' || { echo false; exit 0; }
+        echo "$st" | grep -q 'deny (incoming)' && echo true || echo false
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the firewall's actual posture:**
+
+      ```
+      ufw status verbose
+      ```
+
+      It is disabled, with the default incoming policy set to allow --
+      which means the only thing between the box and the network is
+      whatever happened to be listening.
+
+      **2. Put it back to a real posture** (allow only what the handbook
+      lists as critical services, then enforce):
+
+      ```
+      ufw default deny incoming
+      ufw allow 22/tcp && ufw allow 80/tcp
+      ufw --force enable
+      ```
+
+      **3. Confirm** the status line reads active with deny (incoming).
+
+  - id: ufw_rogue_port_rule_removed
+    type: command_json
+    category: vuln
+    display: "EASY: No firewall rule admits the unexplained high port"
+    max_points: 5
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v ufw >/dev/null 2>&1 || { echo true; exit 0; }
+        ufw status 2>/dev/null | grep -q 'Status: active' || { echo false; exit 0; }
+        if ufw status 2>/dev/null | grep -q '31337'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. An inactive firewall hides its holes** -- the rules only mean
+      something once the firewall is enforced, so bring it up first (the
+      posture check above), then list them:
+
+      ```
+      ufw status numbered
+      ```
+
+      One allow rule admits a port nothing legitimate on this box uses
+      (the well-known "leet" number is a giveaway). A firewall hole with
+      no service behind it is either a preparation for one or a lure.
+
+      **2. Delete it** by its listed number:
+
+      ```
+      ufw status numbered           # find it
+      ufw delete <n>
+      ```
+
+      **3. Confirm** the rule no longer appears.
+
+  - id: ufw_attacker_subnet_rule_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: No firewall rule admits the intruder's subnet"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v ufw >/dev/null 2>&1 || { echo true; exit 0; }
+        ufw status 2>/dev/null | grep -q 'Status: active' || { echo false; exit 0; }
+        if ufw status 2>/dev/null | grep -q '203.0.113.0/24'; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Match the rule list against the login journal** -- and read it
+      with the firewall enforced (the posture check above), since an
+      inactive firewall hides its holes. The address the guessing run
+      came from (the journal and `last` both name it) reappears as a
+      source-subnet ALLOW in the firewall:
+
+      ```
+      ufw status numbered
+      last -a | head
+      ```
+
+      The intruder pre-paid their return ticket. The comment on the rule
+      ("backup-host") is costume, not business.
+
+      **2. Delete the rule**, and confirm the source address matches the
+      one in the journal -- the correlation is the finding.
+
+      **3. Confirm** no rule mentions that subnet.
+
+  # ------------------------------------------------- exposed data services ----
+  - id: redis_requires_auth
+    type: command_json
+    category: vuln
+    display: "HARD: The session cache answers only to authenticated clients"
+    max_points: 20
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v redis-cli >/dev/null 2>&1 || { echo true; exit 0; }
+        systemctl is-active --quiet redis-server 2>/dev/null \
+          || systemctl is-active --quiet redis 2>/dev/null || { echo true; exit 0; }
+        ans=$(redis-cli ping 2>/dev/null)
+        if [ "$ans" = "PONG" ]; then echo false; else echo true; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Talk to the cache exactly as an outsider would** -- if it
+      answers with no credential at all, anyone on any interface can read
+      AND write the session store (a classic remote-code path too, since
+      Redis will happily write files for you):
+
+      ```
+      redis-cli ping
+      redis-cli CONFIG GET requirepass
+      ```
+
+      **2. Set a real password and restart:**
+
+      ```
+      redis-cli CONFIG SET requirepass '<a long random secret>'
+      # make it durable:
+      printf 'requirepass <the same secret>\n' >> /etc/redis/redis.conf
+      systemctl restart redis-server
+      ```
+
+      (Mirror the credential into the dashboard's environment file so the
+      app keeps working -- it holds the same value.)
+
+      **3. Confirm** an unauthenticated `redis-cli ping` now refuses.
+
+  - id: redis_local_only
+    type: command_json
+    category: vuln
+    display: "MODERATE: The session cache listens locally with protected mode on"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        conf=/etc/redis/redis.conf
+        [ -f "$conf" ] || { echo true; exit 0; }
+        bind=$(grep -E '^\s*bind\s' "$conf" | tail -n 1 | awk '{print $2}')
+        pm=$(grep -E '^\s*protected-mode\s' "$conf" | tail -n 1 | awk '{print $2}')
+        case "$bind" in
+          0.0.0.0*|*::*) echo false; exit 0 ;;
+        esac
+        if [ "$pm" = "yes" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read where the cache binds and how it treats unconfigured
+      clients:**
+
+      ```
+      redis-cli CONFIG GET bind
+      redis-cli CONFIG GET protected-mode
+      ```
+
+      Planted values bind it to every interface with protected mode OFF
+      -- a database with no auth, wearing a "local only" name, reachable
+      from anywhere the network allows.
+
+      **2. Bind it home and re-arm protected mode** (both, and make them
+      durable in /etc/redis/redis.conf):
+
+      ```
+      redis-cli CONFIG SET bind 127.0.0.1
+      redis-cli CONFIG SET protected-mode yes
+      printf 'bind 127.0.0.1\nprotected-mode yes\n' >> /etc/redis/redis.conf
+      systemctl restart redis-server
+      ```
+
+      **3. Confirm** both effective values, then re-run the auth check --
+      the two are a pair, not alternatives.
+
+  - id: db_remote_root_closed
+    type: command_json
+    category: vuln
+    display: "HARD: The database has no wildcard-host superuser account"
+    max_points: 20
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v mysql >/dev/null 2>&1 || { echo true; exit 0; }
+        n=$(mysql -N -B -e "SELECT COUNT(*) FROM mysql.user
+            WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1')" 2>/dev/null)
+        [ -z "$n" ] && { echo false; exit 0; }
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Enumerate the database's superuser accounts by HOST, not just
+      by name:**
+
+      ```
+      mysql -e "SELECT User, Host FROM mysql.user WHERE User='root'"
+      ```
+
+      A `root` row with a wildcard host and no password is a network-
+      facing superuser: full database control from any reachable client,
+      no credential required.
+
+      **2. Drop the wildcard superuser:**
+
+      ```
+      mysql -e "DROP USER 'root'@'%'; FLUSH PRIVILEGES;"
+      ```
+
+      **3. Confirm** root rows exist only for loopback hosts.
+
+  - id: db_binds_loopback
+    type: command_json
+    category: vuln
+    display: "MODERATE: The database listens on loopback only"
+    max_points: 10
+    collect:
+      script: |
+        v=$(grep -hE '^\s*bind-address' /etc/mysql/mariadb.conf.d/*.cnf /etc/mysql/my.cnf 2>/dev/null \
+            | tail -n 1 | awk '{print $3}')
+        if [ "$v" = "127.0.0.1" ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read what address the database listens on:**
+
+      ```
+      grep -r bind-address /etc/mysql/
+      ss -tlnp | grep 3306
+      ```
+
+      The planted change binds it to every interface -- the database's
+      whole exposure then depends on the network's goodwill, and the
+      firewall findings on this box show how much goodwill it has.
+
+      **2. Bind it back to loopback:**
+
+      ```
+      sed -i 's/^bind-address.*/bind-address = 127.0.0.1/' \
+          /etc/mysql/mariadb.conf.d/50-server.cnf
+      systemctl restart mariadb
+      ```
+
+      **3. Confirm** `ss -tlnp` shows 3306 on 127.0.0.1 only -- and the
+      dashboard (which lives on the same host) still reaches it.
+
+  - id: db_no_anonymous_users
+    type: command_json
+    category: vuln
+    display: "MODERATE: The database has no anonymous accounts"
+    max_points: 10
+    collect:
+      script: |
+        if [ "$(id -u)" -ne 0 ]; then echo true; exit 0; fi
+        command -v mysql >/dev/null 2>&1 || { echo true; exit 0; }
+        n=$(mysql -N -B -e "SELECT COUNT(*) FROM mysql.user WHERE User=''" 2>/dev/null)
+        [ -z "$n" ] && { echo false; exit 0; }
+        if [ "$n" -eq 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask the database who may connect WITHOUT a username.** Old
+      installs ship anonymous rows that let any client in with no
+      identity at all:
+
+      ```
+      mysql -e "SELECT User, Host FROM mysql.user WHERE User=''"
+      ```
+
+      **2. Drop each anonymous row:**
+
+      ```
+      mysql -e "DROP USER ''@'localhost'; FLUSH PRIVILEGES;"
+      ```
+
+      **3. Confirm** the anonymous list is empty.
+
+  - id: login_defs_max_days_bounded
+    type: command_json
+    category: vuln
+    display: "MODERATE: Password aging actually ages passwords"
+    max_points: 10
+    collect:
+      script: |
+        v=$(grep -E '^PASS_MAX_DAYS' /etc/login.defs | awk '{print $2}')
+        [ -z "$v" ] && { echo false; exit 0; }
+        if [ "$v" -le 90 ] && [ "$v" -gt 0 ]; then echo true; else echo false; fi
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the system's password aging defaults:**
+
+      ```
+      grep -E '^PASS_MAX_DAYS' /etc/login.defs
+      ```
+
+      "Effectively never expires" means a stolen credential stays
+      worthless-forever for the attacker and free-forever for you to
+      notice. Pick a sane ceiling (90 days is standard).
+
+      **2. Set it** in /etc/login.defs:
+
+      ```
+      sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS  90/' /etc/login.defs
+      ```
+
+      **3. Confirm** the value reads 1--90 (that is what the check
+      grades). Optionally force aging onto existing accounts too.
+
+  - id: login_defs_strong_hashing
+    type: command_json
+    category: vuln
+    display: "EASY: Password hashing uses a modern scheme"
+    max_points: 5
+    collect:
+      script: |
+        v=$(grep -E '^ENCRYPT_METHOD' /etc/login.defs | awk '{print $2}')
+        case "$v" in
+          MD5|DES) echo false ;;
+          "") echo false ;;
+          *) echo true ;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read which hash scheme NEW passwords get:**
+
+      ```
+      grep -E '^ENCRYPT_METHOD' /etc/login.defs
+      ```
+
+      MD5 hashing is three decades old and cracks at modern GPU speed --
+      it is what an offline hash-dump dreams of.
+
+      **2. Set the modern scheme** (yescrypt is this platform's default;
+      SHA-512 also scores):
+
+      ```
+      sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT_METHOD YE\$CRYPT/' /etc/login.defs
+      ```
+
+      (Changing the default only affects passwords set from now on --
+      rotate the weak ones you already know about.)
+
+      **3. Confirm** the line no longer reads MD5.
+
+  - id: unauthorized_ftp_removed
+    type: command_json
+    category: vuln
+    display: "MODERATE: The unexplained FTP service is uninstalled or disabled"
+    max_points: 10
+    collect:
+      script: |
+        if dpkg -s vsftpd 2>/dev/null | grep -q '^Status: install ok installed'; then
+          if systemctl is-active --quiet vsftpd 2>/dev/null; then echo false; exit 0; fi
+          if systemctl is-enabled --quiet vsftpd 2>/dev/null; then echo false; exit 0; fi
+        fi
+        echo true
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Walk the listening-port list and ask what each door is for:**
+
+      ```
+      ss -tlnp
+      systemctl list-units --type=service --state=running
+      ```
+
+      An FTP server answers on a port this box has no business serving
+      (the handbook's roster of services is the yardstick). Nobody
+      commissioned it -- it appeared with the intruder.
+
+      **2. Remove it entirely** (it has no legitimate user here):
+
+      ```
+      systemctl disable --now vsftpd
+      apt remove -y vsftpd
+      ```
+
+      **3. Confirm** the service is neither running nor enabled at boot.
+
+  - id: kill_shim_removed
+    type: command_json
+    category: vuln
+    display: "HARD: The system kill utility is the system's own again"
+    max_points: 20
+    collect:
+      script: |
+        f=/bin/kill
+        [ -e "$f" ] || { echo true; exit 0; }
+        grep -q 'svc-daemon' "$f" 2>/dev/null && { echo false; exit 0; }
+        attr=$(lsattr -d "$f" 2>/dev/null | awk '{print $1}')
+        case "$attr" in
+          *i*) echo false ;;
+          *) echo true ;;
+        esac
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Verify the utilities you TRUST.** The kill command may be a
+      wrapper that refuses to stop one specific process -- meaning that
+      process survives every "kill all the things" sweep:
+
+      ```
+      file /bin/kill
+      grep -c svc-daemon /bin/kill
+      lsattr /bin/kill
+      ```
+
+      Two signals at once: the binary is a shell script that filters one
+      marker process name, and BOTH it and its backup carry the immutable
+      bit -- a deliberate "you cannot fix me" flag.
+
+      **2. Undo the immutability first, then restore the real binary:**
+
+      ```
+      chattr -i /bin/kill /bin/.kill.orig 2>/dev/null
+      cp -f /bin/.kill.orig /bin/kill && chattr -i /bin/kill
+      ```
+
+      (or reinstall the package that owns /bin/kill). Removing the
+      marker process is the paired finding -- check the process list for
+      anything named after it and evict it with its persistence.
+
+      **3. Confirm** /bin/kill holds no marker string and no immutable
+      flag.
+
+  # ------------------------------------------------------------- penalties ----
+  # Penalties guard only against player shortcuts the ranked adversary can
+  # never take (locking responders out). The business services' availability
+  # is guarded by their ranked SLA points -- and the red-team schedule kills
+  # glassboard-app and mariadb mid-run, so penalizing their downtime would
+  # dock teams for the engine's own action.
+  - id: penalty_sshd_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: Stopping the SSH service costs 15 points"
+    max_points: 15
+    collect:
+      service: ssh
+    expect:
+      equals: true
+      field: active
+      points: -15
+    solution: |
+      Responders reach this box over SSH. A stopped daemon does not fix
+      any finding -- it locks the response effort out of its own crime
+      scene. Keep it running and hardened (the effective-config checks
+      grade settings, not uptime).
+
+forensics:
+  - id: fq-attacker-key-comment
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "Someone planted an SSH public key for passwordless superuser access. Type the comment tag at the END of that key line (it names the intruder)."
+    answer: "attacker@botforge"
+    answers: ["attacker", "botforge"]
+    points: 4
+    solution: |
+      `sudo cat /root/.ssh/authorized_keys` and read every line to the
+      end. Key lines end with a free-text comment naming the key's owner
+      -- the planted one signs itself. Removing the key and reading the
+      tag are the same command; note the tag first.
+
+  - id: fq-webroot-token
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "A stray environment file under the web root carries a machine token. Type that token's value."
+    answer: "abcd1234efgh5678"
+    points: 4
+    solution: |
+      `ls -la /var/www/html/` shows a dotfile the web root should never
+      hold. Read it: the token line's value is the answer. Remove the
+      file afterward (the paired hardening check) and treat everything in
+      it as compromised.
+
+  - id: fq-appenv-db-password
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "The dashboard's own environment file carries the database credential. Type that password."
+    answer: "GlassDB-2026!"
+    points: 8
+    solution: |
+      The dashboard reads its settings from an environment file next to
+      the application. It is planted world-readable -- the paired check
+      tightens the mode, but READ the file first: the DB_PASS value is
+      the answer, and it matches the account the database actually holds.
+
+  - id: fq-export-author
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "The staged SQL export under /var/backups names its author in a header comment. Type that name."
+    answer: "nightbloom"
+    points: 8
+    solution: |
+      `head /var/backups/collections-export.sql` -- the first lines are a
+      comment block: who wrote the export, and why they should not have
+      been able to. The name in that header also appears as the source of
+      the login-journal intrusion. Then tighten the file's mode (paired
+      check).
+
+  - id: fq-rogue-cron-path
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "A hidden scheduled job re-fires a payload from a concealed directory. Type that payload's FULL PATH."
+    answer: "/opt/.glasshouse/sync-fetch"
+    answers: ["/opt/.glasshouse/sync-fetch", "sync-fetch"]
+    points: 8
+    solution: |
+      `cat /etc/cron.d/glasshouse-sync` -- the schedule's last field is
+      the payload path it re-fires (a dot-directory under /opt). Read the
+      payload before deleting either file: the path is the answer, the
+      deletion is the paired check.
+
+  - id: fq-scanner-ip
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "A planted shell function filters ONE address out of interactive ps/ss listings. Type that address."
+    answer: "192.0.2.111"
+    points: 12
+    solution: |
+      The filter block sits at the end of every .bashrc (root's, the
+      skeleton's, and each user's). Read the block: it defines ps() and
+      ss() wrappers that grep out one scanner address. That address is
+      the answer -- and the reason interactive listings looked oddly
+      quiet. Delete the block in all three places (paired check).
+
+  - id: fq-shim-marker
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "The system kill utility was replaced with a wrapper that refuses to stop one marker process. Type that marker name."
+    answer: "svc-daemon"
+    points: 12
+    solution: |
+      `grep -c svc-daemon /bin/kill` -- the wrapper shell script filters
+      its argument list for one process name and refuses to kill it,
+      with a forged "Operation not permitted" for realism. The marker it
+      protects is the answer; both the wrapper and its hidden backup
+      carry the immutable bit until you lift it.
+
+  - id: fq-vacuum-cron-name
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "A scheduled job keeps emptying the systemd journal. Type the filename of that job (in the system cron drop-in directory)."
+    answer: "journal-maintenance"
+    answers: ["/etc/cron.d/journal-maintenance"]
+    points: 8
+    solution: |
+      `ls /etc/cron.d/` and read the one that is not stock: it runs the
+      journal's vacuum command with a one-second retention, every quarter
+      hour. Note the filename before deleting it -- the question and the
+      fix share one `ls`.
+
+  - id: fq-rogue-port
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "A firewall rule admits a high TCP port nothing on this box uses. Type that port number."
+    answer: "31337"
+    points: 4
+    solution: |
+      `ufw status numbered` -- among the rules sits an allow for a port
+      with no service behind it (the "leet" number is the tell). The port
+      number is the answer; delete the rule for the paired check.
+
+  - id: fq-hosts-hostname
+    path: /home/gardener/Desktop/Forensics-Questions.txt
+    question: "One appended line in the hosts file sends a trusted vendor hostname to the intruder's machine. Type that hostname."
+    answer: "cdn.rosemoor-gardens.org"
+    answers: ["rosemoor-gardens.org"]
+    points: 8
+    solution: |
+      `cat /etc/hosts` and read it ALL -- the planted line hides below a
+      screenful of blank padding. The hostname it redirects is the
+      answer; the destination address matches the intruder's source in
+      the login journal. Delete the line for the paired check.
+
+theme:
+  title: "Rosemoor Botanical Conservatory"
+  organization: "Rosemoor Botanical Conservatory — Curatorial Trust"
+  accent: "#2E7D4F"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  motd: |
+    Welcome to the Rosemoor Botanical Conservatory glasshouse controller.
+    Authorized operators only. Run `huitz score` for your standing and
+    `huitz readme` for the handbook from the Curatorial Trust.
+  issue: |
+    Rosemoor Botanical Conservatory glasshouse controller.
+    Unauthorized access will be reported to the Curatorial Trust.
+  desktop_shortcuts:
+    - name: "Glasshouse Hardening Handbook"
+      exec: "sh -c 'xdg-open $HOME/Documents/huitzilopochtli/README.html'"
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: glassboard
+    display: GlassBoard dashboard (glassboard-app)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1:8080/
+    expect:
+      equals: 200
+      field: status
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: mariadb
+    display: Collections database (MariaDB)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 3306
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: cache
+    display: Session cache (Redis)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 6379
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  - id: ssh
+    display: Responder access (SSH)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 22
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: rsm-drop-inventory
+      action: drop_inert_artifact
+      params:
+        path: glasshouse-inventory.tmp
+      window_s:
+      - 1800
+      - 2700
+    - id: rsm-kill-dashboard
+      action: kill_service
+      params:
+        service: glassboard-app
+      window_s:
+      - 2700
+      - 3600
+      affects_check: glassboard
+    - id: rsm-kill-db
+      action: kill_service
+      params:
+        service: mariadb
+      window_s:
+      - 3600
+      - 5400
+      affects_check: mariadb
+    - id: rsm-kill-cache
+      action: kill_service
+      params:
+        service: redis-server
+      window_s:
+      - 4500
+      - 6300
+      affects_check: cache
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_ROSEMOOR_CONSERVATORY_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: ssh
+    template_vm_username: ${HUITZILOPOCHTLI_ROSEMOOR_CONSERVATORY_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_ROSEMOOR_CONSERVATORY_POOL_TEMPLATE_PASSWORD}
+    vm_count: 3
+    guac_link_ttl_seconds: 14400

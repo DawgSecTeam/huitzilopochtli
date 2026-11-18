@@ -1,0 +1,1375 @@
+scenario:
+  name: "Kestrel Point Zoological Park"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+  # -------------------------------------------------------------- accounts ----
+  - id: admins_roster_clean
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Only the authorized administrator accounts sit in the local Administrators group"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The roster is sysadmin (the build/IT account) plus the built-in
+        # Administrator. Anything else -- an account the trafficking ring
+        # added, or a service account handed admin by mistake -- is a stray
+        # seat (the planted one is zkops_sync).
+        $allowed = @('Administrator', 'sysadmin')
+        $members = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Ignore |
+            ForEach-Object { ($_.Name -split '\\')[-1] })
+        $stray = @($members | Where-Object { $allowed -notcontains $_ })
+        ($stray.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Audit the group.** Every seat in local Administrators is a
+      full-system key on this box:
+
+      ```
+      Get-LocalGroupMember -Group 'Administrators' |
+          Select-Object Name, ObjectClass, PrincipalSource
+      ```
+
+      The roster is `sysadmin` and the built-in `Administrator`. Any other
+      account is a plant or a mistake -- read its description before you
+      touch it.
+
+      **2. Remove the stray seat** (the account itself is handled by its
+      own task -- disable it, do not delete it):
+
+      ```
+      Remove-LocalGroupMember -Group 'Administrators' -Member <the stray>
+      ```
+
+      GUI route: `lusrmgr.msc` > Groups > Administrators > Remove.
+
+      **3. Confirm.** The membership list holds only the two authorized
+      names.
+
+  - id: ir_service_account_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The unauthorized monitoring service account is disabled"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # Disable, do not delete: the incident report needs the zksvc_ir
+        # account object (and its "do not disable" description) intact.
+        $u = Get-LocalUser -Name 'zksvc_ir' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the account first.** Someone created a service account
+      with a "monitoring" description and a never-expiring password --
+      that description is the costume, not the credential:
+
+      ```
+      Get-LocalUser | Select-Object Name, Enabled, PasswordExpires, Description
+      ```
+
+      **2. Disable it** (this check wants the object to exist and be
+      disabled -- deleting it scores nothing, and destroys evidence):
+
+      ```
+      Disable-LocalUser -Name 'zksvc_ir'
+      ```
+
+      GUI route: `lusrmgr.msc` > Users > right-click > Properties >
+      tick **Account is disabled**.
+
+      **3. Confirm.** `Get-LocalUser -Name 'zksvc_ir'` reports
+      `Enabled : False`.
+
+  - id: guest_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The built-in Guest account is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'Guest' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Check the built-in Guest account** -- and remember it may have
+      been "re-purposed" as more than a guest (read its properties before
+      deciding it is only the stock account):
+
+      ```
+      Get-LocalUser -Name 'Guest' | Select-Object Name, Enabled, Description
+      ```
+
+      **2. Disable it.**
+
+      ```
+      Disable-LocalUser -Name 'Guest'
+      # or: net user Guest /active:no
+      ```
+
+      GUI route: `lusrmgr.msc` > Users > Guest > Properties > **Account is
+      disabled**.
+
+      **3. Confirm** `Enabled : False`.
+
+  - id: autologin_cleared
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: No automatic logon is configured in the registry"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The planted autologin carries a cleartext password in the
+        # registry for the sysadmin account -- one registry read from
+        # anyone who lands on the console.
+        $k = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+             -ErrorAction Ignore
+        $on = ($null -ne $k -and [string]$k.AutoAdminLogon -eq '1')
+        $pw = ($null -ne $k -and -not [string]::IsNullOrEmpty([string]$k.DefaultPassword))
+        (-not $on -and -not $pw) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the Winlogon key.** Automatic logon turns the console
+      into a no-credential session, and the password it uses sits next
+      to the setting in cleartext:
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' |
+          Select-Object AutoAdminLogon, DefaultUserName, DefaultPassword
+      ```
+
+      **2. Remove the automatic logon** (the value of that password is a
+      forensics answer -- read it before you delete it, then treat it as
+      compromised):
+
+      ```
+      Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+          -Name AutoAdminLogon, DefaultPassword -ErrorAction Ignore
+      ```
+
+      **3. Confirm** neither value remains.
+
+  - id: password_policy_tightened
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The password policy requires real length and real lockouts"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $p = net accounts | ForEach-Object { $_.Trim() }
+        $min = [int](($p | Where-Object { $_ -like 'Minimum password length*' }) -replace '[^\d]')
+        $lock = [int](($p | Where-Object { $_ -like 'Lockout threshold*' }) -replace '[^\d]')
+        (($min -ge 10) -and ($lock -ge 5)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the policy as the system enforces it:**
+
+      ```
+      net accounts
+      ```
+
+      Four-character passwords and never locking out mean the guessing
+      run that opened this incident was free to take all afternoon.
+
+      **2. Raise both** (10 characters minimum, lock out after 5 bad
+      attempts is the check's bar; longer is fine):
+
+      ```
+      net accounts /minpwlen:10 /lockoutthreshold:5
+      ```
+
+      **3. Confirm** both lines in `net accounts`.
+
+  - id: execution_policy_restricted
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: PowerShell scripts cannot run under an unrestricted policy"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The planted policy is Unrestricted -- both the effective scope
+        # and the registry value that survives scope overrides.
+        $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell' `
+              -Name ExecutionPolicy -ErrorAction Ignore).ExecutionPolicy
+        $eff = Get-ExecutionPolicy -Scope LocalMachine -ErrorAction Ignore
+        $bad = @('Unrestricted', 'Bypass')
+        ((($null -eq $v) -or ($bad -notcontains [string]$v)) -and
+         ($bad -notcontains [string]$eff)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the policy at every scope** -- a machine policy set below
+      the surface still answers `Get-ExecutionPolicy`:
+
+      ```
+      Get-ExecutionPolicy -List
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell' `
+          -Name ExecutionPolicy -ErrorAction Ignore
+      ```
+
+      **2. Set a real policy** at machine scope (RemoteSigned is the
+      standard floor for servers):
+
+      ```
+      Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
+      ```
+
+      **3. Confirm** the list shows no Unrestricted/Bypass rows.
+
+  - id: logon_prompt_hardened
+    type: powershell_json
+    category: vuln
+    display: "EASY: The console requires Ctrl+Alt+Del and does not show the last user"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $sys = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+                -ErrorAction Ignore).DisableCAD
+        $pol = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+                -ErrorAction Ignore).dontdisplaylastusername
+        (([int]$sys -eq 0) -and ([int]$pol -eq 1)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the two console-prompt settings.** Skipping the
+      Ctrl+Alt+Del step and printing the last signed-in name hands a
+      walk-up half of every logon:
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+          -Name DisableCAD
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+          -Name dontdisplaylastusername
+      ```
+
+      **2. Restore the secure console:**
+
+      ```
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' `
+          -Name DisableCAD -Value 0
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+          -Name dontdisplaylastusername -Value 1
+      ```
+
+      **3. Confirm** both values.
+
+  - id: uac_enabled
+    type: registry_value
+    category: vuln
+    display: "MODERATE: User Account Control is enabled again"
+    max_points: 10
+    timeout_s: 15
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+      value: EnableLUA
+    expect:
+      equals: 1
+      field: value
+      points: 10
+    solution: |
+      **1. Read the switch.** With UAC off, every process runs with the
+      full token of its user -- no consent prompt between a script and
+      the administrator ring:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA
+      ```
+
+      **2. Turn it back on** and restart:
+
+      ```
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+          -Name EnableLUA -Value 1
+      ```
+
+      **3. Confirm** the registry value reads 1.
+
+  # ------------------------------------------------------------- defender ----
+  - id: defender_realtime_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Defender real-time protection is back on"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $s = Get-MpComputerStatus -ErrorAction Ignore
+        ($null -ne $s -and $s.RealTimeProtectionEnabled -eq $true) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask Defender what it is actually doing:**
+
+      ```
+      Get-MpComputerStatus | Select-Object AMServiceEnabled, RealTimeProtectionEnabled,
+          BehaviorMonitorEnabled, IoavProtectionEnabled
+      ```
+
+      The whole protection stack was switched off (and a path exclusion
+      was carved out for the web root -- see the portal findings).
+
+      **2. Re-enable the protections:**
+
+      ```
+      Set-MpPreference -DisableRealtimeMonitoring $false `
+                       -DisableBehaviorMonitoring $false `
+                       -DisableScriptScanning $false
+      ```
+
+      **3. Confirm** `Get-MpComputerStatus` reports them enabled.
+
+  - id: defender_policies_cleared
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: No group-policy override is suppressing Defender"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant wrote DisableAntiSpyware/DisableRealtimeMonitoring/
+        # DisableBehaviorMonitoring/DisableIOAVProtection/
+        # DisableOnAccessProtection/DisableRoutinelyTakingAction = 1
+        # under the Policies key; none of them may remain set to 1.
+        $bad = 0
+        $k = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' `
+             -ErrorAction Ignore
+        if ($null -ne $k) {
+          foreach ($p in $k.PSObject.Properties) {
+            if ($p.Name -like 'Disable*' -and [int]$p.Value -eq 1) { $bad++ }
+          }
+        }
+        ($bad -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the policy key** -- values planted here outrank the
+      product's own settings and survive every `Set-MpPreference`:
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+      ```
+
+      **2. Clear every Disable* override** (remove the values, or set
+      them to 0), then restart the Defender services and re-run the
+      realtime check.
+
+      **3. Confirm** no `Disable*` value under the Policies key reads 1.
+
+  # --------------------------------------------------------------- shares ----
+  - id: anonymous_token_restricted
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Anonymous (null-session) tokens no longer inherit Everyone access"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+              -ErrorAction Ignore).EveryoneIncludesAnonymous
+        (($null -eq $v) -or ([int]$v -eq 0)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the Lsa setting.** With it on, a connection with NO
+      credentials at all is treated as a member of Everyone -- every
+      Everyone ACE on the box (the keeper share included) becomes
+      reachable from the network, unauthenticated:
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' |
+          Select-Object EveryoneIncludesAnonymous
+      ```
+
+      **2. Turn it off** (or delete the value -- both satisfy the check):
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+          -Name EveryoneIncludesAnonymous -Value 0
+      ```
+
+      **3. Confirm** the value reads 0.
+
+  - id: lm_auth_level_five
+    type: registry_value
+    category: vuln
+    display: "MODERATE: NTLM authentication requires NTLMv2 (LmCompatibilityLevel 5)"
+    max_points: 10
+    timeout_s: 15
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Control\Lsa
+      value: LmCompatibilityLevel
+    expect:
+      equals: 5
+      field: value
+      points: 10
+    solution: |
+      **1. Read the NTLM level.** A low level lets clients negotiate LM
+      and NTLMv1 -- challenge-response formats that crack offline in
+      minutes:
+
+      ```
+      reg query HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v LmCompatibilityLevel
+      ```
+
+      **2. Require NTLMv2** (level 5; the check grades exactly 5):
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+          -Name LmCompatibilityLevel -Value 5
+      ```
+
+      **3. Confirm** the value reads 5.
+
+  - id: null_session_hardened
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Null sessions and insecure guest logons are shut"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $lsa = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction Ignore
+        $ws = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' `
+               -ErrorAction Ignore).EnableInsecureGuestLogons
+        $ra = $lsa.RestrictAnonymous
+        $fb = $lsa.allownullsessionfallback
+        $ok = ((($null -eq $ra) -or ([int]$ra -eq 1)) -and
+               (($null -eq $fb) -or ([int]$fb -eq 0)) -and
+               (($null -eq $ws) -or ([int]$ws -eq 0)))
+        $ok | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the three null-session doors** -- anonymous enumeration,
+      a fallback that accepts null sessions, and the workstation's
+      insecure-guest switch:
+
+      ```
+      reg query HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v RestrictAnonymous
+      reg query HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v allownullsessionfallback
+      reg query HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters /v EnableInsecureGuestLogons
+      ```
+
+      **2. Close all three** (RestrictAnonymous 1, no fallback, no
+      insecure guest logons):
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+          -Name RestrictAnonymous -Value 1
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+          -Name allownullsessionfallback -Value 0
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' `
+          -Name EnableInsecureGuestLogons -Value 0
+      ```
+
+      **3. Confirm** all three values.
+
+  - id: wdigest_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: WDigest no longer caches cleartext credentials in memory"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' `
+              -ErrorAction Ignore).UseLogonCredential
+        (($null -eq $v) -or ([int]$v -eq 0)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the WDigest switch.** With it on, every interactive
+      sign-in leaves its plaintext password sitting in LSASS memory -- a
+      memory read away from total credential loss:
+
+      ```
+      reg query "HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest" /v UseLogonCredential
+      ```
+
+      **2. Turn it off** (or delete the value):
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' `
+          -Name UseLogonCredential -Value 0
+      ```
+
+      **3. Confirm** the value reads 0. (Credentials already in memory
+      need a sign-out/reboot to flush -- note that in the report.)
+
+  # ------------------------------------------------- machine-wide hooks ----
+  - id: appinit_hooks_cleared
+    type: powershell_json
+    category: vuln
+    display: "HARD: No machine-wide DLL-load hook is registered (AppInit/AppCert)"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant pointed AppInit_DLLs and AppCertDLLs at
+        # C:\Windows\System32\inproc_helper.dll and turned the loader on.
+        $win = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' `
+               -ErrorAction Ignore
+        $cert = (Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs' `
+                 -ErrorAction Ignore)
+        $load = ($null -ne $win -and [int]$win.LoadAppInit_DLLs -eq 1)
+        $init = ($null -ne $win -and -not [string]::IsNullOrEmpty([string]$win.AppInit_DLLs))
+        $certs = ($null -ne $cert -and @($cert.GetValueNames() | Where-Object {
+                    -not [string]::IsNullOrEmpty([string]$cert.GetValue($_)) }).Count -gt 0)
+        ((-not $load) -and (-not $init) -and (-not $certs)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Read the two global DLL-load hooks.** AppInit_DLLs injects a
+      library into EVERY process that loads user32; AppCertDLLs hooks
+      every process creation. Anything they point at runs inside
+      everything:
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' |
+          Select-Object AppInit_DLLs, LoadAppInit_DLLs
+      Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs'
+      ```
+
+      **2. Empty both hooks** (and read the staged library path first --
+      it is a forensics answer):
+
+      ```
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' `
+          -Name LoadAppInit_DLLs -Value 0
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' `
+          -Name AppInit_DLLs -Value ''
+      Remove-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs' `
+          * -ErrorAction Ignore
+      ```
+
+      **3. Confirm** the loader is off, both lists empty, and the staged
+      file removed.
+
+  # ------------------------------------------------- scheduled persistence ----
+  - id: hosts_ads_stream_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The hosts file carries no hidden alternate data stream"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant stashed a base64 payload in an ADS named 'sync_blob'
+        # on the hosts file; only the default ':$DATA' stream may remain.
+        $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+        $extra = @(Get-Item -LiteralPath $hosts -Stream * -ErrorAction Ignore |
+                   Where-Object { $_.Stream -ne ':$DATA' })
+        ($extra.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. List the streams ON the hosts file**, not just its content --
+      NTFS files carry invisible parallel streams:
+
+      ```
+      Get-Item C:\Windows\System32\drivers\etc\hosts -Stream *
+      ```
+
+      Beyond the default stream sits a base64 blob parked in a named
+      stream, with a scheduled loader that decodes it. The stream's name
+      is a forensics answer.
+
+      **2. Read the stream first** (it is evidence), then remove it:
+
+      ```
+      Get-Content C:\Windows\System32\drivers\etc\hosts -Stream <name>
+      Remove-Item C:\Windows\System32\drivers\etc\hosts -Stream <name>
+      ```
+
+      **3. Confirm** only the default stream remains.
+
+  - id: winhostsync_task_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The hosts-file payload loader task is removed"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $t = Get-ScheduledTask -TaskName 'WinHostSync' -ErrorAction Ignore
+        ($null -eq $t) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Walk the task list and ask what each entry is for** -- the
+      loader that reads the hidden stream hides in plain sight:
+
+      ```
+      Get-ScheduledTask | Where-Object State -ne 'Disabled' |
+          Select-Object TaskName, TaskPath, State
+      Get-ScheduledTask -TaskName 'WinHostSync' | Export-ScheduledTask
+      ```
+
+      **2. Remove it** (the stream it feeds is the paired finding):
+
+      ```
+      Unregister-ScheduledTask -TaskName 'WinHostSync' -Confirm:$false
+      ```
+
+      **3. Confirm** the task is gone.
+
+  - id: mp_sync_task_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The hidden Defender-lookalike task is removed"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $t = Get-ScheduledTask -TaskName 'MpSyncHelper' -ErrorAction Ignore
+        ($null -eq $t) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Look for tasks wearing legitimate costumes.** One is registered
+      HIDDEN (it never shows in the default task view), runs as SYSTEM,
+      and fires at every logon -- its name borrows the antivirus's
+      prefix:
+
+      ```
+      Get-ScheduledTask | ForEach-Object {
+          $s = $_.Settings; if ($s.Hidden) { $_ } } |
+          Select-Object TaskName, TaskPath, State
+      ```
+
+      **2. Read its action before deleting** (the task name is a
+      forensics answer; the payload it runs is evidence):
+
+      ```
+      Get-ScheduledTask -TaskName 'MpSyncHelper' | Select-Object -ExpandProperty Actions
+      Unregister-ScheduledTask -TaskName 'MpSyncHelper' -Confirm:$false
+      ```
+
+      **3. Confirm** the task is gone (also check
+      C:\Windows\System32\Tasks for leftovers).
+
+  - id: log_clear_task_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: Nothing keeps wiping the Security event log on a timer"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # The planted task (WinDefSvcHelper) runs `wevtutil cl Security`
+        # every 30 minutes as SYSTEM.
+        $t = Get-ScheduledTask -TaskName 'WinDefSvcHelper' -ErrorAction Ignore
+        ($null -eq $t) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Notice what the Security log is NOT telling you.** Its oldest
+      entry is suspiciously recent -- something empties it on a schedule:
+
+      ```
+      Get-WinEvent -LogName Security -MaxEvents 5 | Select-Object TimeCreated, Id
+      Get-ScheduledTask | ForEach-Object {
+          $_ | Select-Object -ExpandProperty Actions -ErrorAction Ignore } |
+          Where-Object { $_.Execute -like '*wevtutil*' }
+      ```
+
+      A "Defender helper" task runs the event-log clear command every
+      half hour -- anti-forensics on a timer, named to be overlooked.
+
+      **2. Remove the task** (the log content it already deleted is gone;
+      trust System/Application logs and file timestamps for older events):
+
+      ```
+      Unregister-ScheduledTask -TaskName 'WinDefSvcHelper' -Confirm:$false
+      ```
+
+      **3. Confirm** no remaining task action mentions `wevtutil`.
+
+  - id: watchdog_pair_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The mutual-respawn task pair and its helper are gone"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # Two SYSTEM tasks (HelpDeskMon / HelpDeskUpd) each re-create the
+        # other and the helper script C:\ProgramData\Microsoft\Help\
+        # watch-ensure.ps1 if you delete only one.
+        $a = Get-ScheduledTask -TaskName 'HelpDeskMon' -ErrorAction Ignore
+        $b = Get-ScheduledTask -TaskName 'HelpDeskUpd' -ErrorAction Ignore
+        $helper = Test-Path 'C:\ProgramData\Microsoft\Help\watch-ensure.ps1'
+        $dir = Test-Path 'C:\ProgramData\Microsoft\Help\deskmon.exe'
+        (($null -eq $a) -and ($null -eq $b) -and (-not $helper) -and (-not $dir)) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Find the pair.** Two "helpdesk" tasks watch EACH OTHER: delete
+      one at your console, the other re-registers it within the minute --
+      which is exactly what you will see if you try:
+
+      ```
+      Get-ScheduledTask -TaskName 'HelpDesk*' | Select-Object TaskName, State
+      Get-ScheduledTask -TaskName 'HelpDeskMon' | Select-Object -ExpandProperty Actions
+      ```
+
+      **2. Disable BOTH first, then unregister both, then clean the
+      payload directory** (the helper script and the copied binaries live
+      under a ProgramData folder that borrows a Microsoft name):
+
+      ```
+      Disable-ScheduledTask -TaskName 'HelpDeskMon' -ErrorAction Ignore
+      Disable-ScheduledTask -TaskName 'HelpDeskUpd' -ErrorAction Ignore
+      Unregister-ScheduledTask -TaskName 'HelpDeskMon' -Confirm:$false
+      Unregister-ScheduledTask -TaskName 'HelpDeskUpd' -Confirm:$false
+      Remove-Item 'C:\ProgramData\Microsoft\Help' -Recurse -Force
+      ```
+
+      **3. Confirm** neither task returns after a few minutes (wait one
+      re-registration cycle) and the payload folder is gone.
+
+  - id: ifeo_hijacks_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: No executable is hijacked by a debugger redirect (IFEO)"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant set Debugger = 'cmd.exe /c exit' under IFEO for the
+        # forensics/hunting toolkit (taskmgr.exe and ~25 more) -- launching
+        # any of them silently exits instead of running.
+        $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+        $bad = 0
+        Get-ChildItem $ifeo -ErrorAction Ignore | ForEach-Object {
+          $d = (Get-ItemProperty $_.PSPath -ErrorAction Ignore).Debugger
+          if (-not [string]::IsNullOrEmpty([string]$d)) { $bad++ }
+        }
+        ($bad -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Explain the symptom first**: every tool you reach for -- Task
+      Manager first -- starts and vanishes instantly. That is not
+      breakage; it is a redirect:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options" /s /v Debugger
+      ```
+
+      Under the Image File Execution Options key, subkeys for the whole
+      hunting toolkit carry a `Debugger` value that redirects the launch
+      to a command that exits. The blocklist's contents are themselves
+      evidence of what the intruder feared.
+
+      **2. Remove every Debugger value** (read the list first -- which
+      executables were blocked is a forensics answer):
+
+      ```
+      Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options' |
+        ForEach-Object { Remove-ItemProperty $_.PSPath -Name Debugger -ErrorAction Ignore }
+      ```
+
+      **3. Confirm** the query comes back empty and Task Manager starts.
+
+  - id: active_setup_stub_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The per-logon Active Setup stub and its payload are gone"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant registered an Active Setup "installed component" ({8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43})
+        # whose StubPath re-fires C:\ProgramData\KestrelSync\setup-init.ps1 at EVERY user logon.
+        $guid = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43}'
+        $stub = Test-Path $guid
+        $payload = Test-Path 'C:\ProgramData\KestrelSync\setup-init.ps1'
+        ((-not $stub) -and (-not $payload)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Read the Active Setup registry** -- components here re-run for
+      EVERY user at logon, which is why legitimate browser/OS stubs live
+      next to whatever does not belong:
+
+      ```
+      Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components' |
+          ForEach-Object { [PSCustomObject]@{
+              key = $_.PSChildName
+              stub = (Get-ItemProperty $_.PSPath -ErrorAction Ignore).StubPath } }
+      ```
+
+      One stub borrows a plausible component GUID and points at a script
+      under ProgramData -- no update system in its right mind stages
+      payloads there. Read the stub path (evidence) before deleting.
+
+      **2. Remove the component key and the payload file** (and check the
+      WOW6432Node view of the same key on 64-bit):
+
+      ```
+      Remove-Item 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{8E4F2A1C-3B7D-4A9E-9C2F-6D1B5A0E7C43}' -Force
+      Remove-Item 'C:\ProgramData\KestrelSync' -Recurse -Force
+      ```
+
+      **3. Confirm** neither the registry stub nor the payload file
+      remains.
+
+  # ----------------------------------------------------- remote access ----
+  - id: ssh_admin_keys_clean
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: No planted key grants passwordless administrator access"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant added an attacker key (comment ...@redteam) to the
+        # OpenSSH administrators store; the file must be absent or clean.
+        $f = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+        if (-not (Test-Path $f)) { $true | ConvertTo-Json -Compress; exit 0 }
+        $lines = @(Get-Content $f -ErrorAction Ignore |
+                   Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') })
+        ($lines.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the OpenSSH administrators key store** -- on Windows the
+      administrators_authorized_keys file overrides per-user key files
+      for every administrator account, so a planted key there is a
+      passwordless-admin door:
+
+      ```
+      Get-Content C:\ProgramData\ssh\administrators_authorized_keys -ErrorAction Ignore
+      ```
+
+      **2. Read each key line to its end** (the comment names who planted
+      it -- record it before deleting), then empty the file or remove the
+      planted lines:
+
+      ```
+      Clear-Content C:\ProgramData\ssh\administrators_authorized_keys
+      ```
+
+      **3. Confirm** no key lines remain (absent or empty satisfies the
+      check).
+
+  - id: rdp_secondary_listener_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: No second RDP listener is registered on a shifted port"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant cloned the RDP-Tcp listener to RDP-Tcp2 on port 3390
+        # (the extra listener materialises at the next reboot).
+        $ws = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations'
+        $t2 = Test-Path (Join-Path $ws 'RDP-Tcp2')
+        (-not $t2) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Compare the registered RDP listeners with the one you actually
+      use:**
+
+      ```
+      Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations'
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp2' -ErrorAction Ignore
+      ```
+
+      A second listener is a photocopy of the real one, renumbered to an
+      unexpected port -- a parallel front door that survives the firewall
+      rules written for the standard one. Its port number is a forensics
+      answer.
+
+      **2. Remove the second listener key** (the standard RDP-Tcp stays
+      untouched; remote desktop keeps working):
+
+      ```
+      Remove-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp2' -Force
+      ```
+
+      **3. Confirm** only the stock listener remains, and RDP still
+      connects.
+
+  # ----------------------------------------------------------------- iis ----
+  - id: webshell_removed
+    type: permission
+    category: vuln
+    display: "HARD: The hidden command page in the web root is removed"
+    max_points: 20
+    timeout_s: 10
+    collect:
+      path: C:\inetpub\wwwroot\cmd.aspx
+    expect:
+      equals: false
+      field: exists
+      points: 20
+    solution: |
+      **1. Sweep the web root for pages that are not the portal's.** One
+      server-side page there is a pass-through command console -- anyone
+      who can reach the site can run commands as the app pool identity:
+
+      ```
+      Get-ChildItem C:\inetpub\wwwroot -File | Select-Object Name, Length, LastWriteTime
+      ```
+
+      Compare the file list against what the portal actually ships; the
+      extra page is tiny, freshly written, and its name is a forensics
+      answer.
+
+      **2. Read it first** (it is evidence), then delete it:
+
+      ```
+      Get-Content C:\inetpub\wwwroot\cmd.aspx
+      Remove-Item C:\inetpub\wwwroot\cmd.aspx -Force
+      ```
+
+      **3. Confirm** the file is gone.
+
+  - id: defender_webroot_exclusion_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Defender no longer skips the portal's web root"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $p = Get-MpPreference -ErrorAction Ignore
+        $ex = @()
+        if ($null -ne $p -and $null -ne $p.ExclusionPath) { $ex = @($p.ExclusionPath) }
+        $bad = @($ex | Where-Object { $_ -like '*inetpub*wwwroot*' })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read Defender's exclusion list.** Carving the web root out of
+      scanning means anything dropped there -- the command page included
+      -- is never inspected:
+
+      ```
+      Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+      ```
+
+      **2. Remove the web-root exclusion:**
+
+      ```
+      Remove-MpPreference -ExclusionPath 'C:\inetpub\wwwroot'
+      ```
+
+      **3. Confirm** the list no longer mentions the web root (and the
+      realtime checks above are green too).
+
+  # ---------------------------------------------------------------- smb ----
+  - id: keeper_share_acl_restricted
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The keeper data share grants no blanket Everyone access"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The share KeeperData must exist (it is the tablets' drop) but
+        # must not hand Everyone Full control.
+        $share = Get-SmbShare -Name 'KeeperData' -ErrorAction Ignore
+        if ($null -eq $share) { $false | ConvertTo-Json -Compress; exit 0 }
+        $acc = @(Get-SmbShareAccess -Name 'KeeperData' -ErrorAction Ignore |
+                 Where-Object { $_.AccountName -like '*Everyone*' -and
+                                $_.AccessRight -ne 'Read' })
+        ($acc.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read who the share actually admits:**
+
+      ```
+      Get-SmbShare | Select-Object Name, Path, Description
+      Get-SmbShareAccess -Name 'KeeperData'
+      ```
+
+      The keeper tablets' share was opened to EVERYONE with full control
+      -- and with the anonymous-token setting above, "Everyone" includes
+      connections with no credentials at all.
+
+      **2. Keep the share, narrow the access** (a named keeper group or
+      accounts with modify rights; revoke the blanket grant):
+
+      ```
+      Revoke-SmbShareAccess -Name 'KeeperData' -AccountName 'Everyone' -Force
+      Grant-SmbShareAccess -Name 'KeeperData' -AccountName 'sysadmin' `
+          -AccessRight Change -Force
+      ```
+
+      **3. Confirm** no Everyone write/full row remains (read-only
+      Everyone is acceptable but change/full is not), and the tablets
+      still reach their drop.
+
+  - id: runbook_file_acl_fixed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The staged runbook in the share is not Everyone-writable"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The plant granted Everyone:(F) on the runbook file itself.
+        $f = 'C:\KeeperData\outgoing\emergency-runbook.txt'
+        if (-not (Test-Path $f)) { $true | ConvertTo-Json -Compress; exit 0 }
+        $acl = Get-Acl -LiteralPath $f
+        $bad = @($acl.Access | Where-Object {
+                  $_.AccessControlType -eq 'Allow' -and
+                  $_.IdentityReference -like '*Everyone*' -and
+                  ($_.FileSystemRights -band 0x00000002) -ne 0 })
+        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the file's own ACL** (the share ACL is one layer; the
+      file ACL is the second):
+
+      ```
+      (Get-Acl 'C:\KeeperData\outgoing\emergency-runbook.txt').Access |
+          Format-Table IdentityReference, FileSystemRights, AccessControlType
+      ```
+
+      An Everyone-full-control ACE on a file inside a share means the
+      network can rewrite it -- a standing injection point into whatever
+      reads it. (Read its content first: the override code inside is a
+      forensics answer.)
+
+      **2. Replace the blanket ACE** with the accounts that need it:
+
+      ```
+      icacls 'C:\KeeperData\outgoing\emergency-runbook.txt' /remove:g Everyone
+      icacls 'C:\KeeperData\outgoing\emergency-runbook.txt' /grant 'Administrators:F'
+      ```
+
+      **3. Confirm** no Everyone write ACE remains (or the file is
+      removed).
+
+  # --------------------------------------------------------- run persistence ----
+  - id: runkey_removed
+    type: registry_value
+    category: vuln
+    display: "MODERATE: The Run-key entry launching a hidden payload is removed"
+    max_points: 10
+    timeout_s: 15
+    collect:
+      hive: HKLM
+      key: SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+      value: KestrelTraySync
+    expect:
+      equals: false
+      field: present
+      points: 10
+    solution: |
+      **1. Read the Run key** -- everything under it launches at every
+      interactive logon:
+
+      ```
+      reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+      ```
+
+      One entry is a hidden PowerShell that re-fires a "tray sync"
+      payload from ProgramData on every boot. Its value name is a
+      forensics answer.
+
+      **2. Read the value first (it is evidence), then remove it** and
+      the payload folder it feeds:
+
+      ```
+      Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' `
+          -Name 'KestrelTraySync'
+      Remove-Item 'C:\ProgramData\KestrelTray' -Recurse -Force
+      ```
+
+      **3. Confirm** the value and the payload directory are gone (the
+      payload check pairs with this one).
+
+  - id: tray_payload_removed
+    type: permission
+    category: vuln
+    display: "EASY: The Run-key payload and its directory are removed"
+    max_points: 5
+    timeout_s: 10
+    collect:
+      path: C:\ProgramData\KestrelTray\tray-sync.ps1
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Follow the Run-key entry to what it actually launches** -- a
+      "tray sync" script under ProgramData that writes a quiet log on
+      every boot:
+
+      ```
+      Get-Content C:\ProgramData\KestrelTray\tray-sync.ps1 -ErrorAction Ignore
+      ```
+
+      **2. Remove the script and its folder** (after recording the Run
+      value -- they are one finding in two halves):
+
+      ```
+      Remove-Item 'C:\ProgramData\KestrelTray' -Recurse -Force
+      ```
+
+      **3. Confirm** the path is gone.
+
+  # ------------------------------------------------------------- penalties ----
+  # Penalties guard only against player shortcuts the ranked adversary can
+  # never take (locking responders out of RDP). The portal and the keeper
+  # share are guarded by their ranked SLA points -- and the red-team
+  # schedule kills W3SVC and LanmanServer mid-run, so penalizing their
+  # downtime would dock teams for the engine's own action.
+  - id: penalty_termservice_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: Stopping Remote Desktop (TermService) costs 15 points"
+    max_points: 15
+    timeout_s: 25
+    collect:
+      service: TermService
+    expect:
+      equals: true
+      field: active
+      points: -15
+    solution: |
+      Responders reach this box over RDP. Stopping the terminal service
+      locks the response effort out of its own crime scene and costs 15
+      points. Harden RDP (the second-listener check) -- never stop it.
+
+forensics:
+  - id: fq-rogue-admin
+    question: "One local account was added to Administrators by the intruder. What is that account's username?"
+    answer: "zkops_sync"
+    points: 4
+    solution: |
+      Enumerate local Administrators (and every local account) and read
+      the descriptions: `Get-LocalGroupMember -Group Administrators`,
+      `Get-LocalUser`. The stray seat is the intruder's operations-sync
+      account, and its password is its own name. Record the name before
+      you disable it -- the answer file is graded from what you type.
+
+  - id: fq-webshell-name
+    question: "A hidden server-side command page was left in the portal content. What is its filename (including the extension)?"
+    answer: "cmd.aspx"
+    points: 4
+    solution: |
+      Sweep the web root for pages and compare them with the portal's own
+      content: the extra page is tiny and freshly written. Record its
+      filename before deleting it -- the deletion is the paired check.
+
+  - id: fq-ads-stream-name
+    question: "A base64 payload is parked in a hidden stream on the hosts file. What is that stream's name?"
+    answer: "sync_blob"
+    points: 4
+    solution: |
+      `Get-Item C:\Windows\System32\drivers\etc\hosts -Stream *` lists
+      everything riding on that file, not just its visible content. The
+      non-default stream is the answer; read it (evidence) before
+      removing it.
+
+  - id: fq-hidden-task-name
+    question: "One scheduled task is registered hidden, runs as SYSTEM, and borrows the antivirus's naming. What is its task name?"
+    answer: "MpSyncHelper"
+    points: 8
+    solution: |
+      Filter the task list on the Hidden setting:
+      `Get-ScheduledTask | Where-Object { $_.Settings.Hidden }`. The
+      impostor among the results is the answer. Read its action before
+      unregistering it.
+
+  - id: fq-watchdog-task
+    question: "Two scheduled tasks re-create each other when you delete one. Give the name of EITHER task."
+    answer: "HelpDeskMon"
+    answers: ["HelpDeskUpd"]
+    points: 8
+    solution: |
+      Read the task list for the helpdesk-looking pair; either name
+      answers. The tell is what happens when you delete one and the other
+      re-registers it within the minute -- disable both before
+      unregistering either.
+
+  - id: fq-extra-rdp-port
+    question: "A second RDP listener is registered on a shifted TCP port. What port number does it use?"
+    answer: "3390"
+    points: 8
+    solution: |
+      Compare the registered listeners under the Terminal Server
+      WinStations key: the photocopy's PortNumber value is the answer.
+      Remove the second listener for the paired check.
+
+  - id: fq-ifeo-tool
+    question: "The debugger-redirect blocklist covers the forensics toolkit; one of the blocked executables is the one you reach for first when a box misbehaves. Which executable (name with extension) opens as a blank redirect?"
+    answer: "taskmgr.exe"
+    answers: ["taskmgr"]
+    points: 8
+    solution: |
+      List the IFEO subkeys carrying a Debugger value; the blocklist is
+      the answer key to what the intruder feared. Task Manager is the
+      first tool every responder opens, which is why it is on the list.
+
+  - id: fq-runbook-code
+    question: "A file in the keeper share's outgoing folder is an emergency runbook with a gate override code. Type that code."
+    answer: "4471-KPZ"
+    points: 8
+    solution: |
+      Walk the keeper share (including the outgoing folder) and read the
+      runbook text; the override code is the answer. Treat the file's
+      Everyone-full-control ACL as the paired finding -- read the content
+      before you repair the ACL, and rotate the code afterward.
+
+  - id: fq-autologin-password
+    question: "The registry's automatic-logon configuration stores a password in cleartext. Type that password."
+    answer: "K3yKeeper2026!"
+    points: 12
+    solution: |
+      Read the Winlogon key's values (AutoAdminLogon, DefaultUserName,
+      DefaultPassword): the password value is the answer, and it is the
+      console credential of a real account -- treat it as compromised,
+      remove the values (paired check), and note it in the report.
+
+theme:
+  title: "Kestrel Point Zoological Park"
+  organization: "Kestrel Point Zoological Park — Operations Office"
+  accent: "#B45309"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  desktop_shortcuts:
+    - name: "Hardening Handbook"
+      exec: "%PUBLIC%\\Documents\\huitzilopochtli\\README.html"
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: portal
+    display: Ticketing portal (IIS)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1/
+    expect:
+      equals: 200
+      field: status
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: keeper_share
+    display: Keeper data share (SMB)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 445
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 1
+    max_intervals_per_checkin: 3
+  adversary:
+    events:
+    - id: kpz-drop-manifest
+      action: drop_inert_artifact
+      params:
+        path: transfer-manifest.ini
+      window_s:
+      - 1800
+      - 2700
+    - id: kpz-kill-portal
+      action: kill_service
+      params:
+        service: W3SVC
+      window_s:
+      - 2700
+      - 3600
+      affects_check: portal
+    - id: kpz-drop-notes
+      action: drop_inert_artifact
+      params:
+        path: nightshift-notes.txt
+      window_s:
+      - 4800
+      - 5700
+    - id: kpz-kill-share
+      action: kill_service
+      params:
+        service: LanmanServer
+      window_s:
+      - 5400
+      - 6900
+      affects_check: keeper_share
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_KESTREL_POINT_ZOO_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: rdp
+    template_vm_username: ${HUITZILOPOCHTLI_KESTREL_POINT_ZOO_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_KESTREL_POINT_ZOO_POOL_TEMPLATE_PASSWORD}
+    vm_count: 2
+    guac_link_ttl_seconds: 14400

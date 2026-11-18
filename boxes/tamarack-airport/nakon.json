@@ -1,0 +1,122 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "tamarack-fids-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "debian-13-cli",
+      "port": 22,
+      "configurations": [
+        "nginx",
+        "redis-no-auth",
+        "postgresql-no-auth",
+        "postgresql-remote-access",
+        {
+          "name": "web-exposed-file",
+          "vars": {
+            "WEBROOT": "/var/www/html"
+          }
+        },
+        "nginx-server-tokens-on",
+        "secrets-in-webroot-env",
+        "ssh-root-login",
+        "ssh-empty-passwords",
+        "ssh-max-auth-retries-high",
+        {
+          "name": "authorized-keys-persistence",
+          "vars": {
+            "USERNAME": "root",
+            "PUBLIC_KEY": "ssh-ed25519 c2t5bGFyayBmaWVsZCBkZXBsb3kga2V5IHRhbWFyYWNrIDIwMjY= skylark@203.0.113.44"
+          }
+        },
+        {
+          "name": "dup-uid",
+          "vars": {
+            "USERNAME": "gateadmin",
+            "CLONE_OF": "flightops"
+          }
+        },
+        {
+          "name": "priv-user-respawn-service",
+          "vars": {
+            "USERNAME": "fieldsvc",
+            "PASSWORD": "SkylarkField22!"
+          }
+        },
+        {
+          "name": "systemd-timer-persistence",
+          "vars": {
+            "TIMER_NAME": "board-sync",
+            "DESCRIPTION": "Display board content sync",
+            "EXEC_START": "/opt/skylark/board-sync",
+            "PAYLOAD_PATH": "/opt/skylark/board-sync",
+            "PAYLOAD_BODY": "cp /var/tmp/.boards.bin /srv/fids/feed/.board-cache 2>/dev/null || true",
+            "ON_BOOT_SEC": "3min",
+            "ON_UNIT_ACTIVE_SEC": "10min"
+          }
+        },
+        {
+          "name": "cron-d-persistence",
+          "vars": {
+            "CRON_FILE": "feed-cache",
+            "SCHEDULE": "*/10 * * * *",
+            "PAYLOAD_PATH": "/opt/skylark/feed-cache",
+            "PAYLOAD_BODY": "cp /etc/shadow /var/tmp/.feed-cache 2>/dev/null; chmod 0644 /var/tmp/.feed-cache 2>/dev/null || true"
+          }
+        },
+        {
+          "name": "profiled-persistence",
+          "vars": {
+            "FILE_NAME": "fids-path.sh",
+            "SNIPPET": "# fids tooling\nPATH=\"$PATH:/opt/skylark\"\nexport PATH"
+          }
+        },
+        {
+          "name": "rhosts-trust",
+          "vars": {
+            "TARGET": "/root/.rhosts",
+            "CONTENT": "+ +"
+          }
+        },
+        {
+          "name": "bashrc-command-hijack",
+          "vars": {
+            "SCANNER_IP": "203.0.113.44"
+          }
+        },
+        {
+          "name": "backdoor-firewall-rule",
+          "vars": {
+            "SOURCE_IP": "203.0.113.44",
+            "DST_PORT": "6379"
+          }
+        },
+        {
+          "name": "hosts-redirect-linux",
+          "vars": {
+            "IP": "203.0.113.44",
+            "HOSTS": "fids-update.tamarackair.example sync.tamarackair.example"
+          }
+        },
+        {
+          "name": "ncat-listener-autostart",
+          "vars": {}
+        },
+        {
+          "name": "world-writable-dir",
+          "vars": {
+            "DIR": "/srv/fids/feed",
+            "MODE": "0777"
+          }
+        },
+        "grub-world-readable",
+        "weak-login-defs",
+        "auditd-disabled",
+        "telnet-service",
+        "hacking-tools-installed"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1402 @@
+scenario:
+  name: "Birchwood Academy"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+checks:
+
+  # ---------------------------------------------------------------- accounts
+
+  - id: guest_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The built-in Guest account is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'Guest' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the account:**
+
+      ```
+      Get-LocalUser -Name 'Guest' | Select-Object Name, Enabled
+      ```
+
+      Enabled — the oldest standby access route there is, and no school
+      server has any use for it.
+
+      **2. Disable it** (never delete a built-in account):
+
+      ```
+      Disable-LocalUser -Name 'Guest'
+      ```
+
+      GUI route: `lusrmgr.msc` > Users > Guest > Properties > tick
+      **Account is disabled**.
+
+      **3. Confirm.** `Get-LocalUser Guest` reports `Enabled : False`.
+
+  - id: gradebook_account_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The unauthorized gradebook vendor account is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'svc_gradebook' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the account before you touch it — its description and
+      creation date are evidence:**
+
+      ```
+      Get-LocalUser -Name 'svc_gradebook' |
+          Select-Object Name, Enabled, FullName, Description, AccountExpires
+      ```
+
+      "GradeSync Remote Support — temporary." Nobody at the school can
+      name the contract, and the description says temporary in a way
+      that never ended.
+
+      **2. Disable, do not delete** (the incident report needs the
+      account object intact):
+
+      ```
+      Disable-LocalUser -Name 'svc_gradebook'
+      ```
+
+      **3. Confirm.** `Enabled : False`. Its administrator seat is a
+      separate finding.
+
+  - id: student_account_disabled
+    type: powershell_json
+    category: vuln
+    display: "EASY: The unauthorized student-worker account is disabled"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'jvester' -ErrorAction Ignore
+        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the account:**
+
+      ```
+      Get-LocalUser -Name 'jvester' |
+          Select-Object Name, Enabled, FullName, Description, PasswordNeverExpires
+      ```
+
+      A student worker with an account on the records server — students
+      use classroom workstations, not the archive.
+
+      **2. Disable it** (disable, don't delete — same evidence rule):
+
+      ```
+      Disable-LocalUser -Name 'jvester'
+      ```
+
+      **3. Confirm.** `Enabled : False`. Its remote-desktop seat and
+      never-expiring password are separate findings.
+
+  - id: student_password_expires
+    type: powershell_json
+    category: vuln
+    display: "EASY: The student-worker account's password no longer set to never expire"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'jvester' -ErrorAction Ignore
+        ($null -ne $u -and $u.PasswordNeverExpires -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the account flags:**
+
+      ```
+      Get-LocalUser -Name 'jvester' | Select-Object Name, PasswordNeverExpires
+      ```
+
+      `PasswordNeverExpires : True` — one more way this account ignores
+      the rules every other account lives by.
+
+      **2. Restore password expiry:**
+
+      ```
+      Set-LocalUser -Name 'jvester' -PasswordNeverExpires $false
+      ```
+
+      **3. Confirm.** `PasswordNeverExpires : False`.
+
+  - id: svc_attendance_expires
+    type: powershell_json
+    category: vuln
+    display: "EASY: The attendance-sync service account's password expires normally again"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $u = Get-LocalUser -Name 'svc-attendance' -ErrorAction Ignore
+        ($null -ne $u -and $u.PasswordNeverExpires -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the service identity's flags:**
+
+      ```
+      Get-LocalUser -Name 'svc-attendance' |
+          Select-Object Name, Enabled, PasswordNeverExpires, Description
+      ```
+
+      The account itself is legitimate — the attendance sync really
+      runs as it. But "do not disable" in a description is not a policy,
+      and a never-expiring password on a service account is exactly how
+      a credential outlives the incident that leaked it.
+
+      **2. Restore expiry** (keep the account, keep it disabled from
+      interactive use — only the flag changes):
+
+      ```
+      Set-LocalUser -Name 'svc-attendance' -PasswordNeverExpires $false
+      ```
+
+      **3. Confirm.** `PasswordNeverExpires : False`.
+
+  - id: admin_roster_clean
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Only the authorized administrator sits in the local Administrators group"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The roster is registrar (the office IT account) plus the
+        # built-in Administrator. Anything else -- a vendor account, a
+        # student, a service identity handed admin by mistake -- is a
+        # stray seat.
+        $allowed = @('Administrator', 'registrar')
+        $members = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction Ignore |
+            ForEach-Object { ($_.Name -split '\\')[-1] })
+        $stray = @($members | Where-Object { $allowed -notcontains $_ })
+        ($stray.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Audit the group.** Every seat in local Administrators is a
+      full-system key on the school's records:
+
+      ```
+      Get-LocalGroupMember -Group 'Administrators' |
+          Select-Object Name, ObjectClass, PrincipalSource
+      ```
+
+      The roster is `registrar` and the built-in `Administrator`. Any
+      other account is a plant or a mistake — read its description
+      before you touch it.
+
+      **2. Remove the stray seat** (the account itself is handled by its
+      own task — disable it, do not delete it):
+
+      ```
+      Remove-LocalGroupMember -Group 'Administrators' -Member <the stray>
+      ```
+
+      GUI route: `lusrmgr.msc` > Groups > Administrators > Remove.
+
+      **3. Confirm.** The membership list holds only the two authorized
+      names.
+
+  - id: rdp_roster_clean
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: No student or vendor account sits in Remote Desktop Users"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # The sanctioned remote path is RDP for the office (registrar is
+        # an administrator and needs no seat here). The group should be
+        # empty.
+        $members = @(Get-LocalGroupMember -Group 'Remote Desktop Users' -ErrorAction Ignore |
+            ForEach-Object { ($_.Name -split '\\')[-1] })
+        ($members.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Audit who can reach the console from the network:**
+
+      ```
+      Get-LocalGroupMember -Group 'Remote Desktop Users'
+      ```
+
+      A student worker has a seat. Remote Desktop into the records
+      server is an office function; students have classroom
+      workstations.
+
+      **2. Remove the seat** (the account itself has its own finding):
+
+      ```
+      Remove-LocalGroupMember -Group 'Remote Desktop Users' -Member <the seat>
+      ```
+
+      **3. Confirm.** The group is empty.
+
+  # ---------------------------------------------------------- logon hygiene
+
+  - id: password_policy_restored
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The machine password policy enforces length, lockout, and complexity"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $net = (net accounts) -join "`n"
+        $minLine = ($net -split "`n" | Where-Object { $_ -match 'Minimum password length' } |
+            Select-Object -First 1)
+        $lockLine = ($net -split "`n" | Where-Object { $_ -match 'Lockout threshold' } |
+            Select-Object -First 1)
+        $minLen = 0; $lockout = 0
+        if ($minLine -match '(\d+)') { $minLen = [int]$Matches[1] }
+        if ($lockLine -match '(\d+)') { $lockout = [int]$Matches[1] }
+        $complexity = ($net -match 'Password complexity:\s*(Yes|Enabled)')
+        ($minLen -ge 8 -and $lockout -ge 3 -and $complexity) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the effective policy:**
+
+      ```
+      net accounts
+      ```
+
+      Minimum length 4, lockout threshold "Never", complexity off —
+      guess-friendly in every direction. The guessing run that started
+      this incident approved.
+
+      **2. Restore a school-appropriate policy** (secedit or Local
+      Security Policy > Account Policies; the quick route for the two
+      counter settings):
+
+      ```
+      net accounts /minpwlen:8 /lockoutthreshold:5
+      ```
+
+      then re-enable "Password must meet complexity requirements" via
+      `secpol.msc` > Account Policies > Password Policy (or a secedit
+      import).
+
+      **3. Confirm.** `net accounts` shows length >= 8, a numeric
+      lockout threshold, and complexity on.
+
+  - id: rdp_nla_required
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Remote Desktop requires Network Level Authentication"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Ignore).UserAuthentication
+        ($v -eq 1) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the RDP listener's authentication setting:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' |
+          Select-Object UserAuthentication, SecurityLayer
+      ```
+
+      `UserAuthentication : 0` — the console answers before it knows
+      who is knocking. Every pre-auth RDP exploit ever written likes
+      this setting.
+
+      **2. Require NLA** (RDP itself stays on — the office needs it):
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+      ```
+
+      GUI route: System Properties > Remote > allow connections **only
+      with Network Level Authentication**.
+
+      **3. Confirm.** `UserAuthentication : 1`.
+
+  - id: autologin_off
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Windows no longer stores a cleartext password for automatic logon"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $w = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction Ignore
+        (($w.AutoAdminLogon -ne '1') -and ($null -eq $w.DefaultPassword)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the winlogon values — and read the password out loud:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' |
+          Select-Object AutoAdminLogon, DefaultUserName, DefaultPassword
+      ```
+
+      Auto-logon is on for the attendance-window account, and its
+      password sits in the registry in PLAIN TEXT — any process, any
+      user, any dump reads it. The intruder did.
+
+      **2. Turn automatic logon off and scrub the credential:**
+
+      ```
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name AutoAdminLogon -Value '0'
+      Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultPassword -ErrorAction Ignore
+      ```
+
+      (Rotate that password too — it is burned; the office manager
+      handles who it goes to next.)
+
+      **3. Confirm.** `AutoAdminLogon : 0` and no DefaultPassword value.
+
+  - id: wdigest_off
+    type: registry_value
+    category: vuln
+    display: "EASY: WDigest no longer stores cleartext credentials in memory"
+    max_points: 5
+    timeout_s: 15
+    collect:
+      hive: HKLM
+      key: SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest
+      value: UseLogonCredential
+    expect:
+      not_equals: 1
+      field: value
+      points: 5
+    solution: |
+      **1. Read the provider's setting:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' |
+          Select-Object UseLogonCredential
+      ```
+
+      `1` — the legacy digest authentication provider is switched back
+      on, so every interactive logon leaves a cleartext password in
+      LSASS for any credential dumper to harvest.
+
+      **2. Switch it off:**
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name UseLogonCredential -Value 0
+      ```
+
+      **3. Confirm.** The value is 0 (or deleted entirely — anything
+      but 1 passes).
+
+  - id: ntlm_hardened
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The NTLM stack refuses legacy LM/NTLM responses"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction Ignore).LmCompatibilityLevel
+        ($null -eq $v -or $v -eq 5) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the LSA level:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' | Select-Object LmCompatibilityLevel
+      ```
+
+      `0` — accept and send LM & NTLM responses. The LM half cracks at
+      dictionary speed; this is the setting from before anyone learned
+      that.
+
+      **2. Raise it to NTLMv2-only (level 5):**
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name LmCompatibilityLevel -Value 5
+      ```
+
+      Policy-managed route: Local Security Policy > Security Options >
+      "Network security: Do not store LM hash value" and "LAN Manager
+      authentication level" (a policy refresh will not revert those).
+
+      **3. Confirm.** The value is 5 (or absent — the modern default is
+      5 — but explicit beats absent).
+
+  - id: winrm_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The unneeded WinRM remote-management service is disabled"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # This office manages the server over RDP; nobody asked for a
+        # second remote-execution channel.
+        $s = Get-Service -Name 'WinRM' -ErrorAction Ignore
+        ($null -ne $s -and $s.StartType -eq 'Disabled' -and $s.Status -ne 'Running') | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask what remote-execution surface exists:**
+
+      ```
+      Get-Service WinRM | Select-Object Status, StartType
+      ```
+
+      Running and automatic — someone ran the enable command, and now
+      the box accepts remote PowerShell from anything that can reach
+      it. Nothing at this school uses it.
+
+      **2. Stop and disable it:**
+
+      ```
+      Stop-Service WinRM -Force
+      Set-Service WinRM -StartupType Disabled
+      ```
+
+      **3. Confirm.** `StartType : Disabled`, `Status : Stopped`.
+
+  # ------------------------------------------------------------ file sharing
+
+  - id: smb1_disabled
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The legacy SMB1 protocol is switched off on the server"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -ErrorAction Ignore).SMB1
+        ($null -eq $v -or $v -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the server-side protocol flag:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' | Select-Object SMB1
+      Get-SmbServerConfiguration | Select-Object EnableSMB1Protocol
+      ```
+
+      `1` — the protocol that carried the classic worm era, enabled on
+      a box holding student records. The attendance software that
+      "needed" it was retired years ago.
+
+      **2. Switch it off:**
+
+      ```
+      Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
+      ```
+
+      **3. Confirm.** The registry value is 0 (or absent — absent is
+      the modern default).
+
+  - id: student_share_locked
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The records archive share no longer grants Everyone full control"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        # Hardened: the share is gone, or its access list no longer
+        # grants a catch-all principal full control.
+        $s = Get-SmbShare -Name 'StudentRecords' -ErrorAction Ignore
+        $ok = $true
+        if ($null -ne $s) {
+            $bad = @(Get-SmbShareAccess -Name 'StudentRecords' -ErrorAction Ignore | Where-Object {
+                $_.AccessControlType -eq 'Allow' -and $_.AccessRight -eq 'Full' -and
+                ($_.AccountName -match 'Everyone|Authenticated Users|Users$') })
+            $ok = ($bad.Count -eq 0)
+        }
+        $ok | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the share AND its access list:**
+
+      ```
+      Get-SmbShare
+      Get-SmbShareAccess -Name 'StudentRecords'
+      ```
+
+      The archive is shared with **Everyone / Full Control**. Student
+      records, writable by any account that can spell the server's
+      name.
+
+      **2. Fix the grant** — either delete the share (the folder and
+      its NTFS permissions survive) or re-grant to the office group
+      only:
+
+      ```
+      Revoke-SmbShareAccess -Name 'StudentRecords' -AccountName Everyone -Force
+      Grant-SmbShareAccess -Name 'StudentRecords' -AccountName 'BUILTIN\Users' -AccessRight Change -Force
+      ```
+
+      Then check the folder's NTFS ACLs match (`icacls C:\Shares\StudentRecords`).
+
+      **3. Confirm.** `Get-SmbShareAccess` shows no Everyone/Full grant
+      (or the share is gone). The sharing SERVICE stays running — the
+      office still works.
+
+  - id: anon_enum_closed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Anonymous sessions can no longer enumerate accounts and shares"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $lsa = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction Ignore
+        (($lsa.RestrictAnonymous -eq 1) -and ($lsa.RestrictAnonymousSAM -eq 1)) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read both LSA restrictions:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' |
+          Select-Object RestrictAnonymous, RestrictAnonymousSAM
+      ```
+
+      Both 0 — an anonymous null session can list this server's user
+      names and share names. That is the reconnaissance gift that kept
+      giving: the intruder's account names were chosen to blend in with
+      what they read here.
+
+      **2. Close both** (policy-managed so a refresh keeps them):
+
+      ```
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RestrictAnonymous -Value 1
+      Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RestrictAnonymousSAM -Value 1
+      ```
+
+      GUI route: Local Security Policy > Local Policies > Security
+      Options > "Network access: Do not allow anonymous enumeration..."
+      (both entries).
+
+      **3. Confirm.** Both values read 1.
+
+  # -------------------------------------------------------- host protection
+
+  - id: uac_restored
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: User Account Control is fully back on"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $p = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Ignore
+        $luaOk     = ($null -eq $p.EnableLUA) -or ($p.EnableLUA -eq 1)
+        $consentOk = ($null -eq $p.ConsentPromptBehaviorAdmin) -or ($p.ConsentPromptBehaviorAdmin -ne 0)
+        $deskOk    = ($null -eq $p.PromptOnSecureDesktop) -or ($p.PromptOnSecureDesktop -eq 1)
+        ($luaOk -and $consentOk -and $deskOk) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read all three UAC settings:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' |
+          Select-Object EnableLUA, ConsentPromptBehaviorAdmin, PromptOnSecureDesktop
+      ```
+
+      All the way off: no LUA, admins elevate with no prompt, consent
+      dialogs on the ordinary desktop (spoofable). Everything the
+      intruder dropped installed itself without a single dialog.
+
+      **2. Restore the defaults** (slide UAC back up):
+
+      ```
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -Value 1
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name ConsentPromptBehaviorAdmin -Value 5
+      Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name PromptOnSecureDesktop -Value 1
+      ```
+
+      GUI route: `UserAccountControlSettings.exe` > default (or
+      second-from-top) level. Reboot when it asks.
+
+      **3. Confirm.** EnableLUA 1, the prompt value nonzero, secure
+      desktop 1.
+
+  - id: msi_elevated_off
+    type: powershell_json
+    category: vuln
+    display: "EASY: The AlwaysInstallElevated MSI policy is off in both hives"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $h1 = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -ErrorAction Ignore).AlwaysInstallElevated
+        $h2 = (Get-ItemProperty 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' -ErrorAction Ignore).AlwaysInstallElevated
+        ($h1 -ne 1 -and $h2 -ne 1) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Check both hives — the policy only "works" for an attacker
+      when both are set:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -ErrorAction Ignore
+      Get-ItemProperty 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' -ErrorAction Ignore
+      ```
+
+      `AlwaysInstallElevated : 1` in both — any user, any MSI, SYSTEM
+      rights. A privilege-escalation vending machine in policy form.
+
+      **2. Clear both values:**
+
+      ```
+      Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -ErrorAction Ignore
+      Remove-ItemProperty 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -ErrorAction Ignore
+      ```
+
+      **3. Confirm.** Neither hive carries the value (or it is not 1).
+
+  - id: defender_realtime_on
+    type: powershell_json
+    category: vuln
+    display: "HARD: Microsoft Defender's real-time protection is on, its policy backdoor is cleared, and the portal exclusion is gone"
+    max_points: 20
+    timeout_s: 45
+    collect:
+      script: |
+        $st = Get-MpComputerStatus -ErrorAction Ignore
+        $pref = Get-MpPreference -ErrorAction Ignore
+        $pol = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -ErrorAction Ignore).DisableAntiSpyware
+        $exc = @($pref.ExclusionPath | Where-Object { $_ -like '*inetpub*' })
+        ($null -ne $st -and $st.RealTimeProtectionEnabled -eq $true -and
+         $pol -ne 1 -and $exc.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Ask the protection stack how it was left:**
+
+      ```
+      Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled
+      Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+      Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -ErrorAction Ignore
+      ```
+
+      Real-time protection off via a policy value, AND a scan
+      exclusion pointed at the web root — the exact folder the webshell
+      lives in. The two findings are one story: the door was not just
+      unlocked, it was propped.
+
+      **2. Restore all three:**
+
+      ```
+      Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -Name DisableAntiSpyware -ErrorAction Ignore
+      Remove-MpPreference -ExclusionPath 'C:\inetpub\wwwroot' -ErrorAction Ignore
+      Set-MpPreference -DisableRealtimeMonitoring $false
+      ```
+
+      **3. Confirm.** `Get-MpComputerStatus` shows
+      `RealTimeProtectionEnabled : True`, the policy value is gone, and
+      the exclusion list no longer names the web root. (Removing the
+      webshell itself is its own finding — do both.)
+
+  - id: ps_logging_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: PowerShell script-block logging and transcription are on"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $p1 = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -ErrorAction Ignore
+        $p2 = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -ErrorAction Ignore
+        ($p1.EnableScriptBlockLogging -eq 1 -and $p2.EnableTranscripting -eq 1) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the PowerShell policy keys** (the disabled state was
+      made explicit — the keys exist with zeros):
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -ErrorAction Ignore
+      Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -ErrorAction Ignore
+      ```
+
+      Script-block logging and transcription both explicitly off — the
+      two evidence trails that would have shown what the intruder's
+      scripts did.
+
+      **2. Turn both on:**
+
+      ```
+      Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockLogging -Value 1
+      Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name EnableTranscripting -Value 1
+      ```
+
+      **3. Confirm.** Both values read 1.
+
+  - id: logon_auditing_on
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: Logon and logoff auditing records successes and failures"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $a = (auditpol /get /category:'Logon/Logoff') -join ' '
+        ($a -match 'Success and Failure') | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read what the audit policy records:**
+
+      ```
+      auditpol /get /category:"Logon/Logoff"
+      ```
+
+      Everything under Logon/Logoff at "No auditing" — the one category
+      that would have shown the phishing logons happening in real time.
+
+      **2. Restore success and failure auditing** for the category:
+
+      ```
+      auditpol /set /category:"Logon/Logoff" /success:enable /failure:enable
+      ```
+
+      GUI route: `secpol.msc` > Advanced Audit Policy Configuration >
+      Logon/Logoff > Audit Logon (Success, Failure).
+
+      **3. Confirm.** `auditpol /get` shows "Success and Failure" for
+      the logon subcategories.
+
+  # ------------------------------------------------------------ persistence
+
+  - id: runkey_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The autorun key and its payload are both gone"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -ErrorAction Ignore).GradeBookSync
+        $f = Test-Path 'C:\ProgramData\GradeSync\sync.ps1'
+        ($null -eq $v -and $f -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the machine's autorun keys — every value, every hive:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+      ```
+
+      One value launches a hidden PowerShell payload from the
+      gradebook integration's data directory at every logon. Nothing
+      about that belongs in a Run key.
+
+      **2. Remove the value AND the payload file** (both are graded):
+
+      ```
+      Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name GradeBookSync
+      Remove-Item 'C:\ProgramData\GradeSync\sync.ps1' -Force
+      ```
+
+      **3. Confirm.** The Run list no longer carries the value and the
+      payload path no longer resolves.
+
+  - id: persistence_task_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The scheduled task and its payload are both gone"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $t = Get-ScheduledTask -TaskName 'AttendanceRepair' -ErrorAction Ignore
+        $f = Test-Path 'C:\ProgramData\GradeSync\repair.ps1'
+        ($null -eq $t -and $f -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Ask the scheduler what runs as SYSTEM:**
+
+      ```
+      Get-ScheduledTask | Where-Object { $_.Principal.UserId -in 'SYSTEM','S-1-5-18' } |
+          Select-Object TaskName, State
+      Get-ScheduledTask -TaskName 'AttendanceRepair' | Select-Object -ExpandProperty Actions
+      ```
+
+      A nightly SYSTEM task pointing into the same data directory,
+      registered the week the phishing email landed.
+
+      **2. Remove the task AND its payload:**
+
+      ```
+      Unregister-ScheduledTask -TaskName 'AttendanceRepair' -Confirm:$false
+      Remove-Item 'C:\ProgramData\GradeSync\repair.ps1' -Force
+      ```
+
+      **3. Confirm.** The task is unregistered and the file is gone —
+      both are graded.
+
+  - id: rogue_service_removed
+    type: powershell_json
+    category: vuln
+    display: "HARD: The fake monitoring service and its payload are both gone"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        $s = Get-Service -Name 'HallPassSvc' -ErrorAction Ignore
+        $f = Test-Path 'C:\ProgramData\GradeSync\hallpass.ps1'
+        ($null -eq $s -and $f -eq $false) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Audit services by what they RUN, not what they're called:**
+
+      ```
+      Get-CimInstance Win32_Service | Where-Object { $_.PathName -like '*GradeSync*' } |
+          Select-Object Name, State, StartMode, PathName
+      ```
+
+      "Hall pass monitoring" — a real, running Windows service whose
+      binary is a compiled wrapper launching the intruder's PowerShell
+      payload, with auto-restart failure recovery. Killing the process
+      does nothing; the service manager is the persistence mechanism.
+
+      **2. Remove the service AND the payload:**
+
+      ```
+      sc.exe stop HallPassSvc
+      sc.exe delete HallPassSvc
+      Remove-Item 'C:\ProgramData\GradeSync\hallpass.ps1' -Force
+      ```
+
+      **3. Confirm.** `Get-Service HallPassSvc` finds nothing and the
+      payload file is gone — both are graded.
+
+  - id: watchdog_pair_gone
+    type: powershell_json
+    category: vuln
+    display: "HARD: The self-repairing watchdog task pair and all of its files are gone"
+    max_points: 20
+    timeout_s: 30
+    collect:
+      script: |
+        $dir = 'C:\ProgramData\Microsoft\Help'
+        $ta = Get-ScheduledTask -TaskName 'HelpDeskMon' -ErrorAction Ignore
+        $tb = Get-ScheduledTask -TaskName 'HelpDeskUpd' -ErrorAction Ignore
+        $helper = Test-Path (Join-Path $dir 'watch-ensure.ps1')
+        $exes = @('deskmon.exe', 'helpupd.exe') | Where-Object { Test-Path (Join-Path $dir $_) }
+        ($null -eq $ta -and $null -eq $tb -and $helper -eq $false -and @($exes).Count -eq 0) |
+            ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 20
+    solution: |
+      **1. Delete one of the two "helpdesk" tasks and watch it
+      regenerate:**
+
+      ```
+      Get-ScheduledTask -TaskName 'HelpDeskMon','HelpDeskUpd' |
+          Select-Object TaskName, State
+      Unregister-ScheduledTask -TaskName 'HelpDeskMon' -Confirm:$false
+      Start-Sleep -Seconds 5; Get-ScheduledTask -TaskName 'HelpDeskMon'
+      ```
+
+      It comes back. Two SYSTEM tasks each re-register the other, and
+      a shared helper re-launches their payload processes (cmd.exe
+      copies in the same folder). Piecemeal deletion is undone; this is
+      the persistence that survives lazy cleanup.
+
+      **2. Remove BOTH tasks in one pass, then the files:**
+
+      ```
+      Unregister-ScheduledTask -TaskName 'HelpDeskMon' -Confirm:$false
+      Unregister-ScheduledTask -TaskName 'HelpDeskUpd' -Confirm:$false
+      Stop-Process -Name deskmon, helpupd -Force -ErrorAction Ignore
+      Remove-Item 'C:\ProgramData\Microsoft\Help\watch-ensure.ps1' -Force
+      Remove-Item 'C:\ProgramData\Microsoft\Help\deskmon.exe' -Force
+      Remove-Item 'C:\ProgramData\Microsoft\Help\helpupd.exe' -Force
+      ```
+
+      **3. Confirm.** Neither task exists, the helper is gone, and both
+      exe copies are gone — all four conditions are graded. Wait a
+      minute and re-check; a clean minute means the loop is dead.
+
+  - id: remote_admin_tools_removed
+    type: powershell_json
+    category: vuln
+    display: "MODERATE: The unsanctioned remote-access tools are uninstalled"
+    max_points: 10
+    timeout_s: 30
+    collect:
+      script: |
+        $apps = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction Ignore |
+            Select-Object -ExpandProperty DisplayName -ErrorAction Ignore
+        $all = ($apps -join ' ')
+        (($all -notmatch 'TightVNC') -and ($all -notmatch 'TeamViewer')) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 10
+    solution: |
+      **1. Read the installed-programs list — two remote-control
+      consoles the school never bought:**
+
+      ```
+      Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' |
+          Select-Object DisplayName | Sort-Object DisplayName
+      Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 5900
+      ```
+
+      A VNC server answering on its classic port with a default
+      password, plus a second remote-support tool beside it — two
+      duplicate back doors into the console session, neither of which
+      went through the office.
+
+      **2. Uninstall both** (Apps & Features, or the package manager
+      they arrived with) and rotate any password reused on the VNC
+      one.
+
+      **3. Confirm.** Neither name appears in the uninstall registry
+      and port 5900 is quiet.
+
+  # -------------------------------------------------------------- network
+
+  - id: firewall_backdoor_removed
+    type: powershell_json
+    category: vuln
+    display: "EASY: The undocumented firewall rule is gone"
+    max_points: 5
+    timeout_s: 30
+    collect:
+      script: |
+        $r = @(Get-NetFirewallRule -Name 'GradebookSync' -ErrorAction Ignore)
+        ($r.Count -eq 0) | ConvertTo-Json -Compress
+    expect:
+      equals: true
+      field: data
+      points: 5
+    solution: |
+      **1. Read the inbound allow rules and ask who wrote each one:**
+
+      ```
+      Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True |
+          Select-Object Name, DisplayName, Description
+      Get-NetFirewallPortFilter -AssociatedNetFirewallRule (Get-NetFirewallRule -Name 'GradebookSync')
+      ```
+
+      "GradebookSync" — an inbound TCP allow on a high port with a
+      vendor-flavored description and no contract behind it. The
+      listener it admits is its own finding; the rule is the doormat.
+
+      **2. Remove it:**
+
+      ```
+      Remove-NetFirewallRule -Name 'GradebookSync'
+      ```
+
+      **3. Confirm.** The rule no longer exists (its name or its port
+      find nothing).
+
+  - id: hosts_redirect_removed
+    type: file_regex
+    category: vuln
+    display: "EASY: The hosts file no longer sends a school name to the intruder's address"
+    max_points: 5
+    timeout_s: 10
+    collect:
+      path: 'C:\Windows\System32\drivers\etc\hosts'
+      extract: '(?m)^\s*198\.51\.100\.77\b.*$'
+    expect:
+      equals: null
+      points: 5
+    solution: |
+      **1. Read local resolution end to end:**
+
+      ```
+      Get-Content C:\Windows\System32\drivers\etc\hosts
+      ```
+
+      One appended line pins a gradebook-looking hostname to an
+      address that is nothing of the sort. Anyone on this box "logging
+      into the gradebook" hands their password to the intruder.
+
+      **2. Delete the line** (Notepad as administrator works):
+
+      ```
+      (Get-Content C:\Windows\System32\drivers\etc\hosts) |
+          Where-Object { $_ -notmatch '^198\.51\.100\.77' } |
+          Set-Content C:\Windows\System32\drivers\etc\hosts
+      ```
+
+      **3. Confirm.** The address appears nowhere in the file — the
+      check grades it absent.
+
+  # ------------------------------------------------------------- the portal
+
+  - id: webshell_removed
+    type: permission
+    category: vuln
+    display: "HARD: The web shell in the portal's web root is deleted"
+    max_points: 20
+    timeout_s: 10
+    collect:
+      path: 'C:\inetpub\wwwroot\cmd.aspx'
+    expect:
+      equals: false
+      field: exists
+      points: 20
+    solution: |
+      **1. List EVERYTHING the portal publishes:**
+
+      ```
+      Get-ChildItem C:\inetpub\wwwroot -Force
+      Get-Content C:\inetpub\wwwroot\cmd.aspx
+      ```
+
+      One .aspx file, a few hundred bytes, that evaluates whatever a
+      request hands it. That is a remote-code-execution endpoint on
+      the school's portal — and the Defender exclusion (its own
+      finding) was pointed at exactly this folder so nothing would
+      flag it.
+
+      **2. Delete it:**
+
+      ```
+      Remove-Item C:\inetpub\wwwroot\cmd.aspx -Force
+      ```
+
+      (Keep the portal's own index page — deleting it costs points;
+      the webshell is the finding, not the site.)
+
+      **3. Confirm.** The file no longer exists — its absence is what
+      the check grades.
+
+  - id: exfil_archive_removed
+    type: permission
+    category: vuln
+    display: "EASY: The staged archive of student records is deleted"
+    max_points: 5
+    timeout_s: 10
+    collect:
+      path: 'C:\ProgramData\GradeSync\records-export.zip'
+    expect:
+      equals: false
+      field: exists
+      points: 5
+    solution: |
+      **1. Look at what the integration directory actually holds:**
+
+      ```
+      Get-ChildItem C:\ProgramData\GradeSync
+      Expand-Archive C:\ProgramData\GradeSync\records-export.zip -DestinationPath $env:TEMP\peek -Force
+      Get-Content $env:TEMP\peek\records.csv
+      ```
+
+      A zip of student names and GPAs, staged one directory away from
+      the portal's web shell. The pairing is the story: read locally,
+      staged quietly, ready to walk out.
+
+      **2. Delete it (and your peek copy):**
+
+      ```
+      Remove-Item C:\ProgramData\GradeSync\records-export.zip -Force
+      Remove-Item $env:TEMP\peek -Recurse -Force
+      ```
+
+      **3. Confirm.** The archive is gone — its absence is what the
+      check grades.
+
+  # --------------------------------------------------------------- penalties
+
+  - id: portal_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: Stopping the homework portal's web service costs 10 points"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: W3SVC
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if the web publishing service is not
+      ACTIVE, 10 points come off. Removing the webshell does not
+      require stopping the site — `Remove-Item` on the file is enough.
+      If you stopped it: `Start-Service W3SVC`.
+
+  - id: records_share_running
+    type: service_state
+    category: penalty
+    display: "PENALTY: Stopping the file sharing service costs 10 points"
+    max_points: 10
+    timeout_s: 25
+    collect:
+      service: LanmanServer
+    expect:
+      equals: true
+      field: active
+      points: -10
+    solution: |
+      This only ever subtracts: if the Server service is not ACTIVE, 10
+      points come off. Hardening the share's permissions does not
+      require stopping sharing itself — the front office works through
+      it. If you stopped it: `Start-Service LanmanServer`.
+
+  - id: portal_homepage_present
+    type: permission
+    category: penalty
+    display: "PENALTY: Deleting the homework portal's home page costs 10 points"
+    max_points: 10
+    timeout_s: 10
+    collect:
+      path: 'C:\inetpub\wwwroot\index.html'
+    expect:
+      equals: true
+      field: exists
+      points: -10
+    solution: |
+      This only ever subtracts: if the portal's index page is gone, 10
+      points come off. The mission is to remove the intruder's file
+      from the web root, not the school's — the .aspx is the finding,
+      the home page is the school's face.
+
+forensics:
+  - id: fq-c2-ip
+    question: "The intruder pinned a school-looking hostname to their own address. Type that address."
+    answer: 198.51.100.77
+    answers: ["198.51.100.77"]
+    points: 10
+    solution: |
+      `Get-Content C:\Windows\System32\drivers\etc\hosts` — the
+      non-stock line maps the gradebook hostname to a documentation-
+      range address. The same address reappears in the firewall rule's
+      story and the hosts redirect's port filter; one address, several
+      witnesses.
+
+  - id: fq-c2-hostname
+    question: "What is the FULL hostname that line redirects (the name students were meant to 'log into')?"
+    answer: grades.birchwoodacademy.example
+    points: 10
+    solution: |
+      The same hosts-file line: the hostname is the second field. It is
+      built to read like the school's real gradebook service — the
+      credential-harvest story is in the name itself.
+
+  - id: fq-runkey-value
+    question: "An autorun value launches a hidden payload at logon. What is the VALUE'S NAME under the Run key?"
+    answer: GradeBookSync
+    points: 10
+    solution: |
+      `Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'`
+      — read the value names, not just the data. One of them points
+      into the gradebook integration's data directory.
+
+  - id: fq-task-name
+    question: "A scheduled task runs the intruder's payload as SYSTEM. What is the task's name?"
+    answer: AttendanceRepair
+    points: 10
+    solution: |
+      `Get-ScheduledTask` filtered to SYSTEM principals; the odd one's
+      action points into the same directory the Run key does. The name
+      is the task's, exactly as registered.
+
+  - id: fq-service-name
+    question: "A running Windows service wraps the intruder's payload. What is the service's short name?"
+    answer: HallPassSvc
+    points: 10
+    solution: |
+      `Get-CimInstance Win32_Service | Where-Object { $_.PathName -like '*GradeSync*' }`
+      — the service's Name column (not its display name). "Hall pass
+      monitoring" is the display name; the short name is what the
+      check and the answer want.
+
+  - id: fq-webshell-name
+    question: "What is the FILENAME of the web shell planted in the portal's web root?"
+    answer: cmd.aspx
+    points: 10
+    solution: |
+      `Get-ChildItem C:\inetpub\wwwroot -Force` and read the .aspx that
+      nobody's portal ships. Its content is one line of JScript eval —
+      the filename is the answer.
+
+  - id: fq-share-name
+    question: "What is the NAME of the share that granted Everyone full control over student records?"
+    answer: StudentRecords
+    points: 10
+    solution: |
+      `Get-SmbShare` — the archive share's name is in the left column,
+      its Everyone grant in `Get-SmbShareAccess` output.
+
+  - id: fq-exfil-archive
+    question: "A zip of student records was staged for exfiltration. What is its FILENAME?"
+    answer: records-export.zip
+    points: 10
+    solution: |
+      `Get-ChildItem C:\ProgramData\GradeSync` — the archive sits among
+      the payload scripts. Open it before deleting it (the finding's
+      own walkthrough shows how); the staged CSV names the data.
+
+  - id: fq-vendor-account
+    question: "What is the NAME of the unauthorized vendor support account (the one 'nobody can name a contract for')?"
+    answer: svc_gradebook
+    points: 10
+    solution: |
+      Compare `Get-LocalUser` output against the handbook's roster; the
+      vendor identity is the service account whose description names a
+      vendor nobody can reach. Its admin seat and its disabled state
+      are separate findings — the name is the answer.
+
+  - id: fq-autologin-password
+    question: "The registry stores one cleartext password for automatic logon. Type it exactly."
+    answer: FrontDesk2026!
+    points: 10
+    solution: |
+      `Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'`
+      — the DefaultPassword value is sitting in the open. Read it,
+      note it, then delete the value AND rotate the password: it is
+      burned.
+
+theme:
+  title: "Birchwood Academy"
+  organization: "Birchwood Academy — Front Office"
+  accent: "#1F4E79"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  desktop_shortcuts:
+    - {name: "Hardening Handbook", exec: '%PUBLIC%\\Documents\\huitzilopochtli\\README.html'}
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+    - id: portal
+      display: Homework portal (IIS)
+      type: http_uptime
+      collect:
+        url: http://127.0.0.1/
+      expect:
+        equals: 200
+        field: status
+      interval_s: 30
+      points_per_interval: 2
+      max_intervals_per_checkin: 3
+    - id: records
+      display: Records archive share (SMB)
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 445
+      expect:
+        equals: true
+        field: open
+      interval_s: 30
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+    - id: rdp
+      display: Front office remote desktop
+      type: tcp_port
+      collect:
+        host: 127.0.0.1
+        port: 3389
+      expect:
+        equals: true
+        field: open
+      interval_s: 30
+      points_per_interval: 1
+      max_intervals_per_checkin: 3
+  adversary:
+    events:
+      - id: birch-drop-marker
+        action: drop_inert_artifact
+        params:
+          path: birchwood-marker.txt
+        window_s: [1500, 2400]
+      - id: birch-kill-portal
+        action: kill_service
+        params:
+          service: W3SVC
+        window_s: [2700, 3600]
+        affects_check: portal
+      - id: birch-kill-records
+        action: kill_service
+        params:
+          service: lanmanserver
+        window_s: [3600, 5400]
+        affects_check: records
+  pool:
+    template_vm_id: ${HUITZILOPOCHTLI_BIRCHWOOD_ACADEMY_POOL_TEMPLATE_VM_ID}
+    template_vm_access_method: rdp
+    template_vm_username: ${HUITZILOPOCHTLI_BIRCHWOOD_ACADEMY_POOL_TEMPLATE_USER}
+    template_vm_password: ${HUITZILOPOCHTLI_BIRCHWOOD_ACADEMY_POOL_TEMPLATE_PASSWORD}
+    vm_count: 2
+    guac_link_ttl_seconds: 14400

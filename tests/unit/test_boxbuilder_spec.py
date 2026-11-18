@@ -154,10 +154,25 @@ def test_top_level_must_be_mapping(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _pool_env(monkeypatch):
-    """A ranked compile expands pool placeholders from the environment."""
+    """A ranked compile expands pool placeholders from the environment.
+    A box may author the generic trio or scenario-specific names
+    (HUITZILOPOCHTLI_<SLUG>_POOL_TEMPLATE_*), so both are seeded for
+    every ranked box -- a new box inherits the floor without edits."""
     monkeypatch.setenv("HUITZILOPOCHTLI_POOL_TEMPLATE_VM_ID", "4242")
     monkeypatch.setenv("HUITZILOPOCHTLI_POOL_TEMPLATE_USER", "template-user")
     monkeypatch.setenv("HUITZILOPOCHTLI_POOL_TEMPLATE_PASSWORD", "template-password")
+    import glob
+    import yaml
+    for path in glob.glob("boxes/*/box.yaml"):
+        scenario = yaml.safe_load(open(
+            os.path.join(os.path.dirname(path), "scenario.yaml"), encoding="utf-8"))
+        if scenario.get("ranked"):
+            prefix = "HUITZILOPOCHTLI_" + \
+                os.path.basename(os.path.dirname(path)).upper().replace("-", "_") + \
+                "_POOL_TEMPLATE"
+            monkeypatch.setenv(f"{prefix}_VM_ID", "4242")
+            monkeypatch.setenv(f"{prefix}_USER", "template-user")
+            monkeypatch.setenv(f"{prefix}_PASSWORD", "template-password")
 
 
 def _box_with_ranked():

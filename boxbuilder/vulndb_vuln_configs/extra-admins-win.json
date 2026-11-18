@@ -1,0 +1,12 @@
+{
+ "attachments": [],
+ "category": "misconfiguration",
+ "depends_on": [],
+ "description": "Realistic mistake: extra local 'break-glass' administrator accounts left over from an install or onboarding, with the classic username-equals-password pattern. Member workstations/servers only (a domain controller has no local SAM). Vars: ADMIN_USER (default svc_intake), ADMIN_PASSWORD (defaults to the username). Defender notice: Get-LocalGroupMember Administrators shows accounts absent from the build manifest; credential testing confirms the password equals the username. Difficulty: easy \u2014 the accounts are fully visible; the value for red is a second admin path that survives rotation of the primary account.",
+ "id": 315,
+ "name": "extra-admins-win",
+ "platform": "windows",
+ "run_as": "Administrator",
+ "script": "# Extra local admin with the username-equals-password break-glass pattern.\nif (-not $ADMIN_USER) { $ADMIN_USER = 'svc_intake' }\nif (-not $ADMIN_PASSWORD) { $ADMIN_PASSWORD = $ADMIN_USER }\n$sec = ConvertTo-SecureString $ADMIN_PASSWORD -AsPlainText -Force\nif (Get-LocalUser -Name $ADMIN_USER -ErrorAction Ignore) {\n    Set-LocalUser -Name $ADMIN_USER -Password $sec -PasswordNeverExpires:$true\n} else {\n    New-LocalUser -Name $ADMIN_USER -Password $sec -PasswordNeverExpires -Description 'Intake sync service account' -ErrorAction Ignore | Out-Null\n}\nAdd-LocalGroupMember -Group Administrators -Member $ADMIN_USER -ErrorAction Ignore\nWrite-Output \"extra admin $ADMIN_USER asserted\"",
+ "type": "powershell"
+}
