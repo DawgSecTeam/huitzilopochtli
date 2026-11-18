@@ -219,6 +219,42 @@ def test_leaderboard_runs_on_the_page_ground_without_a_leader_bar():
     assert "tr.leader" not in web.CSS and 'class="leader"' not in page
 
 
+# --- leaderboard screenshot button --------------------------------------------
+
+def test_leaderboard_has_a_screenshot_button():
+    page = web.competition_page(_payload())
+    assert '<button type="button" class="btn" data-shot' in page
+    assert "<span>Screenshot</span>" in page
+    # The player-facing words tell the truth about where the image goes.
+    assert 'title="Copy an image of the leaderboard to the clipboard"' in page
+    assert 'aria-label="Copy an image of the leaderboard to the clipboard"' in page
+
+
+def test_screenshot_button_follows_the_board_visibility():
+    # Hidden standings must not ship a picture of them.
+    page = web.competition_page(
+        _payload(competition={"leaderboard_hidden": True}))
+    assert '<button type="button" class="btn" data-shot' not in page
+    # The big-screen page is chromeless and carries no controls at all.
+    assert '<button type="button" class="btn" data-shot' not in web.display_page(_payload())
+
+
+def test_screenshot_js_copies_a_png_with_a_download_fallback():
+    js = web.JS
+    # The trigger finds its own board section (polling re-renders it).
+    assert "closest('[data-shot]')" in js and "closest('.board')" in js
+    # PNG onto the clipboard; older engines reject a promise payload.
+    assert "new ClipboardItem({'image/png':payload})" in js
+    assert "new ClipboardItem({'image/png':blob})" in js
+    # No ClipboardItem -> file download instead of a silent nothing.
+    assert "download='leaderboard.png'" in js
+    # The capture walks the live table with computed fonts/colors, and the
+    # wrap's negative margins do not crop the last column.
+    assert ".table-wrap" in js and "scrollWidth" in js
+    # The button excludes itself (and all form controls) from the picture.
+    assert "shotSkip(el)" in js and "tag==='BUTTON'" in js
+
+
 def test_leaderboard_spells_out_the_score_breakdown():
     page = web.competition_page(_payload())
     assert "<th>Hardening</th>" not in page

@@ -532,6 +532,9 @@ def competition_page(data: dict, *, refresh: int = 5,
 </section>
 <div id="board" data-poll="{refresh * 1000}">
 <section class="board"><div class="board-head"><h2>Leaderboard</h2>
+{'' if comp.get("leaderboard_hidden") else
+('<button type="button" class="btn" data-shot title="Copy an image of the leaderboard to the clipboard"'
+ ' aria-label="Copy an image of the leaderboard to the clipboard"><span>Screenshot</span></button>')}
 </div>
 {_board_table(rows) if not comp.get("leaderboard_hidden") else
 ('<p class="empty muted">Standings are hidden by the organizers.</p>')}
@@ -1454,9 +1457,9 @@ if(tbtn){
   tbtn.setAttribute('aria-pressed',
     document.documentElement.getAttribute('data-theme')==='dark'?'true':'false');
 }
-function flash(btn){
+function flash(btn,label){
   var lbl=btn.querySelector('span');if(!lbl)return;
-  var old=lbl.textContent;lbl.textContent='Copied';btn.classList.add('copied');
+  var old=lbl.textContent;lbl.textContent=label||'Copied';btn.classList.add('copied');
   setTimeout(function(){lbl.textContent=old;btn.classList.remove('copied');},1400);
 }
 document.addEventListener('click',function(ev){
@@ -1473,6 +1476,167 @@ document.addEventListener('click',function(ev){
     try{document.execCommand('copy');done();}catch(e){}
     document.body.removeChild(ta);
   }
+});
+/* [data-shot] paints the closest .board section onto a canvas and puts the
+   PNG on the clipboard (download fallback where ClipboardItem is missing).
+   Hand-rolled renderer: the engine ships no third-party JS, so the table is
+   redrawn element by element from the live DOM — backgrounds, borders, round
+   status dots, and per-line text with its computed font and colors. */
+function shotOpaque(color){return !!color&&color!=='transparent'&&color!=='rgba(0, 0, 0, 0)';}
+function shotFont(cs){
+  return cs.fontStyle+' '+cs.fontWeight+' '+cs.fontSize+' '+cs.fontFamily;
+}
+function shotTransform(text,tf){
+  if(tf==='uppercase')return text.toUpperCase();
+  if(tf==='lowercase')return text.toLowerCase();
+  if(tf==='capitalize')return text.replace(/\\b\\w/g,function(c){return c.toUpperCase();});
+  return text;
+}
+function shotDrawText(node,ctx){
+  var text=node.nodeValue||'';
+  if(!text.trim())return;
+  var parent=node.parentElement;if(!parent)return;
+  var cs=getComputedStyle(parent);
+  if(cs.visibility!=='visible')return;
+  ctx.font=shotFont(cs);
+  ctx.fillStyle=cs.color;
+  ctx.textBaseline='middle';
+  ctx.textAlign='left';
+  if('letterSpacing' in ctx){ctx.letterSpacing=cs.letterSpacing||'0px';}
+  text=shotTransform(text,cs.textTransform);
+  var r=document.createRange();
+  var curTop=null,curStart=0,curRect=null;
+  function flush(i,rect){
+    if(rect&&i>curStart){
+      var piece=text.slice(curStart,i);
+      if(piece.trim())ctx.fillText(piece,rect.left,rect.top+rect.height/2);
+    }
+  }
+  for(var i=0;i<text.length;i++){
+    r.setStart(node,i);r.setEnd(node,i+1);
+    var rects=r.getClientRects();
+    var hit=null,j;
+    for(j=0;j<rects.length;j++){if(rects[j].width>0||rects[j].height>0){hit=rects[j];break;}}
+    if(!hit)continue;
+    if(curTop===null){curTop=hit.top;curStart=i;curRect=hit;}
+    else if(Math.abs(hit.top-curTop)>2){flush(i,curRect);curTop=hit.top;curStart=i;curRect=hit;}
+  }
+  if(curTop!==null)flush(text.length,curRect);
+}
+function shotSkip(el){
+  var tag=el.tagName;
+  return tag==='BUTTON'||tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA'||tag==='SVG'
+    ||tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT';
+}
+function paintShots(el,ctx,rootRect){
+  var cs=getComputedStyle(el);
+  if(shotSkip(el))return;
+  if(cs.visibility!=='visible'||cs.display==='none')return;
+  var rect=el.getBoundingClientRect();
+  if(rect.bottom<rootRect.top||rect.top>rootRect.bottom)return;
+  var small=Math.min(rect.width,rect.height);
+  var radius=parseFloat(cs.borderTopLeftRadius)||0;
+  if(shotOpaque(cs.backgroundColor)){
+    ctx.fillStyle=cs.backgroundColor;
+    if(radius>0&&radius>=small/2&&small<=14){
+      /* A status dot: fill the circle it declares, never a square. */
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(rect.left+rect.width/2,rect.top+rect.height/2,small/2,0,Math.PI*2);
+      ctx.clip();
+      ctx.fillRect(rect.left,rect.top,rect.width,rect.height);
+      ctx.restore();
+    }else{
+      ctx.fillRect(rect.left,rect.top,rect.width,rect.height);
+    }
+  }
+  ['Top','Bottom','Left','Right'].forEach(function(side){
+    var w=parseFloat(cs['border'+side+'Width'])||0;
+    var stl=cs['border'+side+'Style'];
+    if(!w||stl==='none'||stl==='hidden')return;
+    if(!shotOpaque(cs['border'+side+'Color']))return;
+    ctx.fillStyle=cs['border'+side+'Color'];
+    if(side==='Top'||side==='Bottom'){
+      ctx.fillRect(rect.left,side==='Top'?rect.top:rect.bottom-w,rect.width,w);
+    }else{
+      ctx.fillRect(side==='Left'?rect.left:rect.right-w,rect.top,w,rect.height);
+    }
+  });
+}
+function shotWalk(el,ctx,rootRect){
+  paintShots(el,ctx,rootRect);
+  Array.prototype.slice.call(el.childNodes).forEach(function(child){
+    if(child.nodeType===3){
+      shotDrawText(child,ctx);
+    }else if(child.nodeType===1&&!shotSkip(child)){
+      shotWalk(child,ctx,rootRect);
+    }
+  });
+}
+function shotRootRect(section){
+  /* The table hangs wider than the section via the wrap's negative margins:
+     grow the capture to cover it, but only while it is not scrolled. */
+  var rect=section.getBoundingClientRect();
+  var out={left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};
+  $all('.table-wrap',section).forEach(function(wr){
+    if(wr.scrollWidth>wr.clientWidth+1)return;
+    var r=wr.getBoundingClientRect();
+    if(r.left<out.left)out.left=r.left;
+    if(r.right>out.right)out.right=r.right;
+  });
+  out.width=out.right-out.left;
+  out.height=out.bottom-out.top;
+  return out;
+}
+function shotFlashLater(btn,label){return function(){flash(btn,label);};}
+document.addEventListener('click',function(ev){
+  var btn=ev.target.closest?ev.target.closest('[data-shot]'):null;
+  if(!btn||btn._busy)return;
+  var section=btn.closest('.board');
+  if(!section)return;
+  var rect=shotRootRect(section);
+  if(rect.width<2||rect.height<2)return;
+  btn._busy=true;
+  var dpr=Math.min(2,window.devicePixelRatio||1);
+  var canvas=document.createElement('canvas');
+  canvas.width=Math.ceil(rect.width*dpr);
+  canvas.height=Math.ceil(rect.height*dpr);
+  var ctx=canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.translate(-rect.left,-rect.top);
+  var bodyBg=getComputedStyle(document.body).backgroundColor;
+  ctx.fillStyle=shotOpaque(bodyBg)?bodyBg:'#ffffff';
+  ctx.fillRect(rect.left,rect.top,rect.width,rect.height);
+  shotWalk(section,ctx,rect);
+  var done=shotFlashLater(btn,'Saved');
+  var fail=shotFlashLater(btn,'Failed');
+  function download(){
+    canvas.toBlob(function(blob){
+      if(!blob){fail();return;}
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=url;a.download='leaderboard.png';
+      document.body.appendChild(a);a.click();
+      setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},0);
+      done();
+    },'image/png');
+  }
+  if(navigator.clipboard&&window.ClipboardItem&&navigator.clipboard.write){
+    var payload=new Promise(function(res){canvas.toBlob(res,'image/png');});
+    var item=null;
+    try{item=new ClipboardItem({'image/png':payload});}catch(e){item=null;}
+    if(item!==null){
+      navigator.clipboard.write([item]).then(done,download);
+    }else{
+      /* Older engines reject a promise payload; hand them the blob once ready. */
+      payload.then(function(blob){
+        if(!blob){fail();return;}
+        try{navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(done,download);}
+        catch(e2){download();}
+      });
+    }
+  }else{download();}
+  setTimeout(function(){btn._busy=false;},300);
 });
 /* Click anywhere on a competition row (delegated, so polling can swap rows);
    links and buttons inside keep their own behavior. */
