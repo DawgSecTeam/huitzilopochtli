@@ -182,24 +182,25 @@ def leaderboard_payload(store: Store, comp: CompetitionRecord,
                         now: Optional[float] = None) -> dict:
     now = time.time() if now is None else now
     rows = []
-    for p, status, score, total in _scored_players(store, comp, now):
-        rows.append({
-            "player_id": p.player_id,
-            "name": p.display_name,
-            "status": status,
-            "total": total,
-            "hardening_points": score["hardening_points"] if score else 0,
-            "service_points": score["service_points"] if score else 0,
-            # Checks the agent reported `unavailable` at the last check-in
-            # (required software missing); 0 keeps healthy rows unchanged.
-            "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
-            "started_at": p.started_at,
-            "ends_at": p.ends_at,
-            "remaining_s": _remaining(p, now) if status == "running" else 0,
-            "last_checkin": score["updated_at"] if score else None,
-            "services": _service_rows(store, comp, p.box_id),
-            "box_bound": bool(p.box_id),
-        })
+    if not comp.leaderboard_hidden:
+        for p, status, score, total in _scored_players(store, comp, now):
+            rows.append({
+                "player_id": p.player_id,
+                "name": p.display_name,
+                "status": status,
+                "total": total,
+                "hardening_points": score["hardening_points"] if score else 0,
+                "service_points": score["service_points"] if score else 0,
+                # Checks the agent reported `unavailable` at the last check-in
+                # (required software missing); 0 keeps healthy rows unchanged.
+                "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
+                "started_at": p.started_at,
+                "ends_at": p.ends_at,
+                "remaining_s": _remaining(p, now) if status == "running" else 0,
+                "last_checkin": score["updated_at"] if score else None,
+                "services": _service_rows(store, comp, p.box_id),
+                "box_bound": bool(p.box_id),
+            })
     previous_total = None
     previous_rank = 0
     for position, row in enumerate(rows, start=1):
@@ -233,6 +234,7 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
         "scenario_version": comp.scenario_version,
         "status": comp.status,
         "join_open": bool(comp.join_open),
+        "leaderboard_hidden": bool(comp.leaderboard_hidden),
         "max_players": comp.max_players,
         "player_count": count,
         "duration_s": comp.duration_s,

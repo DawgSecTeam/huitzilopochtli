@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS competitions (
     auto_end INTEGER NOT NULL DEFAULT 0,
     theme_json TEXT,
     join_instructions TEXT,
+    leaderboard_hidden INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     started_at REAL,
     ended_at REAL,

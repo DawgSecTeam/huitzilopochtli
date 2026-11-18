@@ -222,6 +222,18 @@ def test_removed_player_name_is_reusable(store):
     assert p3 is None and "taken" in err
 
 
+def test_name_matching_trims_and_case_folds(store):
+    """Whitespace padding and letter case never mint a second seat."""
+    comp = _comp(store)
+    p, _code, err = competition.create_player_with_code(store, comp, " Ada ", b"s")
+    assert err is None
+    for spelled in ("ada", "  ADA  ", "Ada"):
+        dup, _code, err = competition.create_player_with_code(
+            store, comp, spelled, b"s")
+        assert dup is None and "taken" in err
+    assert competition.normalize_name(p.display_name) == "ada"
+
+
 def test_join_rejects_bad_and_expired_code(store):
     comp = _comp(store)
     player, code, err = competition.create_player_with_code(store, comp, "Ada", b"s")
@@ -339,3 +351,26 @@ def test_join_codes_stay_unique_across_competitions(store, monkeypatch):
     assert err is None and second is not None
     assert code_b == "BBBBBBBB"
     assert code_b != code_a
+
+
+def test_leaderboard_visibility_toggle_conceals_standings(store):
+    """The leaderboard toggle: concealed while flagged, restored after."""
+    comp = _comp(store)
+    priv, box_id, _payload = _join(store, comp)
+    board = competition.leaderboard_payload(store, comp)
+    assert len(board["leaderboard"]) == 1
+    assert board["leaderboard"][0]["name"] == "Ada"
+
+    store.set_leaderboard_hidden(comp.id, True)
+    # The board goes quiet: no rows are served, and the flag says so. (The
+    # payload reads the record's current state, like the per-request handlers
+    # do; the stale pre-toggle snapshot must not leak into it.)
+    board = competition.leaderboard_payload(store, store.get_competition(comp.id))
+    assert board["leaderboard"] == []
+    assert board["competition"]["leaderboard_hidden"] is True
+
+    store.set_leaderboard_hidden(comp.id, False)
+    # The standings come back unchanged (nothing was deleted).
+    board = competition.leaderboard_payload(store, store.get_competition(comp.id))
+    assert len(board["leaderboard"]) == 1
+    assert board["competition"]["leaderboard_hidden"] is False

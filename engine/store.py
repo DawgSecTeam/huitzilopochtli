@@ -95,6 +95,7 @@ class CompetitionRecord:
     workshop_pool_name: Optional[str] = None
     #: End automatically when joins are closed and every run has finished.
     auto_end: bool = False
+    leaderboard_hidden: bool = False
 
 
 @dataclass
@@ -296,6 +297,7 @@ class Store:
                 ("claim_last_attempt_at", "REAL"),
                 ("claim_last_poll_at", "REAL"),
             )),
+            ("competitions", (("leaderboard_hidden", "INTEGER NOT NULL DEFAULT 0"),)),
         ):
             cols = self._table_columns(table)
             if not cols:
@@ -913,6 +915,7 @@ class Store:
             join_instructions=row["join_instructions"],
             created_at=row["created_at"], started_at=row["started_at"],
             ended_at=row["ended_at"],
+            leaderboard_hidden=bool(row["leaderboard_hidden"]),
         )
 
     @staticmethod
@@ -983,14 +986,15 @@ class Store:
     def update_competition(self, comp_id: str, **fields) -> None:
         allowed = {"slug", "name", "scenario_name", "scenario_version", "status",
                    "join_open", "max_players", "duration_s", "workshop_pool_code",
-                   "workshop_pool_name", "auto_end",
+                   "workshop_pool_name", "auto_end", "leaderboard_hidden",
                    "theme_json", "join_instructions", "started_at", "ended_at"}
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed:
                 continue
             sets.append(f"{k} = ?")
-            vals.append(int(v) if k in ("join_open", "auto_end")
+            vals.append(int(v) if k in ("join_open", "auto_end",
+                                        "leaderboard_hidden")
                         and isinstance(v, bool) else v)
         if not sets:
             return
@@ -1039,6 +1043,22 @@ class Store:
                 (1 if open_ else 0, comp_id),
             )
             self._commit()
+
+    def set_leaderboard_hidden(self, comp_id: str, hidden: bool) -> bool:
+        """Reveal (False) or conceal (True) the public leaderboard.
+
+        Concealing does not touch scores or player rows: the board keeps
+        scoring, historical boards survive an end/delete, and a reveal puts
+        the standings back exactly as they were. Returns False for an
+        unknown competition.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE competitions SET leaderboard_hidden = ? WHERE id = ?",
+                (1 if hidden else 0, comp_id),
+            )
+            self._commit()
+            return cur.rowcount == 1
 
     def delete_competition(self, comp_id: str) -> bool:
         """Remove an **ended** competition and its player slots.

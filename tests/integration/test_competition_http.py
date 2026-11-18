@@ -326,6 +326,21 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         conn.close()
         assert n == 0  # no second slot, no second VM
 
+        # Same competition, cookie lost: the held seat is named, and the
+        # message tells the seat's owner and the second joiner apart.
+        status, page = _http("POST", base + "/c/http-comp/join",
+                             urllib.parse.urlencode({"name": "Ada"}), form)
+        assert status == 409 and "already reserved in HTTP Comp" in page
+        assert "If that is you" in page and "pick a different name" in page
+        # Matching is on the trimmed, lower-cased handle, so padding and case
+        # collide with the same held seat rather than minting a second Ada.
+        status, page = _http("POST", base + "/c/http-comp/join",
+                             urllib.parse.urlencode({"name": "  ADA  "}), form)
+        assert status == 409 and "is already reserved" in page
+        # The form says out loud that spaces and case don't dodge a clash.
+        status, page = _http("GET", base + "/c/http-comp/join?key=http-key")
+        assert status == 200 and "matched case-insensitively" in page
+
         conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
         player = conn.execute("SELECT * FROM players WHERE display_name='Ada'").fetchone()
         conn.close()
@@ -510,6 +525,168 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         conn.close()
     finally:
         proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        ws.shutdown()
+
+
+def test_leaderboard_visibility_toggle(tmp_path):
+    """The dashboard can conceal the public leaderboard (and reveal it back).
+
+    Concealment is data-layer: the public page, the JSON API and the admin
+    dashboard row read the same flag, and toggling it never touches scores
+    or player rows.
+    """
+    port = _free_port()
+    workshop_port = _free_port()
+    db = tmp_path / "engine.db"
+    boxes = tmp_path / "boxes" / "http-comp-box"
+    boxes.mkdir(parents=True)
+    (boxes / "scenario.yaml").write_text(_scenario_yaml())
+    env = dict(os.environ)
+    env.update({
+        "HUITZILOPOCHTLI_DB_PATH": str(db),
+        "HUITZILOPOCHTLI_PORT": str(port),
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": ADMIN,
+        "HUITZILOPOCHTLI_ADMIN_PASSWORD": "test-pw",
+        "HUITZILOPOCHTLI_BIND": "127.0.0.1",
+        "HUITZILOPOCHTLI_WORKSHOP_URL": f"http://127.0.0.1:{workshop_port}",
+        "HUITZILOPOCHTLI_WORKSHOP_SECRET": "ws-secret",
+        "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD": "portal-pw",
+        "HUITZILOPOCHTLI_PUBLIC_URL": f"http://127.0.0.1:{port}",
+        "HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes"),
+        "PYTHONUNBUFFERED": "1",
+    })
+    ws = ThreadingHTTPServer(("127.0.0.1", workshop_port), _Workshop)
+    threading.Thread(target=ws.serve_forever, daemon=True).start()
+    proc = subprocess.Popen([sys.executable, "-m", "engine.server"], cwd=REPO_ROOT,
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            try:
+                if _http("GET", base + "/health")[0] == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        auth = {"X-HUITZILOPOCHTLI-Admin-Token": ADMIN}
+        status, body = _http("POST", base + "/admin/api/competitions", {
+            "slug": "vis-comp", "name": "Vis Comp", "scenario_name": "HTTPComp",
+            "scenario_version": 1, "max_players": 4, "duration_s": 3600,
+        }, auth)
+        assert status == 200, body
+        vis = json.loads(body)
+        status, _body = _http("POST",
+                              base + f"/admin/api/competitions/{vis['id']}/start",
+                              {}, auth)
+
+        status, _body = _http("POST", base + "/c/vis-comp/join",
+                              urllib.parse.urlencode({"name": "Ada"}),
+                              {"Content-Type": "application/x-www-form-urlencoded"})
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        player = conn.execute(
+            "SELECT * FROM players WHERE display_name='Ada'").fetchone()
+        conn.close()
+        assert player is not None
+        code = player["join_code_plain"]
+        priv, pub = signing.keypair()
+        join_body = {
+            "join_code": code, "box_id": "box-vis-1",
+            "public_key": base64.b64encode(pub).decode(),
+            "agent_version": AGENT_VERSION, "scenario_name": "HTTPComp",
+            "scenario_version": 1,
+        }
+        sig = signing.sign(priv, canon.canonicalize(join_body))
+        status, body = _http("POST", base + "/join", json.dumps(join_body).encode(), {
+            "Content-Type": "application/json",
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(sig).decode(),
+            "X-HUITZILOPOCHTLI-Box": "box-vis-1",
+        })
+        assert status == 200, body
+        ev = [Evidence(check_id="banner", check_type="file_regex",
+                       host_id="localhost", status=CollectorStatus.OK,
+                       raw={"matched": "ok", "present": True}, reason="ok",
+                       collected_monotonic=0.0, collected_wall_claim=0.0)]
+        bundle = Bundle(box_id="box-vis-1", seq=1, boot_id="b",
+                        agent_version=AGENT_VERSION, scenario_name="HTTPComp",
+                        scenario_version=1, evidence=ev,
+                        created_wall_claim=0.0, schema_version=SCHEMA_VERSION)
+        bsig = signing.sign(priv, canon.canonicalize(dataclasses.asdict(bundle)))
+        status, _body = _http("POST", base + "/checkin",
+                              json.dumps(dataclasses.asdict(bundle)).encode(), {
+            "Content-Type": "application/json",
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(bsig).decode(),
+            "X-HUITZILOPOCHTLI-Box": "box-vis-1",
+        })
+        assert status == 200, body
+
+        # The board is live: the player's row is visible.
+        status, page = _http("GET", base + "/c/vis-comp")
+        assert status == 200 and "Ada" in page
+        status, body = _http("GET", base + "/api/public/competitions/vis-comp/leaderboard")
+        assert json.loads(body)["leaderboard"][0]["name"] == "Ada"
+
+        # Login session for the dashboard route.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("POST", "/admin/login",
+                     body=urllib.parse.urlencode(
+                         {"username": "admin", "password": "test-pw"}),
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        dash_cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
+        conn.close()
+
+        # Conceal: every read surface shows the quiet note, no standings.
+        status, _body = _http("POST",
+                              base + f"/admin/api/competitions/{vis['id']}/leaderboard-visibility",
+                              {"hidden": 1}, auth)
+        assert status in (200, 303), body
+        status, page = _http("GET", base + "/c/vis-comp")
+        assert "Standings are hidden by the organizers." in page
+        assert "Ada" not in page
+        status, page = _http("GET", base + "/c/vis-comp/display")
+        assert "Standings are hidden by the organizers." in page
+        status, body = _http("GET", base + "/api/public/competitions/vis-comp/leaderboard")
+        assert json.loads(body)["leaderboard"] == []
+
+        # The dashboard row flips to the reveal control, matching the
+        # concealed state.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("POST", "/admin/login",
+                     body=urllib.parse.urlencode(
+                         {"username": "admin", "password": "test-pw"}),
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        dash_cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
+        conn.close()
+        status, page = _http("GET", base + "/admin",
+                             headers={"Cookie": dash_cookie})
+        assert "Show leaderboard" in page
+
+        # Revealing restores the standings without re-scoring anything.
+        status, body = _http("POST",
+                             base + f"/admin/api/competitions/{vis['id']}/leaderboard-visibility",
+                             {"hidden": 0}, auth)
+        assert status in (200, 303), body
+        status, page = _http("GET", base + "/c/vis-comp")
+        assert "Ada" in page
+        status, body = _http("GET", base + "/api/public/competitions/vis-comp/leaderboard")
+        assert json.loads(body)["leaderboard"][0]["name"] == "Ada"
+
+        # The index page live-reloads: its list is inside a data-poll node.
+        status, page = _http("GET", base + "/")
+        assert status == 200
+        assert 'id="home" data-poll=' in page
+    finally:
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:

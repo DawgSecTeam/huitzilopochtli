@@ -464,11 +464,13 @@ def index_page(comps: list, admin_view: bool = False,
     body = f"""<section class="hero">
 <h1>Available competitions</h1>
 </section>
+<div id="home" data-poll="15000">
 <h2 class="section-title">Live</h2>{_comp_cards(live, players_by_comp, show_status=False)}"""
     if admin_view:
         other = [c for c in comps if c.status != "live"]
         body += f"""
 <h2 class="section-title">Other competitions</h2>{_comp_cards(other, players_by_comp)}"""
+    body += "</div>"
     return layout("Competitions", body, admin=admin_view, current="home")
 
 
@@ -531,7 +533,8 @@ def competition_page(data: dict, *, refresh: int = 5,
 <div id="board" data-poll="{refresh * 1000}">
 <section class="board"><div class="board-head"><h2>Leaderboard</h2>
 </div>
-{_board_table(rows)}
+{_board_table(rows) if not comp.get("leaderboard_hidden") else
+('<p class="empty muted">Standings are hidden by the organizers.</p>')}
 </section>
 </div>"""
     accent = (comp.get("theme") or {}).get("accent")
@@ -549,6 +552,8 @@ def display_page(data: dict) -> str:
 <span class="time">{_time_cell(r)}</span>
 <span>{_service_dots(r.get('services'))}</span>
 </div>""" for r in rows) or '<p class="empty">Waiting for players…</p>'
+    if comp.get("leaderboard_hidden"):
+        board = '<p class="empty muted">Standings are hidden by the organizers.</p>'
     body = f"""<section class="display-head"><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div></section>
 <div id="board" data-poll="5000">
 <section class="display-board">{board}</section>
@@ -591,7 +596,11 @@ Finish (or leave) your current run before joining another.</p>
 <label>Display name<input name="name" maxlength="40" required autofocus placeholder="e.g. Ada"></label>
 <button class="btn primary" type="submit">Join and get my box</button>
 </form>
-<p class="muted small">By joining you agree to compete on a disposable ranked box. One box per player; no teams; one competition at a time. Provisioning your VM can take a minute.</p>
+<p class="muted small">Display names may contain spaces; they are trimmed and
+matched case-insensitively. Each name seats exactly one player and stays
+reserved for them until an admin frees the seat. By joining you agree to
+compete on a disposable ranked box. One box per player; no teams; one
+competition at a time. Provisioning your VM can take a minute.</p>
 </section>"""
     return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
                   current="home")
@@ -834,8 +843,13 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                        '<div class="muted small">Your box hasn\'t joined yet — '
                        'open your VM; it joins itself.</div>')
         rank_line = "Not on the board yet"
-    board = (_board_table(rows[:8]) if rows else
-             '<p class="empty">No scores on the board yet.</p>')
+    # The organizers can pause the public standings for the run; while they
+    # are hidden the player's board shows a quiet note instead of scores
+    # (check-ins, the clock and the run itself keep working).
+    board = (_board_table(rows[:8]) if rows and not comp.leaderboard_hidden
+             else ('<p class="empty muted">Standings are hidden by the '
+                   'organizers.</p>' if comp.leaderboard_hidden else
+                   '<p class="empty">No scores on the board yet.</p>'))
     body = f"""<section class="home-hero">
 <div><div class="title-line"><h1>You're in {esc(comp.name)}</h1>{comp_badge(comp.status)}</div>
 <p class="meta">{esc(player.display_name)} · this is your main page while your run is active
@@ -913,7 +927,7 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
         # rows freely.
         cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div></td>
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
-<td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a></td></tr>""")
+<td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
     body = f"""<section class="page-head-row"><div><h1>Admin console</h1></div>
 <div class="actions"><a class="btn primary" href="/admin/competitions/new">New competition</a></div></section>
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}

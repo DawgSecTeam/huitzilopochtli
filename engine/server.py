@@ -1017,6 +1017,21 @@ class Handler(BaseHTTPRequestHandler):
         if not name_error:
             other = self.store.find_active_player_by_name(
                 competition.normalize_name(name))
+            if other is not None and other.competition_id == comp.id:
+                # An active seat in this very run already holds that name, so
+                # create_player would die on the unique constraint. A bare
+                # "taken" leaves the seat's own owner (reaching the form from
+                # a cleared-cookie browser) hunting for a phantom, while a
+                # second joiner simply needs another handle — name both
+                # possibilities in one message.
+                self._send_html(409, web.join_form_page(
+                    comp,
+                    error=(f"'{other.display_name}' is already reserved in "
+                           f"{comp.name}. One seat per name. If that is you, "
+                           "go back to the browser you joined from; otherwise "
+                           "an admin can free the seat, or just pick a "
+                           "different name.")))
+                return
             if other is not None and other.competition_id != comp.id:
                 other_comp = self.store.get_competition(other.competition_id)
                 if competition.is_active_player(other, other_comp):
@@ -1183,6 +1198,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(404, web.error_page(
                 404, "Competition not found",
                 "It may have been removed.", "/admin", admin=True))
+            return
+        if action == "leaderboard-visibility":
+            hidden = str(form.get("hidden", "")) not in ("", "0", "false")
+            self.store.set_leaderboard_hidden(comp.id, hidden)
+            self.store.add_audit(actor, "competition_leaderboard_visibility",
+                                 comp.id,
+                                 details_json=json.dumps({"hidden": hidden}),
+                                 remote_addr=self.client_address[0]
+                                 if self.client_address else None)
+            # Back to wherever the toggle was pressed from (the dashboard row
+            # or the competition page); "back" is validated below against
+            # same-origin shaped paths only.
+            back = str(form.get("back", ""))
+            self._redirect(back if back.startswith("/") and
+                           not back.startswith("//") else "/admin")
             return
         if action == "rerun":
             if comp.status != "ended":
