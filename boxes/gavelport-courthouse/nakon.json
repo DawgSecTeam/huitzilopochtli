@@ -1,0 +1,412 @@
+{
+  "machines": [
+    {
+      "id": 1,
+      "name": "gavelport-courthouse-01",
+      "ip": "REPLACED-BY-PROVIDER",
+      "user": "REPLACED-BY-PROVIDER",
+      "password": "REPLACED-BY-PROVIDER",
+      "os": "windows-server",
+      "port": 22,
+      "configurations": [
+        {
+          "name": "malicious-service-win",
+          "vars": {
+            "SERVICE_NAME": "MeshAgent",
+            "PAYLOAD_PATH": "C:\\ProgramData\\MeshCentral\\mesh-agent-heartbeat.ps1",
+            "PAYLOAD_BODY": "$go = 'C:\\ProgramData\\MeshCentral\\mesh-heartbeat.txt'\nwhile ($true) { Set-Content -Path $go -Value ('hb ' + (Get-Date -Format o)) -Encoding ascii; Start-Sleep -Seconds 300 }",
+            "STARTUP": "Automatic",
+            "DESCRIPTION": "MeshCentral remote management agent"
+          }
+        },
+        {
+          "name": "dsinternals-dnscache-module-win"
+        },
+        {
+          "name": "audit-policy-off-win"
+        },
+        {
+          "name": "ps-logging-off-win"
+        },
+        {
+          "name": "dns-query-logging-off-win"
+        },
+        {
+          "name": "domain-password-pattern-win",
+          "vars": {
+            "ACCOUNTS": "daffy.duck:Daffy!Acme4103,lola.bunny:Lola!Acme4105,foghorn.leghorn:Foghorn!Acme4108",
+            "PATTERN": "^[A-Za-z]+!Acme\\d{4}$"
+          }
+        },
+        {
+          "name": "never-expires-service-account-win",
+          "vars": {
+            "USERNAME": "svc-all",
+            "PASSWORD": "Clerks!Hall1900",
+            "ADD_GROUP": "Administrators"
+          }
+        },
+        {
+          "name": "administrator-weak-password-win",
+          "vars": {
+            "ADMIN_PASSWORD": "Acme!Admin2026"
+          }
+        },
+        {
+          "name": "guest-enabled-win"
+        },
+        {
+          "name": "uac-disabled-win"
+        },
+        {
+          "name": "rdp-no-nla-win"
+        },
+        {
+          "name": "windows-updates-frozen-win"
+        },
+        {
+          "name": "autologin-win",
+          "vars": {
+            "USERNAME": "gaveladmin",
+            "PASSWORD": "Gavel#Clerk2026"
+          }
+        },
+        {
+          "name": "lsa-ppl-off-win"
+        },
+        {
+          "name": "weak-password-policy-win",
+          "vars": {
+            "MINPWLEN": "4",
+            "LOCKOUT_THRESHOLD": "0",
+            "MAXPWAGE": "unlimited"
+          }
+        },
+        {
+          "name": "smb-anon-token-win"
+        },
+        {
+          "name": "ntlm-downgrade-win"
+        },
+        {
+          "name": "wdigest-cleartext-win"
+        },
+        {
+          "name": "ldap-signing-off-win"
+        },
+        {
+          "name": "anonymous-enumeration-win"
+        },
+        {
+          "name": "smb1-enabled-win"
+        },
+        {
+          "name": "sensitive-file-win",
+          "vars": {
+            "FILE_PATH": "C:\\Windows\\uts.ps1",
+            "FILE_CONTENT": "# uts.ps1 -- unattended ticket-sync helper (internal)\n# run by the records service at boot\n$acct = 'svc-all'\n$pw = 'Clerks!Hall1900'\nWrite-Output ('ticket-sync seeded for ' + $acct)"
+          }
+        },
+        {
+          "name": "llm-corpus-credentials-win",
+          "vars": {
+            "CORPUS_DIR": "C:\\GavelportAI\\corpus",
+            "MAIN_PASSWORD": "Objection!2026"
+          }
+        },
+        {
+          "name": "gpp-cpassword-win",
+          "vars": {
+            "GPO_NAME": "Gavelport-Deploy",
+            "PASSWORD": "Kiosk!Drop7",
+            "LOCAL_USER": "kioskdeploy",
+            "GROUP_NAME": "Administrators"
+          }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": {
+            "GROUP": "Domain Admins",
+            "USERNAME": "speedy.gonzales"
+          }
+        },
+        {
+          "name": "ad-group-member-win",
+          "vars": {
+            "GROUP": "Domain Admins",
+            "USERNAME": "marvin.martian"
+          }
+        },
+        {
+          "name": "ad-acl-dcsync-win",
+          "vars": {
+            "TRUSTEE": "speedy.gonzales"
+          }
+        },
+        {
+          "name": "windows-adminsdholder-everyone-ace"
+        },
+        {
+          "name": "local-group-member-win",
+          "vars": {
+            "GROUP": "IIS_IUSRS",
+            "USERNAME": "Administrator"
+          }
+        },
+        {
+          "name": "extra-admins-win",
+          "vars": {
+            "ADMIN_USER": "svc_intake",
+            "ADMIN_PASSWORD": "svc_intake"
+          }
+        },
+        {
+          "name": "ad-delegation-win",
+          "vars": {
+            "ACCOUNT": "app01",
+            "ACCOUNT_TYPE": "computer",
+            "MODE": "unconstrained"
+          }
+        },
+        {
+          "name": "krbtgt-account-disabled-win"
+        },
+        {
+          "name": "gpo-persistence-win",
+          "vars": {
+            "GPO_NAME": "Gavelport-Telemetry",
+            "RUN_VALUE_NAME": "GP-Telemetry",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\gpotelemetry.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "rid-hijack-win",
+          "vars": {
+            "GUEST_PASSWORD": "Guest!Rules4200"
+          }
+        },
+        {
+          "name": "ad-computer-win",
+          "vars": {
+            "COMPUTER_NAME": "ACME-KIOSK09",
+            "DESCRIPTION": "Kiosk 9 - records room terminal"
+          }
+        },
+        {
+          "name": "Elevate Guest Account"
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "\\SecureUpdate",
+            "PAYLOAD_PATH": "C:\\ProgramData\\SecureUpdate\\update-check.ps1",
+            "PAYLOAD_BODY": "netsh advfirewall set allprofiles state off\nSet-Content -Path C:\\ProgramData\\SecureUpdate\\last-run.txt -Value (Get-Date -Format o)"
+          }
+        },
+        {
+          "name": "scheduled-task-persistence-win",
+          "vars": {
+            "TASK_NAME": "\\SuperSecureUpdate",
+            "PAYLOAD_PATH": "C:\\ProgramData\\SecureUpdate\\super-update.ps1",
+            "PAYLOAD_BODY": "Set-Content -Path C:\\ProgramData\\SecureUpdate\\super-last-run.txt -Value (Get-Date -Format o)"
+          }
+        },
+        {
+          "name": "windows-hidden-scheduled-task",
+          "vars": {
+            "TASK_NAME": "\\TheMostSecureUpdate",
+            "PAYLOAD_PATH": "C:\\ProgramData\\SecureUpdate\\wmisync.ps1"
+          }
+        },
+        {
+          "name": "Disable System Firewall"
+        },
+        {
+          "name": "defender-off-win",
+          "vars": {
+            "EXCLUSION_PATH": "C:\\ProgramData\\SecureUpdate"
+          }
+        },
+        {
+          "name": "Enable WinRM"
+        },
+        {
+          "name": "windows-scheduled-log-clear"
+        },
+        {
+          "name": "ifeo-tool-block-win"
+        },
+        {
+          "name": "windows-wmi-kill-respawn",
+          "vars": {
+            "MARKER_PATH": "C:\\ProgramData\\Subsystems\\dns-refresh.ps1",
+            "PROC_NAME": "svcsplash.exe",
+            "WMI_BASE_NAME": "WinSvcEvent"
+          }
+        },
+        {
+          "name": "mutual-watchdog-tasks-win",
+          "vars": {
+            "WATCH_DIR": "C:\\ProgramData\\Microsoft\\HelpDesk",
+            "TASK_A": "HelpDeskMon",
+            "TASK_B": "HelpDeskUpd"
+          }
+        },
+        {
+          "name": "windows-deny-delete-artifact",
+          "vars": {
+            "FILE_PATH": "C:\\Windows\\System32\\WinDefSvcHelper.dat",
+            "DENY_SID": "Everyone"
+          }
+        },
+        {
+          "name": "windows-service-sd-lockdown",
+          "vars": {
+            "SVC_NAME": "WinCryptSvc32",
+            "DISPLAY_NAME": "Windows Cryptography Helper"
+          }
+        },
+        {
+          "name": "priv-user-respawn-win",
+          "vars": {
+            "ADMIN_USER": "svc_helper",
+            "ADMIN_PASSWORD": "svc_helper"
+          }
+        },
+        {
+          "name": "runkey-persistence-win",
+          "vars": {
+            "RUN_VALUE_NAME": "WinDefSvcHelper",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\winitupd.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "wmi-subscription-persistence-win",
+          "vars": {
+            "FILTER_NAME": "WinPerfFilter",
+            "CONSUMER_NAME": "WinPerfConsumer",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\perf-sync.ps1",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "startup-folder-item-win",
+          "vars": {
+            "ITEM_NAME": "svc-status",
+            "PAYLOAD_PATH": "C:\\ProgramData\\Subsystems\\svc-status.ps1",
+            "PAYLOAD_BODY": "Set-Content -Path C:\\ProgramData\\Subsystems\\svc-status.log -Value (\"started \" + (Get-Date -Format o))"
+          }
+        },
+        {
+          "name": "windows-appinit-hook-registry",
+          "vars": {
+            "DLL_PATH": "C:\\ProgramData\\Subsystems\\inproc_helper.dll"
+          }
+        },
+        {
+          "name": "winlogon-shell-win",
+          "vars": {
+            "PAYLOAD_PS1": "C:\\ProgramData\\Subsystems\\winitupd.ps1",
+            "PAYLOAD_EXE": "C:\\ProgramData\\Subsystems\\winitupd.exe",
+            "PAYLOAD_BODY": "while ($true) { Start-Sleep -Seconds 300 }"
+          }
+        },
+        {
+          "name": "rpc-proxy-on-dc-web-win"
+        },
+        {
+          "name": "iis-ftp-base-win"
+        },
+        {
+          "name": "iis-webshell"
+        },
+        {
+          "name": "iis-admin-console-win"
+        },
+        {
+          "name": "iis-backoffice-open-win"
+        },
+        {
+          "name": "ftp-content-win"
+        },
+        {
+          "name": "ftp-hardening-off-win"
+        },
+        {
+          "name": "rdp-secondary-port-win",
+          "vars": {
+            "RDP_EXTRA_PORT": "3388"
+          }
+        },
+        {
+          "name": "rdp-group-member-win",
+          "vars": {
+            "USERNAME": "svc_helper"
+          }
+        },
+        {
+          "name": "domain-host-on-wan-subnet-win",
+          "vars": {
+            "IP": "10.250.250.10",
+            "PREFIX": "24",
+            "DNS1": "1.1.1.1",
+            "DNS2": "8.8.8.8"
+          }
+        },
+        {
+          "name": "New SMB Share"
+        },
+        {
+          "name": "insecure-smb-share-quiet-win",
+          "vars": {
+            "SHARE_NAME": "ACME-Share",
+            "SHARE_PATH": "C:\\ProgramData\\ACME-Share",
+            "DESCRIPTION": "File drop"
+          }
+        },
+        {
+          "name": "ad-blank-password-win",
+          "vars": {
+            "USERNAME": "intern.acme",
+            "FULLNAME": "Records Intern",
+            "DESCRIPTION": "Summer intake - records room"
+          }
+        },
+        {
+          "name": "always-install-elevated-win"
+        },
+        {
+          "name": "insecure-file-acl-win",
+          "vars": {
+            "FILE_PATH": "C:\\ProgramData\\Gavelport\\deploy-creds.txt",
+            "FILE_CONTENT": "Gavelport deploy credentials (INTERNAL - do not distribute)\ngaveladmin: Gavel#Clerk2026\nsvc-all: Clerks!Hall1900\nkioskdeploy: Kiosk!Drop7"
+          }
+        },
+        {
+          "name": "windows-ssh-authorized-keys"
+        },
+        {
+          "name": "insecure-interactive-logon"
+        },
+        {
+          "name": "local-user-enable-win",
+          "vars": {
+            "USERNAME": "acmedeploy"
+          }
+        },
+        {
+          "name": "local-group-member-win",
+          "vars": {
+            "GROUP": "Administrators",
+            "USERNAME": "acmedeploy"
+          }
+        },
+        {
+          "name": "powershell-execution-unrestricted"
+        }
+      ]
+    }
+  ]
+}

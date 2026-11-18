@@ -1,0 +1,5 @@
+scenario: scenario.yaml
+nakon_config: nakon.json
+provider:
+  name: ssh
+  user: gaveladmin

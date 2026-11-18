@@ -1,0 +1,10 @@
+{
+  "name": "domain-host-secondary-nic-win",
+  "description": "Practice-box helper (Windows): puts a SECOND network adapter on the perimeter/WAN-range subnet with external DNS resolvers -- an exposed second NIC on the domain controller. Adapted from the primary-NIC repoint of 'domain-host-on-wan-subnet-win' (which would cut build/scoring connectivity): this variant never touches the first Up adapter and deliberately sets NO default gateway on the WAN NIC, so the primary keeps the default route and engine reachability. Requires the second NIC to exist already (add it hypervisor-side before planting). Vars: IP (required), PREFIX (optional, default 24), DNS1/DNS2 (optional, defaults 1.1.1.1/8.8.8.8), INTERFACE_ALIAS (optional; defaults to the second adapter by ifIndex). Idempotent (skips when the IP is already present). Pairs with a powershell_json check: no enabled adapter carries an address in the WAN range with external resolver DNS.",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "if (-not $IP) { throw 'IP is required' }\n$adapters = @(Get-NetAdapter | Where-Object Status -eq 'Up' | Sort-Object ifIndex)\nif ($adapters.Count -lt 2) {\n    Write-Warning 'no second NIC present (add the NIC hypervisor-side before planting); no-op'\n    exit 0\n}\nif (-not $PREFIX)  { $PREFIX  = '24' }\nif (-not $DNS1)    { $DNS1    = '1.1.1.1' }\nif (-not $DNS2)    { $DNS2    = '8.8.8.8' }\nif ($INTERFACE_ALIAS) {\n    $nic = $adapters | Where-Object Name -eq $INTERFACE_ALIAS\n} else {\n    $nic = $adapters[1]\n}\nif (-not $nic) { throw \"adapter '$INTERFACE_ALIAS' not found among the up adapters\" }\n$existing = Get-NetIPAddress -InterfaceAlias $nic.Name -IPAddress $IP -ErrorAction Ignore\nif (-not $existing) {\n    New-NetIPAddress -InterfaceAlias $nic.Name -IPAddress $IP -PrefixLength ([int]$PREFIX) | Out-Null\n}\nSet-DnsClientServerAddress -InterfaceAlias $nic.Name -ServerAddresses @($DNS1, $DNS2)\nWrite-Output \"WAN-range NIC configured: $($nic.Name) = $IP/$PREFIX dns $DNS1,$DNS2\"\n",
+  "depends_on": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "dns-query-logging-off-win",
+  "description": "Practice-box helper (Windows, DC trail): turns DNS query logging OFF -- the Dnscache client query log (HKLM\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters EnableQueryLogging=0) and the DNS Server query-log marker (HKLM\\SYSTEM\\CurrentControlSet\\Services\\DNS\\Parameters EnableQueryLogging=0) -- so resolution traffic from the DC becomes unanswerable, matching the source competition's 'dnslogs held only service-lifecycle events' finding. No vars. Idempotent. Pairs with a registry_value check reading EnableQueryLogging=1 (Dnscache Parameters path).",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "script": "$k1 = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters'\nif (-not (Test-Path $k1)) { New-Item -Path $k1 -Force | Out-Null }\nSet-ItemProperty -Path $k1 -Name EnableQueryLogging -Value 0 -Type DWord\n$k2 = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\DNS\\Parameters'\nif (-not (Test-Path $k2)) { New-Item -Path $k2 -Force | Out-Null }\nSet-ItemProperty -Path $k2 -Name EnableQueryLogging -Value 0 -Type DWord\nWrite-Output 'DNS query logging disabled (client + server keys)'\n",
+  "depends_on": []
+}

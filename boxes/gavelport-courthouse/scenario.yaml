@@ -1,0 +1,2328 @@
+scenario:
+  name: "Gavelport Courthouse"
+  version: 1
+  mode: honor
+  hosts: ["localhost"]
+
+# Gavelport Courthouse - the county records network's domain controller.
+# Replay box for the WRCCDC Inv#2 / MWCCDC Inv#2 Windows DC trails; the
+# in-box artifact names (the cast accounts, the SecureUpdate tasks, the
+# DNSCache module, the Name!AcmeNNNN password pattern) are range-faithful so
+# students can pattern-match the real competitions. THE BOX ARRIVES DIRTY:
+# the compromise predates the students (see W1).
+#
+# Checks are authored against the planted states in nakon.json; the catalog
+# scripts are the source of truth for what each plant leaves on disk.
+
+checks:
+# ---------------------------------------------------------------- W1: image ships dirty
+- id: w1_01_mesh_agent_removed
+  type: powershell_json
+  category: vuln
+  display: "W1: The pre-staged MeshCentral agent service is removed, with its payload directory"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='MeshAgent'" -ErrorAction SilentlyContinue
+      if ($svc) { $false | ConvertTo-Json -Compress }
+      elseif (Test-Path 'C:\ProgramData\MeshCentral') { $false | ConvertTo-Json -Compress }
+      else { $true | ConvertTo-Json -Compress }
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    **1. Prove provenance.** The service predates your assignment. Compare its
+    binary's install time against the image's own file dates:
+
+    ```
+    Get-CimInstance Win32_Service -Filter "Name='MeshAgent'" |
+      Select-Object Name, State, StartMode, PathName, ProcessId
+    Get-Item 'C:\ProgramData\MeshCentral\*' | Select-Object Name, CreationTime
+    ```
+
+    An RMM agent installed days before you inherited the image is
+    arrive-owned access, not operations tooling.
+
+    **2. Remove it completely** -- service first, then the program files.
+
+    ```
+    Stop-Service MeshAgent -Force
+    sc.exe delete MeshAgent
+    Remove-Item -Recurse -Force 'C:\ProgramData\MeshCentral'
+    ```
+
+    **3. Confirm.** The service query returns nothing and the directory is
+    gone. Stopping without deleting leaves the auto-start configured.
+- id: w1_02_dnscache_module_removed
+  type: permission
+  category: vuln
+  display: "W1: The disguised DSInternals module directory under WindowsPowerShell\\v1.0\\Modules is gone"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    path: 'C:\Windows\system32\WindowsPowerShell\v1.0\Modules\DNSCache'
+  expect:
+    equals: false
+    field: exists
+    points: 5
+  solution: |
+    **1. Find it.** A PowerShell module directory named like the benign DNS
+    client cache that is NOT the real DNS client module:
+
+    ```
+    Get-ChildItem 'C:\Windows\system32\WindowsPowerShell\v1.0\Modules\DNSCache' -Force
+    ```
+
+    Read the bootstrap -- its function names are the giveaway:
+    `Get-ADDBAccount` / `Get-ADReplAccount` / `Get-ADDBBackupKey` are
+    AD-database dump and DCSync-grade tooling wearing a DNS costume.
+    (Answer the forensics question about its path BEFORE deleting.)
+
+    **2. The directory must go entirely.** Deleting only the .dll, or only
+    the .psm1, does not remove the finding -- the score demands the whole
+    directory gone, because a renamed distribution keeps loading from a
+    partial directory.
+
+    ```
+    Remove-Item -Recurse -Force 'C:\Windows\system32\WindowsPowerShell\v1.0\Modules\DNSCache'
+    ```
+
+    **3. Sweep.** No `.psm1` under `WindowsPowerShell\v1.0\Modules` should
+    reference `Get-ADDBAccount` anywhere else, either.
+- id: w1_03_logon_auditing_on
+  type: powershell_json
+  category: vuln
+  display: "W1: Logon, logoff and credential-validation auditing are back on"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $on = $true
+      foreach ($sub in @('Logon','Logoff','Other Logon/Logoff Events','Credential Validation')) {
+        $s = (auditpol /get /subcategory:"$sub" 2>$null | Out-String)
+        if ($s -notmatch 'Success and Failure') { $on = $false }
+      }
+      $on | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The image ships with logon auditing gutted: no 4624/4625/4776, so
+    "who logged in, from where, with what" is unanswerable -- exactly the
+    state that made the source competition's attacks unprovable.
+
+    ```
+    auditpol /get /subcategory:'Logon'
+    auditpol /set /subcategory:'Logon' /success:enable /failure:enable
+    auditpol /set /subcategory:'Logoff' /success:enable /failure:enable
+    auditpol /set /subcategory:'Other Logon/Logoff Events' /success:enable /failure:enable
+    auditpol /set /subcategory:'Credential Validation' /success:enable /failure:enable
+    ```
+
+    All four subcategories must read `Success and Failure` in
+    `auditpol /get`.
+- id: w1_04_powershell_logging_on
+  type: powershell_json
+  category: vuln
+  display: "W1: PowerShell script-block and transcription logging are enabled"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $sb = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockLogging -ErrorAction Ignore).EnableScriptBlockLogging
+      $tr = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name EnableTranscription -ErrorAction Ignore).EnableTranscription
+      (($sb -eq 1) -and ($tr -eq 1)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    **1. Read the two policies.**
+
+    ```
+    Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+    ```
+
+    Without script-block logging (4104) nothing records what the attacker's
+    PowerShell actually did -- the second channel that made the source
+    competition's activity unanswerable.
+
+    **2. Turn both on.**
+
+    ```
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockLogging -Value 1 -Type DWord
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockInvocationLogging -Value 1 -Type DWord
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name EnableTranscription -Value 1 -Type DWord
+    ```
+- id: w1_05_dns_query_logging_on
+  type: registry_value
+  category: vuln
+  display: "W1: DNS query logging is enabled"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    hive: HKLM
+    key: SYSTEM\CurrentControlSet\Services\Dnscache\Parameters
+    value: EnableQueryLogging
+  expect:
+    equals: 1
+    field: value
+    points: 5
+  solution: |
+    **1. Check the resolver's own log setting.**
+
+    ```
+    Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
+    ```
+
+    With query logging off, lookups the DC makes (including downloads a
+    second stage asks it to resolve) leave no trace -- the source DC's DNS
+    log held only service lifecycle events.
+
+    **2. Enable it.**
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name EnableQueryLogging -Value 1 -Type DWord
+    ```
+
+    **3. Confirm.** The value reads 1.
+- id: w1_06_pattern_passwords_rotated
+  type: powershell_json
+  category: vuln
+  display: "W1: The clerk accounts no longer carry the shared weak password pattern"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $ok = $true
+      foreach ($name in @('daffy.duck','lola.bunny','foghorn.leghorn')) {
+        $u = Get-ADUser -Identity $name -Properties Enabled,PasswordLastSet,whenCreated -ErrorAction SilentlyContinue
+        if (-not $u) { continue }
+        if (-not $u.Enabled) { continue }
+        if (-not $u.PasswordLastSet) { $ok = $false; break }
+        if ($u.whenCreated -and ($u.PasswordLastSet -lt $u.whenCreated.AddMinutes(5))) { $ok = $false; break }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Three employees' passwords share one machine-learnable pattern (the
+    source competition leaked it from three logons where the password was
+    typed into the username field). One cracked password cracks all three.
+
+    **1. List the accounts and their password age.**
+
+    ```
+    Get-ADUser daffy.duck, lola.bunny, foghorn.leghorn -Properties PasswordLastSet,Enabled |
+      Select-Object SamAccountName, Enabled, PasswordLastSet
+    ```
+
+    **2. Rotate each one to its own unique value** (or disable the account
+    if it should not exist at all):
+
+    ```
+    Set-ADAccountPassword -Identity daffy.duck -Reset -NewPassword (ConvertTo-SecureString '<new unique password>' -AsPlainText -Force)
+    ```
+
+    The check asks for a real change after the account was created --
+    a password that is still the seeded pattern does not score.
+- id: w1_07_svc_all_reined_in
+  type: powershell_json
+  category: vuln
+  display: "W1: The svc-all service account no longer holds admin rights and its password expires"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $u = Get-LocalUser -Name 'svc-all' -ErrorAction SilentlyContinue
+      if (-not $u) { $true | ConvertTo-Json -Compress }
+      else {
+        $admins = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Name) { ($_.Name -split '\\')[-1] } })
+        $notDa = -not ($admins -contains 'svc-all')
+        $expires = (-not $u.PasswordNeverExpires)
+        ($notDa -and $expires) | ConvertTo-Json -Compress
+      }
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    `svc-all` authenticates with special privileges and its password never
+    expires -- the twin of the shared DB password that felled the source
+    range: one compromise and the box is gone.
+
+    **1. Audit scope.** One administrative credential used from every host
+    is uncontainable.
+
+    **2. Fix any of:** remove it from local Administrators, make the
+    password expire again, rotate it, or delete the account:
+
+    ```
+    Remove-LocalGroupMember -Group Administrators -Member 'svc-all'
+    Set-LocalUser -Name 'svc-all' -PasswordNeverExpires:$false
+    Set-LocalUser -Name 'svc-all' -Password (ConvertTo-SecureString '<new password>' -AsPlainText -Force)
+    ```
+
+    Deleting the account always satisfies the check.
+- id: w1_08_administrator_password_rotated
+  type: powershell_json
+  category: vuln
+  display: "W1: The built-in Administrator account's password has been rotated since the image was built"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $ref = Get-Item 'C:\ProgramData\huitzilopochtli\manifest.signed.json' -ErrorAction SilentlyContinue
+      if (-not $ref) { $false | ConvertTo-Json -Compress }
+      else {
+        Import-Module ActiveDirectory -ErrorAction Ignore
+        $u = Get-ADUser -Identity 'Administrator' -Properties PasswordLastSet -ErrorAction SilentlyContinue
+        ([bool]$u -and [bool]$u.PasswordLastSet -and ($u.PasswordLastSet -gt $ref.LastWriteTime)) | ConvertTo-Json -Compress
+      }
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The Administrator password is the one value every account-spray in the
+    source competition hammered for 14 straight minutes -- and it was a
+    weak pattern value, unchanged since build.
+
+    **1. Check the age.** `PasswordLastSet` must postdate the image install
+    (the scoring agent's manifest timestamp is the reference).
+
+    ```
+    Get-ADUser Administrator -Properties PasswordLastSet | Select-Object PasswordLastSet
+    ```
+
+    **2. Rotate it to something unique and strong.** This is the account of
+    record -- do not reuse the pattern.
+
+    ```
+    Set-ADAccountPassword -Identity Administrator -Reset -NewPassword (ConvertTo-SecureString '<strong unique password>' -AsPlainText -Force)
+    ```
+
+    The check accepts only a genuine rotation, not the seeded value.
+- id: w1_09_guest_disabled
+  type: powershell_json
+  category: vuln
+  display: "W1: The Guest account is disabled"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $g = Get-ADUser -Identity 'Guest' -Properties Enabled -ErrorAction SilentlyContinue
+      ([bool]$g -and (-not $g.Enabled)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The domain Guest account is enabled on the image.
+
+    ```
+    Get-ADUser Guest -Properties Enabled
+    Disable-ADAccount -Identity Guest
+    ```
+
+    Confirm Enabled reads `False`.
+- id: w1_10_uac_on
+  type: registry_value
+  category: vuln
+  display: "W1: UAC is re-enabled (EnableLUA=1)"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    hive: HKLM
+    key: SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+    value: EnableLUA
+  expect:
+    equals: 1
+    field: value
+    points: 5
+  solution: |
+    With UAC's EnableLUA disabled, every interactive session is a full
+    administrator session and the token harderening is gone.
+
+    ```
+    Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -Value 1 -Type DWord
+    ```
+
+    A reboot applies it cleanly to new logons.
+- id: w1_11_rdp_nla_on
+  type: registry_value
+  category: vuln
+  display: "W1: RDP requires network-level authentication (UserAuthentication=1)"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    hive: HKLM
+    key: SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp
+    value: UserAuthentication
+  expect:
+    equals: 1
+    field: value
+    points: 5
+  solution: |
+    RDP itself must stay UP (it is a scored service) -- but it must demand
+    NLA so pre-auth clients cannot grind credentials.
+
+    ```
+    Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' UserAuthentication
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1 -Type DWord
+    ```
+- id: w1_12_windows_update_unfrozen
+  type: powershell_json
+  category: vuln
+  display: "W1: Windows Update access and service are restored"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $blocked = $false
+      $pol = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -ErrorAction Ignore
+      $au = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -ErrorAction Ignore
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='wuauserv'" -ErrorAction SilentlyContinue
+      if ($pol -and $pol.DisableWindowsUpdateAccess -eq 1) { $blocked = $true }
+      if ($au -and $au.NoAutoUpdate -eq 1) { $blocked = $true }
+      if ($svc -and $svc.StartMode -eq 'Disabled') { $blocked = $true }
+      (-not $blocked) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The image freezes the patch level: WU access disabled, the service off.
+    Every hotfix after the freeze date is missing by construction.
+
+    ```
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name DisableWindowsUpdateAccess -Value 0 -Type DWord
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -Value 0 -Type DWord
+    Set-Service wuauserv -StartupType Manual
+    Start-Service wuauserv
+    ```
+
+    All three blockers must go: the policy value, the AU policy, and the
+    service start type.
+- id: w1_13_autologin_removed
+  type: powershell_json
+  category: vuln
+  display: "W1: No stored autologin credential remains in Winlogon"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $k = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction Ignore
+      $auto = $k.AutoAdminLogon
+      $pw = $k.DefaultPassword
+      (($auto -ne '1') -and (-not $pw)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Winlogon carries both the autologin switch and a plaintext password
+    value readable by any local process.
+
+    ```
+    Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' AutoAdminLogon, DefaultPassword
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name AutoAdminLogon
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultPassword
+    ```
+- id: w1_14_lsa_ppl_on
+  type: registry_value
+  category: vuln
+  display: "W1: LSA runs protected (RunAsPPL=1)"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    hive: HKLM
+    key: SYSTEM\CurrentControlSet\Control\Lsa
+    value: RunAsPPL
+  expect:
+    equals: 1
+    field: value
+    points: 5
+  solution: |
+    LSA Protection Level off means any local admin can read credential
+    material from LSASS.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RunAsPPL -Value 1 -Type DWord
+    ```
+# ------------------------------------------------- W2: credential attack surface
+- id: w2_01_password_policy_reset
+  type: powershell_json
+  category: vuln
+  display: "W2: The domain password policy enforces lockout, real length, and a finite max age"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $out = net accounts 2>$null | Out-String
+      $lock = 0; $len = 0; $max = 0
+      if ($out -match 'Lockout threshold:\s+(\d+)') { $lock = [int]$Matches[1] }
+      if ($out -match 'Minimum password length:\s+(\d+)') { $len = [int]$Matches[1] }
+      if ($out -match 'Maximum password age \(days\):\s+(\d+)') { $max = [int]$Matches[1] }
+      (($lock -ge 5) -and ($len -ge 8) -and ($max -ge 1) -and ($max -le 90)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    No lockout, a 4-character floor, and no maximum age: the policy that let
+    319 failed logons in the source competition's window go unanswered.
+
+    ```
+    net accounts
+    net accounts /minpwlen:8 /lockoutthreshold:5 /maxpwage:90
+    ```
+
+    All three numbers must move: threshold >= 5, length >= 8, max age
+    1-90 days (`Unlimited` does not score).
+- id: w2_02_anonymous_token_hardened
+  type: registry_value
+  category: vuln
+  display: "W2: Anonymous tokens no longer map into Everyone (EveryoneIncludesAnonymous=0)"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    hive: HKLM
+    key: SYSTEM\CurrentControlSet\Control\Lsa
+    value: EveryoneIncludesAnonymous
+  expect:
+    equals: 0
+    field: value
+    points: 5
+  solution: |
+    With anonymous tokens folded into Everyone, every 'Everyone' ACL on the
+    box is reachable without credentials -- the null-session path the
+    source attacker used 21 times.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name EveryoneIncludesAnonymous -Value 0 -Type DWord
+    ```
+- id: w2_03_ntlm_floor_raised
+  type: powershell_json
+  category: vuln
+  display: "W2: LM/NTLMv1 are refused (LmCompatibilityLevel >= 3)"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $v = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name LmCompatibilityLevel -ErrorAction Ignore).LmCompatibilityLevel
+      (($null -ne $v) -and ($v -ge 3)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Level 0 sends LM and NTLM -- downgrade-able, replay-able, and the
+    reason the source attacker's blank-workstation NTLM logons worked.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name LmCompatibilityLevel -Value 3 -Type DWord
+    ```
+- id: w2_04_wdigest_off
+  type: powershell_json
+  category: vuln
+  display: "W2: WDigest no longer caches logon credentials in cleartext"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $v = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name UseLogonCredential -ErrorAction Ignore).UseLogonCredential
+      ((($null -eq $v) -or ($v -eq 0))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    With UseLogonCredential=1, cleartext passwords wait in lsass memory for
+    anyone who can read it.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name UseLogonCredential -Value 0 -Type DWord
+    ```
+
+    Deleting the value entirely also satisfies the check (a fresh value in
+    Server 2022 would simply not exist).
+- id: w2_05_ldap_signing_required
+  type: registry_value
+  category: vuln
+  display: "W2: LDAP server integrity requires signing (LDAPServerIntegrity=2)"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    hive: HKLM
+    key: SYSTEM\CurrentControlSet\Services\NTDS\Parameters
+    value: LDAPServerIntegrity
+  expect:
+    equals: 2
+    field: value
+    points: 5
+  solution: |
+    LDAP signing off on a DC is what makes the NTLM relay/null-session
+    toString work against directory traffic.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters' -Name LDAPServerIntegrity -Value 2 -Type DWord
+    ```
+- id: w2_06_anonymous_enum_blocked
+  type: powershell_json
+  category: vuln
+  display: "W2: Anonymous SAM/LSA enumeration is restricted"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $ra = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RestrictAnonymous -ErrorAction Ignore).RestrictAnonymous
+      $ras = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RestrictAnonymousSAM -ErrorAction Ignore).RestrictAnonymousSAM
+      (($ra -eq 1) -and ($ras -eq 1)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Both values must be 1: the unauthenticated-fist-phase user enumeration
+    that stocked the source attacker's spray list is what these two keys
+    gate.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RestrictAnonymous -Value 1 -Type DWord
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RestrictAnonymousSAM -Value 1 -Type DWord
+    ```
+- id: w2_07_smb1_disabled
+  type: powershell_json
+  category: vuln
+  display: "W2: SMBv1 is disabled"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $v = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -ErrorAction Ignore).SMB1
+      ((($null -eq $v) -or ($v -eq 0))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    SMBv1 is a 30-year protocol with an unpatchable-era exploit history.
+
+    ```
+    Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -Value 0 -Type DWord
+    ```
+    Restart the LanmanServer service (or the box) to apply it.
+- id: w2_08_uts_ps1_removed
+  type: permission
+  category: vuln
+  display: "W2: The cleartext-credential helper script C:\\Windows\\uts.ps1 is gone"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    path: 'C:\Windows\uts.ps1'
+  expect:
+    equals: false
+    field: exists
+    points: 5
+  solution: |
+    A script parked directly in `C:\Windows` (run as SYSTEM in the source
+    competition's timeline) with live credentials inside it.
+
+    ```
+    Get-Content 'C:\Windows\uts.ps1'
+    Remove-Item 'C:\Windows\uts.ps1'
+    ```
+
+    Read it first, rotate whatever credential it exposes, then delete it.
+- id: w2_09_corpus_creds_removed
+  type: powershell_json
+  category: vuln
+  display: "W2: The LLM corpus directory holds no credential sheets"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      (-not (Test-Path 'C:\GavelportAI\corpus')) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A retrieval corpus ingested by the county's AI assistant ships with a
+    staff credential sheet inside it: the corpus itself becomes an
+    exfiltration path -- ask the assistant a question, receive a password.
+
+    ```
+    Get-ChildItem -Recurse 'C:\GavelportAI\corpus' | Select-Object FullName
+    Remove-Item -Recurse -Force 'C:\GavelportAI\corpus'
+    ```
+
+    If the corpus must stay, the sheets must not; the check scores the
+    directory gone entirely.
+- id: w2_10_gpp_cpassword_purged
+  type: powershell_json
+  category: vuln
+  display: "W2: No Group Policy Preferences file carries an MS14-025 cpassword"
+  max_points: 5
+  timeout_s: 45
+  collect:
+    script: |
+      $hits = @()
+      $pol = 'C:\Windows\SYSVOL\domain\Policies'
+      if (Test-Path $pol) {
+        $hits = @(Get-ChildItem -Path $pol -Recurse -Filter 'Groups.xml' -ErrorAction SilentlyContinue |
+          Select-String -Pattern 'cpassword' -SimpleMatch -ErrorAction SilentlyContinue)
+      }
+      ($hits.Count -eq 0) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The GPP `cpassword` attribute encrypts every local-account credential
+    with a key Microsoft published in MS14-025 -- anyone who can read
+    SYSVOL decrypts the box's roster password.
+
+    ```
+    Get-ChildItem 'C:\Windows\SYSVOL\domain\Policies' -Recurse -Filter Groups.xml |
+      Select-String cpassword -SimpleMatch
+    ```
+
+    Fix by deleting the GPP credential entry (or the whole GPO); the sweep
+    across SYSVOL must come back empty.
+# ------------------------------------------------ W3: domain escalation to DA
+- id: w3_01_da_stray_speedy_removed
+  type: powershell_json
+  category: vuln
+  display: "W3: speedy.gonzales no longer sits in Domain Admins"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $m = @(Get-ADGroupMember -Identity 'Domain Admins' -ErrorAction SilentlyContinue | ForEach-Object { $_.SamAccountName })
+      (-not ($m -contains 'speedy.gonzales')) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Three minutes into the source competition, an ordinary user account was
+    made a Domain Admin. Membership in that group is the highest-value
+    object on the box; audit it as such.
+
+    ```
+    Get-ADGroupMember 'Domain Admins' | Select-Object SamAccountName, Name
+    Remove-ADGroupMember 'Domain Admins' -Members 'speedy.gonzales' -Confirm:$false
+    ```
+
+    Confirm by list. (Then rotate the account's own password or disable it --
+    the group add is one trail of finding.)
+- id: w3_02_da_stray_marvin_removed
+  type: powershell_json
+  category: vuln
+  display: "W3: marvin.martian no longer sits in Domain Admins"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $m = @(Get-ADGroupMember -Identity 'Domain Admins' -ErrorAction SilentlyContinue | ForEach-Object { $_.SamAccountName })
+      (-not ($m -contains 'marvin.martian')) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The second stray Domain Admin from the same 4729 pair as
+    `speedy.gonzales` (the source group-add landed 4729 x2 + 4737 inside one
+    console session).
+
+    ```
+    Remove-ADGroupMember 'Domain Admins' -Members 'marvin.martian' -Confirm:$false
+    ```
+
+    Rotate or disable the account itself afterwards.
+- id: w3_03_dcsync_rights_revoked
+  type: powershell_json
+  category: vuln
+  display: "W3: speedy.gonzales no longer holds DCSync rights on the domain root"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $rootDn = (Get-ADDomain -ErrorAction SilentlyContinue).DistinguishedName
+      $ok = $true
+      if ($rootDn) {
+        $acl = Get-Acl -Path "AD:\$rootDn" -ErrorAction SilentlyContinue
+        if ($acl) {
+          $grants = @($acl.Access | Where-Object {
+            ($_.AccessControlType -eq 'Allow') -and
+            ($_.IdentityReference -match 'speedy\.gonzales') -and
+            ($_.ActiveDirectoryRights -match 'ExtendedRight')
+          })
+          if ($grants.Count -gt 0) { $ok = $false }
+        } else { $ok = $false }
+      } else { $ok = $false }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The DS-Replication-Get-Changes(-All) extended rights on the domain root
+    are what DCSync-grade dumping needs; an ordinary account holding them
+    can pull every hash without ever logging in.
+
+    ```
+    $a = Get-Acl "AD:\<domain DN>"
+    $a.Access | Where-Object { $_.IdentityReference -like '*speedy.gonzales*' }
+    ```
+
+    Remove the ACEs (both replication rights GUIDs), e.g. via
+    `Remove-ADPermission`-style ADSI editing: install a `deny` is not the
+    fix -- the Allow entries must be gone.
+- id: w3_04_adminsdholder_ace_removed
+  type: powershell_json
+  category: vuln
+  display: "W3: AdminSDHolder carries no Everyone ACE"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $rootDn = (Get-ADDomain -ErrorAction SilentlyContinue).DistinguishedName
+      $ok = $true
+      if ($rootDn) {
+        $acl = Get-Acl -Path "AD:\CN=AdminSDHolder,CN=System,$rootDn" -ErrorAction SilentlyContinue
+        if ($acl) {
+          $grants = @($acl.Access | Where-Object {
+            ($_.IdentityReference -match 'Everyone') -and ($_.AccessControlType -eq 'Allow')
+          })
+          if ($grants.Count -gt 0) { $ok = $false }
+        } else { $ok = $false }
+      } else { $ok = $false }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    An `Everyone` GenericAll on AdminSDHolder means SDProp re-stamps the ACE
+    onto every protected object in the domain, on an hourly cadence, in
+    perpetuity.
+
+    ```
+    Get-Acl "AD:\CN=AdminSDHolder,CN=System,<domain DN>" |
+      ForEach-Object Access | Where-Object IdentityReference -match 'Everyone'
+    ```
+
+    Remove the ACE from the AdminSDHolder security descriptor (ADSI
+    Edit/`Set-Acl`), then let SDProp run; verify the template's protected
+    groups' ACLs no longer inherit it.
+- id: w3_05_administrator_not_iis_iusrs
+  type: powershell_json
+  category: vuln
+  display: "W3: Administrator is not a member of IIS_IUSRS"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $m = @(Get-LocalGroupMember -Group 'IIS_IUSRS' -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Name) { ($_.Name -split '\\')[-1] } })
+      (-not ($m -contains 'Administrator')) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The source competition's 4732/4735 at 13:53:39: the domain's
+    Administrator pulled into the anonymous-web group that IIS's app
+    pools run as. A service identity holding an administrator makes every
+    web-mediated write a domain write.
+
+    ```
+    Get-LocalGroupMember 'IIS_IUSRS'
+    Remove-LocalGroupMember -Group 'IIS_IUSRS' -Member 'Administrator'
+    ```
+- id: w3_06_no_extra_local_admins
+  type: powershell_json
+  category: vuln
+  display: "W3: The local Administrators group holds no stray user accounts"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $m = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue)
+      $strays = @($m | Where-Object { $_.ObjectClass -eq 'User' -and $_.Name -and (($_.Name -split '\\')[-1] -ne 'Administrator') })
+      ($strays.Count -eq 0) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Every *user-class* principal in the local Administrators group whose
+    name is not the built-in Administrator is a rogue on this box
+    (break-glass accounts with username-equals-password patterns included),
+    on a DC the group nests the domain admin groups they were created
+    around.
+
+    ```
+    Get-LocalGroupMember Administrators
+    Remove-LocalGroupMember -Group Administrators -Member <each stray user>
+    ```
+
+    Any user account that appearance of legitimacy, present but unlisted in
+    your roster, is a finding; the gavel's answer to one is removal.
+- id: w3_07_delegation_cleared
+  type: powershell_json
+  category: vuln
+  display: "W3: No account is trusted for unconstrained delegation (app01 included)"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $c = Get-ADComputer -Identity 'app01' -Properties TrustedForDelegation,TrustedToAuthForDelegation -ErrorAction SilentlyContinue
+      $ok = $true
+      if ($c) { $ok = ((-not $c.TrustedForDelegation) -and (-not $c.TrustedToAuthForDelegation)) }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Unconstrained delegation makes the box's computer account a
+    ticket-catching dragnet: any DA-authenticated traffic THROUGH the
+    account leaves reusable credentials in its memory.
+
+    ```
+    Get-ADComputer app01 -Properties TrustedForDelegation,TrustedToAuthForDelegation
+    Set-ADAccountControl -Identity 'app01$' -TrustedForDelegation $false -TrustedToAuthForDelegation $false
+    ```
+
+    Deleting the computer account also satisfies the check.
+- id: w3_08_krbtgt_enabled
+  type: powershell_json
+  category: vuln
+  display: "W3: The krbtgt account is enabled"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $u = Get-ADUser -Identity 'krbtgt' -Properties Enabled -ErrorAction SilentlyContinue
+      ([bool]$u -and [bool]$u.Enabled) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    `krbtgt` disabled is the fatal find: Kerberos renewal is down
+    domain-wide, every ticket path it fails to falls back to NTLM, and the
+    answer to "is the trust fabric healthy" is visibly no.
+
+    ```
+    Get-ADUser krbtgt -Properties Enabled
+    Enable-ADAccount -Identity krbtgt
+    ```
+
+    Confirm Enabled reads `True`. Do not rename, rotate, or re-parent the
+    account -- the check is precisely its Enabled state.
+- id: w3_09_gpo_persistence_removed
+  type: powershell_json
+  category: vuln
+  display: "W3: The telemetry GPO's Run-key persistence and its payload are gone"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module GroupPolicy -ErrorAction Ignore
+      $gpo = Get-GPO -Name 'Gavelport-Telemetry' -ErrorAction SilentlyContinue
+      $val = $null
+      if ($gpo) {
+        $val = Get-GPRegistryValue -Name 'Gavelport-Telemetry' -Key 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' -ValueName 'GP-Telemetry' -ErrorAction SilentlyContinue
+      }
+      $payload = Test-Path 'C:\ProgramData\Subsystems\gpotelemetry.ps1'
+      ((($null -eq $val) -and (-not $payload))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A GPO nobody remembers authoring that only writes one Run value and one
+    payload is domain-wide persistence: every machine that applies the
+    policy runs it.
+
+    ```
+    Get-GPO 'Gavelport-Telemetry'
+    Get-GPRegistryValue 'Gavelport-Telemetry' -Key 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run'
+    ```
+
+    Delete the GPO (or strip the Run value via
+    `Remove-GPRegistryValue`), then delete the payload file. The scoring
+    pair is: no Run value in the GPO AND the payload file gone.
+- id: w3_10_guest_rid_restored
+  type: powershell_json
+  category: vuln
+  display: "W3: Guest does not carry the Administrator account's SAM identity"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $f4 = (Get-ItemProperty -Path 'HKLM:\SAM\SAM\Domains\Account\Users\000001F4' -Name F -ErrorAction SilentlyContinue).F
+      $f5 = (Get-ItemProperty -Path 'HKLM:\SAM\SAM\Domains\Account\Users\000001F5' -Name F -ErrorAction SilentlyContinue).F
+      $same = $false
+      if ($f4 -and $f5) { $same = ((Compare-Object @($f4) @($f5) -SyncWindow 0).Count -eq 0) }
+      $g = Get-ADUser -Identity 'Guest' -Properties Enabled -ErrorAction SilentlyContinue
+      $guestOff = [bool]$g -and (-not $g.Enabled)
+      ($guestOff -or (-not $same)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A RID hijack copies the Administrator SAM `F` value (RID 500 identity)
+    onto Guest's shell account: every Guest logon is an Administrator logon
+    under the hood.
+
+    ```
+    reg query 'HKLM\SAM\SAM\Domains\Account\Users\000001F5' /v F      (as SYSTEM)
+    reg query 'HKLM\SAM\SAM\Domains\Account\Users\000001F4' /v F
+    ```
+
+    The scoring accepts either fix: disable the Guest account, or restore
+    its identity (delete/reset Guest so its own SID's F is rebuilt).
+    **Read both `F` values before you change anything.**
+- id: w3_11_rogue_computer_removed
+  type: powershell_json
+  category: vuln
+  display: "W3: The rogue kiosk computer account is disabled or removed"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $c = Get-ADComputer -Identity 'ACME-KIOSK09' -Properties Enabled -ErrorAction SilentlyContinue
+      $ok = $true
+      if ($c -and $c.Enabled) { $ok = $false }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    `ACME-KIOSK09` is not one of the kiosks the roster lists: a domain-
+    writable computer account is where an attacker parks a machine identity
+    to return through.
+
+    ```
+    Get-ADComputer ACME-KIOSK09
+    Disable-ADAccount -Identity 'ACME-KIOSK09$'
+    ```
+
+    Deletion (`Remove-ADComputer`) is the cleanest fix; disabled also
+    satisfies the check.
+- id: w3_12_guest_not_da_and_off
+  type: powershell_json
+  category: vuln
+  display: "W3: Guest is not in Domain Admins and is disabled"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $m = @(Get-ADGroupMember -Identity 'Domain Admins' -ErrorAction SilentlyContinue | ForEach-Object { $_.SamAccountName })
+      $g = Get-ADUser -Identity 'Guest' -Properties Enabled -ErrorAction SilentlyContinue
+      $gOff = ([bool]$g -and (-not $g.Enabled))
+      ((-not ($m -contains 'Guest')) -and $gOff) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The worst-case Domain Admin: a name built to be disposable, promoted to
+    the most trusted group in the forest.
+
+    ```
+    Get-ADGroupMember 'Domain Admins' | Select-Object Name
+    Remove-ADGroupMember 'Domain Admins' -Members 'Guest' -Confirm:$false
+    Disable-ADAccount -Identity Guest
+    ```
+
+    Both conditions must hold: no Guest in Domain Admins, Guest disabled.
+# --------------------------------------- W4: persistence + anti-forensics
+- id: w4_01_secureupdate_task_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The netsh firewall-kill task \\SecureUpdate and its payload are gone, and the firewall is back on"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $t = Get-ScheduledTask -TaskPath '\' -TaskName 'SecureUpdate' -ErrorAction SilentlyContinue
+      $pay = Test-Path 'C:\ProgramData\SecureUpdate\update-check.ps1'
+      $profilesOn = (@(Get-NetFirewallProfile -ErrorAction SilentlyContinue) | Where-Object { -not $_.Enabled }).Count -eq 0
+      ((-not $t) -and (-not $pay) -and $profilesOn) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The registered SYSTEM task that keeps turning the firewall back off
+    (the source competition's visible hourly `netsh` tug-of-war against the
+    blue team's re-enables).
+
+    ```
+    Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -in 'SecureUpdate','SuperSecureUpdate','TheMostSecureUpdate'
+    Get-ScheduledTask -TaskPath '\' -TaskName 'SecureUpdate' | Select-Object -ExpandProperty Actions
+    ```
+
+    All three facets score together: the task deleted, its payload file
+    deleted, and every firewall profile re-enabled.
+
+    ```
+    Unregister-ScheduledTask -TaskName 'SecureUpdate' -Confirm:$false
+    Remove-Item -Recurse -Force 'C:\ProgramData\SecureUpdate'
+    Set-NetFirewallProfile -All -Enabled True
+    ```
+- id: w4_02_supersecureupdate_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The \\SuperSecureUpdate task and its payload are gone"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $t = Get-ScheduledTask -TaskPath '\' -TaskName 'SuperSecureUpdate' -ErrorAction SilentlyContinue
+      $pay = Test-Path 'C:\ProgramData\SecureUpdate\super-update.ps1'
+      ((-not $t) -and (-not $pay)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The second member of the registered-in-83ms trio: a SYSTEM task with a
+    security-update name and a payload that is not an update.
+
+    ```
+    Get-ScheduledTask -TaskPath '\' -TaskName 'SuperSecureUpdate' | Select-Object -ExpandProperty Actions
+    Unregister-ScheduledTask -TaskName 'SuperSecureUpdate' -Confirm:$false
+    Remove-Item -Force 'C:\ProgramData\SecureUpdate\super-update.ps1'
+    ```
+- id: w4_03_hidden_task_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The hidden \\TheMostSecureUpdate task is gone"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $t = Get-ScheduledTask -TaskPath '\' -TaskName 'TheMostSecureUpdate' -ErrorAction SilentlyContinue
+      ((-not $t) -or (-not $t.Settings.Hidden)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Hidden tasks do not show in the default Task Scheduler view; they are
+    the reason your enumeration has to be exhaustive:
+
+    ```
+    Get-ScheduledTask -TaskPath '\' | Where-Object { $_.Settings.Hidden }
+    schtasks /query /tn '\TheMostSecureUpdate' /v
+    Unregister-ScheduledTask -TaskName 'TheMostSecureUpdate' -Confirm:$false
+    ```
+- id: w4_04_firewall_profiles_on
+  type: powershell_json
+  category: vuln
+  display: "W4: Every firewall profile is enabled"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $off = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { -not $_.Enabled })
+      ($off.Count -eq 0) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    All three profiles (Domain, Private, Public) ship disabled on the
+    image, kept off by the SecureUpdate task -- re-enable in order, kill the
+    task first or it wins the tug-of-war.
+
+    ```
+    Get-NetFirewallProfile | Select-Object Name, Enabled
+    Unregister-ScheduledTask -TaskName 'SecureUpdate' -Confirm:$false
+    Set-NetFirewallProfile -All -Enabled True
+    ```
+- id: w4_05_defender_restored
+  type: powershell_json
+  category: vuln
+  display: "W4: Defender real-time protection is on, the kill policy is cleared, and no exclusions remain"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      $rt = (Get-MpComputerStatus -ErrorAction SilentlyContinue).RealTimeProtectionEnabled
+      $pol = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -Name DisableAntiSpyware -ErrorAction Ignore).DisableAntiSpyware
+      $ex = (Get-MpPreference -ErrorAction SilentlyContinue).ExclusionPath
+      $exOk = $true
+      if ($ex) { $exOk = (@($ex).Count -eq 0) }
+      (($rt -eq $true) -and (($null -eq $pol) -or ($pol -eq 0)) -and $exOk) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Real-time protection disabled by policy plus an attacker-folder
+    exclusion is a two-fold finding: nothing scans, and one directory is
+    explicitly waved through.
+
+    ```
+    Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled
+    Get-MpPreference | Select-Object ExclusionPath
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -Name DisableAntiSpyware -Value 0 -Type DWord
+    Remove-MpPreference -ExclusionPath 'C:\ProgramData\SecureUpdate'
+    Remove-MpPreference -ExclusionPath 'C:\inetpub\wwwroot'
+    Set-MpPreference -DisableRealtimeMonitoring $false
+    ```
+- id: w4_06_winrm_disabled
+  type: powershell_json
+  category: vuln
+  display: "W4: WinRM is stopped and disabled"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $svc = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+      (($svc -and ($svc.Status -ne 'Running') -and ($svc.StartType -eq 'Disabled'))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    WinRM was the attacker's file-push channel (`Copy-Item -ToSession`
+    moved the next-stage payload onto the DC). The scoring agent does not
+    need it -- removing it costs you nothing on this box.
+
+    ```
+    Get-Service WinRM | Select-Object Status, StartType
+    Stop-Service WinRM -Force
+    Set-Service WinRM -StartupType Disabled
+    ```
+- id: w4_07_log_clear_task_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The recurring Security-log clear task is gone"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $t = Get-ScheduledTask -TaskPath '\' -TaskName 'WinDefSvcHelper' -ErrorAction SilentlyContinue
+      ((-not $t)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A SYSTEM task running `wevtutil cl Security` on a timer is an
+    anti-forensics machine: the event log never fills, and every gap looks
+    like quiet.
+
+    ```
+    Get-ScheduledTask -TaskPath '\' -TaskName 'WinDefSvcHelper' | Select-Object -ExpandProperty Actions
+    Unregister-ScheduledTask -TaskName 'WinDefSvcHelper' -Confirm:$false
+    ```
+- id: w4_08_ifeo_blocklist_clean
+  type: powershell_json
+  category: vuln
+  display: "W4: No IFEO Debugger entry silently kills launched executables"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+      $blocked = 0
+      Get-ChildItem -Path $ifeo -ErrorAction SilentlyContinue | ForEach-Object {
+        $d = (Get-ItemProperty -Path $_.PSPath -Name Debugger -ErrorAction SilentlyContinue).Debugger
+        if ($d -and ($d -match 'cmd\.exe /c exit')) { $blocked++ }
+      }
+      ($blocked -eq 0) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    An IFEO `Debugger` value of `cmd.exe /c exit` makes the named binary
+    exit silently the moment it starts -- the source range's IR tooling
+    (Autoruns, procexp) was silenced exactly this way.
+
+    ```
+    Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options' |
+      ForEach-Object { Get-ItemProperty $_.PSPath Debugger } |
+      Where-Object { $_.Debugger -match 'exit' }
+    ```
+
+    `Remove-ItemProperty` each `Debugger` value back to nothing.
+- id: w4_09_wmi_killrespawn_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The WMI kill-respawn subscription and its payload are gone"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      $ns = 'root\subscription'
+      $bind = @(Get-CimInstance -Namespace $ns -ClassName __FilterToConsumerBinding -ErrorAction SilentlyContinue | Where-Object { $_.Filter -like '*WinSvcEventFilter*' })
+      $filt = @(Get-CimInstance -Namespace $ns -ClassName __EventFilter -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'WinSvcEventFilter' })
+      $cons = @(Get-CimInstance -Namespace $ns -ClassName CommandLineEventConsumer -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'WinSvcEventConsumer' })
+      $pay = (Test-Path 'C:\ProgramData\Subsystems\dns-refresh.ps1') -or (Test-Path 'C:\ProgramData\Microsoft\Network\svcsplash.exe')
+      ((($bind.Count -eq 0) -and ($filt.Count -eq 0) -and ($cons.Count -eq 0) -and (-not $pay))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A `__InstanceDeletionEvent` subscription watches for its own payload
+    process dying and relaunches it: kill the process, the subscription
+    reacts; remove the binding first.
+
+    ```
+    Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding
+    Get-CimInstance -Namespace root\subscription -ClassName __EventFilter -Filter "Name='WinSvcEventFilter'"
+    Get-CimInstance -Namespace root\subscription -ClassName __EventFilter -Filter "Name='WinSvcEventFilter'" | Remove-CimInstance
+    Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer -Filter "Name='WinSvcEventConsumer'" | Remove-CimInstance
+    Remove-Item -Force 'C:\ProgramData\Subsystems\dns-refresh.ps1','C:\ProgramData\Microsoft\Network\svcsplash.exe'
+    ```
+- id: w4_10_watchdog_pair_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The mutual-watchdog task pair is gone, with its payload directory"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      $a = Get-ScheduledTask -TaskPath '\' -TaskName 'HelpDeskMon' -ErrorAction SilentlyContinue
+      $b = Get-ScheduledTask -TaskPath '\' -TaskName 'HelpDeskUpd' -ErrorAction SilentlyContinue
+      $pay = (Test-Path 'C:\ProgramData\Microsoft\HelpDesk\watch-ensure.ps1') -or (Test-Path 'C:\ProgramData\Microsoft\HelpDesk\deskmon.exe') -or (Test-Path 'C:\ProgramData\Microsoft\HelpDesk\helpupd.exe')
+      ((-not $a) -and (-not $b) -and (-not $pay)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Two tasks that re-register each other once a minute: deleting either
+    alone, it comes back. Unregister BOTH, then remove the payload
+    directory.
+
+    ```
+    Unregister-ScheduledTask -TaskName 'HelpDeskMon' -Confirm:$false
+    Unregister-ScheduledTask -TaskName 'HelpDeskUpd' -Confirm:$false
+    Remove-Item -Recurse -Force 'C:\ProgramData\Microsoft\HelpDesk'
+    ```
+- id: w4_11_deny_delete_artifact_removed
+  type: permission
+  category: vuln
+  display: "W4: The deny-delete marker artifact is gone"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    path: 'C:\Windows\System32\WinDefSvcHelper.dat'
+  expect:
+    equals: false
+    field: exists
+    points: 5
+  solution: |
+    A file armored against deletion: read-only bit, an Everyone DENY on
+    delete/child-delete, System integrity level. You cannot delete it until
+    you unwind the armor:
+
+    ```
+    icacls 'C:\Windows\System32\WinDefSvcHelper.dat'
+    icacls 'C:\Windows\System32\WinDefSvcHelper.dat' /reset
+    attrib -r 'C:\Windows\System32\WinDefSvcHelper.dat'
+    Remove-Item 'C:\Windows\System32\WinDefSvcHelper.dat'
+    ```
+
+    Take ownership (`takeown /f`) if the reset path resists. The check
+    scores only the file's absence.
+- id: w4_12_locked_service_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The SYSTEM-only service (WinCryptSvc32) is removed after its lockdown is unwound"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='WinCryptSvc32'" -ErrorAction SilentlyContinue
+      (-not $svc) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The service is present and unmanageable: its security descriptor
+    grants everything only to SYSTEM, so even an Administrator cannot
+    stop or delete it through the normal path.
+
+    ```
+    sc.exe sdshow WinCryptSvc32
+    $sd = sc.exe sdshow WinCryptSvc32 | Select-Object -Skip 1
+    sc.exe sdset WinCryptSvc32 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;AU)'
+    sc.exe stop WinCryptSvc32
+    sc.exe delete WinCryptSvc32
+    ```
+
+    The service must be GONE for the score (an SD reset that leaves the
+    service in place does not satisfy the check).
+- id: w4_13_respawn_user_gone
+  type: user_group
+  category: vuln
+  display: "W4: The respawned service account (svc_helper) stays gone"
+  max_points: 5
+  timeout_s: 30
+  collect: {}
+  expect:
+    user_absent: true
+    username: svc_helper
+    points: 5
+  solution: |
+    A SYSTEM task re-creates this account every 60 seconds. Delete the
+    account without unregistering the task and it returns; kill the task
+    first.
+
+    ```
+    Get-ScheduledTask -TaskPath '\' -TaskName 'WinUserAccountHelper' | Select-Object -ExpandProperty Actions
+    Unregister-ScheduledTask -TaskName 'WinUserAccountHelper' -Confirm:$false
+    net user svc_helper /delete
+    ```
+
+    The check wants the account absent from the local user list.
+- id: w4_14_runkey_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The WinDefSvcHelper Run-key persistence and its payload are gone"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $v = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'WinDefSvcHelper' -ErrorAction SilentlyContinue).WinDefSvcHelper
+      $pay = Test-Path 'C:\ProgramData\Subsystems\winitupd.ps1'
+      ((-not $v) -and (-not $pay)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A machine-wide Run value plus the script it launches -- classic two-part
+    persistence; removing only the key leaves the payload, and vice versa.
+
+    ```
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'WinDefSvcHelper'
+    Remove-Item -Force 'C:\ProgramData\Subsystems\winitupd.ps1'
+    ```
+- id: w4_15_wmi_subscription_removed
+  type: powershell_json
+  category: vuln
+  display: "W4: The WMI event subscription (WinPerf filter/consumer) and its payload are gone"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      $ns = 'root\subscription'
+      $bind = @(Get-CimInstance -Namespace $ns -ClassName __FilterToConsumerBinding -ErrorAction SilentlyContinue | Where-Object { $_.Filter -like '*WinPerfFilter*' })
+      $filt = @(Get-CimInstance -Namespace $ns -ClassName __EventFilter -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'WinPerfFilter' })
+      $cons = @(Get-CimInstance -Namespace $ns -ClassName CommandLineEventConsumer -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'WinPerfConsumer' })
+      $pay = Test-Path 'C:\ProgramData\Subsystems\perf-sync.ps1'
+      ((($bind.Count -eq 0) -and ($filt.Count -eq 0) -and ($cons.Count -eq 0) -and (-not $pay))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A filter (a timer query), a consumer (the command line), and the
+    binding that welds them: remove all three, in that order of attention.
+
+    ```
+    Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding | Where-Object { $_.Filter -like '*WinPerf*' }
+    Get-CimInstance -Namespace root\subscription -ClassName __EventFilter -Filter "Name='WinPerfFilter'" | Remove-CimInstance
+    Get-CimInstance -Namespace root\subscription -ClassName CommandLineEventConsumer -Filter "Name='WinPerfConsumer'" | Remove-CimInstance
+    Remove-Item -Force 'C:\ProgramData\Subsystems\perf-sync.ps1'
+    ```
+- id: w4_16_start_item_removed
+  type: permission
+  category: vuln
+  display: "W4: The all-users Startup folder item (svc-status) is gone"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    path: 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\svc-status.bat'
+  expect:
+    equals: false
+    field: exists
+    points: 5
+  solution: |
+    An all-users Startup batch file that launches the payload for every
+    interactive logon -- the most visible of the persistence set and the
+    easiest to overlook for exactly that reason.
+
+    ```
+    Get-Content 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\svc-status.bat'
+    Remove-Item 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\svc-status.bat'
+    ```
+- id: w4_17_appinit_clean
+  type: powershell_json
+  category: vuln
+  display: "W4: No AppInit/AppCert DLL hook is registered"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $win = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' -ErrorAction Ignore
+      $app = $win.AppInit_DLLs
+      $load = $win.LoadAppInit_DLLs
+      $certKey = Get-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs' -ErrorAction Ignore
+      $certVals = @()
+      if ($certKey) {
+        $certVals = @($certKey.GetValueNames() | Where-Object { $certKey.GetValue($_) })
+      }
+      $appOk = ((-not $app) -or ($app -eq ''))
+      $loadOk = (($null -eq $load) -or ($load -eq 0) -or ($load -eq '0'))
+      $hookFile = Test-Path 'C:\ProgramData\Subsystems\inproc_helper.dll'
+      (($appOk -and $loadOk -and ($certVals.Count -eq 0) -and (-not $hookFile))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    AppInit_DLLs and AppCertDLLs are machine-wide DLL load hooks: any
+    process that loads USER32 or creates processes pulls the planted
+    library.
+
+    ```
+    Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' AppInit_DLLs, LoadAppInit_DLLs
+    Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs'
+    ```
+
+    Empty `AppInit_DLLs`, set `LoadAppInit_DLLs=0`, empty the AppCertDLLs
+    subkey, and delete the placeholder DLL.
+- id: w4_18_winlogon_shell_restored
+  type: powershell_json
+  category: vuln
+  display: "W4: The Winlogon Userinit value launches no planted payload"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $ui = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -ErrorAction SilentlyContinue).Userinit
+      $exe = Test-Path 'C:\ProgramData\Subsystems\winitupd.exe'
+      $clean = (-not ($ui -match 'winitupd'))
+      ((-not $exe) -and $clean) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The Winlogon `Userinit` value launches at every interactive logon --
+    before the user ever appears -- and the plant appended its own binary
+    to it.
+
+    ```
+    Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' Userinit
+    Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -Value 'C:\Windows\system32\userinit.exe,'
+    Remove-Item -Force 'C:\ProgramData\Subsystems\winitupd.exe'
+    ```
+
+    The value must reference only userinit once more, and the payload must
+    be gone.
+# ------------------------------------------- W5: exposed services & cleartext creds
+- id: w5_01_webshell_removed
+  type: permission
+  category: vuln
+  display: "W5: The cmd.aspx JScript shell is gone from the IIS webroot"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    path: 'C:\inetpub\wwwroot\cmd.aspx'
+  expect:
+    equals: false
+    field: exists
+    points: 5
+  solution: |
+    A one-line JScript `eval(Request.Item["cmd"])` page in the default
+    webroot -- a command prompt over HTTP for anyone who can reach the site.
+
+    ```
+    Get-Content 'C:\inetpub\wwwroot\cmd.aspx'
+    Remove-Item 'C:\inetpub\wwwroot\cmd.aspx'
+    ```
+
+    While you are in Defender (the w4_05 finding), drop the matching
+    webroot exclusion too.
+- id: w5_02_admin_console_removed
+  type: powershell_json
+  category: vuln
+  display: "W5: The SaltmarshAdmin console site and its firewall rule are gone"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module WebAdministration -ErrorAction Ignore
+      $site = Get-Website -Name 'SaltmarshAdmin' -ErrorAction SilentlyContinue
+      $rule = Get-NetFirewallRule -Name 'SaltmarshAdmin' -ErrorAction SilentlyContinue
+      (($null -eq $site) -and ($null -eq $rule)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    An internal admin console published on 8080 by its own inbound firewall
+    rule -- the whole finding is the pairing: site + publish rule.
+
+    ```
+    Get-Website | Select-Object Name, State, PhysicalPath, Bindings
+    Remove-Website -Name 'SaltmarshAdmin'
+    Remove-NetFirewallRule -Name 'SaltmarshAdmin'
+    ```
+- id: w5_03_backoffice_auth_closed
+  type: powershell_json
+  category: vuln
+  display: "W5: The SaltmarshPortal backoffice application requires real credentials"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module WebAdministration -ErrorAction Ignore
+      $ok = $true
+      if (Get-WebApplication -Site 'SaltmarshPortal' -Name 'backoffice' -ErrorAction SilentlyContinue) {
+        $bo = 'IIS:\Sites\SaltmarshPortal\backoffice'
+        $anon = (Get-WebConfiguration -PSPath $bo -Filter 'system.webServer/security/authentication/anonymousAuthentication' -ErrorAction Ignore).enabled
+        $basic = (Get-WebConfiguration -PSPath $bo -Filter 'system.webServer/security/authentication/basicAuthentication' -ErrorAction Ignore).enabled
+        if ([bool]$anon) { $ok = $false }
+        if ([bool]$basic) { $ok = $false }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Anonymous AND basic auth both open on the backoffice application:
+    unauthenticated browsing with an HTTP-cleartext password option.
+
+    ```
+    $bo = 'IIS:\Sites\SaltmarshPortal\backoffice'
+    Set-WebConfigurationProperty -PSPath $bo -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name enabled -Value $false
+    Set-WebConfigurationProperty -PSPath $bo -Filter 'system.webServer/security/authentication/basicAuthentication' -Name enabled -Value $false
+    ```
+
+    Deleting the backoffice application entirely also satisfies the check.
+- id: w5_04_rpcproxy_disabled
+  type: powershell_json
+  category: vuln
+  display: "W5: RPC-over-HTTPS proxying is disabled on the domain controller"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      $rpc = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Rpc\RpcProxy' -ErrorAction Ignore)
+      $enabled = $rpc.Enabled
+      $valid = $rpc.ValidPorts
+      $ok = ((($null -eq $enabled) -or ($enabled -eq 0)) -and ((-not $valid) -or ($valid -eq '')))
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The RpcProxy role turns the DC's web site into an authenticated tunnel
+    into inner-ring RPC endpoints (Outlook-Anywhere-style exposure nobody
+    on a county records network asked for).
+
+    ```
+    Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Rpc\RpcProxy'
+    Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Rpc\RpcProxy' -Name Enabled -Value 0 -Type DWord
+    Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Rpc\RpcProxy' -Name ValidPorts -ErrorAction SilentlyContinue
+    ```
+
+    Any `Rpc`/`RpcWithCert` applications left on IIS sites should go with
+    it (`Get-WebApplication` / `Remove-WebApplication`).
+- id: w5_05_ftp_locked_or_removed
+  type: powershell_json
+  category: vuln
+  display: "W5: No FTP site accepts anonymous authentication"
+  max_points: 5
+  timeout_s: 45
+  collect:
+    script: |
+      Import-Module WebAdministration -ErrorAction Ignore
+      $ok = $true
+      $sites = @('VendorDrop')
+      foreach ($s in $sites) {
+        if (-not (Get-Website -Name $s -ErrorAction SilentlyContinue) -and -not ((Get-Website -ErrorAction Ignore) | Where-Object { Get-WebConfiguration -PSPath ("MACHINE/WEBROOT/APPHOST/sites/site[@name='" + $s + "']") -Filter 'system.ftpServer' -ErrorAction Ignore })) { continue }
+        $v = (Get-WebConfiguration -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.applicationHost/sites/site[@name='$s']/ftpServer/security/authentication/anonymousAuthentication" -ErrorAction Ignore).enabled
+        if ([bool]$v) { $ok = $false }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The VendorDrop FTP site is the vector: an anonymous-readable drop
+    seeded from outside.
+
+    ```
+    Import-Module WebAdministration
+    Get-Website | Select-Object Name, Bindings
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/authentication/anonymousAuthentication" `
+      -Name enabled -Value $false
+    Restart-Service FTPSVC -Force
+    ```
+
+    Removing the FTP site entirely (`Remove-Website -Name VendorDrop`)
+    also satisfies the check.
+- id: w5_06_ftp_drop_content_gated
+  type: powershell_json
+  category: vuln
+  display: "W5: No FTP authorization rule grants wildcard/Everyone access, and the anonymous drop content is not public"
+  max_points: 5
+  timeout_s: 45
+  collect:
+    script: |
+      Import-Module WebAdministration -ErrorAction Ignore
+      $ok = $true
+      $rules = @(Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.ftpServer/security/authorization' -ErrorAction Ignore | ForEach-Object { $_.Collection } | Where-Object { $_ })
+      foreach ($r in $rules) {
+        if ($r.accessType -eq 'Allow' -and ($r.users -eq '*' -or $r.roles -eq 'Everyone' -or $r.users -match 'Everyone')) { $ok = $false }
+      }
+      if (Test-Path 'C:\inetpub\ftproot\MyFtpSite\TASKS.txt') {
+        $acl = Get-Acl 'C:\inetpub\ftproot\MyFtpSite\TASKS.txt' -ErrorAction Ignore
+        if ($acl) {
+          $evl = @($acl.Access | Where-Object { $_.IdentityReference -match 'Everyone' })
+          if ($evl.Count -gt 0) { $ok = $false }
+        }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Two faces of the same drop: authorization rules that say "anyone" and
+    a seeded content directory readable by Everyone.
+
+    ```
+    Get-WebConfiguration 'MACHINE/WEBROOT/APPHOST' -Filter 'system.ftpServer/security/authorization'
+    Clear-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.ftpServer/security/authorization'
+    Add-WebConfiguration 'MACHINE/WEBROOT/APPHOST' -Filter 'system.ftpServer/security/authorization' -Value @{accessType='Allow'; users='ftp_vendor'; permissions='Read, Write'}
+    icacls 'C:\inetpub\ftproot\MyFtpSite' /remove:g Everyone
+    ```
+
+    If the anonymous drop content itself should not exist, delete the
+    MyFtpSite directory instead of securing it.
+- id: w5_07_ftp_hardening_restored
+  type: powershell_json
+  category: vuln
+  display: "W5: The FTP service requires TLS on the control channel again"
+  max_points: 5
+  timeout_s: 45
+  collect:
+    script: |
+      Import-Module WebAdministration -ErrorAction Ignore
+      $ok = $true
+      if (Get-Website -Name 'VendorDrop' -ErrorAction SilentlyContinue) {
+        $cc = (Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl" -ErrorAction Ignore).controlChannelPolicy
+        if ($cc -ne 'SslRequire') { $ok = $false }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The build's own hardening row ran backwards: SSL was flipped to
+    "allow" and the anonymous switch re-opened. Restore TLS as required on
+    the VendorDrop site (or remove the site; the check accepts removal).
+
+    ```
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl" `
+      -Name controlChannelPolicy -Value 'SslRequire'
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+      -Filter "system.applicationHost/sites/site[@name='VendorDrop']/ftpServer/security/ssl" `
+      -Name dataChannelPolicy -Value 'SslRequire'
+    Restart-Service FTPSVC -Force
+    ```
+- id: w5_08_rdp_secondary_removed
+  type: powershell_json
+  category: vuln
+  display: "W5: The secondary RDP listener (RDP-Tcp2 on 3388) is gone"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $k = (Get-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp2' -ErrorAction SilentlyContinue)
+      $port = $null
+      if ($k) { $port = $k.GetValue('PortNumber') }
+      $listen = @(Get-NetTCPConnection -LocalPort 3388 -State Listen -ErrorAction SilentlyContinue)
+      ((($null -eq $port) -or ($port -ne 3388)) -and ($listen.Count -eq 0)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A second RDP listener on a nonstandard port survives Port Keepalive
+    scans precisely because nobody looks at 3388; it re-materializes at
+    boot unless the WinStations key goes.
+
+    ```
+    Get-NetTCPConnection -State Listen -LocalPort 3388 -ErrorAction SilentlyContinue
+    Remove-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp2' -Recurse
+    Remove-NetFirewallRule -DisplayName 'RDP-Secondary' -ErrorAction SilentlyContinue
+    ```
+
+    Reboot to release the listener immediately; the key removal is the
+    scored fact.
+- id: w5_09_rdp_users_clean
+  type: powershell_json
+  category: vuln
+  display: "W5: svc_helper is not in the Remote Desktop Users group"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $m = @(Get-LocalGroupMember -Group 'Remote Desktop Users' -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Name) { ($_.Name -split '\\')[-1] } })
+      (-not ($m -contains 'svc_helper')) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A service account in Remote Desktop Users is an RDP-capable identity
+    with no humans attached -- after the respawn task (w4_13) is killed,
+    strip its seat too.
+
+    ```
+    Get-LocalGroupMember 'Remote Desktop Users'
+    Remove-LocalGroupMember -Group 'Remote Desktop Users' -Member 'svc_helper'
+    ```
+- id: w5_10_no_wan_nic
+  type: powershell_json
+  category: vuln
+  display: "W5: No network adapter sits on the perimeter subnet with external resolvers"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      $wanIp = $false
+      $extDns = $false
+      $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+      foreach ($i in $ips) {
+        if ($i.IPAddress -like '10.250.250.*') { $wanIp = $true }
+      }
+      foreach ($n in @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+        foreach ($s in @($n.ServerAddresses)) {
+          if ($s -in @('1.1.1.1','8.8.8.8')) { $extDns = $true }
+        }
+      }
+      ((-not $wanIp) -and (-not $extDns)) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A second network card on the perimeter range with public DNS servers
+    splits the box's trust boundary and republishes every local listener
+    toward the WAN side of the range.
+
+    ```
+    Get-NetIPConfiguration | Select-Object InterfaceAlias, IPv4Address
+    Get-DnsClientServerAddress
+    Remove-NetIPAddress -InterfaceAlias <WAN adapter name> -IPAddress 10.250.250.10 -Confirm:$false
+    Set-DnsClientServerAddress -InterfaceAlias <WAN adapter name> -ResetServerAddresses
+    ```
+
+    Both scored facts must go: the 10.250.250.x address AND the 1.1.1.1 /
+    8.8.8.8 resolver configuration.
+- id: w5_11_c_share_removed
+  type: powershell_json
+  category: vuln
+  display: "W5: The C$-adjacent all-access 'C' share is removed or restricted"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $s = Get-SmbShare -Name 'C' -ErrorAction SilentlyContinue
+      $ok = $true
+      if ($s) {
+        $ev = @($s | Get-SmbShareAccess -ErrorAction SilentlyContinue | Where-Object { $_.AccountName -match 'Everyone' })
+        if ($ev.Count -gt 0) { $ok = $false }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    A share literally named `C` -- the whole drive -- handed to Everyone.
+    Not the hidden administrative C$; a separate, visible one.
+
+    ```
+    Get-SmbShare | Select-Object Name, Path
+    Get-SmbShareAccess -Name 'C'
+    Remove-SmbShare -Name 'C' -Force
+    ```
+
+    Restricting the ACL to named principals also satisfies the check; but
+    on a DC a whole-drive share should simply not exist.
+- id: w5_12_quiet_share_locked
+  type: powershell_json
+  category: vuln
+  display: "W5: The quiet second SMB share (ACME-Share) is not open to Everyone"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $s = Get-SmbShare -Name 'ACME-Share' -ErrorAction SilentlyContinue
+      $ok = $true
+      if ($s) {
+        $ev = @($s | Get-SmbShareAccess -ErrorAction SilentlyContinue | Where-Object { ($_.AccountName -match 'Everyone') -and ($_.AccessRight -match 'Full|Change') })
+        if ($ev.Count -gt 0) { $ok = $false }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The share you find on the second sweep: nothing in its name states a
+    purpose, Everyone holds Full, and it stays up across reboots.
+
+    ```
+    Get-SmbShareAccess -Name 'ACME-Share'
+    Revoke-SmbShareAccess -Name 'ACME-Share' -AccountName 'Everyone' -Force
+    ```
+
+    Removing the share entirely is the cleanest score.
+# ------------------------------------------------ W6: local privesc by construction
+- id: w6_01_no_blank_password_accounts
+  type: powershell_json
+  category: vuln
+  display: "W6: No enabled domain account tolerates a blank password"
+  max_points: 5
+  timeout_s: 30
+  collect:
+    script: |
+      Import-Module ActiveDirectory -ErrorAction Ignore
+      $bad = @(Get-ADUser -Filter { Enabled -eq $true -and PasswordNotRequired -eq $true } -ErrorAction SilentlyContinue)
+      ($bad.Count -eq 0) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    An enabled account whose flag says "password not required" may be
+    logged into with an empty password on the DC.
+
+    ```
+    Get-ADUser -Filter 'Enabled -eq $true -and PasswordNotRequired -eq $true'
+    Set-ADAccountControl -Identity intern.acme -PasswordNotRequired $false
+    Set-ADAccountPassword -Identity intern.acme -Reset -NewPassword (ConvertTo-SecureString '<real password>' -AsPlainText -Force)
+    ```
+
+    Disabling or deleting the account also satisfies the check.
+- id: w6_02_always_install_elevated_off
+  type: powershell_json
+  category: vuln
+  display: "W6: AlwaysInstallElevated is off in both policy hives"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $m = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -ErrorAction Ignore).AlwaysInstallElevated
+      $u = (Get-ItemProperty -Path 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -ErrorAction Ignore).AlwaysInstallElevated
+      $ok = ((($null -eq $m) -or ($m -eq 0)) -and (($null -eq $u) -or ($u -eq 0)))
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    With both hives set to 1, any MSI runs as SYSTEM when a non-admin
+    double-clicks it -- a guaranteed local-to-SYSTEM ladder.
+
+    ```
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord
+    Set-ItemProperty 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord
+    ```
+
+    Both hives must read 0 (or the value absent).
+- id: w6_03_deploy_creds_acl_locked
+  type: powershell_json
+  category: vuln
+  display: "W6: The deploy credentials file is no longer world-readable"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $p = 'C:\ProgramData\Gavelport\deploy-creds.txt'
+      $ok = $true
+      if (Test-Path $p) {
+        $acl = Get-Acl -LiteralPath $p -ErrorAction SilentlyContinue
+        if ($acl) {
+          $ev = @($acl.Access | Where-Object { ($_.IdentityReference -match 'Everyone') -and ($_.AccessControlType -eq 'Allow') })
+          if ($ev.Count -gt 0) { $ok = $false }
+        }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The deploy credentials file carries Everyone:(F) -- every created local
+    process can read the box's standing credentials.
+
+    ```
+    icacls 'C:\ProgramData\Gavelport\deploy-creds.txt'
+    icacls 'C:\ProgramData\Gavelport\deploy-creds.txt' /inheritance:r /grant 'SYSTEM:F' 'BUILTIN\Administrators:F'
+    ```
+
+    Reading the file first is the point -- rotate whatever it exposes.
+    Deleting the file is also an acceptable fix (the check reads no file).
+- id: w6_04_ssh_deploy_key_removed
+  type: powershell_json
+  category: vuln
+  display: "W6: The Windows OpenSSH administrators_authorized_keys file carries no planted key"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $f = 'C:\ProgramData\ssh\administrators_authorized_keys'
+      $ok = $true
+      if (Test-Path $f) {
+        $lines = @(Get-Content $f -ErrorAction SilentlyContinue | Where-Object { $_ -match 'ssh-(ed25519|rsa) ' })
+        if ($lines.Count -gt 0) { $ok = $false }
+      }
+      $ok | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    An attacker's key in `administrators_authorized_keys` survives every
+    password rotation: no group membership required, the file's ACL alone
+    makes it a SYSTEM+Admins backdoor.
+
+    ```
+    Get-Content 'C:\ProgramData\ssh\administrators_authorized_keys'
+    ```
+
+    (Answer the forensics question about the key's comment STRING before
+    removing it.)
+
+    Remove the key line -- if the file ends up empty, delete it; either
+    state scores. The acl on the file (SYSTEM + Administrators only) is
+    correct and should stay.
+- id: w6_05_interactive_logon_hardened
+  type: powershell_json
+  category: vuln
+  display: "W6: The logon screen hides the last username and requires Ctrl+Alt+Del"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $d = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name dontdisplaylastusername -ErrorAction Ignore).dontdisplaylastusername
+      $cad = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DisableCAD -ErrorAction Ignore).DisableCAD
+      (($d -eq 1) -and (($null -eq $cad) -or ($cad -eq 0))) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The image trusts its console: last username displayed, secure-attention
+    sequence skipped. On a shared terminal, the first is half a credential;
+    harden both.
+
+    ```
+    Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name dontdisplaylastusername -Value 1 -Type DWord
+    Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DisableCAD -Value 0 -Type DWord
+    ```
+- id: w6_06_acmedeploy_disabled
+  type: user_group
+  category: vuln
+  display: "W6: The acmedeploy account is disabled"
+  max_points: 5
+  timeout_s: 30
+  collect: {}
+  expect:
+    user_absent: true
+    username: acmedeploy
+    points: 5
+  solution: |
+    A standing build/deploy account left enabled with a weak password:
+    either kill the account or make it unusable.
+
+    ```
+    net user acmedeploy /delete
+    ```
+    Or: `Disable-LocalUser -Name acmedeploy` -- the check reads the local
+    user list and wants the account gone. (Disabled accounts still show in
+    the user list; make it `Enabled: False` in `Get-LocalUser` AND confirm
+    the roster does not need it, or simply delete.)
+- id: w6_07_acmedeploy_not_admin
+  type: powershell_json
+  category: vuln
+  display: "W6: The acmedeploy account holds no local administrator rights"
+  max_points: 5
+  timeout_s: 25
+  collect:
+    script: |
+      $m = @(Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Name) { ($_.Name -split '\\')[-1] } })
+      (-not ($m -contains 'acmedeploy')) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    The deploy account was granted a seat in local Administrators. Strip
+    the seat:
+
+    ```
+    Remove-LocalGroupMember -Group Administrators -Member acmedeploy
+    ```
+- id: w6_08_execution_policy_locked
+  type: powershell_json
+  category: vuln
+  display: "W6: The machine-wide PowerShell execution policy is Restricted or AllSigned"
+  max_points: 5
+  timeout_s: 20
+  collect:
+    script: |
+      $pol = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell' -Name ExecutionPolicy -ErrorAction Ignore).ExecutionPolicy
+      $en = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -Name EnableScripts -ErrorAction Ignore).EnableScripts
+      $polOk = ($pol -in @('Restricted','AllSigned'))
+      $enOk = (($null -eq $en) -or ($en -eq 0))
+      ($polOk -and $enOk) | ConvertTo-Json -Compress
+  expect:
+    equals: true
+    field: data
+    points: 5
+  solution: |
+    Unrestricted everywhere means every dropped .ps1 runs without a
+    prompt; Restricted (or AllSigned) restores the default friction
+    against script-based replants.
+
+    ```
+    Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell' -Name ExecutionPolicy -Value 'Restricted'
+    Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -Name EnableScripts -Value 0 -Type DWord
+    ```
+
+    Write the registry values directly -- a `Set-ExecutionPolicy` call from
+    a policy-scoped context throws; the two writes above ARE the machine
+    policy.
+
+    Both facets must read locked: the ShellIds policy string AND the
+    EnableScripts machine policy.
+
+forensics:
+- id: fq-da-stray1
+  points: 10
+  question: Two ordinary user accounts were promoted into Domain Admins before you arrived. What is the SamAccountName of the FIRST of them?
+  answer: speedy.gonzales
+  answers: ["speedy.gonzales", "speedy gonzales", "speedy"]
+  solution: '`Get-ADGroupMember "Domain Admins" | Select SamAccountName` -- one of the
+    two cartoon-cast names is the first stray the log events recorded. The
+    competition timeline shows both were added in the same minute.'
+- id: fq-da-stray2
+  points: 10
+  question: What is the SamAccountName of the SECOND stray Domain Admins member?
+  answer: marvin.martian
+  answers: ["marvin.martian", "marvin martian", "marvin"]
+  solution: 'Same roster query as the first stray: `Get-ADGroupMember "Domain Admins"`.
+    Both were added together; remove both.'
+- id: fq-dnscache-path
+  points: 10
+  question: One PowerShell module directory under WindowsPowerShell\v1.0\Modules is not what its name says it is. What is its FULL path?
+  answer: 'C:\Windows\system32\WindowsPowerShell\v1.0\Modules\DNSCache'
+  answers:
+  - 'C:\Windows\System32\WindowsPowerShell\v1.0\Modules\DNSCache'
+  - C:\Windows\system32\WindowsPowerShell\v1.0\Modules\DNSCache\
+  solution: 'A directory sweep reads wrong at the top (the name is the benign
+    DNS client cache). The content gives it away: the bootstrap exports
+    `Get-ADDBAccount` / `Get-ADReplAccount` / `Get-ADDBBackupKey`. Read it
+    BEFORE deleting -- the path is the answer.'
+- id: fq-task-netsh
+  points: 10
+  question: One scheduled task keeps firing `netsh advfirewall set allprofiles state off`. What is the registered task's name?
+  answer: \SecureUpdate
+  answers: ["\\SecureUpdate", SecureUpdate, "Secure Update"]
+  solution: '`Get-ScheduledTask -TaskPath "\" | Where TaskName -in "SecureUpdate","SuperSecureUpdate","TheMostSecureUpdate"`
+    and inspect each `Actions` line -- exactly one payload runs net against
+    the firewall profiles. The name says the least.'
+- id: fq-pattern-user
+  points: 10
+  question: Three accounts share one password pattern. Whose password is exactly `Daffy!Acme4103`?
+  answer: daffy.duck
+  answers: ["daffy.duck", "daffy duck", daffy]
+  solution: 'The pattern is `Name!AcmeNNNN` -- first name, exclamation, `Acme`,
+    four digits. Each planted account carries its own first name in that
+    same position, so the fact that the password leads with `Daffy!`
+    identifies the account directly.'
+- id: fq-svc-account
+  points: 10
+  question: One never-expiring service account on the box holds admin rights and authenticates from every host. What is its name?
+  answer: svc-all
+  answers: ["svc-all", svc_all, "svcall"]
+  solution: '`Get-LocalUser | Where PasswordNeverExpires` -- the one with a
+    description that says monitoring/ops and a seat in the Administrators
+    group. One shared credential, every host.'
+- id: fq-ifeo-tool
+  points: 10
+  question: The IFEO `Debugger` blocklist silently kills security tools. Give the name of ONE executable it blocks.
+  answer: Autoruns.exe
+  answers: ["Autoruns.exe", "Autoruns64.exe", "autoruns", "procexp.exe", "procexp64.exe", "procmon.exe", "taskmgr.exe", "mmc.exe", "Sysmon.exe"]
+  solution: 'Enumerate the Image File Execution Options subkeys whose
+    `Debugger` value points at `cmd.exe /c exit`:
+
+    ```
+    Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options" |
+      ForEach-Object { $d = (Get-ItemProperty $_.PSPath Debugger).Debugger; if ($d) { "$($_.PSChildName) -> $d" } }
+    ```'
+- id: fq-ssh-key-comment
+  points: 10
+  question: An attacker's key is planted in the Windows OpenSSH administrators_authorized_keys file. What is the comment string on that key?
+  answer: anvil-backup
+  answers: ["anvil-backup", anvil_backup, anvilbackup]
+  solution: '`C:\ProgramData\ssh\administrators_authorized_keys` -- a single
+    line, one key, and its comment is the last whitespace-separated field.
+    Read it BEFORE you remove the line.'
+- id: fq-gpp-gpo
+  points: 10
+  question: One Group Policy Object in SYSVOL carries an MS14-025 cpassword in its Groups.xml. What is the GPO's display name?
+  answer: Gavelport-Deploy
+  answers: ["Gavelport-Deploy", "Gavelport Deploy", gavelportdeploy]
+  solution: 'Sweep SYSVOL for the attribute:
+
+    ```
+    Get-ChildItem "C:\Windows\SYSVOL\domain\Policies" -Recurse -Filter Groups.xml |
+      Select-String cpassword -SimpleMatch
+    ```
+
+    The GUID in the hit resolves to its display GPO name via
+    `Get-GPO -Guid <guid>`; the display name reads like a deploy policy.'
+- id: fq-mesh-service
+  points: 10
+  question: A remote-management agent was staged on this image days before you arrived. What is the exact service name of its agent?
+  answer: MeshAgent
+  answers: ["MeshAgent", "Mesh Agent"]
+  solution: '`Get-CimInstance Win32_Service | Where { $_.PathName -match "Mesh" }` --
+    the service that auto-starts from the ProgramData payload directory;
+    its install timestamp is the provenance proof (predates your roster
+    by days).'
+
+theme:
+  title: "Gavelport Courthouse"
+  organization: "Gavelport County Municipal Court"
+  accent: "#8C1F28"
+  logo: assets/logo.png
+  wallpaper: assets/wallpaper.png
+  readme: assets/README.md
+  desktop_shortcuts:
+  - name: "Hardening Handbook"
+    exec: '%PUBLIC%\Documents\huitzilopochtli\README.html'
+
+ranked:
+  engine_url: http://127.0.0.1:8080
+  services:
+  - id: rdp
+    display: Remote Desktop (port 3389)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 3389
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: dns
+    display: Domain name service (port 53)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 53
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: ldap
+    display: Active Directory directory (port 389)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 389
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: kdc
+    display: Kerberos key distribution (port 88)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 88
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: smb
+    display: File/domain sharing (port 445)
+    type: tcp_port
+    collect:
+      host: 127.0.0.1
+      port: 445
+    expect:
+      equals: true
+      field: open
+    interval_s: 30
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  - id: iis
+    display: County web portal (HTTP, port 80)
+    type: http_uptime
+    collect:
+      url: http://127.0.0.1/
+    expect:
+      equals: 200
+      field: status
+    interval_s: 60
+    points_per_interval: 2
+    max_intervals_per_checkin: 3
+  pool:
+    template_vm_id: "${HUITZILOPOCHTLI_GAVELPORT_COURTHOUSE_POOL_TEMPLATE_VM_ID}"
+    template_vm_access_method: rdp
+    template_vm_username: "${HUITZILOPOCHTLI_GAVELPORT_COURTHOUSE_POOL_TEMPLATE_USER}"
+    template_vm_password: "${HUITZILOPOCHTLI_GAVELPORT_COURTHOUSE_POOL_TEMPLATE_PASSWORD}"
+    vm_count: 4
+    guac_link_ttl_seconds: 14400
