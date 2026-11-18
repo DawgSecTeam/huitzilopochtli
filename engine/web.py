@@ -994,7 +994,14 @@ def _build_line() -> str:
         return ('<p class="muted small">Engine build unknown: this checkout '
                 'has no build_info.json (built dev checkout).</p>')
     short = esc(info["commit"][:7])
-    built = f' · built {esc(_fmt_ts(info["built_at"]))}' if info["built_at"] else ""
+    built = ""
+    if info["built_at"]:
+        try:
+            # Epoch seconds (a bundle stamp could carry them) render through
+            # the shared formatter; ISO stamps render as-is, trimmed.
+            built = f" · built {esc(_fmt_ts(float(info['built_at'])))}"
+        except (TypeError, ValueError):
+            built = " · built " + esc(str(info["built_at"])[:16].replace("T", " "))
     src = f' ({esc(info["source"])})' if info["source"] else ""
     started = esc(_fmt_ts(engine_build.STARTED_AT))
     return f'<p class="muted small" title="{esc(info["commit"])}">Engine build <code>{short}</code>{src}{built} · process started {started}</p>'

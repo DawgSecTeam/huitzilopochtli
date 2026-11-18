@@ -59,6 +59,16 @@ def test_dashboard_shows_commit_when_build_known():
     assert "Engine build" in html
 
 
+def test_dashboard_renders_an_iso_build_stamp_without_crashing():
+    """The git deploy stamps built_at as ISO; _fmt_ts wants epoch floats."""
+    web.engine_build._CACHE = {
+        "commit": "e" * 40, "built_at": "2026-11-18T09:41:43+00:00",
+        "source": "git"}
+    html = web.admin_dashboard_page([_comp()], {}, csrf="t")
+    assert "· built 2026-11-18 09:41" in html
+    assert "<code>eeeeeee</code>" in html
+
+
 def test_dashboard_says_unknown_for_dev_checkout():
     web.engine_build._CACHE = {"commit": None, "built_at": None,
                                "source": None}
