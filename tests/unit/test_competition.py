@@ -374,3 +374,57 @@ def test_leaderboard_visibility_toggle_conceals_standings(store):
     board = competition.leaderboard_payload(store, store.get_competition(comp.id))
     assert len(board["leaderboard"]) == 1
     assert board["competition"]["leaderboard_hidden"] is False
+
+
+def test_extend_runs_moves_live_clocks_and_resumes_expired(store):
+    """Overtime slides running deadlines; expiry-finished runs resume."""
+    comp = _comp(store)
+    _priv, box_id, _payload = _join(store, comp)
+    _priv2, _box2, _p2 = _join(store, comp, name="Grace")
+    grace = store.get_player_by_box(_box2)
+    ends_running = store.get_player_by_box(box_id).ends_at
+
+    # Grace's clock expired and a check-in froze the run as finished.
+    store.update_player(grace.player_id, ends_at=1000.0)
+    r = _checkin(store, _priv2, _bundle(_box2, 1), 1001.0)
+    assert r.run_status == "finished"
+    assert store.get_player(grace.player_id).status == "finished"
+
+    report = competition.extend_runs(store, comp, 900, now=1100.0)
+    assert len(report["extended"]) == 1
+    assert report["extended"][0]["player_id"] == \
+        store.get_player_by_box(box_id).player_id
+    assert report["resumed"] == [
+        {"player_id": grace.player_id, "name": "Grace", "ends_at": 2000.0}]
+
+    fresh = store.get_player_by_box(box_id)
+    assert fresh.ends_at == ends_running + 900  # running clock slid intact
+    resumed = store.get_player(grace.player_id)
+    assert resumed.status == "running" and resumed.finished_at is None
+    assert resumed.ends_at == 2000.0  # resumed on an equal footing
+
+    # The resumed run scores again on the next check-in.
+    r2 = _checkin(store, _priv2, _bundle(_box2, 2), 1150.0)
+    assert r2.run_status == "running"
+
+
+def test_extend_runs_skips_invited_and_non_live(store):
+    comp = _comp(store)
+    _priv, _box, _payload = _join(store, comp)
+    bob, _code, _err = competition.create_player_with_code(
+        store, comp, "Bob", b"s")
+    assert bob.status == "invited"
+
+    report = competition.extend_runs(store, comp, 900, now=10.0)
+    assert [s["name"] for s in report["skipped"]] == ["Bob"]
+    assert store.get_player(bob.player_id).status == "invited"
+    assert bob.ends_at is None
+
+    # Refusals: out-of-bounds request, then a non-live competition.
+    with pytest.raises(competition.ExtendRefused, match="between 1 minute"):
+        competition.extend_runs(store, comp, 0)
+    with pytest.raises(competition.ExtendRefused, match="between 1 minute"):
+        competition.extend_runs(store, comp, 7 * 3600)
+    store.end_competition(comp.id)
+    with pytest.raises(competition.ExtendRefused, match="only a live competition"):
+        competition.extend_runs(store, store.get_competition(comp.id), 900)

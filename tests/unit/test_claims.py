@@ -1263,3 +1263,81 @@ def test_auto_end_does_not_fire_while_joins_are_open(store, monkeypatch):
     claims.sweep(store, b"secret")
     assert store.get_competition(comp.id).status == "live"
     assert cleaned == []
+
+
+def _bound_player(store, comp, name, *, ends_at, claim_expires_at):
+    """A box-bound, VM-claimed running player with a portal reclaim clock."""
+    player, _code, _err = competition.create_player_with_code(
+        store, comp, name, b"secret")
+    store.update_player(player.player_id, box_id=f"box-{name}",
+                        status="running", ends_at=ends_at,
+                        claim_url=f"http://portal.example/r/{name.lower()}",
+                        claim_uid=f"u-{name.lower()}",
+                        claim_expires_at=claim_expires_at)
+    return store.get_player(player.player_id)
+
+
+def test_extend_pool_expiry_no_temporary_pin_or_portal(store, comp,
+                                                       monkeypatch):
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD",
+                       raising=False)
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_URL", raising=False)
+    out = claims.extend_pool_expiry(store, comp, 900)
+    assert out == {"bumped": False,
+                   "reason": "portal not configured or no pinned pool"}
+
+
+def test_extend_pool_expiry_sleeps_while_the_portal_has_headroom(
+        store, comp, portal_env, monkeypatch):
+    calls = []
+
+    def boom(*a, **kw):
+        calls.append(a)
+        raise AssertionError("portal must not be touched while there is slack")
+
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.workshop, "list_vms", boom)
+    _bound_player(store, comp, "Ada", ends_at=time.time() + 3600,
+                  claim_expires_at=time.time() + 4 * 3600)
+    out = claims.extend_pool_expiry(store, comp, 900)
+    assert out == {"bumped": False,
+                   "reason": "portal reclaim clocks have headroom"}
+    assert calls == []
+
+
+def test_extend_pool_expiry_bumps_the_pool_when_the_run_catches_up(
+        store, comp, portal_env, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.workshop, "list_vms",
+                        lambda *a, **kw: [
+                            {"vmid": 201, "student_id": "huitz-ranked-claim-comp-1"},
+                            {"vmid": 202, "student_id": "huitz-ranked-claim-comp-2"},
+                            {"vmid": 999, "student_id": "huitz-ranked-other-1"}])
+    bumped = []
+
+    def extend(_base, _pw, vmids, hours, **kw):
+        bumped.append((list(vmids), hours))
+        return [{"vmid": v, "ok": True} for v in vmids]
+
+    monkeypatch.setattr(claims.workshop, "extend_vms", extend)
+    # The deadline lands within the margin of the claim's portal expiry.
+    _bound_player(store, comp, "Ada", ends_at=time.time() + 900,
+                  claim_expires_at=time.time() + 1800)
+    _bound_player(store, comp, "Grace", ends_at=time.time() + 1800 + 400,
+                  claim_expires_at=time.time() + 1800)
+    out = claims.extend_pool_expiry(store, comp, 900)
+    assert out["bumped"] is True and out["hours"] == 1
+    assert bumped == [([201, 202], 1)]  # only this pool's clones, not 999
+
+
+def test_extend_pool_expiry_reports_a_missing_vm_listing(store, comp,
+                                                         portal_env,
+                                                         monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(claims.workshop, "list_vms", lambda *a, **kw: [])
+    _bound_player(store, comp, "Ada", ends_at=time.time() + 900,
+                  claim_expires_at=time.time() + 1000)
+    out = claims.extend_pool_expiry(store, comp, 900)
+    assert out["bumped"] is False
+    assert out["reason"] == "no portal VMs found for the pool"
+    assert out["needed_by"] == ["Ada"]

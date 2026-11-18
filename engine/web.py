@@ -1020,6 +1020,10 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'Discard this draft and release any pre-deployed boxes?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Discard draft</button></form>')
     if comp.status == "live":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
+        # Overtime: nudging the run deadline is metadata on the engine side
+        # (the boxes and the scoring do not change), so it is offered as a
+        # plain form like the other controls.
+        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/extend" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><label class="small">Extend (min)<input name="minutes" type="number" min="1" max="360" value="15" style="width:4.5rem"></label><button class="btn">Extend</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'End the competition for everyone?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">End competition</button></form>')
     if comp.status == "ended":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/rerun" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Rerun competition</button></form>')

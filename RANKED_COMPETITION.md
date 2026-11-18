@@ -111,6 +111,15 @@ pre-deployed pool. An ended competition can be **rerun** (fresh, same settings)
 or **removed** — removal releases its VMs, cleans its pool, and deletes the
 competition and its slots; boxes and scores remain as history.
 
+**Extend** (live competitions only) grants overtime: every running clock slides
+forward by the given minutes, and a run the receipt clock has already frozen as
+finished restarts on the same deadline as everyone else (its VM, scores, and
+rank are untouched — the next check-in just keeps scoring). This is engine
+metadata only — it never pauses a clock or moves the box side; the workshop
+portal's reclaim clock is bumped alongside when the new deadline closes on it.
+Slots that never claimed a box have no clock to move; removed and disqualified
+slots are never resurrected.
+
 **End also tears the pool down.** It releases claimed VMs, destroys the pool's
 remaining pre-provisioned clones, and deletes the pool configuration. If the
 portal is unreachable the pool pin is kept and the sweeper retries. Ending

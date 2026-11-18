@@ -247,6 +247,53 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
     }
 
 
+def extend_runs(store: Store, comp: CompetitionRecord, seconds: int, *,
+                now: Optional[float] = None) -> dict:
+    """Grant overtime to a live competition's runs (admin action).
+
+    Runs are scored purely from the engine receipt clock against the stored
+    ``ends_at``, so an extension is a metadata move, not a scoring change:
+    every running clock slides forward by ``seconds``. A run already frozen
+    as ``finished`` by expiry (the only way an actively-participating player
+    ends up ``finished``) resumes on an even footing: its deadline restarts
+    at ``now + seconds``. Slots that never claimed a box (invited) have no
+    clock to extend -- their join codes are refreshed by the claim sweep --
+    and removed/disqualified slots are never touched.
+
+    Returns a report the admin API forwards verbatim; the caller audits it.
+    """
+    now = time.time() if now is None else now
+    if comp.status != "live":
+        raise ExtendRefused("only a live competition can be extended")
+    seconds = int(seconds)
+    if seconds <= 0 or seconds > 6 * 3600:
+        raise ExtendRefused("extension must be between 1 minute and 6 hours")
+    extended, resumed, skipped = [], [], []
+    for p in store.list_players(comp.id):
+        if p.status == "running" and p.ends_at is not None:
+            store.update_player(p.player_id, ends_at=p.ends_at + seconds)
+            extended.append({"player_id": p.player_id,
+                             "name": p.display_name,
+                             "ends_at": p.ends_at + seconds})
+        elif p.status == "finished" and p.box_id:
+            store.update_player(p.player_id, status="running", finished_at=None,
+                                ends_at=now + seconds)
+            resumed.append({"player_id": p.player_id,
+                            "name": p.display_name,
+                            "ends_at": now + seconds})
+        elif p.status in ("invited", "running"):
+            # invited: no clock yet; running without ends_at cannot happen,
+            # but leave anything unexplainable untouched and say so.
+            skipped.append({"name": p.display_name, "status": p.status})
+        # removed/disqualified stay untouched, by design.
+    return {"minutes": seconds // 60, "seconds": seconds,
+            "extended": extended, "resumed": resumed, "skipped": skipped}
+
+
+class ExtendRefused(Exception):
+    """The competition is not in a state that accepts an extension."""
+
+
 def handle_join(store: Store, body: dict, sig: bytes, server_secret: bytes,
                 now: Optional[float] = None) -> tuple:
     """Verify and bind a box to a player. Returns (status, payload).

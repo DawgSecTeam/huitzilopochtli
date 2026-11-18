@@ -59,7 +59,9 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
   locks) must never be globalized.
 - **Competition run clocks are per-player** (start at join, fixed duration, no
   pause) and all scoring timestamps remain engine receipt time. Self-reported
-  service checks are explicitly not independent uptime verification.
+  service checks are explicitly not independent uptime verification. The only
+  clock mutation is an explicit admin overtime extension (RANKED_COMPETITION.md
+  §2); it still moves the stored receipt-clock deadline, never a box clock.
 
 ## Building a practice box (the boxbuilder workflow)
 

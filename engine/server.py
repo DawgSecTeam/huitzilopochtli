@@ -1214,6 +1214,56 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect(back if back.startswith("/") and
                            not back.startswith("//") else "/admin")
             return
+        if action == "extend":
+            # Overtime: move every live run's receipt-clock deadline. Metadata
+            # only -- no clocks pause, no scoring changes, no box restarts.
+            comp = self.store.get_competition(comp_id)
+            try:
+                minutes = int(str(form.get("minutes", "15")).strip())
+            except (TypeError, ValueError):
+                minutes = 0
+            seconds = minutes * 60
+            bump = {"bumped": False, "reason": "not attempted"}
+            try:
+                report = competition.extend_runs(self.store, comp, seconds)
+            except competition.ExtendRefused as exc:
+                message = ("Competition is not live." if comp.status != "live"
+                           else str(exc))
+                if session is None:
+                    self._send_json(400 if comp.status == "live" else 409,
+                                    {"error": message})
+                else:
+                    self._render_admin_competition(session, comp.id,
+                                                   error=message)
+                return
+            try:
+                bump = claims.extend_pool_expiry(self.store, comp, seconds)
+            except workshop.WorkshopError as exc:
+                # The runs keep their overtime; flag the portal miss.
+                bump = {"bumped": False, "reason": str(exc)[:200]}
+            self.store.add_audit(actor, "competition_extend", comp.id,
+                                 details_json=json.dumps(
+                                     {"minutes": minutes,
+                                      "extended": len(report["extended"]),
+                                      "resumed": len(report["resumed"]),
+                                      "vm_bump": bump}),
+                                 remote_addr=self.client_address[0]
+                                 if self.client_address else None)
+            if session is None:
+                self._send_json(200, {"ok": True, **report, "vm_bump": bump})
+                return
+            note = (f"Extended {len(report['extended'])} run(s) by "
+                    f"{minutes} min.")
+            resumed = len(report["resumed"])
+            if resumed:
+                note += f" {resumed} finished run(s) resumed."
+            if not bump.get("bumped"):
+                reason = bump.get("reason") or ""
+                if reason and "headroom" not in reason:
+                    note += f" VM clocks: {reason}"
+            self._redirect(f"/admin/competitions/{comp.id}?msg="
+                           + note.replace(" ", "+"))
+            return
         if action == "rerun":
             if comp.status != "ended":
                 if session is None:

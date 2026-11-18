@@ -225,6 +225,31 @@ def list_vms(base_url: str, admin_password: str, timeout: float = 15.0) -> list:
                  headers=_admin_headers(admin_password))
 
 
+def extend_vms(base_url: str, admin_password: str, vmids, hours: int,
+               timeout: float = 10.0) -> list:
+    """POST /api/admin/extend for each VMID: push the portal's reclaim clock.
+
+    The portal expires claimed VMs on its own schedule regardless of the
+    engine's run clocks, so a competition that runs past that schedule needs
+    the VMs' expiry bumped too. The portal takes one VMID per call with an
+    integral ``hours`` (minimum 1). Best effort: returns one outcome per
+    VMID, never raises, so an extend is not lost to a portal blip.
+    """
+    ids = sorted({int(v) for v in vmids if v is not None})
+    hours = int(hours)
+    outcomes = []
+    for vmid in ids:
+        try:
+            _call(base_url, "POST", "/api/admin/extend",
+                  {"hours": hours, "vmid": vmid}, timeout,
+                  headers=_admin_headers(admin_password))
+            outcomes.append({"vmid": vmid, "ok": True})
+        except WorkshopError as exc:
+            outcomes.append({"vmid": vmid, "ok": False,
+                             "detail": str(exc)[:200]})
+    return outcomes
+
+
 def destroy_vms(base_url: str, admin_password: str, vmids,
                 timeout: float = 10.0, wait_s: float = 60.0) -> dict:
     """POST /api/admin/destroy (specific VMIDs) and wait for the teardown job.

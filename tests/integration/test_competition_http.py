@@ -119,6 +119,12 @@ class _Workshop(BaseHTTPRequestHandler):
             })
             self._reply(200, {"job_id": "j1"})
             return
+        if self.path == "/api/admin/extend":
+            if not self._admin():
+                self._reply(403, {"detail": "admin auth required"})
+                return
+            self._reply(200, {"extended": body.get("vmid")})
+            return
         if self.path == "/api/release":
             self._reply(200, {"released": True})
             return
@@ -686,6 +692,206 @@ def test_leaderboard_visibility_toggle(tmp_path):
         status, page = _http("GET", base + "/")
         assert status == 200
         assert 'id="home" data-poll=' in page
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        ws.shutdown()
+
+
+def test_extend_overtime(tmp_path):
+    """Admin overtime: running clocks slide, expiry-finished runs resume.
+
+    Everything is engine metadata: no scoring change, no box restart, and the
+    portal's reclaim clock gets bumped only when the new deadline closes on
+    the claimed VM's portal expiry.
+    """
+    port = _free_port()
+    workshop_port = _free_port()
+    db = tmp_path / "engine.db"
+    boxes = tmp_path / "boxes" / "ot-comp-box"
+    boxes.mkdir(parents=True)
+    (boxes / "scenario.yaml").write_text(_scenario_yaml())
+    _Workshop.requests = []
+    _Workshop.pools = []
+    _Workshop.vms = []
+    env = dict(os.environ)
+    env.update({
+        "HUITZILOPOCHTLI_DB_PATH": str(db),
+        "HUITZILOPOCHTLI_PORT": str(port),
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": ADMIN,
+        "HUITZILOPOCHTLI_BIND": "127.0.0.1",
+        "HUITZILOPOCHTLI_WORKSHOP_URL": f"http://127.0.0.1:{workshop_port}",
+        "HUITZILOPOCHTLI_WORKSHOP_SECRET": "ws-secret",
+        "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD": "portal-pw",
+        "HUITZILOPOCHTLI_PUBLIC_URL": f"http://127.0.0.1:{port}",
+        "HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes"),
+        "PYTHONUNBUFFERED": "1",
+    })
+    ws = ThreadingHTTPServer(("127.0.0.1", workshop_port), _Workshop)
+    threading.Thread(target=ws.serve_forever, daemon=True).start()
+    proc = subprocess.Popen([sys.executable, "-m", "engine.server"], cwd=REPO_ROOT,
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    base = f"http://127.0.0.1:{port}"
+    form = {"Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        for _ in range(100):
+            try:
+                if _http("GET", base + "/health")[0] == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        auth = {"X-HUITZILOPOCHTLI-Admin-Token": ADMIN}
+        status, body = _http("POST", base + "/admin/api/competitions", {
+            "slug": "ot-comp", "name": "OT Comp", "scenario_name": "HTTPComp",
+            "scenario_version": 1, "max_players": 4, "duration_s": 3600,
+        }, auth)
+        assert status == 200, body
+        ot = json.loads(body)
+        status, body = _http("POST",
+                             base + f"/admin/api/competitions/{ot['id']}/start",
+                             {}, auth)
+        assert status in (200, 303), body
+
+        # A player joins, claims a VM link, and binds a box: status running
+        # with a one-hour receipt clock.
+        status, _page = _http("POST", base + "/c/ot-comp/join",
+                              urllib.parse.urlencode({"name": "Ada"}), form)
+        # _http follows the PRG redirect; the created row below is the check.
+        assert status in (200, 303)
+        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
+        player = conn.execute(
+            "SELECT * FROM players WHERE display_name='Ada'").fetchone()
+        conn.close()
+        assert player["claim_expires_at"] is not None
+        priv, pub = signing.keypair()
+        join_body = {
+            "join_code": player["join_code_plain"], "box_id": "box-ot-1",
+            "public_key": base64.b64encode(pub).decode(),
+            "agent_version": AGENT_VERSION, "scenario_name": "HTTPComp",
+            "scenario_version": 1,
+        }
+        sig = signing.sign(priv, canon.canonicalize(join_body))
+        status, body = _http("POST", base + "/join", json.dumps(join_body).encode(), {
+            "Content-Type": "application/json",
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(sig).decode(),
+            "X-HUITZILOPOCHTLI-Box": "box-ot-1",
+        })
+        assert status == 200, body
+        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
+        player = conn.execute(
+            "SELECT * FROM players WHERE display_name='Ada'").fetchone()
+        conn.close()
+        bound_ends = player["ends_at"]
+
+        # Overtime +15: the stored deadline slides by exactly 900s, the
+        # public leaderboard shows the longer window, and the portal is not
+        # touched (its reclaim clock already has two hours of headroom).
+        status, body = _http(
+            "POST", base + f"/admin/api/competitions/{ot['id']}/extend",
+            urllib.parse.urlencode({"minutes": "15"}), auth)
+        assert status == 200, body
+        report = json.loads(body)
+        assert report["ok"] is True and len(report["extended"]) == 1
+        assert report["extended"][0]["player_id"] == player["player_id"]
+        assert report["vm_bump"] == {
+            "bumped": False, "reason": "portal reclaim clocks have headroom"}
+        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM players WHERE player_id = ?",
+                           (player["player_id"],)).fetchone()
+        conn.close()
+        assert row["ends_at"] == bound_ends + 900
+        status, body = _http(
+            "GET", base + "/api/public/competitions/ot-comp/leaderboard")
+        lead = json.loads(body)["leaderboard"][0]
+        assert 900 < lead["remaining_s"] <= 4500  # > the original hour left
+
+        # A deadline that closes on the portal's reclaim clock wakes the
+        # bump: every clone of the competition's pool gets pushed.
+        _Workshop.vms = [{"vmid": 352, "student_id": "huitz-ranked-ot-comp-1",
+                          "pool": "PROV1", "claimed": True, "expired": False,
+                          "os": "Linux", "expires_at": row["ends_at"] - 300}]
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE players SET claim_expires_at = ? WHERE player_id = ?",
+                     (row["ends_at"] - 300, player["player_id"]))
+        conn.commit(); conn.close()
+        _n_before = len([r for r in _Workshop.requests
+                         if r[0] == "/api/admin/extend"])
+        status, body = _http(
+            "POST", base + f"/admin/api/competitions/{ot['id']}/extend",
+            urllib.parse.urlencode({"minutes": "10"}), auth)
+        assert status == 200, body
+        report = json.loads(body)
+        bumps = {"hours": 1, "vmid": 352}
+        assert any(r[0] == "/api/admin/extend" and r[2] == bumps
+                   for r in _Workshop.requests[_n_before:]), _Workshop.requests
+        assert report["vm_bump"]["bumped"] is True
+        assert report["vm_bump"]["outcomes"] == [{"vmid": 352, "ok": True}]
+
+        # A run the clock already froze (finished at receipt > ends) resumes
+        # on the next extension and scores again.
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE players SET ends_at = ? WHERE player_id = ?",
+                     (time.time() - 60, player["player_id"]))
+        conn.commit(); conn.close()
+        ev = [Evidence(check_id="banner", check_type="file_regex",
+                       host_id="localhost", status=CollectorStatus.OK,
+                       raw={"matched": "ok", "present": True}, reason="ok",
+                       collected_monotonic=0.0, collected_wall_claim=0.0)]
+        bundle = Bundle(box_id="box-ot-1", seq=2, boot_id="b",
+                        agent_version=AGENT_VERSION, scenario_name="HTTPComp",
+                        scenario_version=1, evidence=ev,
+                        created_wall_claim=0.0, schema_version=SCHEMA_VERSION)
+        bsig = signing.sign(priv, canon.canonicalize(dataclasses.asdict(bundle)))
+        status, _body = _http("POST", base + "/checkin",
+                              json.dumps(dataclasses.asdict(bundle)).encode(), {
+            "Content-Type": "application/json",
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(bsig).decode(),
+            "X-HUITZILOPOCHTLI-Box": "box-ot-1",
+        })
+        assert status == 200
+        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM players WHERE player_id = ?",
+                           (player["player_id"],)).fetchone()
+        conn.close()
+        assert row["status"] == "finished"
+        status, body = _http(
+            "POST", base + f"/admin/api/competitions/{ot['id']}/extend",
+            urllib.parse.urlencode({"minutes": "10"}), auth)
+        assert status == 200, body
+        report = json.loads(body)
+        assert [r["name"] for r in report["resumed"]] == ["Ada"]
+        seq3 = dataclasses.replace(bundle, seq=3)
+        bsig = signing.sign(priv, canon.canonicalize(dataclasses.asdict(seq3)))
+        status, _body = _http("POST", base + "/checkin",
+                              json.dumps(dataclasses.asdict(seq3)).encode(), {
+            "Content-Type": "application/json",
+            "X-HUITZILOPOCHTLI-Sig": base64.b64encode(bsig).decode(),
+            "X-HUITZILOPOCHTLI-Box": "box-ot-1",
+        })
+        assert status == 200
+        conn = sqlite3.connect(db)
+        st = conn.execute("SELECT status FROM players WHERE player_id = ?",
+                          (player["player_id"],)).fetchone()[0]
+        conn.close()
+        assert st == "running"
+
+        # Refusals: out-of-bounds request, then a non-live competition.
+        status, body = _http(
+            "POST", base + f"/admin/api/competitions/{ot['id']}/extend",
+            urllib.parse.urlencode({"minutes": "0"}), auth)
+        assert status == 400 and "between 1 minute" in body
+        status, _body = _http("POST",
+                              base + f"/admin/api/competitions/{ot['id']}/end",
+                              {}, auth)
+        assert status in (200, 303)
+        status, body = _http(
+            "POST", base + f"/admin/api/competitions/{ot['id']}/extend",
+            urllib.parse.urlencode({"minutes": "15"}), auth)
+        assert status == 409 and "not live" in body
     finally:
         try:
             proc.wait(timeout=5)

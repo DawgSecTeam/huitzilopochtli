@@ -665,6 +665,44 @@ def _pool_vmids(base: str, password: str, pool_name: str, pool_code: str,
     return []
 
 
+def extend_pool_expiry(store: Store, comp: CompetitionRecord,
+                       extension_s: int, *, margin_s: float = 300.0) -> dict:
+    """Bump the portal's reclaim clock when overtime would outlive it.
+
+    The portal reclaims claimed VMs on its own ``expires_at`` (the engine
+    keeps a copy as the player's ``claim_expires_at``); an extension that
+    pushes a run's ``ends_at`` within ``margin_s`` of that instant means the
+    box could be torn down mid-overtime. The portal's admin listing identifies
+    clones by VMID but not by engine player, so the bump is coarse: every
+    clone in this competition's pool gets the same bump. Portal TTLs already
+    exceed typical academy run lengths, so for common short extensions this
+    is a no-op -- it only wakes up for long runs or long extensions.
+    """
+    base, _secret = config()
+    password = _admin_password()
+    if not (base and password and comp.workshop_pool_code):
+        return {"bumped": False,
+                "reason": "portal not configured or no pinned pool"}
+    tight = [p for p in store.list_players(comp.id)
+             if p.box_id and p.ends_at is not None
+             and p.claim_expires_at is not None
+             and p.ends_at + margin_s > p.claim_expires_at]
+    if not tight:
+        return {"bumped": False, "reason": "portal reclaim clocks have headroom"}
+    hours = max(1, -(-int(extension_s) // 3600))
+    prefix = workshop.competition_pool_name(comp.slug) + "-"
+    expected = int(getattr(store.get_competition(comp.id),
+                           "max_players", 0) or 0) or len(tight)
+    vmids = _pool_vmids(base, password, prefix, comp.workshop_pool_code,
+                        expected, attempts=2)
+    if not vmids:
+        return {"bumped": False,
+                "reason": "no portal VMs found for the pool",
+                "needed_by": [p.display_name for p in tight]}
+    outcomes = workshop.extend_vms(base, password, vmids, hours)
+    return {"bumped": True, "hours": hours, "outcomes": outcomes}
+
+
 def cleanup_pool(store: Store, comp: Optional[CompetitionRecord]) -> dict:
     """Release a competition's VMs and drop its pool once the run is over.
 
