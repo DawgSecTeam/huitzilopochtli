@@ -690,10 +690,12 @@ def extend_pool_expiry(store: Store, comp: CompetitionRecord,
     if not tight:
         return {"bumped": False, "reason": "portal reclaim clocks have headroom"}
     hours = max(1, -(-int(extension_s) // 3600))
-    prefix = workshop.competition_pool_name(comp.slug) + "-"
+    # The name goes in WITHOUT a trailing dash: _pool_vmids anchors
+    # ``<pool name>-<n>`` itself, and a dash here would never match.
+    pool_name = workshop.competition_pool_name(comp.slug)
     expected = int(getattr(store.get_competition(comp.id),
                            "max_players", 0) or 0) or len(tight)
-    vmids = _pool_vmids(base, password, prefix, comp.workshop_pool_code,
+    vmids = _pool_vmids(base, password, pool_name, comp.workshop_pool_code,
                         expected, attempts=2)
     if not vmids:
         return {"bumped": False,

@@ -311,11 +311,29 @@ def _service_history(services: list) -> str:
     return '<div class="svc-history">' + "".join(rows) + "</div>"
 
 
+def _ungraded_note(row: dict) -> str:
+    """How many checks the agent could not grade, when that is not zero.
+
+    A box missing required software (a check's ``requires`` entry was
+    absent) scores 0 for those checks -- it must not read as a healthy
+    low-scoring run. The roster, leaderboard, and player dashboard all say
+    how much of the board went ungraded."""
+    try:
+        count = int(row.get("ungraded_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return ""
+    noun = "check" if count == 1 else "checks"
+    return (f'<span class="ungraded">{esc(count)} {noun} ungraded: '
+            'required software missing</span>')
+
+
 def _score_cell(row: dict) -> str:
     """Total with the spelled-out breakdown under it (leaderboard + roster)."""
     return (f'<div class="score-cell"><span class="score">{esc(row.get("total", 0))}</span>'
             f'<span class="muted small">hardening {esc(row.get("hardening_points", 0))} · '
-            f'services {esc(row.get("service_points", 0))}</span></div>')
+            f'services {esc(row.get("service_points", 0))}</span>{_ungraded_note(row)}</div>')
 
 
 def _time_cell(row: dict) -> str:
@@ -626,6 +644,10 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
     err = (player.claim_error or "").strip()
 
     parts = []
+    if player.status == "disqualified":
+        parts.append('<p class="warnmsg"><strong>Disqualified.</strong> You '
+                     'keep your box and your clock — work on until the end — '
+                     'but your score will not appear on the leaderboard.</p>')
     if url:
         parts.append(
             f'<div class="vm-actions"><a class="btn primary" href="{esc(url)}" '
@@ -708,18 +730,43 @@ when it does.</p></li>"""
 
 def player_page(comp: CompetitionRecord, player: PlayerRecord,
                 board_row: Optional[dict], claim_url: Optional[str],
-                csrf: str = "", admin: bool = False) -> str:
+                csrf: str = "", admin: bool = False,
+                join_code: str = "") -> str:
     row = board_row or {}
+    joined = bool(player.box_id)
     running = player.status == "running"
     remaining = max(0, int(player.ends_at - time.time())) if (running and player.ends_at) else 0
     if row:
         score = (f'<div class="bigscore">{esc(row.get("total", 0))}</div>'
                  f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
-                 f'<span>services {esc(row.get("service_points", 0))}</span></div>')
+                 f'<span>services {esc(row.get("service_points", 0))}</span></div>'
+                 + _ungraded_note(row))
+    elif joined and player.status == "disqualified":
+        score = ('<div class="bigscore muted">off-board</div>'
+                 '<div class="muted small">Disqualified: the box keeps '
+                 'scoring its own report; the board is closed to this run.</div>')
+    elif joined:
+        score = ('<div class="bigscore muted">—</div>'
+                 '<div class="muted small">Your box is joined — waiting for its '
+                 'first engine check-in.</div>')
     else:
         score = ('<div class="bigscore muted">—</div>'
-                 '<div class="muted small">Your box hasn\'t joined yet — open your VM; '
-                 'it joins itself.</div>')
+                 '<div class="muted small">Not scoring: your box has not joined yet.</div>')
+    join_panel = ""
+    if not joined:
+        code = (join_code or player.join_code_plain or "").strip()
+        code_block = (f'<div class="codebox" aria-label="one-time join code">'
+                      f'<code>{esc(code)}</code></div>' if code else
+                      '<p class="muted" id="code-wait">Your one-time code is being '
+                      'prepared — refresh this page in a moment.</p>')
+        join_panel = f'''<div class="warnmsg"><strong>You have not joined yet.</strong>
+Your box is not on the board, nothing is scoring, and your clock has not
+started. Open your VM, run <code>huitz join</code> in its terminal, and enter
+this code:</div>
+{code_block}
+<p class="small">1. Open your VM. 2. In its terminal run
+<code>huitz join</code>. 3. Enter the code above. This page updates when the
+box joins.</p>'''
     if running:
         time_block = (f'<span data-remaining="{remaining}">{esc(_fmt_countdown(remaining))}</span>')
     elif player.status == "invited":
@@ -727,10 +774,12 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
     else:
         time_block = '<span class="muted">—</span>'
     body = f"""<section class="page-head-row"><div>
-<div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}</div>
+<div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}{'' if joined else '<span class="fullflag">not joined</span>'}</div>
 <p class="meta">{esc(comp.name)}</p></div></section>
 <div id="run" data-poll="15000">
 <section class="card narrow">
+{join_panel}
+{f'<p class="warnmsg"><strong>Disqualified.</strong> You keep your box and your clock — work on until the end — but your score will not appear on the leaderboard.</p>' if player.status == "disqualified" else ''}
 <div class="row me-top">
 <div>{score}</div>
 <div class="me-right"><div class="muted small">Time remaining</div>
@@ -743,7 +792,7 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
 </dl>
 {f'<p><a class="btn primary" href="{esc(claim_url)}" target="_blank" rel="noopener">Open my VM</a></p>' if claim_url else ''}
 {'' if player.box_id or player.claim_url or player.claim_ticket else _claim_retry_form(player, csrf)}
-{f'<p class="error">{esc(player.claim_error)}</p>' if player.claim_error else ''}
+{f'<p class="error">{esc(player.claim_error)}</p>' if player.claim_error and 'join code' not in player.claim_error.lower() else ''}
 <p><a href="/c/{esc(comp.slug)}">Leaderboard →</a></p>
 </section>
 </div>"""
@@ -778,14 +827,26 @@ def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
     action_html = (f'<div class="home-actions">{"".join(actions)}</div>'
                    if actions else "")
     fallback = ""
+    join_hint = ""
     if not player.box_id:
-        # The success page still holds the terminal fallback + one-time code;
-        # it redirects to this dashboard as soon as the box is joined.
+        # The code has to be visible where the player lands, not only on the
+        # success page: without it the VM looks joined but nothing is scoring.
+        code = (player.join_code_plain or "").strip()
+        code_block = (f'<div class="codebox"><code>{esc(code)}</code></div>'
+                      if code else
+                      '<p class="muted" id="code-wait">Your one-time code is '
+                      'being prepared — this page updates automatically.</p>')
+        join_hint = f'''<div class="warnmsg"><strong>Not joined yet.</strong> Open
+your VM, run <code>huitz join</code> in its terminal, and enter this code:</div>
+{code_block}
+<p class="small">Nothing is scoring and your clock has not started until the
+box joins.</p>'''
+        # The success page still holds the same code + instructions.
         fallback = (f'<p class="small"><a href="/c/{esc(comp.slug)}/join/success">'
-                    'Terminal fallback and join code</a></p>')
+                    'Join instructions</a></p>')
     return f"""<section class="card home-card">
 <div class="card-head"><h2>Your VM</h2>{player_badge(player.status)}</div>
-{note}{action_html}{fallback}
+{note}{join_hint}{action_html}{fallback}
 </section>"""
 
 
@@ -839,13 +900,14 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
         score_block = (f'<div class="stat-big">{esc(row.get("total", 0))}</div>'
                        f'<div class="scoresplit"><span>hardening '
                        f'{esc(row.get("hardening_points", 0))}</span>'
-                       f'<span>services {esc(row.get("service_points", 0))}</span></div>')
+                       f'<span>services {esc(row.get("service_points", 0))}</span></div>'
+                       + _ungraded_note(row))
         rank_line = (f'Rank {esc(row.get("rank"))} of {esc(len(rows))} on the board'
                      if row.get("rank") else "On the board")
     else:
         score_block = ('<div class="stat-big muted">—</div>'
-                       '<div class="muted small">Your box hasn\'t joined yet — '
-                       'open your VM; it joins itself.</div>')
+                       '<div class="muted small">Your box hasn\'t joined yet — open '
+                       'your VM, then run <code>huitz join</code> with your code.</div>')
         rank_line = "Not on the board yet"
     # The organizers can pause the public standings for the run; while they
     # are hidden the player's board shows a quiet note instead of scores
@@ -939,35 +1001,161 @@ def _build_line() -> str:
 
 
 def admin_dashboard_page(comps: list, players_by_comp: dict,
-                         csrf: str, msg: str = "") -> str:
+                         csrf: str, msg: str = "",
+                         pool_warn: Optional[dict] = None,
+                         pool_counts: Optional[dict] = None) -> str:
+    pool_warn = pool_warn or {}
+    pool_counts = pool_counts or {}
+    live = sum(1 for c in comps if c.status == "live")
     cards = []
     for c in comps:
         n = players_by_comp.get(c.id, 0)
+        # A competition that could not pre-deploy anything says so on its row,
+        # so the operator learns it before opening the page and pressing the
+        # button (the page itself carries the full reason and the fix).
+        warn = pool_warn.get(c.id)
+        warn_line = (f'<div class="fullflag">{esc(warn)}</div>' if warn else "")
+        # Two competitions can hold pools at once; the row says how much of
+        # this one's pool is warm (one portal read feeds every row).
+        counts = pool_counts.get(c.workshop_pool_code) \
+            if c.workshop_pool_code else None
+        pool_cell = (f'{esc(counts["available"])}/{esc(counts["total"])}'
+                     if counts else '<span class="muted">&mdash;</span>')
         # The whole row is one click target (the name link stays for
         # keyboard/middle-click use); the JS delegates so polling can swap
         # rows freely.
-        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div></td>
+        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
+<td class="num r">{pool_cell}</td>
 <td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
+    live_note = (f'<p class="meta">{live} competition{"s" if live != 1 else ""} '
+                 f'live right now &middot; each holds its own VM pool.</p>'
+                 if live else "")
     body = f"""<section class="page-head-row"><div><h1>Admin console</h1></div>
-<div class="actions"><a class="btn primary" href="/admin/competitions/new">New competition</a></div></section>
+<div class="actions"><a class="btn" href="/admin/audit">Audit log</a>
+<a class="btn primary" href="/admin/competitions/new">New competition</a></div></section>
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}
+{live_note}
 <div id="dash" data-poll="30000">
 <section class="card"><div class="card-head"><h2>Competitions</h2>
 </div>
-<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="5" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Pool ready</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="6" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
 </div>
 {_build_line()}"""
     return layout("Admin", body, admin=True, current="admin")
 
 
+def _audit_detail_cell(details_json) -> str:
+    """Detail column: the logged JSON as ``key value`` pairs, raw on hover.
+
+    Whoever logged the action chose the payload's shape, so nothing here
+    pretends to a schema -- dict or not, the stored text is shown, and the
+    untouched JSON stays in the cell's tooltip.
+    """
+    if not details_json:
+        return '<span class="muted">&mdash;</span>'
+    try:
+        parsed = json.loads(details_json)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and parsed:
+        pairs = []
+        for key in sorted(parsed):
+            value = parsed[key]
+            text = (value if isinstance(value, str)
+                    else json.dumps(value, sort_keys=True))
+            pairs.append(f"{esc(key)} {esc(text)}")
+        shown = " &middot; ".join(pairs)
+    else:
+        shown = esc(details_json)
+    return f'<span class="small" title="{esc(details_json)}">{shown}</span>'
+
+
+def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
+                     limit: int = 200, limit_max: int = 1000,
+                     scan: Optional[int] = None, unknown_filter: str = "",
+                     player_names: Optional[dict] = None) -> str:
+    """The admin audit trail: who did what to which competition, newest first.
+
+    One card, one table -- the same shell the console and the roster use. The
+    filter is a GET form so a filtered view is a URL an operator can paste
+    into a ticket; ``/admin/audit?competition=&limit=``. Times render through
+    ``_fmt_ts`` like every other page in the console (engine-local, with the
+    zone spelled out) and the column header says so. Rows are
+    ``store.AuditRecord``s; nothing here invents a column the store does not
+    keep.
+    """
+    player_names = player_names or {}
+    by_id = {c.id: c for c in comps}
+    opts = ['<option value="">All competitions</option>']
+    for c in comps:
+        selected = " selected" if c.id == competition_id else ""
+        opts.append(f'<option value="{esc(c.slug)}"{selected}>{esc(c.name)}</option>')
+    out = []
+    for r in rows:
+        comp = by_id.get(r.competition_id)
+        if comp is not None:
+            target = (f'<a href="/admin/competitions/{esc(comp.id)}">'
+                      f'{esc(comp.name)}</a>'
+                      f'<div class="muted small">/c/{esc(comp.slug)}</div>')
+        elif r.competition_id:
+            # A competition that has since been removed still owns its rows;
+            # the id is all the record has, so the id is what shows.
+            target = f'<span class="small">{esc(r.competition_id)}</span>'
+        else:
+            target = '<span class="muted">&mdash;</span>'
+        if r.player_id:
+            target += (f'<div class="muted small">player '
+                       f'{esc(player_names.get(r.player_id) or r.player_id)}</div>')
+        actor = esc(r.actor)
+        if r.remote_addr:
+            actor += f'<div class="muted small">{esc(r.remote_addr)}</div>'
+        out.append(f"""<tr><td class="num">{esc(_fmt_ts(r.ts))}</td><td>{actor}</td>
+<td><code>{esc(r.action)}</code></td><td>{target}</td>
+<td>{_audit_detail_cell(r.details_json)}</td></tr>""")
+    empty = ("No matching audit entries." if competition_id or unknown_filter
+             else "Nothing logged yet.")
+    meta = "Newest first &middot; times are engine-local"
+    if scan is not None:
+        # The store keeps one append-only table, so a filtered view searches a
+        # bounded window of it; say which window rather than implying "all".
+        meta += f" &middot; filter searched the newest {esc(scan)} entries"
+    filters = f"""<form method="get" action="/admin/audit" class="filter-form">
+<label class="small">Competition<select name="competition">{"".join(opts)}</select></label>
+<label class="small">Rows<input name="limit" type="number" min="1" max="{esc(limit_max)}" value="{esc(limit)}" style="width:6rem"></label>
+<button class="btn" type="submit">Apply</button></form>"""
+    body = f"""{_page_head("Audit log")}
+{f'<p class="warnmsg">No competition matches <code>{esc(unknown_filter)}</code>.</p>' if unknown_filter else ''}
+<section class="card"><div class="card-head"><h2>Entries</h2>
+{filters}</div>
+<p class="meta">{meta}</p>
+<div class="table-wrap"><table><thead><tr><th>Time (local)</th><th>Actor</th><th>Action</th><th>Competition</th><th>Detail</th></tr></thead><tbody>{"".join(out) or f'<tr><td colspan="5" class="empty">{empty}</td></tr>'}</tbody></table></div></section>"""
+    return layout("Audit log", body, admin=True, current="admin")
+
+
 def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> str:
-    opts = "".join(
+    opts, unusable = [], []
+    for row in scenarios:
+        name, version, _path = row[0], row[1], row[2]
+        problem = row[3] if len(row) > 3 else None
         # The version stays in the value as invisible plumbing; it is never
         # rendered as a label.
-        f'<option value="{esc(name)}|{esc(version)}">{esc(name)}</option>'
-        for name, version, _path in scenarios
-    )
+        if problem:
+            # A committed box whose pool block cannot expand stays on the
+            # list -- disabled, with the reason stated -- so the operator
+            # sees the box exists and what to fix, instead of the whole
+            # picker failing or the scenario silently vanishing.
+            opts.append(f'<option value="{esc(name)}|{esc(version)}" disabled>'
+                        f'{esc(name)} — pool not configured</option>')
+            unusable.append(f'<li><strong>{esc(name)}</strong>: {esc(problem)}</li>')
+        else:
+            opts.append(f'<option value="{esc(name)}|{esc(version)}">'
+                        f'{esc(name)}</option>')
+    unusable_block = (
+        '<p class="warnmsg small">These boxes are in the folder but cannot '
+        'start a competition until their pool is configured:</p>'
+        f'<ul class="small muted">{"".join(unusable)}</ul>'
+        if unusable else "")
     body = f"""<div class="form-page">
 {_page_head("New competition")}
 {f'<p class="error">{esc(error)}</p>' if error else ''}
@@ -975,13 +1163,15 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <div class="form-grid form-lead">
 <label>Name<input name="name" required placeholder="Friday Night Ranked" autofocus></label>
-<label>Scenario<select name="scenario" required>{opts or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
+<label>Scenario<select name="scenario" required>{"".join(opts) or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
 </div>
+{unusable_block}
 <div class="form-grid form-cols">
 <label>Max players<input name="max_players" type="number" min="1" value="32"></label>
 <label>Run duration (minutes)<input name="duration_min" type="number" min="1" value="120"></label>
 <label>Accent color<input name="accent" type="color" value="#5f4a38"></label>
 </div>
+<label class="check"><input type="checkbox" name="auto_end" value="1"> End automatically once joins are closed and every run has finished<span class="help">Releases the competition's VM pool without an operator pressing End. Off by default; you can flip it on the competition page.</span></label>
 <div class="form-foot"><button class="btn primary" type="submit">Create draft</button></div>
 </form></div>"""
     return layout("New competition", body, admin=True, current="admin")
@@ -991,10 +1181,15 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            csrf: str, msg: str = "", error: str = "",
                            warm: Optional[dict] = None,
                            pool: Optional[dict] = None,
-                           public_base: str = "") -> str:
+                           public_base: str = "",
+                           predeploy_warn: str = "") -> str:
     now = time.time()
     warm = warm or {"status": "idle"}
     pool = pool or {"status": "unknown"}
+    # A removed player is a tombstone: it keeps the row (and its freed name)
+    # but is gone from the roster, the count and the action buttons. The
+    # tombstone is what lets the same name join again.
+    players = [p for p in players if p.status != "removed"]
     rows = []
     for p in players:
         row = next((r for r in board.get("leaderboard", []) if r["player_id"] == p.player_id), {})
@@ -1019,10 +1214,18 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            f'<button class="btn">Reissue code</button></form>')
         if p.status in ("running", "finished"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/disqualify" class="inline"'
-                          f' onsubmit="return confirm(\'Disqualify this player?\')">'
+                          f' onsubmit="return confirm(\'Disqualify: keeps their box and clock, drops them from the board. Continue?\')">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Disqualify</button></form>')
-        if p.status in ("invited", "running", "finished"):
+        if p.status == "disqualified":
+            # §7.1: disqualification is a board exclusion and the run is
+            # still alive, so the row offers Reinstate (back on the board)
+            # and Remove -- the only verb that releases the box and frees
+            # the seat.
+            neutral.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/reinstate" class="inline">'
+                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+                           f'<button class="btn">Reinstate</button></form>')
+        if p.status in ("invited", "running", "finished", "disqualified"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/remove" class="inline"'
                           f' onsubmit="return confirm(\'Remove this player from the competition?\')">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
@@ -1041,7 +1244,12 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/start" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Start competition</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'Discard this draft and release any pre-deployed boxes?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Discard draft</button></form>')
     if comp.status == "live":
-        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
+        if comp.join_open:
+            controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
+        else:
+            # Joins closed by mistake used to be permanent: close-join had no
+            # counterpart verb, so the only way back was a new competition.
+            controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/open-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Reopen joins</button></form>')
         # Overtime: nudging the run deadline is metadata on the engine side
         # (the boxes and the scoring do not change), so it is offered as a
         # plain form like the other controls.
@@ -1067,6 +1275,9 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         state = warm.get("status")
         if state == "running":
             note = f'<p class="meta">Pre-deploying {requested} boxes…</p>'
+        elif state == "queued":
+            note = ('<p class="meta">Queued: another competition is filling its '
+                    'pool first (the portal provisions one pool at a time).</p>')
         elif state == "ready":
             # A completed pre-deploy is news for a few seconds; the standing
             # count line above carries the state after that, across reloads.
@@ -1080,27 +1291,60 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                     'each box when its player joins. Warm the pool first to move '
                     'that wait off the join.</p>')
         default_count = min(max(1, int(comp.max_players or 8)), 64)
+        # A competition with nothing to clone from must not offer a button
+        # whose only outcome is a failed job: the reason sits in the card and
+        # the click is refused before the thread starts. The form lives inside
+        # the polled node so the button re-enables by itself once the scenario
+        # (or the engine's pools file) gains the missing pool block.
+        blocked = bool(predeploy_warn)
+        stale_pin = (pool.get("status") == "unpinned"
+                     and bool(comp.workshop_pool_code))
+        if blocked:
+            pool_line = f'<p class="warnmsg">{esc(predeploy_warn)}</p>'
         # Standing live count from the portal snapshot (survives engine
         # restarts, unlike the in-memory job note below it); both lines live
         # in the polled node so they update without a reload.
-        if pool.get("status") == "ok":
+        elif pool.get("status") == "ok":
             pool_line = (f"<p class=\"meta\">{int(pool.get('available') or 0)} of "
                          f"{int(pool.get('total') or 0)} boxes ready to claim</p>")
+        elif stale_pin:
+            # A pin outlives its pool only until the next warm/claim; this is a
+            # notice, not an error, and it must not read as "nothing set up".
+            pool_line = ('<p class="warnmsg">The pool this competition used is '
+                         'gone from the portal; the next pre-deploy or join '
+                         'clones a fresh one from the scenario template.</p>')
         elif pool.get("status") == "unpinned":
             pool_line = '<p class="meta">No boxes pre-deployed yet.</p>'
         elif pool.get("status") == "unavailable":
             pool_line = '<p class="meta">Pool count unavailable right now.</p>'
         else:
             pool_line = ""
+        if state == "idle" and (blocked or stale_pin
+                                or pool.get("status") not in ("unpinned",
+                                                               "unknown")):
+            # The "nothing pre-deployed yet" explainer only fits an empty pool
+            # with nothing else to say; a count, a stale-pin notice or a
+            # blocker would contradict it.
+            note = ""
+        button = (f'<button class="btn" type="submit" disabled title="{esc(predeploy_warn)}">Pre-deploy</button>'
+                  if blocked else '<button class="btn" type="submit">Pre-deploy</button>')
         warm_block = f"""<section class="card"><div class="card-head"><h2>Pre-deploy boxes</h2></div>
-<div id="warm" data-poll="10000">{pool_line}{note}</div>
+<div id="warm" data-poll="10000">{pool_line}{note}
 <form method="post" action="/admin/api/competitions/{esc(comp.id)}/warm" class="warm-form">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <label class="small">Boxes <input name="count" type="number" min="1" max="64" value="{default_count}" style="width:6rem"></label>
-<button class="btn" type="submit">Pre-deploy</button></form></section>"""
+{button}</form></div></section>"""
     # The pool code is portal plumbing (audit log / journal carry it for
     # debugging); the UI stays quiet about pools unless a claim actually fails,
     # in which case the error text lands on the player row.
+    auto_end_btn = ""
+    if comp.status in ("draft", "live"):
+        verb = "Disable" if comp.auto_end else "Enable"
+        auto_end_btn = (
+            f' <form method="post" action="/admin/api/competitions/'
+            f'{esc(comp.id)}/toggle-auto-end" class="inline">'
+            f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+            f'<button class="btn">{verb}</button></form>')
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp.name)}</h1>{comp_status_tag(comp.status)}</div>
 <p class="meta">/c/{esc(comp.slug)} · {esc(comp.scenario_name)}</p></div>
@@ -1111,6 +1355,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <div class="fact"><span class="fact-label">Status</span><span class="fact-value">{esc(comp_status_label(comp.status))} {comp_badge(comp.status)}</span></div>
 <div class="fact"><span class="fact-label">Players</span><span class="fact-value">{esc(len(players))} / {esc(comp.max_players)} joined</span></div>
 <div class="fact"><span class="fact-label">Run duration</span><span class="fact-value">{_fmt_duration(comp.duration_s)} runs</span></div>
+<div class="fact"><span class="fact-label">Auto-end</span><span class="fact-value">{'On' if comp.auto_end else 'Off'}{auto_end_btn}</span></div>
 <div class="fact wide"><span class="fact-label">Join URL</span>
 <span class="fact-value"><code>{esc(join_url)}</code> {_copy_btn(join_url, "Copy")}
 {csv_btn}</span></div>
@@ -1227,6 +1472,7 @@ readable accent; <span class="muted">muted text</span> and
 </section>
 <section class="card"><div class="card-head"><h2>Messages</h2></div>
 <p class="okmsg">.okmsg — the box is joined.</p>
+<p class="warnmsg">.warnmsg — there is no pool to pre-deploy from.</p>
 <p class="error">.error — we couldn't prepare your VM.</p>
 <p class="empty">.empty — no players yet.</p>
 </section>
@@ -1310,6 +1556,9 @@ button rests on a quiet tint and empties to an outline on hover. */
 .btn.danger{color:var(--danger);background:var(--danger-bg)}
 .btn.danger:hover{background:transparent;border-color:var(--danger);color:var(--danger)}
 .btn.copied{color:var(--ok);border-color:var(--ok);background:transparent}
+/* A refused action (no pool to pre-deploy from) must not look pressable. */
+.btn[disabled],.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn[disabled]:hover,.btn:disabled:hover{background:var(--surface-2);border-color:transparent;color:var(--ink-2)}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:0;padding:var(--pad-card)}
 .card.narrow{max-width:640px;margin-left:auto;margin-right:auto}
 .card h1{font-size:1.3rem}
@@ -1374,6 +1623,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent-text);out
 /* The pre-deploy row: caption+input sit in one column, the button base-aligns
 with the input (flex-end, both --control tall), so nothing stacks crooked. */
 .warm-form{display:flex;gap:var(--s2);align-items:flex-end;flex-wrap:wrap}
+/* The audit filter row is the same shape as the pre-deploy row; one line so
+the page keeps the button/field baseline without a rule of its own. */
+.filter-form{display:flex;gap:var(--s2);align-items:flex-end;flex-wrap:wrap}
 code{background:var(--surface-2);border-radius:0;padding:.08rem .35rem;font-size:.9em}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:0;padding:var(--pad-card);overflow:auto}
 pre code{background:none;padding:0}
@@ -1381,11 +1633,13 @@ pre code{background:none;padding:0}
 .codebox code{background:none;letter-spacing:inherit;padding:0}
 .vm-actions{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2)}
 .okmsg{color:var(--ok);background:var(--ok-bg);border:1px solid var(--ok);border-radius:0;padding:.6rem .85rem}
+.warnmsg{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);border-radius:0;padding:.6rem .85rem}
 .error{color:var(--danger);background:var(--danger-bg);border:1px solid var(--danger);border-radius:0;padding:.6rem .85rem}
 /* Capacity states users must not miss. */
 .fullnote{display:inline-flex;align-items:center;gap:var(--s2);margin:0;color:var(--warn);background:var(--warn-bg);padding:var(--s2) var(--s3);font-size:.78rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
 .fullflag{color:var(--warn);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:.82em}
 .stale{color:var(--warn)}
+.ungraded{color:var(--warn);font-size:.78rem;font-weight:600}
 .steps{list-style:none;counter-reset:step;padding:0;margin:0}
 .steps>li{position:relative;padding:0 0 1.7rem 2.7rem;margin:0}
 .steps>li:last-child{padding-bottom:.2rem}
