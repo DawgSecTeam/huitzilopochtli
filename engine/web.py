@@ -610,9 +610,15 @@ def competition_page(data: dict, *, refresh: int = 5,
     full = (comp["status"] == "live" and comp["max_players"] > 0
             and comp["player_count"] >= comp["max_players"])
     full_flag = ' · <span class="fullflag">full</span>' if full else ""
+    # Reserved seats that never got a VM, named apart from "joined": the
+    # board lists players only once a box is bound, so without this line a
+    # waiting name simply looks missing.
+    waiting = int(comp.get("waiting_count") or 0)
+    waiting_line = (f' · {esc(waiting)} waiting for a VM'
+                    if waiting and comp["status"] == "live" else "")
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div>
-<p class="meta">{esc(comp['player_count'])} joined of {esc(comp['max_players'])} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a>{_scheduled_end_line(comp)}</p>
+<p class="meta">{esc(comp['player_count'])} joined of {esc(comp['max_players'])}{waiting_line} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a>{_scheduled_end_line(comp)}</p>
 {f'<p class="small muted">{esc(comp.get("join_instructions") or "")}</p>' if comp.get('join_instructions') else ''}</div>
 {f'<div class="joinbox">{join_box}</div>' if join_box else ''}
 </section>
@@ -655,7 +661,8 @@ def display_page(data: dict) -> str:
 def join_form_page(comp: CompetitionRecord, error: str = "",
                    closed_notice: str = "",
                    blocked_comp: Optional[CompetitionRecord] = None,
-                   admin: bool = False) -> str:
+                   admin: bool = False,
+                   recoverable_name: Optional[str] = None) -> str:
     if blocked_comp is not None:
         # One competition at a time: point them at the run they already own
         # instead of rendering a form whose POST can only be refused.
@@ -677,6 +684,23 @@ Finish (or leave) your current run before joining another.</p>
 </section>"""
         return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
                       current="home")
+    # Seat recovery: a reserved-but-never-bound seat whose owner's browser
+    # lost the huitz_player cookie (slow cold provisioning, closed tab) is
+    # otherwise unreachable -- the dashboard needs the cookie and every
+    # re-join under that name is refused. The form below the join form
+    # re-links this browser to that seat by name; the server only honors it
+    # while the seat has no box (a live run is never recoverable by name).
+    recovery = ""
+    if recoverable_name:
+        recovery = f"""<section class="card narrow">
+<form method="post" action="/c/{esc(comp.slug)}/recover" class="stack">
+<input type="hidden" name="recover" value="1">
+<label>Seat name<input name="name" maxlength="40" required value="{esc(recoverable_name)}"></label>
+<button class="btn primary" type="submit">That's me — recover my seat</button>
+</form>
+<p class="muted small">Recovery re-links this browser to that still-empty seat
+(only a seat without a VM can be recovered; a live run needs the organizer).</p>
+</section>"""
     body = f"""<section class="hero"><h1>Join {esc(comp.name)}</h1>
 <p class="lede">Enter the name your competitors will see. You will get a VM link and a one-time code to run inside the box.</p></section>
 <section class="card narrow">
@@ -690,7 +714,7 @@ matched case-insensitively. Each name seats exactly one player and stays
 reserved for them until an admin frees the seat. By joining you agree to
 compete on a disposable ranked box. One box per player; no teams; one
 competition at a time. Provisioning your VM can take a minute.</p>
-</section>"""
+</section>{recovery}"""
     return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
                   current="home")
 

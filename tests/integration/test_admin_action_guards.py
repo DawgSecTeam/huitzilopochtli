@@ -18,7 +18,7 @@ import time
 from http.server import ThreadingHTTPServer
 
 from tests.integration.test_competition_http import (
-    ADMIN, REPO_ROOT, _Workshop, _free_port, _http, _scenario_yaml)
+    ADMIN, REPO_ROOT, _Workshop, _free_port, _http, _scenario_yaml, _wait_db)
 
 
 def _engine(tmp_path):
@@ -142,12 +142,10 @@ def test_disqualify_keeps_the_box_and_remove_releases_it(tmp_path):
         assert resp.status == 303
         conn.close()
 
-        sconn = sqlite3.connect(db)
-        sconn.row_factory = sqlite3.Row
-        player = sconn.execute(
-            "SELECT * FROM players WHERE display_name='Cheater'").fetchone()
-        sconn.close()
-        assert player is not None and player["claim_uid"]
+        # The claim finishes after the join response; wait for the uid.
+        player = _wait_db(db, "SELECT * FROM players WHERE display_name=?",
+                          ("Cheater",), "claim_uid")
+        assert player["claim_uid"]
         pid = player["player_id"]
 
         releases_before = sum(1 for r in _Workshop.requests
@@ -240,12 +238,10 @@ def test_release_box_destroys_the_run_vm_without_tombstoning(tmp_path):
         assert resp.status == 303
         conn.close()
 
-        sconn = sqlite3.connect(db)
-        sconn.row_factory = sqlite3.Row
-        player = sconn.execute(
-            "SELECT * FROM players WHERE display_name='Gone'").fetchone()
-        sconn.close()
-        assert player is not None and player["claim_uid"]
+        # The claim finishes after the join response; wait for the uid.
+        player = _wait_db(db, "SELECT * FROM players WHERE display_name=?",
+                          ("Gone",), "claim_uid")
+        assert player["claim_uid"]
         pid = player["player_id"]
         # release_box is for a held, bound box (a bound run); the join flow
         # alone leaves the claim unbound until the agent joins, so bind the

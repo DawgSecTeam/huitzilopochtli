@@ -1138,6 +1138,20 @@ class Store:
                 ).fetchone()
         return int(row["n"]) if row is not None else 0
 
+    def count_waiting_players(self, comp_id: str) -> int:
+        """Seats reserved but not yet bound to a box (status ``invited``).
+
+        Kept apart from count_players so pages can say "2 joined · 1 waiting
+        for a VM" instead of showing an unprovisioned slot as a zero-point
+        competitor or as capacity that vanished.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM players WHERE competition_id = ? "
+                "AND status = 'invited'", (comp_id,),
+            ).fetchone()
+        return int(row["n"]) if row is not None else 0
+
     def create_player(self, comp_id: str, display_name: str,
                       display_name_norm: str, join_code_hash: str,
                       join_code_expires_at: float,

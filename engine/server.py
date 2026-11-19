@@ -1033,14 +1033,17 @@ class Handler(BaseHTTPRequestHandler):
                 # "taken" leaves the seat's own owner (reaching the form from
                 # a cleared-cookie browser) hunting for a phantom, while a
                 # second joiner simply needs another handle — name both
-                # possibilities in one message.
+                # possibilities in one message, and when the seat never got a
+                # box, offer the seat recovery that re-links the owner's
+                # browser (a live seat stays organizer-only on purpose).
+                recoverable = other.status == "invited" and not other.box_id
                 self._send_html(409, web.join_form_page(
                     comp,
                     error=(f"'{other.display_name}' is already reserved in "
                            f"{comp.name}. One seat per name. If that is you, "
-                           "go back to the browser you joined from; otherwise "
-                           "an admin can free the seat, or just pick a "
-                           "different name.")))
+                           "recover your seat below; otherwise an admin can "
+                           "free the seat, or just pick a different name."),
+                    recoverable_name=name if recoverable else None))
                 return
             if other is not None and other.competition_id != comp.id:
                 other_comp = self.store.get_competition(other.competition_id)
@@ -1057,16 +1060,77 @@ class Handler(BaseHTTPRequestHandler):
         if error:
             self._send_html(400, web.join_form_page(comp, error))
             return
-        claims.start(self.store, comp, player,
-                     back_url=f"{self._public_base()}/c/{comp.slug}/join/success")
         self.store.add_audit("player", "join_reserved", comp.id, player.player_id,
                              details_json=json.dumps({"name": player.display_name}),
                              remote_addr=self.client_address[0] if self.client_address else None)
+        # The claim runs OUTSIDE the request: seat the cookie first. A portal
+        # with nothing pre-warmed spends its first claim provisioning the pool
+        # and a cold VM -- minutes, not milliseconds -- and doing that inline
+        # outlasted the browser's patience: the join completed server-side
+        # (name reserved) but the response carrying the identity cookie never
+        # landed, leaving the seat unreachable by its own owner. The run
+        # dashboard this redirect leads to already renders every claim state
+        # and polls for the VM link; the claim sweeper picks the claim up if
+        # this process dies before the thread gets to it.
+        threading.Thread(
+            target=claims.start,
+            args=(self.store, comp, player),
+            kwargs={"back_url":
+                    f"{self._public_base()}/c/{comp.slug}/join/success"},
+            name=f"claim-{player.player_id[:8]}", daemon=True).start()
         # PRG: a redirect (not a 200 page) so refreshing never re-submits the
         # form. The main page is now the run dashboard; the success page is
         # kept for the pending/fallback states and redirects here once bound.
         self._redirect("/", extra_headers={"Set-Cookie": (
             f"huitz_player={player.player_id}; Path=/; HttpOnly; "
+            f"SameSite=Lax; Max-Age=86400")})
+
+    def _handle_public_recover(self, slug: str) -> None:
+        """Re-bind a lost browser to the player's own still-empty seat.
+
+        The cookie is the only handle on a browser and the name is the only
+        handle on a seat; a join whose response never landed (slow cold
+        provisioning, closed tab) splits the two: the seat stays reserved --
+        visible to nobody, the board lists only bound boxes -- and every
+        re-join under that name is refused. This is the way back in, and it
+        opens ONLY a seat that never got a box (status invited): a running,
+        finished or removed seat needs an organizer on purpose, because a
+        name alone must never reattach a live run. Names are validated the
+        same way the join form validates them.
+        """
+        comp = self.store.get_competition_by_slug(slug)
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        try:
+            form = self._read_form()
+        except Exception:
+            form = {}
+        name = str(form.get("name", ""))
+        name_error = competition.validate_display_name(name)
+        other = None if name_error else self.store.find_active_player_by_name(
+            competition.normalize_name(name))
+        if (other is None or other.competition_id != comp.id
+                or other.status != "invited" or other.box_id):
+            self._send_html(403, web.error_page(
+                403, "Seat cannot be recovered",
+                "No seat in this competition is waiting for a box under "
+                "that name. If you already had a VM or your run is over, "
+                "ask the organizer; otherwise join with a different name.",
+                f"/c/{comp.slug}/join"))
+            return
+        self.store.add_audit("player", "seat_recover", comp.id, other.player_id,
+                             details_json=json.dumps(
+                                 {"name": other.display_name}),
+                             remote_addr=self.client_address[0]
+                             if self.client_address else None)
+        # The seat keeps whatever claim state it has (a pending provisioning
+        # ticket, a ready link, a recorded error): the dashboard reflects it
+        # and the sweeper keeps working it. Only the identity is restored.
+        self._redirect("/", extra_headers={"Set-Cookie": (
+            f"huitz_player={other.player_id}; Path=/; HttpOnly; "
             f"SameSite=Lax; Max-Age=86400")})
 
     def _handle_public_leave(self, slug: str) -> None:
@@ -1958,6 +2022,10 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/c/") and path.endswith("/join"):
             slug = path[len("/c/"):].strip("/").split("/")[0]
             self._handle_public_join(slug)
+            return
+        if path.startswith("/c/") and path.endswith("/recover"):
+            slug = path[len("/c/"):].strip("/").split("/")[0]
+            self._handle_public_recover(slug)
             return
         if path.startswith("/c/") and path.endswith("/leave"):
             slug = path[len("/c/"):].strip("/").split("/")[0]

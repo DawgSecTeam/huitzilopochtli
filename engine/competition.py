@@ -249,6 +249,10 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
                                now: Optional[float] = None) -> dict:
     now = time.time() if now is None else now
     count = store.count_players(comp.id)
+    # Reserved-but-unprovisioned seats, reported apart so a name waiting for
+    # a VM reads as what it is instead of a zero-point competitor (the board
+    # lists players only once a box is bound) or a phantom.
+    waiting = store.count_waiting_players(comp.id)
     theme = {}
     if comp.theme_json:
         try:
@@ -266,6 +270,7 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
         "leaderboard_hidden": bool(comp.leaderboard_hidden),
         "max_players": comp.max_players,
         "player_count": count,
+        "waiting_count": waiting,
         "duration_s": comp.duration_s,
         "started_at": comp.started_at,
         "ended_at": comp.ended_at,

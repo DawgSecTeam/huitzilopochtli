@@ -50,10 +50,47 @@ def _http(method, url, body=None, headers=None):
         return e.code, e.read().decode("utf-8", "replace")
 
 
+def _wait_claim_url(base, player_id, want, timeout=15.0):
+    """Poll the join-page status endpoint until the claim lands.
+
+    The claim runs outside the join request (the cookie is sent first), so
+    tests must wait for provisioning instead of assuming it finished
+    synchronously with the 303. The fake portal usually answers in
+    milliseconds; the timeout exists for the general case.
+    """
+    deadline = time.time() + timeout
+    body = ""
+    while time.time() < deadline:
+        status, body = _http(
+            "GET", f"{base}/api/public/join/{player_id}/status")
+        if status == 200:
+            state = json.loads(body)
+            if state.get("claim_url") == want:
+                return state
+        time.sleep(0.2)
+    raise AssertionError(f"claim_url never reached {want!r}: {body!r}")
+
+
+def _wait_db(db, sql, params, column, timeout=15.0):
+    """Poll the engine DB until ``column`` of the single matching row is set."""
+    deadline = time.time() + timeout
+    row = None
+    while time.time() < deadline:
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(sql, params).fetchone()
+        conn.close()
+        if row is not None and row[column]:
+            return row
+        time.sleep(0.2)
+    raise AssertionError(f"{column} never appeared for {sql} {params}")
+
+
 class _Workshop(BaseHTTPRequestHandler):
     requests = []
     counter = 0
     fail_claims = 0
+    claim_delay = 0.0
     pools = []
     vms = []
 
@@ -137,6 +174,11 @@ class _Workshop(BaseHTTPRequestHandler):
             return
         type(self).counter += 1
         uid = f"u{type(self).counter}"
+        # Simulate a cold portal: a claim can spend seconds (or minutes in
+        # real life) before it answers. Tests assert the join POST did NOT
+        # wait for this.
+        if type(self).claim_delay:
+            time.sleep(type(self).claim_delay)
         self._reply(200, {
             "status": "ready",
             "open_url": f"http://portal.example/r/{uid}",
@@ -274,6 +316,19 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
         assert cookie.startswith("huitz_player=")
         conn.close()
+
+        # The claim runs after the join response now, so the seat row exists
+        # (the cookie already names it) while provisioning finishes in the
+        # background. Wait for the VM link before asserting what the pages
+        # show about it.
+        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
+        player = conn.execute(
+            "SELECT * FROM players WHERE display_name='Ada'").fetchone()
+        conn.close()
+        assert player is not None
+        _wait_claim_url(base, player["player_id"],
+                        "http://portal.example/r/u1")
+
         # The success URL remains the pending/fallback page while unbound.
         status, page = _http("GET", base + "/c/http-comp/join/success",
                              headers={"Cookie": cookie})
@@ -748,16 +803,14 @@ def test_extend_overtime(tmp_path):
         assert status in (200, 303), body
 
         # A player joins, claims a VM link, and binds a box: status running
-        # with a one-hour receipt clock.
+        # with a one-hour receipt clock. The claim finishes after the join
+        # response now, so wait for it before reading the bound fields.
         status, _page = _http("POST", base + "/c/ot-comp/join",
                               urllib.parse.urlencode({"name": "Ada"}), form)
         # _http follows the PRG redirect; the created row below is the check.
         assert status in (200, 303)
-        conn = sqlite3.connect(db); conn.row_factory = sqlite3.Row
-        player = conn.execute(
-            "SELECT * FROM players WHERE display_name='Ada'").fetchone()
-        conn.close()
-        assert player["claim_expires_at"] is not None
+        player = _wait_db(db, "SELECT * FROM players WHERE display_name=?",
+                          ("Ada",), "claim_expires_at")
         priv, pub = signing.keypair()
         join_body = {
             "join_code": player["join_code_plain"], "box_id": "box-ot-1",

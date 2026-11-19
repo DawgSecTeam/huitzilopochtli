@@ -221,12 +221,21 @@ def test_two_live_competitions_tear_down_independently(tmp_path):
         assert _post_form(port, "/c/demo/join", {"name": "Ada"}) == 303
         assert _post_form(port, "/c/demo-2/join", {"name": "Bob"}) == 303
 
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        rows = {r["slug"]: r for r in conn.execute(
-            "SELECT slug, workshop_pool_code, workshop_pool_name "
-            "FROM competitions")}
-        conn.close()
+        # Each first claim provisions that competition's own pool — outside
+        # the join request now, so wait for both pins before teardown asserts.
+        deadline = time.time() + 15
+        rows = {}
+        while time.time() < deadline:
+            conn = sqlite3.connect(db)
+            conn.row_factory = sqlite3.Row
+            rows = {r["slug"]: r for r in conn.execute(
+                "SELECT slug, workshop_pool_code, workshop_pool_name "
+                "FROM competitions")}
+            conn.close()
+            if (rows["demo"]["workshop_pool_code"]
+                    and rows["demo-2"]["workshop_pool_code"]):
+                break
+            time.sleep(0.2)
         code_a = rows["demo"]["workshop_pool_code"]
         code_b = rows["demo-2"]["workshop_pool_code"]
         assert code_a and code_b and code_a != code_b
