@@ -45,6 +45,7 @@ huitz score        # or: huitz watch / huitz forensics / huitz grade
 | `agent/` | On-box collector/reporter; builds into the `.pyz` deployed to a box. |
 | `engine/` | Ranked-mode server: enrollment, check-in, SLA ledger, adversary scheduler, competitions, leaderboard. |
 | `authoring/` | Scenario compile + sign toolchain, run on the author's machine. |
+| `debrief/` | Post-competition team debrief reports: read-only over the store, one PDF per team. |
 | `boxbuilder/` | Practice-box factory: pairs nakon-planted vulns with huitz scoring checks. |
 | `packaging/` | Zipapp and engine bundles, init units, and re-arm/reset tooling. |
 | `tests/` | Unit, integration, and live-infrastructure test tiers. |

@@ -8,3 +8,4 @@ python-dotenv>=1.0
 # Optional tiers:
 paramiko>=3.4          # boxbuilder ssh provider
 proxmoxer>=2.0         # tests/proxmox live-VM tier
+fpdf2>=2.7             # debrief/ PDF report rendering
