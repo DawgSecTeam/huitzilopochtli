@@ -621,11 +621,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "competition not found"})
                 return
             board = competition.leaderboard_payload(self.store, comp)
-            rows = [["rank", "player", "status", "total", "hardening", "services",
+            rows = [["rank", "player", "status", "total", "hardening",
+                     "forensics", "services",
                      "started_at", "ends_at", "last_checkin"]]
             for r in board["leaderboard"]:
                 rows.append([r["rank"], _csv_cell(r["name"]), r["status"],
                              r["total"], r["hardening_points"],
+                             r["forensics_points"],
                              r["service_points"], _csv_time(r["started_at"]),
                              _csv_time(r["ends_at"]), _csv_time(r["last_checkin"])])
             self._send_csv(f"{comp.slug}-results.csv", rows)

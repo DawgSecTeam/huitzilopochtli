@@ -517,14 +517,36 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
     forensics = snap.get("forensics") or []
     if forensics:
         earned = int(snap.get("forensics_earned") or 0)
-        lines.append("  " + sty.bold(f"FORENSICS — {earned} of {len(forensics)}"))
+        submitted = sum(1 for f in forensics if f.get("submitted"))
+        header = f"FORENSICS — {earned} of {len(forensics)}"
+        if submitted > earned:
+            # Answers were collected that have not earned points: say so,
+            # or a wrong answer is indistinguishable from an unanswered one.
+            header += f" · {submitted} answered"
+        lines.append("  " + sty.bold(header))
         for f in forensics:
-            mark = (sty.color(sym.check, "ok", 1) if f.get("answered")
-                    else sty.color(sym.bullet, "muted"))
+            answered = f.get("answered")
+            submitted_not_correct = (f.get("submitted")
+                                     and not answered and f.get("graded"))
+            submitted_pending = f.get("submitted") and not answered
+            if answered:
+                mark = sty.color(sym.check, "ok", 1)
+            elif submitted_not_correct:
+                mark = sty.color(sym.cross, "warn", 1)
+            elif submitted_pending:
+                mark = sty.color("…" if sym.utf8 else "...", "muted")
+            else:
+                mark = sty.color(sym.bullet, "muted")
             points = int(f.get("points", 0))
-            pts_plain = _pts_plain(points) if f.get("answered") else "0"
-            pts_styled = (_pts_cell(sty, points) if f.get("answered")
-                          else sty.color("0", "muted"))
+            if answered:
+                pts_plain = _pts_plain(points)
+                pts_styled = _pts_cell(sty, points)
+            elif submitted_not_correct:
+                pts_plain = "0"
+                pts_styled = sty.color("0", "warn")
+            else:
+                pts_plain = "0"
+                pts_styled = sty.color("0", "muted")
             title = f"Q{f.get('ordinal') or '?'} {f.get('question', '')}"
             lines.append(_leader_line(sty, sym, f"{mark} {title}",
                                       pts_plain, pts_styled, width, indent=4))
@@ -705,12 +727,19 @@ def _read_answers(path: str) -> str:
 def _answer_status(entry: dict, current: str | None) -> tuple:
     """(label, styled) describing the relationship between the file's current
     answer and the last grade's verdict."""
+    graded = entry.get("graded")
     if current:
         if entry.get("answered"):
             return "recorded", None
+        if entry.get("submitted") and graded:
+            # The last grade saw this (or a later) answer and rejected it:
+            # say so instead of leaving "awaiting re-grade" up forever.
+            return "recorded — not correct on the last grade", "warn"
         return "recorded — awaiting re-grade", "muted"
     if entry.get("answered"):
         return "answered on the last grade; the file is now blank", "warn"
+    if entry.get("submitted") and graded:
+        return "not correct on the last grade; the file is now blank", "warn"
     return "blank", "muted"
 
 
@@ -732,8 +761,12 @@ def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
     paths = {_answers_path_for(e, answers_override) for e in entries}
     multi_path = len(paths) > 1
 
-    lines = ["  " + sty.bold(
-        f"FORENSICS — {snap.get('forensics_earned', 0)} of {len(entries)}")]
+    earned = int(snap.get("forensics_earned") or 0)
+    submitted = sum(1 for e in entries if e.get("submitted"))
+    header = f"FORENSICS — {earned} of {len(entries)}"
+    if submitted > earned:
+        header += f" · {submitted} answered"
+    lines = ["  " + sty.bold(header)]
     if multi_path:
         lines.append("      " + sty.color(
             "answers files: multiple (shown per question)", "muted"))
@@ -756,10 +789,21 @@ def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
 
     for i, e in enumerate(entries):
         ordinal = _entry_ordinal(e, i)
-        mark = (sty.color(sym.check, "ok", 1) if e.get("answered")
-                else sty.color(sym.bullet, "muted"))
-        pts = (_pts_cell(sty, int(e.get("points", 0))) if e.get("answered")
-               else sty.color(f"0/{e.get('max_points', 0)}", "muted"))
+        answered = e.get("answered")
+        if answered:
+            mark = sty.color(sym.check, "ok", 1)
+        elif e.get("submitted") and e.get("graded"):
+            mark = sty.color(sym.cross, "warn", 1)
+        elif e.get("submitted"):
+            mark = sty.color("…" if sym.utf8 else "...", "muted")
+        else:
+            mark = sty.color(sym.bullet, "muted")
+        if answered:
+            pts = _pts_cell(sty, int(e.get("points", 0)))
+        elif e.get("submitted") and e.get("graded"):
+            pts = sty.color(f"0/{e.get('max_points', 0)}", "warn")
+        else:
+            pts = sty.color(f"0/{e.get('max_points', 0)}", "muted")
         question = agent.term.ellipsize(str(e.get("question", "")),
                                         max(20, width - 24), sym)
         lines.append(f"  {mark} Q{ordinal}  {question}  {pts}")

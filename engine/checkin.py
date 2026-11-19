@@ -14,8 +14,9 @@ from common import canon
 from common.evaluator import evaluate
 from common.matchers import evaluate_matcher
 from common.schema import (
-    Bundle, CheckinResponse, CollectorStatus, Directive, Rubric, SCHEMA_VERSION,
-    SLA_HISTORY_MAX, ScoreBreakdown, SlaStatus,
+    Bundle, Category, CheckinResponse, CheckResult, CollectorStatus,
+    Directive, Rubric, SCHEMA_VERSION, SLA_HISTORY_MAX, ScoreBreakdown,
+    SlaStatus,
 )
 from common.version import AGENT_VERSION
 from engine import scenario as scenario_mod
@@ -48,8 +49,29 @@ def _agent_version_compatible(agent_version: str) -> bool:
         return False
 
 
+def _forensics_check_ids(rubric: Optional[Rubric]) -> set:
+    """The rubric's forensics check ids — its `answer_equals` entries.
+
+    Ids are the author's own string (the `fq-` prefix is convention, not
+    contract — nothing in the compiler or validator enforces it), so the
+    compiled matcher tag is the reliable discriminator.
+    """
+    if rubric is None:
+        return set()
+    out = set()
+    for entry in rubric.entries:
+        matcher = entry.matcher
+        if not isinstance(matcher, dict):
+            continue
+        tag = matcher.get("tag")
+        if tag == "answer_equals" or (tag is None and "answer_equals" in matcher):
+            out.add(entry.check_id)
+    return out
+
+
 def _redact_for_box(score, evidence_by_check_id: dict,
-                    *, hide_forensics: bool = False) -> None:
+                    *, hide_forensics: bool = False,
+                    forensics_ids: Optional[set] = None) -> None:
     """Reduce the score to the positive-only facts the box may see.
 
     Matcher reasons embed expected values (the answer key), so they are
@@ -63,11 +85,28 @@ def _redact_for_box(score, evidence_by_check_id: dict,
     While a ranked run is still live, also hide the per-question forensics
     results. A player who sees "Q4 scored" can iterate wrong answers for
     free; the run total still moves, but the per-question oracle is gone.
-    The full list is restored when the run finishes/ends.
+    Once the run is over the frozen-score response carries the forensics
+    results back, failed ones included (see `_frozen_score`), so the box can
+    show "answered — not correct".
+
+    The forensics_points aggregate is NOT redacted: it moves exactly when the
+    run total does, so it exposes nothing the total does not already say —
+    and it is the only way a box can render an honest hardening/forensics/
+    service split without per-question data.
+
+    `forensics_ids` is the rubric-derived set of forensics check ids (the
+    `answer_equals` entries, `_forensics_check_ids`). When None, the `fq-`
+    id-convention prefix is the fallback; callers holding the rubric should
+    always pass the set.
     """
+    def _is_forensics(check_id: str) -> bool:
+        if forensics_ids is not None:
+            return check_id in forensics_ids
+        return check_id.startswith("fq-")
+
     visible = []
     for result in score.results:
-        if hide_forensics and result.check_id.startswith("fq-"):
+        if hide_forensics and _is_forensics(result.check_id):
             continue
         if not (result.passed or result.awarded_points != 0):
             continue  # a failed zero-point check is the answer key
@@ -128,18 +167,58 @@ def _stored_sla_status(data: dict) -> list:
 
 
 def _frozen_score(store: Store, box_id: str, scenario_name: str,
-                  scenario_version: int, received_at: float) -> ScoreBreakdown:
-    """Return the last stored authoritative score, or a zero placeholder."""
+                  scenario_version: int, received_at: float,
+                  forensics_ids: Optional[set] = None) -> ScoreBreakdown:
+    """Return the last stored authoritative score, or a zero placeholder.
+
+    The stored score_json still contains matcher reasons (the answer key), so
+    raw results must not be replayed to the box. The frozen response carries:
+
+    - the positive-only board facts — passed checks and incurred penalties —
+      with reasons BLANKED: the board renders from passed/awarded alone, and
+      a stored reason can embed an expected value;
+    - the forensics results in full, failed ones included: an `answer_equals`
+      reason names only the player's own answer and the evidence wording,
+      never the expected value, so the post-run board can show "answered —
+      not correct" (§13.1), plus the forensics_points aggregate.
+
+    Service state, accrual and the tick history carry no expected values, and
+    keeping them means the ranked report's uptime tab stays populated after
+    the run ends.
+    """
+    forensics_ids = forensics_ids or set()
     stored = store.get_score(box_id)
     if stored and stored.get("score_json"):
         try:
             data = json.loads(stored["score_json"])
+            results = []
+            for raw in data.get("results") or []:
+                if not isinstance(raw, dict):
+                    continue
+                check_id = raw.get("check_id")
+                if not isinstance(check_id, str) or not check_id:
+                    continue
+                passed = bool(raw.get("passed"))
+                try:
+                    awarded = int(raw.get("awarded_points", 0) or 0)
+                    category = Category(str(raw.get("category", "")))
+                except (TypeError, ValueError):
+                    continue
+                is_forensics = check_id in forensics_ids
+                if not passed and awarded == 0 and not is_forensics:
+                    continue  # a failed zero-point check is the answer key
+                results.append(CheckResult(
+                    check_id=check_id, category=category,
+                    awarded_points=awarded, passed=passed,
+                    reason=str(raw.get("reason", "")) if is_forensics else "",
+                ))
             return ScoreBreakdown(
                 scenario_name=data.get("scenario_name", scenario_name),
                 scenario_version=data.get("scenario_version", scenario_version),
                 total=int(data.get("total", stored["total"])),
-                results=[], sla_status=_stored_sla_status(data),
+                results=results, sla_status=_stored_sla_status(data),
                 computed_at=float(data.get("computed_at", received_at)),
+                forensics_points=int(data.get("forensics_points", 0) or 0),
             )
         except (ValueError, TypeError, KeyError):
             pass
@@ -147,6 +226,7 @@ def _frozen_score(store: Store, box_id: str, scenario_name: str,
         scenario_name=scenario_name, scenario_version=scenario_version,
         total=int(stored["total"]) if stored else 0,
         results=[], sla_status=[], computed_at=received_at,
+        forensics_points=0,
     )
 
 
@@ -295,6 +375,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             )
     if event_pool is None:
         event_pool = []
+    forensics_ids = _forensics_check_ids(rubric)
 
     # 3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
     if bundle.seq <= box.last_seq:
@@ -330,7 +411,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
                 json.dumps(dataclasses.asdict(bundle), default=str),
             )
         frozen = _frozen_score(store, bundle.box_id, box.scenario_name,
-                               box.scenario_version, now_for_run)
+                               box.scenario_version, now_for_run,
+                               forensics_ids=forensics_ids)
         rank, rank_total = competition.rank_for_player(
             store, comp, player, now_for_run)
         return CheckinResponse(
@@ -380,9 +462,19 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             last = fresh.last_seq if fresh is not None else box.last_seq
             raise CheckinError(409, "replay/stale seq", last_seq=last)
 
-        # 6. Evaluate point-in-time evidence against the engine-held rubric.
+        # Steps 6-9. Point-in-time first: the evaluator's total mixes the
+        # hardening board and the forensics questions, so separate the
+        # forensics aggregate out of it (§11.4): hardening stays a pure
+        # configuration score and `total = hardening + forensics + SLA`.
+        # The aggregate rides the response (score.forensics_points); the
+        # per-question results keep the §14.2 redaction rules below.
         clock = _Clock(received_at)
+        # 6. Evaluate point-in-time evidence against the engine-held rubric.
         score = evaluate(bundle.evidence, rubric, clock)
+        forensics_total = sum(
+            r.awarded_points for r in score.results
+            if r.check_id in forensics_ids
+        )
         evidence_by_check_id = {e.check_id: e for e in bundle.evidence}
 
         # 7. Run the adversary scheduler before the SLA ledger so a directive
@@ -451,9 +543,10 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             for d in store.get_issued_directives(bundle.box_id)
         ]
 
-        hardening_total = score.total
-        final_total = hardening_total + sla_accrued_total
+        hardening_total = score.total - forensics_total
+        final_total = hardening_total + sla_accrued_total + forensics_total
         score.total = final_total
+        score.forensics_points = forensics_total
 
         # Checks the agent could not grade because a `requires` prerequisite
         # was absent on this host: they score 0 and are excluded from the
@@ -471,6 +564,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             bundle.box_id, rubric.scenario_name, final_total,
             hardening_points=hardening_total,
             service_points=sla_accrued_total,
+            forensics_points=forensics_total,
             score_json=json.dumps(dataclasses.asdict(score), default=str),
             ungraded_count=ungraded,
         )
@@ -478,9 +572,12 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     # §2.4: matcher reasons embed expected values (the answer key), and a
     # failed check's id/points are just as revealing. The box gets the
     # positive-only board (passed checks + incurred penalties) with its own
-    # evidence reasons; the full result list stays engine-side.
+    # evidence reasons; the full result list stays engine-side. Forensics
+    # results ride the run-over (frozen) response instead — live runs hide
+    # them entirely, so the per-question oracle only opens once scoring has.
     _redact_for_box(score, evidence_by_check_id,
-                    hide_forensics=(run_status == "running"))
+                    hide_forensics=(run_status == "running"),
+                    forensics_ids=forensics_ids)
 
     # Scoreboard position is a presentation fact, not a scoring input: derive
     # it after the score write so it reflects this check-in, including ties.

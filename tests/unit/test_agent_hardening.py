@@ -297,6 +297,79 @@ def test_ranked_loop_survives_bad_directive_and_honors_next_checkin_s(
     assert (tmp_path / "report.html").exists()
 
 
+def test_run_over_response_is_rendered_before_exit(tmp_path, monkeypatch):
+    """The run-over response must be published, not dropped: its frozen score
+    carries the forensics results — including 'answered — not correct' — that
+    every earlier render predated. The loop then exits without sleeping."""
+    import json as _json
+
+    from common.schema import (
+        Category, CheckResult, CheckSpec, CollectorStatus, Evidence,
+        ForensicsQuestion, Manifest, Mode, ScoreBreakdown,
+    )
+
+    config = _FakeConfig(tmp_path)
+    config.report_path = str(tmp_path / "report.html")
+    config.checkin_interval_s = 60
+    config.mode = Mode.RANKED
+    manifest = Manifest(
+        schema_version=1, scenario_name="sc", scenario_version=1,
+        mode=Mode.RANKED, engine_url="http://127.0.0.1:1",
+        hosts=["localhost"], theme=None,
+        checks=[CheckSpec(id="f1", type="forensics_answer",
+                          category=Category.VULN, host_id="localhost",
+                          collect_params={"ordinal": 1, "path": "x"},
+                          display_title="q", display_max_points=5)],
+        forensics=[ForensicsQuestion(id="f1", question="q?", max_points=5)],
+    )
+
+    class _OverResponse(_FakeResponse):
+        def __init__(self):
+            super().__init__(next_checkin_s=60)
+            self.score = ScoreBreakdown(
+                scenario_name="sc", scenario_version=1, total=0,
+                results=[CheckResult(check_id="f1", category=Category.VULN,
+                                     awarded_points=0, passed=False,
+                                     reason="answer 'x' is not correct")],
+                sla_status=[], computed_at=0.0)
+            self.run_status = "finished"
+            self.player_name = None
+
+    class _OverClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def checkin(self, bundle):
+            return _OverResponse()
+
+    def _fail_sleep(s):
+        raise AssertionError("must not sleep once the run is over")
+
+    evidence = [Evidence(check_id="f1", check_type="forensics_answer",
+                         host_id="localhost", status=CollectorStatus.OK,
+                         raw={"answer": "x"}, reason="answer recorded for Q1",
+                         collected_monotonic=0.0, collected_wall_claim=0.0)]
+    monkeypatch.setattr(agent_main.agent.transport, "TransportClient", _OverClient)
+    monkeypatch.setattr(agent_main.time, "sleep", _fail_sleep)
+    monkeypatch.setattr(agent_main.agent.collector, "run_all",
+                        lambda checks, ctx: evidence)
+    monkeypatch.setattr(agent_main, "_ensure_enrolled", lambda *a: False)
+    identity = agent.identity.Identity(
+        box_id="b", private_key=b"x" * 32, public_key=b"y" * 32, last_seq=0)
+    monkeypatch.setattr(agent_main.agent.identity, "load_or_create",
+                        lambda path: identity)
+
+    agent_main._run_ranked(config, manifest, ctx=None)  # returns: run over
+
+    snap = _json.loads((tmp_path / "report.json").read_text())
+    assert snap["mode"] == "ranked"
+    [f] = snap["forensics"]
+    assert f["submitted"] is True and f["graded"] is True
+    assert f["answered"] is False
+    assert any(r["check_id"] == "f1" and r["passed"] is False
+               for r in snap["results"])
+
+
 # --- transport: parse failure must not queue an accepted bundle ------------------
 
 def _mk_bundle():

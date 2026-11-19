@@ -480,6 +480,7 @@ def honor_grade(config, manifest, ctx) -> tuple:
             score, Mode.HONOR, None, theme=manifest.theme, manifest=manifest,
             score_delta=delta,
             honor_interval_s=honor_interval_s,
+            evidence=evidence,
         )
         _write_text_atomic(config.report_path, html)
 
@@ -487,6 +488,7 @@ def honor_grade(config, manifest, ctx) -> tuple:
             score, manifest, mode="honor", agent_version=AGENT_VERSION,
             delta=delta, computed_at=score.computed_at,
             honor_interval_s=honor_interval_s,
+            evidence=evidence,
         )
         agent.snapshot.write(config.report_path, snap)
         agent.notify.record_score(
@@ -743,9 +745,9 @@ def _run_ranked(config, manifest, ctx) -> None:
                   file=sys.stderr)
             time.sleep(max(config.checkin_interval_s or 0, 60))
 
+    run_over = False
     while True:
         evidence = agent.collector.run_all(manifest.checks, ctx)
-
         bundle = Bundle(
             box_id=identity.box_id,
             seq=identity.last_seq + 1,
@@ -800,7 +802,12 @@ def _run_ranked(config, manifest, ctx) -> None:
                 print(
                     f"run {response.run_status}: {response.player_name or 'player'}"
                     f" — final score {response.score.total}", file=sys.stderr)
-                break
+                # Not a bare exit: fall through to the render below so the
+                # box's final board is the run-over response — the frozen
+                # score carries the forensics results (including
+                # "answered — not correct") that every earlier render
+                # predated. The loop exits after publishing it.
+                run_over = True
 
         delta = None
         try:
@@ -819,6 +826,7 @@ def _run_ranked(config, manifest, ctx) -> None:
                     rank_total=getattr(last_response, "rank_total", None),
                     run_ends_at=getattr(last_response, "run_ends_at", None),
                     disqualified=getattr(last_response, "disqualified", False),
+                    evidence=evidence,
                 )
                 snap = agent.snapshot.build_snapshot(
                     last_response.score, manifest, mode="ranked",
@@ -829,6 +837,7 @@ def _run_ranked(config, manifest, ctx) -> None:
                     rank=getattr(last_response, "rank", None),
                     rank_total=getattr(last_response, "rank_total", None),
                     run_ends_at=getattr(last_response, "run_ends_at", None),
+                    evidence=evidence,
                 )
             else:
                 placeholder = ScoreBreakdown(
@@ -868,6 +877,9 @@ def _run_ranked(config, manifest, ctx) -> None:
                 delta, last_response.score.total, title=_theme_title(manifest),
                 enabled=config.notifications,
             )
+
+        if run_over:
+            break
 
         # The engine's next_checkin_s is authoritative when present (it backs
         # the reporter countdown and SLA cadence); fall back to local config.

@@ -57,6 +57,7 @@ def get_competition_leaderboard(store: Store, comp) -> list:
             "total": row["total"],
             "hardening_points": row["hardening_points"],
             "service_points": row["service_points"],
+            "forensics_points": row["forensics_points"],
             "updated_at": row["last_checkin"],
             "status": row["status"],
         })

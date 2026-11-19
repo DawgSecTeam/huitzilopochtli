@@ -71,6 +71,7 @@ class ScoreRow:
     first_scored_at: float = 0.0
     hardening_points: int = 0
     service_points: int = 0
+    forensics_points: int = 0
 
 
 @dataclass
@@ -276,6 +277,12 @@ class Store:
             ("scores", (
                 ("hardening_points", "INTEGER NOT NULL DEFAULT 0"),
                 ("service_points", "INTEGER NOT NULL DEFAULT 0"),
+                # The forensics aggregate, separated from hardening_points
+                # (§11.4/§21.3). Legacy rows (written before the split) keep 0
+                # with their forensics points still lumped into
+                # hardening_points until the next check-in rewrites the row:
+                # the three cells still sum to total in the meantime.
+                ("forensics_points", "INTEGER NOT NULL DEFAULT 0"),
                 ("score_json", "TEXT"),
                 # Checks the agent could not grade this check-in (a `requires`
                 # prerequisite was absent). Carried on the score row so the
@@ -551,6 +558,7 @@ class Store:
     def upsert_score(self, box_id: str, scenario_name: str, total: int,
                      hardening_points: Optional[int] = None,
                      service_points: int = 0,
+                     forensics_points: int = 0,
                      score_json: Optional[str] = None,
                      ungraded_count: int = 0) -> None:
         import time
@@ -562,18 +570,19 @@ class Store:
             self._conn.execute(
                 "INSERT INTO scores (box_id, scenario_name, total, updated_at, "
                 "first_scored_at, hardening_points, service_points, score_json, "
-                "ungraded_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ungraded_count, forensics_points) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(box_id) DO UPDATE SET "
                 "scenario_name = excluded.scenario_name, "
                 "total = excluded.total, "
                 "updated_at = excluded.updated_at, "
                 "hardening_points = excluded.hardening_points, "
                 "service_points = excluded.service_points, "
+                "forensics_points = excluded.forensics_points, "
                 "score_json = excluded.score_json, "
                 "ungraded_count = excluded.ungraded_count",
                 (box_id, scenario_name, total, now, now, hardening,
-                 service_points, score_json, ungraded),
+                 service_points, score_json, ungraded, forensics_points),
             )
             self._commit()
 
@@ -581,7 +590,8 @@ class Store:
         with self._lock:
             row = self._conn.execute(
                 "SELECT box_id, scenario_name, total, updated_at, first_scored_at, "
-                "hardening_points, service_points, score_json, ungraded_count "
+                "hardening_points, service_points, forensics_points, score_json, "
+                "ungraded_count "
                 "FROM scores WHERE box_id = ?", (box_id,)
             ).fetchone()
         if row is None:
@@ -592,6 +602,7 @@ class Store:
             "first_scored_at": row["first_scored_at"],
             "hardening_points": row["hardening_points"],
             "service_points": row["service_points"],
+            "forensics_points": row["forensics_points"],
             "score_json": row["score_json"],
             "ungraded_count": row["ungraded_count"],
         }

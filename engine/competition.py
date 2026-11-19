@@ -191,6 +191,8 @@ def leaderboard_payload(store: Store, comp: CompetitionRecord,
                 "total": total,
                 "hardening_points": score["hardening_points"] if score else 0,
                 "service_points": score["service_points"] if score else 0,
+                "forensics_points": (score.get("forensics_points", 0)
+                                     if score else 0),
                 # Checks the agent reported `unavailable` at the last check-in
                 # (required software missing); 0 keeps healthy rows unchanged.
                 "ungraded_count": (score.get("ungraded_count", 0) if score else 0),

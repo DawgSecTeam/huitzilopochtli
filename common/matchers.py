@@ -331,17 +331,22 @@ def _answer_equals(matcher: dict, raw: dict) -> tuple:
     if not isinstance(actual, str):
         return False, f"answer must be a string (got {type(actual).__name__})"
 
-    normalized = _normalize_answer(actual)
+    normalized = normalize_answer(actual)
     if not normalized:
         return False, "answer is blank"
     for candidate in candidates:
-        if normalized == _normalize_answer(candidate):
+        if normalized == normalize_answer(candidate):
             return True, f"answer {actual!r} matches expected"
     return False, f"answer {actual!r} is not correct"
 
 
-def _normalize_answer(value: str) -> str:
-    """Casefold, collapse whitespace, and strip surrounding punctuation."""
+def normalize_answer(value: str) -> str:
+    """Casefold, collapse whitespace, and strip surrounding punctuation.
+
+    The one definition of "counts as blank" for a forensics answer: the
+    matcher scores against it, and the board's submitted flag (whether a
+    non-blank answer was collected at all) must agree with it.
+    """
     collapsed = " ".join(str(value).casefold().split())
     return collapsed.strip(string.punctuation + "\u201c\u201d\u2018\u2019")
 

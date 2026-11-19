@@ -39,3 +39,12 @@ def test_finished_run_reveals_forensics_results():
     score = _score("fq-1", "banner")
     _redact_for_box(score, _evidence(), hide_forensics=False)
     assert [r.check_id for r in score.results] == ["fq-1", "banner"]
+
+
+def test_rubric_ids_drive_hiding_not_the_fq_prefix():
+    # Ids are the author's own string; `fq-` is convention, not contract.
+    # A rubric-derived forensics id without the prefix is still hidden live.
+    score = _score("question-nine", "banner")
+    _redact_for_box(score, _evidence(), hide_forensics=True,
+                    forensics_ids={"question-nine"})
+    assert [r.check_id for r in score.results] == ["banner"]

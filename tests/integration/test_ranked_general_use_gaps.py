@@ -583,9 +583,11 @@ def test_csv_export_header_has_one_row_per_ranked_player_and_shared_ranks(
     _seed_csv_players(eng, comp)
     rows = _csv_export(eng, comp)
 
+    # The export reports forensics separately from hardening/services (the
+    # scores row carries its own forensics_points column).
     assert rows[0] == [
-        "rank", "player", "status", "total", "hardening", "services",
-        "started_at", "ends_at", "last_checkin",
+        "rank", "player", "status", "total", "hardening", "forensics",
+        "services", "started_at", "ends_at", "last_checkin",
     ], rows[0]
     assert len(rows) - 1 == len(CSV_NAMES), (
         f"expected one row per ranked player, got {len(rows) - 1}: {rows!r}")
@@ -598,6 +600,10 @@ def test_csv_export_header_has_one_row_per_ranked_player_and_shared_ranks(
     assert int(third[0]) > int(first[0]), (
         f"a lower total must rank after the tie: {third[0]} vs {first[0]}")
     assert first[3] == second[3] == "10"
+    # The seeded rows harden everything and touch nothing else: the split
+    # columns each carry their own value (forensics defaults to 0).
+    assert first[4] == second[4] == "10"
+    assert first[5] == second[5] == "0"
 
 
 def test_csv_export_timestamps_are_iso_8601_local_not_epoch_floats(

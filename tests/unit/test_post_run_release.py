@@ -31,6 +31,9 @@ def _rubric():
             {"check_id": "banner", "category": "vuln",
              "matcher": {"tag": "equals", "value": "ok"}, "points": 10,
              "sla": None},
+            {"check_id": "fq-where", "category": "vuln",
+             "matcher": {"tag": "answer_equals", "value": "ghost"},
+             "points": 20, "sla": None},
         ],
     }
 
@@ -68,16 +71,24 @@ def _join(store, comp, name="Ada", secret=b"secret"):
     return priv, body["box_id"]
 
 
-def _bundle(box_id, seq, banner="ok"):
+def _bundle(box_id, seq, banner="ok", answer=None):
+    evidence = [
+        Evidence(check_id="banner", check_type="file_regex",
+                 host_id="localhost", status=CollectorStatus.OK,
+                 raw={"matched": banner, "present": True}, reason="banner",
+                 collected_monotonic=0.0, collected_wall_claim=0.0),
+    ]
+    if answer is not None:
+        evidence.append(Evidence(
+            check_id="fq-where", check_type="forensics_answer",
+            host_id="localhost", status=CollectorStatus.OK,
+            raw={"answer": answer},
+            reason="answer recorded for Q1 in Forensics-Questions.txt",
+            collected_monotonic=0.0, collected_wall_claim=0.0))
     return Bundle(
         box_id=box_id, seq=seq, boot_id="boot", agent_version=AGENT_VERSION,
         scenario_name="PostRun", scenario_version=1,
-        evidence=[
-            Evidence(check_id="banner", check_type="file_regex",
-                     host_id="localhost", status=CollectorStatus.OK,
-                     raw={"matched": banner, "present": True}, reason="banner",
-                     collected_monotonic=0.0, collected_wall_claim=0.0),
-        ],
+        evidence=evidence,
         created_wall_claim=0.0, schema_version=SCHEMA_VERSION,
     )
 
@@ -172,6 +183,69 @@ def test_grace_env_visible_in_the_message(store, monkeypatch):
 def test_run_over_message_tiny_grace():
     assert "shortly" in _run_over_message(10.0)
     assert "30" in _run_over_message(1800.0)
+
+
+# --- run-over forensics results -------------------------------------------------
+
+def test_live_run_hides_forensics_end_to_end(store):
+    comp = _comp(store)
+    priv, box_id = _join(store, comp)
+    player = store.get_player_by_box(box_id)
+    r = _checkin(store, priv, _bundle(box_id, 1, answer="wrong"),
+                 player.ends_at - 600)
+    assert r.run_status == "running"
+    # Scored against the rubric (the total says 10, not 30: the wrong answer
+    # earned nothing) yet the per-question result never reaches the box.
+    assert r.score.total == 10
+    assert [r.check_id for r in r.score.results] == ["banner"]
+
+
+def test_run_over_response_carries_failed_forensics_result(store):
+    comp = _comp(store)
+    priv, box_id = _join(store, comp)
+    player = store.get_player_by_box(box_id)
+    _checkin(store, priv, _bundle(box_id, 1, answer="wrong"),
+             player.ends_at - 600)  # scored + stored while live
+    over = _checkin(store, priv, _bundle(box_id, 2, answer="wrong"),
+                    player.ends_at + 5)
+    assert over.run_status == "finished"
+    fq = next(r for r in over.score.results if r.check_id == "fq-where")
+    assert fq.passed is False and fq.awarded_points == 0
+    # The reason names the player's own submission, never the answer key.
+    assert "'wrong'" in fq.reason and "not correct" in fq.reason
+    assert "ghost" not in fq.reason
+
+
+def test_run_over_response_still_hides_failed_non_forensics(store):
+    comp = _comp(store)
+    priv, box_id = _join(store, comp)
+    player = store.get_player_by_box(box_id)
+    _checkin(store, priv, _bundle(box_id, 1, banner="bad", answer="wrong"),
+             player.ends_at - 600)
+    over = _checkin(store, priv, _bundle(box_id, 2, banner="bad"),
+                    player.ends_at + 5)
+    ids = [r.check_id for r in over.score.results]
+    assert "fq-where" in ids        # forensics is the one exception...
+    assert "banner" not in ids      # ...a failed check stays the answer key
+
+
+def test_run_over_response_keeps_positive_board_strips_reasons(store):
+    """The frozen response must render a sane final board: passed checks and
+    incurred penalties survive (reasons stripped — stored reasons embed
+    expected values); the board never reads them."""
+    comp = _comp(store)
+    priv, box_id = _join(store, comp)
+    player = store.get_player_by_box(box_id)
+    _checkin(store, priv, _bundle(box_id, 1, answer="ghost"),
+             player.ends_at - 600)  # banner passes, fq correct: 30 pts
+    over = _checkin(store, priv, _bundle(box_id, 2),
+                    player.ends_at + 5)
+    assert over.score.total == 30
+    by_id = {r.check_id: r for r in over.score.results}
+    assert by_id["banner"].passed and by_id["banner"].awarded_points == 10
+    assert by_id["banner"].reason == ""      # stripped: not the box's words
+    assert by_id["fq-where"].passed and by_id["fq-where"].awarded_points == 20
+    assert by_id["fq-where"].reason != ""    # kept: names only their answer
 
 
 # --- agent action: wall_message -------------------------------------------------

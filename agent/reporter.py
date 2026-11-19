@@ -81,6 +81,17 @@ def _render_config_cards(b) -> str:
                     f'{html.escape(str(f.points))} pts</span>'
                 )
                 icon = '<span class="icon ok">&#10003;</span> '
+            elif f.submitted and f.graded:
+                # Answered but not correct: say so. This is the player's own
+                # submission being acknowledged — it names no correct answer.
+                pts_html = '<span class="pts warn">0 pts</span>'
+                icon = ('<span class="icon warn" title="your answer was '
+                        'recorded but did not match">&#10007;</span> ')
+            elif f.submitted:
+                # Submitted, no result visible (ranked live: the engine
+                # withholds per-question forensics results until the run ends).
+                pts_html = '<span class="pts muted">0 pts</span>'
+                icon = '<span class="icon muted">&#8230;</span> '
             else:
                 pts_html = '<span class="pts muted">0 pts</span>'
                 icon = ""
@@ -90,13 +101,18 @@ def _render_config_cards(b) -> str:
             )
 
         forensics_items = "\n".join(_forensics_li(f) for f in b.forensics)
+        submitted_suffix = ""
+        if b.forensics_submitted > b.forensics_earned:
+            submitted_suffix = (
+                f' &middot; {b.forensics_submitted} answered'
+            )
         forensics_card = f"""
   <section class="card forensics">
-    <h2><span class="icon warn">&#128269;</span> Forensics &mdash; {b.forensics_earned} of {len(b.forensics)} correct</h2>
+    <h2><span class="icon warn">&#128269;</span> Forensics &mdash; {b.forensics_earned} of {len(b.forensics)} correct{submitted_suffix}</h2>
     <ul>
       {forensics_items}
     </ul>
-    <p class="muted remaining">Type your answers into Forensics-Questions.txt &mdash; they are re-graded automatically.</p>
+    <p class="muted remaining">Type your answers into Forensics-Questions.txt &mdash; they are re-graded automatically. &#10003; correct; &#10007; answered but not correct.</p>
   </section>"""
 
     return f"""
@@ -118,7 +134,7 @@ def _render_config_cards(b) -> str:
 </div>"""
 
 
-def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
+def _render_honor_board(score: ScoreBreakdown, manifest, evidence=None) -> str:
     """CyberPatriot-style honor board: positive-only.
 
     All derived facts (fixed vulns, active penalties, forensics state,
@@ -132,7 +148,7 @@ def _render_honor_board(score: ScoreBreakdown, manifest) -> str:
     - Scored forensics questions get their own card and are excluded from the
       vulnerabilities-fixed accounting (they still add to score.total).
     """
-    b = board_mod.build_board(score, manifest)
+    b = board_mod.build_board(score, manifest, evidence)
 
     max_label = (
         f" / {b.max_possible} max"
@@ -360,7 +376,8 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                    rank: int | None = None,
                    rank_total: int | None = None,
                    run_ends_at: float | None = None,
-                   disqualified: bool = False) -> str:
+                   disqualified: bool = False,
+                   evidence=None) -> str:
     """Render ScoreBreakdown to a self-contained HTML string.
 
     Dashboard: total, point-in-time results, SLA status, and in ranked mode a
@@ -382,6 +399,11 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     the detail into two tabs: the positive-only configuration/forensics board
     (same spoiler contract as honor) and scored service uptime with its recent
     tick history. No per-check result table exists in either mode.
+
+    ``evidence`` (the collection the score was computed from) lights up the
+    forensics card's submitted/not-correct states; omit it when the score's
+    evidence is not the one in hand (e.g. a redacted engine response paired
+    with fresh local evidence).
     """
     theme = theme or {}
     mode_label = html.escape(mode.value if hasattr(mode, "value") else str(mode))
@@ -407,7 +429,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     else:
         if is_honor:
             body_main = _render_delta_banner(score_delta) + _render_honor_board(
-                score, manifest
+                score, manifest, evidence
             )
             # Countdown target: computed_at + honor interval
             interval = honor_interval_s if honor_interval_s is not None else _HONOR_INTERVAL_S
@@ -424,7 +446,7 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             # exactly like honor: the engine has already filtered failed
             # zero-point checks, and the board only names fixed vulns and
             # incurred penalties. Never render the per-check result table.
-            _rb = board_mod.build_board(score, manifest)
+            _rb = board_mod.build_board(score, manifest, evidence)
             config_html = _render_config_cards(_rb)
             stamp_html = ""
             if last_confirmed_at is not None:

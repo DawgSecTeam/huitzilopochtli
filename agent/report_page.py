@@ -228,6 +228,11 @@ hr { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
 .pts { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
 .pts.pos { color: #1a7f37; }
 .pts.neg { color: #cf222e; }
+.pts.warn { color: #9a6700; }
+/* The forensics card's per-question state marks (/.icon.ok|warn/ are only
+   styled inside h2 otherwise): green check, amber cross, muted ellipsis. */
+.forensics .icon.ok { color: #1a7f37; }
+.forensics .icon.warn { color: #9a6700; }
 .muted { color: var(--muted); }
 .remaining { margin: 0.75rem 0 0; font-size: 0.85rem; }
 .stamp { color: var(--muted); font-size: 0.85rem; margin: 2.5rem 0 0;

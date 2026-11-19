@@ -128,9 +128,11 @@ def test_join_score_services_and_end(store, monkeypatch):
     assert r3.run_status == "ended"
     assert r3.score.total == 13  # frozen
     # The frozen score keeps the safe SLA state/history (so the report's
-    # uptime tab survives the end) but never replays point-in-time results,
-    # whose reasons are the answer key.
-    assert r3.score.results == []
+    # uptime tab survives the end) and the positive-only board facts the
+    # final render needs — passed checks with their reasons STRIPPED (stored
+    # reasons are the answer key). Failed checks never come back.
+    assert [(r.check_id, r.passed, r.awarded_points, r.reason)
+            for r in r3.score.results] == [("banner", True, 10, "")]
     assert r3.score.sla_status[0].state == "UP"
     assert r3.score.sla_status[0].history == ["UP", "UP"]
     assert store.get_player_by_box(box_id).status == "finished"

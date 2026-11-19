@@ -8,6 +8,7 @@ the reporter's forensics card.
 """
 import json
 import os
+import time
 
 import pytest
 import yaml
@@ -21,7 +22,7 @@ from common.crypto.signing import keypair
 from common.matchers import evaluate_matcher
 from common.schema import (
     CheckResult, Category, CheckSpec, CollectorStatus, Evidence,
-    ForensicsQuestion, Manifest, Mode, validate_manifest,
+    ForensicsQuestion, Manifest, Mode, ScoreBreakdown, validate_manifest,
 )
 
 
@@ -308,3 +309,90 @@ def test_honor_board_renders_forensics_card():
     assert "Forensics" in page
     assert "1 of 1 correct" in page
     assert "Which file?" in page
+
+
+# --- board: answered-but-not-correct is visible, not "unanswered" --------------
+
+def _wrong_answer_evidence(answer="nope", status=CollectorStatus.OK):
+    return Evidence(
+        check_id="fq1", check_type="forensics_answer", host_id="localhost",
+        status=status, raw={"answer": answer},
+        reason="answer recorded for Q1 in /tmp/Forensics-Questions.txt",
+        collected_monotonic=0.0, collected_wall_claim=0.0,
+    )
+
+
+def _failed_forensics_score():
+    return ScoreBreakdown(
+        scenario_name="t", scenario_version=1, total=0,
+        results=[
+            CheckResult(check_id="fq1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'nope' is not correct"),
+        ],
+        sla_status=[], computed_at=time.time(),
+    )
+
+
+def test_board_marks_wrong_answer_submitted_not_correct():
+    from agent.board import build_board
+    b = build_board(_failed_forensics_score(), _manifest_with_forensics("/tmp"),
+                    [_wrong_answer_evidence()])
+    [f] = b.forensics
+    assert f.submitted is True and f.graded is True and f.answered is False
+    assert b.forensics_submitted == 1 and b.forensics_earned == 0
+
+
+def test_board_blank_placeholder_and_whitespace_are_not_submitted():
+    # The board's "submitted" rule is the matcher's "blank" rule: a blank
+    # line, whitespace, or the untouched underscore placeholder all read as
+    # unanswered, exactly as they score.
+    from agent.board import build_board
+    for answer in ("", "   ", "____", "_" * 44):
+        b = build_board(_failed_forensics_score(),
+                        _manifest_with_forensics("/tmp"),
+                        [_wrong_answer_evidence(answer)])
+        assert b.forensics[0].submitted is False, answer
+
+
+def test_board_without_result_shows_submitted_pending():
+    # Ranked live: the engine withholds per-question forensics results, so a
+    # submission must surface as pending, never as "not correct".
+    from agent.board import build_board
+    score = _failed_forensics_score()
+    score.results = []
+    b = build_board(score, _manifest_with_forensics("/tmp"),
+                    [_wrong_answer_evidence()])
+    [f] = b.forensics
+    assert f.submitted is True and f.graded is False and f.answered is False
+
+
+def test_board_without_evidence_stays_unsubmitted():
+    # Callers that do not hold the evidence (CLI rendering a snapshot) get
+    # today's behavior: no submitted flag, no warning.
+    from agent.board import build_board
+    b = build_board(_failed_forensics_score(), _manifest_with_forensics("/tmp"))
+    assert b.forensics[0].submitted is False and b.forensics_submitted == 0
+
+
+def test_honor_board_renders_wrong_answer_warning():
+    from agent.reporter import render_report
+    page = render_report(_failed_forensics_score(), Mode.HONOR, None,
+                         manifest=_manifest_with_forensics("/tmp"),
+                         evidence=[_wrong_answer_evidence()])
+    assert ('<span class="icon warn" title="your answer was recorded '
+            'but did not match">&#10007;</span>' in page)
+    assert '<span class="pts warn">0 pts</span>' in page
+    assert "0 of 1 correct" in page
+    assert "1 answered" in page                     # header counts submissions
+
+
+def test_honor_board_renders_submitted_pending_without_result():
+    from agent.reporter import render_report
+    score = _failed_forensics_score()
+    score.results = []
+    page = render_report(score, Mode.HONOR, None,
+                         manifest=_manifest_with_forensics("/tmp"),
+                         evidence=[_wrong_answer_evidence()])
+    assert '<span class="icon muted">&#8230;</span>' in page  # pending mark
+    assert '<span class="pts warn">0 pts</span>' not in page  # never "wrong"

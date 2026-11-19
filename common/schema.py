@@ -186,6 +186,13 @@ class ScoreBreakdown:
     results: list  # list[CheckResult]; on the box wire, passed/incurred only
     sla_status: list  # list[SlaStatus] — empty in honor mode
     computed_at: float
+    # Ranked only: the engine's aggregate forensics (answer_equals) award for
+    # this check-in, so the box can split total into
+    # hardening + forensics + service uptime without per-question results
+    # (§11.4, §21.3 — those stay engine-side while a run is live). None from
+    # engines predating the split: the box then keeps the two-way reading in
+    # which forensics points ride inside the hardening figure.
+    forensics_points: Optional[int] = None
 
 
 # --- §9.4 Bundle (collector output assembled for transmission/evaluation) --

@@ -22,6 +22,8 @@ from common.schema import (
     Category,
     CheckResult,
     CheckSpec,
+    CollectorStatus,
+    Evidence,
     ForensicsQuestion,
     Manifest,
     Mode,
@@ -260,6 +262,42 @@ class TestBoard:
         m = _manifest(theme={"title": "X", "accent": "red; } body {"})
         assert board_mod.build_board(_score(), m).accent is None
 
+    def _forensics_evidence(self, answer, path="/tmp/FQ.txt"):
+        return Evidence(
+            check_id="f1", check_type="forensics_answer", host_id="localhost",
+            status=CollectorStatus.OK, raw={"answer": answer},
+            reason=f"answer recorded for Q1 in {path}",
+            collected_monotonic=0.0, collected_wall_claim=0.0,
+        )
+
+    def test_wrong_answer_is_submitted_but_not_answered(self):
+        score = _score(results=[
+            CheckResult(check_id="c1", category=Category.VULN,
+                        awarded_points=10, passed=True, reason="ok"),
+            CheckResult(check_id="f1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'ghost' is not correct"),
+        ], total=10)
+        b = board_mod.build_board(score, _manifest(),
+                                  [self._forensics_evidence("ghost")])
+        [f] = b.forensics
+        assert f.submitted is True and f.graded is True
+        assert f.answered is False and f.points == 0
+        assert b.forensics_submitted == 1 and b.forensics_earned == 0
+
+    def test_correct_answer_is_both_submitted_and_answered(self):
+        b = board_mod.build_board(_score(), _manifest(),
+                                  [self._forensics_evidence("hal9000")])
+        [f] = b.forensics
+        assert f.submitted and f.graded and f.answered
+        assert b.forensics_submitted == 1 and b.forensics_earned == 1
+
+    def test_blank_answer_is_not_submitted(self):
+        b = board_mod.build_board(_score(), _manifest(),
+                                  [self._forensics_evidence("")])
+        assert b.forensics[0].submitted is False
+        assert b.forensics_submitted == 0
+
     def test_dict_manifest_form(self):
         # engine-side callers may hold parsed JSON, not dataclasses
         m = _manifest()
@@ -339,6 +377,50 @@ class TestSnapshot:
         # The new fields validate (and are optional for older snapshots).
         snapshot._validate_snapshot(snap, "mem")
 
+    def test_ranked_snapshot_keeps_failed_forensics_result(self):
+        # Post-run, the engine's frozen response carries failed forensics
+        # results (engine/checkin.py); the snapshot must keep them — they
+        # carry no expected value and drive the "answered — not correct"
+        # board state. A failed vuln check is still never kept.
+        score = _score(results=[
+            CheckResult(check_id="c1", category=Category.VULN,
+                        awarded_points=10, passed=True, reason=""),
+            CheckResult(check_id="f1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'ghost' is not correct"),
+            CheckResult(check_id="c2", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="equals removed expected yes"),
+        ], total=10)
+        snap = snapshot.build_snapshot(
+            score, _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60)
+        ids = [r["check_id"] for r in snap["results"]]
+        assert "f1" in ids and "c2" not in ids
+
+    def test_read_keeps_failed_forensics_strips_other_failures(self, tmp_path):
+        score = _score(results=[
+            CheckResult(check_id="c1", category=Category.VULN,
+                        awarded_points=10, passed=True, reason="ok"),
+            CheckResult(check_id="f1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'ghost' is not correct"),
+        ], total=10)
+        snap = snapshot.build_snapshot(
+            score, _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60)
+        # A stale/foreign failed non-forensics row must still be stripped on
+        # read; the forensics one survives the sweep.
+        snap["results"].append({
+            "check_id": "c2", "category": "vuln", "awarded_points": 0,
+            "passed": False, "reason": "equals removed expected yes",
+        })
+        report = tmp_path / "report.html"
+        snapshot.write(str(report), snap)
+        loaded = snapshot.read(snapshot.snapshot_path_for(str(report)))
+        ids = [r["check_id"] for r in loaded["results"]]
+        assert "f1" in ids and "c2" not in ids
+
     def test_snapshot_rejects_non_list_history(self):
         import copy
         from common.schema import SlaStatus
@@ -359,6 +441,48 @@ class TestSnapshot:
             awaiting_engine=True)
         assert snap["awaiting_engine"] is True
         assert snap["total"] is None
+
+    def test_snapshot_carries_forensics_submission_state(self):
+        score = _score(results=[
+            CheckResult(check_id="c1", category=Category.VULN,
+                        awarded_points=10, passed=True, reason="ok"),
+            CheckResult(check_id="f1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'ghost' is not correct"),
+        ], total=10)
+        evidence = [Evidence(
+            check_id="f1", check_type="forensics_answer", host_id="localhost",
+            status=CollectorStatus.OK, raw={"answer": "ghost"},
+            reason="answer recorded for Q1",
+            collected_monotonic=0.0, collected_wall_claim=0.0)]
+        snap = snapshot.build_snapshot(
+            score, _manifest(), mode="honor", agent_version="t", delta=0,
+            computed_at=100.0, evidence=evidence)
+        [f] = snap["forensics"]
+        assert f["submitted"] is True and f["graded"] is True
+        assert f["answered"] is False
+        assert snap["forensics_submitted"] == 1
+
+    def test_older_snapshot_without_submission_fields_reads(self, tmp_path):
+        # Snapshots written before the submitted/graded fields existed must
+        # still validate: the fields are optional, absent reads as False.
+        path, snap = _honor_snapshot(tmp_path)
+        for entry in snap["forensics"]:
+            entry.pop("submitted", None)
+            entry.pop("graded", None)
+        snap.pop("forensics_submitted", None)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(snap, f)
+        loaded = snapshot.read(path)
+        assert all(f.get("submitted") is None for f in loaded["forensics"])
+
+    def test_snapshot_rejects_non_bool_submitted(self):
+        snap = snapshot.build_snapshot(
+            _score(), _manifest(), mode="honor", agent_version="t",
+            delta=0, computed_at=1.0)
+        snap["forensics"][0]["submitted"] = "yes"
+        with pytest.raises(snapshot.SnapshotError, match="submitted"):
+            snapshot._validate_snapshot(snap, "mem")
 
     def test_write_read_round_trip(self, tmp_path):
         path, snap = _honor_snapshot(tmp_path)
@@ -503,6 +627,78 @@ class TestRenderScorecard:
         # spoilers never render
         assert "Guest account removed" not in out
         assert "equals FOUND" not in out and "c2" not in out
+
+    def _wrong_answer_snapshot(self, tmp_path):
+        """Snapshot for a graded, rejected forensics answer."""
+        forensics_path = tmp_path / "FQ.txt"
+        score = _score(results=[
+            CheckResult(check_id="c1", category=Category.VULN,
+                        awarded_points=10, passed=True, reason="ok"),
+            CheckResult(check_id="f1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'ghost' is not correct"),
+        ], total=10)
+        evidence = [Evidence(
+            check_id="f1", check_type="forensics_answer", host_id="localhost",
+            status=CollectorStatus.OK, raw={"answer": "ghost"},
+            reason="answer recorded for Q1",
+            collected_monotonic=0.0, collected_wall_claim=0.0)]
+        snap = snapshot.build_snapshot(
+            score, _manifest(forensics_path=str(forensics_path)),
+            mode="honor", agent_version="test", delta=0,
+            computed_at=1700000000.0, evidence=evidence)
+        return snap, forensics_path
+
+    def test_board_warns_on_wrong_answer(self, tmp_path):
+        snap, _ = self._wrong_answer_snapshot(tmp_path)
+        out = self._render(snap)
+        assert "✗" in out                      # the not-correct cross mark
+        assert "FORENSICS — 0 of 1 · 1 answered" in out
+        assert "✓" not in out.split("FORENSICS")[1]  # no credit is claimed
+
+    def test_forensics_screen_warns_on_wrong_answer(self, tmp_path):
+        snap, forensics_path = self._wrong_answer_snapshot(tmp_path)
+        forensics_path.write_text(
+            "Q1: Which account did the attacker create?\nAnswer: ghost\n",
+            encoding="utf-8")
+        sty = term.Style.detect(_FakeStream(), "never")
+        out = cli.render_forensics(snap, sty, term.Symbols(True), 100, None)
+        assert "✗" in out
+        assert "recorded — not correct on the last grade" in out
+
+    def test_submitted_without_result_shows_pending_never_wrong(self, tmp_path):
+        # Ranked live: the engine withholds per-question forensics results.
+        # A submission must read as pending, never as "not correct".
+        snap, _ = self._wrong_answer_snapshot(tmp_path)
+        snap["forensics"][0]["graded"] = False
+        out = self._render(snap)
+        assert "…" in out
+        assert "\u2717" not in out
+        assert "not correct" not in out
+        assert "FORENSICS — 0 of 1 · 1 answered" in out
+
+    def test_run_over_board_shows_wrong_answer(self, tmp_path):
+        # Post-run ranked: the engine's frozen response carries the failed
+        # forensics result; the board warns exactly like honor mode.
+        score = _score(results=[
+            CheckResult(check_id="c1", category=Category.VULN,
+                        awarded_points=10, passed=True, reason=""),
+            CheckResult(check_id="f1", category=Category.VULN,
+                        awarded_points=0, passed=False,
+                        reason="answer 'ghost' is not correct"),
+        ], total=10)
+        evidence = [Evidence(
+            check_id="f1", check_type="forensics_answer", host_id="localhost",
+            status=CollectorStatus.OK, raw={"answer": "ghost"},
+            reason="answer recorded for Q1",
+            collected_monotonic=0.0, collected_wall_claim=0.0)]
+        snap = snapshot.build_snapshot(
+            score, _manifest(), mode="ranked", agent_version="t", delta=0,
+            computed_at=100.0, server_time=500.0, next_checkin_s=60,
+            evidence=evidence)
+        out = self._render(snap)
+        assert "✗" in out
+        assert "FORENSICS — 0 of 1 · 1 answered" in out
 
     def test_delta_banner_one_run_semantics(self, tmp_path):
         _, up = _honor_snapshot(tmp_path / "a")

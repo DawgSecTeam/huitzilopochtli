@@ -79,6 +79,8 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         results=results,
         sla_status=sla_status,
         computed_at=score_data.get("computed_at"),
+        # Absent from engines predating the forensics/hardening split.
+        forensics_points=_optional_int(score_data.get("forensics_points")),
     )
 
     def _directives(key):

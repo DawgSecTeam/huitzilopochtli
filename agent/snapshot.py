@@ -17,9 +17,12 @@ Secrecy follows the HTML report's positive-only contract (§13):
   `cat`, `jq`, and the Desktop copy.
 - **ranked**: also positive-only. The snapshot may carry the passed and
   incurred-penalty results needed to derive the board, plus SLA states, live
-  rank, and the run clock — never a failed zero-point check. The engine
-  filters that list too, so an old/compromised response cannot reintroduce
-  the answer key; the CLI/HTML mirror honor mode's board.
+  rank, and the run clock — never a failed zero-point check, with one
+  exception: failed FORENSICS results (engine/checkin.py sends them only
+  once the run is over; their reasons name the player's own answer, never
+  the expected value). The engine filters that list too, so an
+  old/compromised response cannot reintroduce the answer key; the CLI/HTML
+  mirror honor mode's board.
 
 `snapshot_version` gates the format; the CLI refuses newer majors with a
 clear message instead of misrendering.
@@ -56,7 +59,8 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                    awaiting_engine: bool = False,
                    rank: int | None = None,
                    rank_total: int | None = None,
-                   run_ends_at: float | None = None) -> dict:
+                   run_ends_at: float | None = None,
+                   evidence=None) -> dict:
     """Assemble the snapshot dict. Pure; `write` serializes it.
 
     `mode` is "honor" | "ranked" (str, so callers need not import schema).
@@ -71,8 +75,13 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
     ``rank``/``rank_total``/``run_ends_at`` are the engine's live scoreboard
     position and run clock (ranked only). Like the countdown they are
     presentation facts, never scoring inputs; honor mode leaves them null.
+
+    ``evidence`` is the list the score was computed from; pass it whenever
+    the caller holds it so forensics questions can show that an answer was
+    submitted (and, when a result exists and failed, that it was not
+    correct). Omitting it degrades to the pre-evidence behavior.
     """
-    b = board_mod.build_board(score, manifest)
+    b = board_mod.build_board(score, manifest, evidence)
     theme = getattr(manifest, "theme", None)
     if theme is None and isinstance(manifest, dict):
         theme = manifest.get("theme")
@@ -108,16 +117,26 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "max_points": f.max_points,
                 "answered": f.answered,
                 "points": f.points,
+                # A non-blank answer was collected; with `graded` also true
+                # and `answered` false it was judged incorrect. Optional keys
+                # (older snapshots validate without them).
+                "submitted": f.submitted,
+                "graded": f.graded,
                 "answers_path": f.answers_path,
             }
             for f in b.forensics
         ],
         "forensics_earned": b.forensics_earned,
+        "forensics_submitted": b.forensics_submitted,
         # Ranked only: total = hardening_points + service_points (null in
         # honor mode). One derivation in agent/board.py; every renderer reads
         # these rather than re-splitting the total.
         "hardening_points": b.hardening_points,
         "service_points": b.service_points,
+        # Ranked only: the engine's own forensics aggregate (answer_equals
+        # checks), carved back out of the total so every reader gets the same
+        # three-way split the engine stored. Kept None in honor mode.
+        "forensics_points": b.forensics_points,
         "delta": delta,
         "computed_at": computed_at,
         "next_event_at": None,
@@ -136,7 +155,13 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         # Positive-only, exactly like honor: a failed zero-point check names
         # a misconfiguration, so it never enters the world-readable snapshot.
         # Passing/incurred-penalty rows are kept because the derived board
-        # needs them (and they are facts the player already knows).
+        # needs them (and they are facts the player already knows). The one
+        # exception is forensics (engine/checkin.py): a failed forensics row
+        # carries no expected value — it is the run-over "answered — not
+        # correct" signal — so it is kept whenever the engine sends it.
+        forensics_ids = {
+            f["id"] for f in board_mod._manifest_forensics(manifest)
+        }
         snap["results"] = [
             {
                 "check_id": r.check_id,
@@ -147,7 +172,7 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "reason": r.reason,
             }
             for r in (score.results or [])
-            if r.passed or r.awarded_points != 0
+            if r.passed or r.awarded_points != 0 or r.check_id in forensics_ids
         ]
         snap["sla_status"] = [
             {
@@ -272,6 +297,9 @@ def _validate_snapshot(data: dict, path: str) -> None:
                     bad(f"{key}[{i}].{field} must be an integer")
                 elif kind == "bool" and not isinstance(value, bool):
                     bad(f"{key}[{i}].{field} must be a boolean")
+                elif kind == "opt_bool" and value is not None and not isinstance(value, bool):
+                    # Written by the current agent; absent in older snapshots.
+                    bad(f"{key}[{i}].{field} must be a boolean or absent")
                 elif kind == "strlist" and value is not None and (
                         not isinstance(value, list)
                         or any(not isinstance(item, str) for item in value)):
@@ -282,6 +310,7 @@ def _validate_snapshot(data: dict, path: str) -> None:
     check_list("forensics", [
         ("id", "str"), ("ordinal", "int"), ("question", "str"),
         ("max_points", "int"), ("answered", "bool"), ("points", "int"),
+        ("submitted", "opt_bool"), ("graded", "opt_bool"),
         ("answers_path", "str"),
     ])
     check_list("results", [
@@ -293,7 +322,8 @@ def _validate_snapshot(data: dict, path: str) -> None:
         ("history", "strlist"),
     ])
     for key in ("snapshot_version", "scenario_version", "vulns_fixed",
-                "vulns_total", "remaining", "max_possible", "forensics_earned"):
+                "vulns_total", "remaining", "max_possible", "forensics_earned",
+                "forensics_submitted"):
         value = data.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             bad(f"{key} must be an integer")
@@ -302,7 +332,7 @@ def _validate_snapshot(data: dict, path: str) -> None:
         value = data.get(key)
         if value is not None and not isinstance(value, str):
             bad(f"{key} must be a string or null")
-    for key in ("hardening_points", "service_points"):
+    for key in ("hardening_points", "service_points", "forensics_points"):
         value = data.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             bad(f"{key} must be an integer or null")
@@ -351,13 +381,21 @@ def read(path: str) -> dict:
     if data.get("mode") == "ranked" and isinstance(data.get("results"), list):
         # A snapshot written before the positive-only change (or by a
         # compromised agent) may still list failed checks. Never let the CLI
-        # or `score --json` render/echo them: that is the answer key.
+        # or `score --json` render/echo them: that is the answer key. The one
+        # exception is forensics (engine/checkin.py): a failed forensics row
+        # carries no expected value — it is the run-over "answered — not
+        # correct" signal — so it survives the sweep.
+        forensics_ids = {
+            f.get("id") for f in (data.get("forensics") or [])
+            if isinstance(f, dict)
+        }
         data["results"] = [
             r for r in data["results"]
             if isinstance(r, dict)
             and (r.get("passed") is True
                  or (isinstance(r.get("awarded_points"), int)
                      and not isinstance(r.get("awarded_points"), bool)
-                     and r.get("awarded_points") != 0))
+                     and r.get("awarded_points") != 0)
+                 or r.get("check_id") in forensics_ids)
         ]
     return _sanitize_strings(data)

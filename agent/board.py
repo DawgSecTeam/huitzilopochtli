@@ -15,6 +15,7 @@ failed checks are never identified, only counted ("N issue(s) remain").
 from dataclasses import dataclass, field
 
 from agent.report_page import ACCENT_RE
+from common.matchers import normalize_answer
 from common.schema import SLA_HISTORY_MAX
 
 
@@ -39,6 +40,13 @@ class ForensicsEntry:
     answers_path: str = ""          # resolved by agent/__main__._prepare_forensics
     answered: bool = False          # results say this question earned its points
     points: int = 0                 # awarded on the last grade (0 when unanswered)
+    # A non-blank answer was collected (evidence) — true for correct AND
+    # incorrect submissions; only `answered` means points were earned. With
+    # `graded` (a scoring result exists) it renders as the answered-but-not-
+    # correct warning; without a result (ranked live: the engine withholds
+    # per-question forensics results) it renders as a neutral "submitted".
+    submitted: bool = False
+    graded: bool = False
 
 
 @dataclass
@@ -66,6 +74,7 @@ class Board:
     penalties: list = field(default_factory=list)   # list[ActivePenalty]
     forensics: list = field(default_factory=list)   # list[ForensicsEntry]
     forensics_earned: int = 0
+    forensics_submitted: int = 0    # questions with a non-blank answer collected
     # Ranked only: scored services with their current state + recent tick
     # history, derived once from the engine's SlaStatus list.
     services: list = field(default_factory=list)    # list[ServiceEntry]
@@ -77,6 +86,7 @@ class Board:
     # headline number honest in every renderer (round 6 finding 2).
     hardening_points: int | None = None
     service_points: int | None = None
+    forensics_points: int | None = None
 
 
 def _manifest_checks(manifest) -> list:
@@ -86,22 +96,23 @@ def _manifest_checks(manifest) -> list:
     return checks or []
 
 
-def ranked_split(total, sla_status) -> tuple:
-    """(hardening, service) split of a ranked total.
+def ranked_split(total, sla_status, forensics_points=None) -> tuple:
+    """(hardening, forensics, service) split of a ranked total.
 
     The engine scores ``final_total = hardening_total + sla_accrued_total``
     (engine/checkin.py) and sends the box the final total plus each service's
     accrual — so the box re-derives the exact same split from data it already
-    carries. Every ranked renderer (CLI, HTML, report.json) must show this
-    one split, never re-derive it (round 6 finding 2: a 514-pt total against
-    a 150-pt board read as broken aggregation).
+    carries. ``forensics_points`` is the engine's own aggregate for the
+    answer_equals checks when it reports one (§11.4); it is carved out of the
+    hardening share, keeping ``hardening + forensics + service == total``.
     """
     service = 0
     for s in (sla_status or []):
         accrued = (s.accrued_points if hasattr(s, "accrued_points")
                    else (s or {}).get("accrued_points", 0))
         service += int(accrued or 0)
-    return int(total) - service, service
+    forensics = max(0, int(forensics_points or 0))
+    return int(total) - service - forensics, forensics, service
 
 
 def _check_field(check, name, default=None):
@@ -153,12 +164,49 @@ def _manifest_forensics(manifest) -> list:
     return out
 
 
-def build_board(score, manifest) -> Board:
+def _submitted_answers(evidence) -> dict:
+    """{check_id: submitted_bool} from collected evidence (duck-typed).
+
+    A question counts as submitted when its forensics_answer evidence carries
+    a non-blank answer — the same normalization `answer_equals` scores
+    against, so a blank line, whitespace, or the untouched underscore
+    placeholder read as unanswered here exactly as they score. Callers that
+    hold the evidence they just collected (honor grade, ranked loop) pass it
+    so the boards can warn on answered-but-not-correct; callers rendering a
+    redacted engine response pass nothing and get today's behavior.
+    """
+    out = {}
+    for e in evidence or []:
+        if isinstance(e, dict):
+            check_id = e.get("check_id")
+            raw = e.get("raw")
+        else:
+            check_id = getattr(e, "check_id", None)
+            raw = getattr(e, "raw", None)
+        if not isinstance(check_id, str) or not check_id or check_id in out:
+            continue
+        answer = raw.get("answer") if isinstance(raw, dict) else None
+        out[check_id] = bool(
+            isinstance(answer, str) and normalize_answer(answer)
+        )
+    return out
+
+
+def build_board(score, manifest, evidence=None) -> Board:
     """Derive the player-facing board from a scoring result + manifest.
 
     Splitting this from rendering is what lets the HTML report, the huitz
     CLI, and the report.json snapshot stay in lockstep (§13): one derivation,
     three presentations, and the unit tests pin each number once.
+
+    `evidence` (the list the score was computed from) is optional but should
+    be passed whenever the caller holds it: it is what lets a forensics
+    question show "submitted but not correct" instead of wearing the same
+    muted 0-points face as an unanswered one. The not-correct warning fires
+    only when the score also carries a failed result for the question, so
+    evidence newer than the score it is paired with (ranked retry after a
+    lost response) degrades to the neutral "submitted" state, never to a
+    false "not correct".
     """
     manifest = manifest or {}
     theme = getattr(manifest, "theme", None)
@@ -233,6 +281,7 @@ def build_board(score, manifest) -> Board:
     pct = max(0, min(100, pct))
 
     # --- forensics ------------------------------------------------------------
+    submitted_by_id = _submitted_answers(evidence)
     forensics = []
     for f in forensics_meta:
         r = results_by_id.get(f["id"])
@@ -251,8 +300,11 @@ def build_board(score, manifest) -> Board:
             answers_path=collect_params.get("path", "") or "",
             answered=bool(r is not None and r.passed),
             points=r.awarded_points if r is not None else 0,
+            submitted=submitted_by_id.get(f["id"], False),
+            graded=r is not None,
         ))
     forensics_earned = sum(1 for f in forensics if f.answered)
+    forensics_submitted = sum(1 for f in forensics if f.submitted)
 
     accent = theme.get("accent")
     accent = str(accent) if accent and ACCENT_RE.match(str(accent)) else None
@@ -262,9 +314,11 @@ def build_board(score, manifest) -> Board:
     # None (their total IS the hardening score); `sla_status` is empty in
     # honor mode by construction (§9), so its presence identifies ranked.
     hardening_points = service_points = None
+    forensics_points = getattr(score, "forensics_points", None)
     sla_status = getattr(score, "sla_status", None) or []
     if sla_status:
-        hardening_points, service_points = ranked_split(score.total, sla_status)
+        hardening_points, forensics_points, service_points = ranked_split(
+            score.total, sla_status, forensics_points)
 
     services = []
     for s in sla_status:
@@ -299,9 +353,11 @@ def build_board(score, manifest) -> Board:
         penalties=penalties,
         forensics=forensics,
         forensics_earned=forensics_earned,
+        forensics_submitted=forensics_submitted,
         services=services,
         services_total=len(services),
         services_clean=services_clean,
         hardening_points=hardening_points,
         service_points=service_points,
+        forensics_points=forensics_points,
     )
