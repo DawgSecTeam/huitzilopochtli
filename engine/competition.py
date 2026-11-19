@@ -5,9 +5,12 @@ for the signed /join verification and the leaderboard shaping used by the
 HTTP layer.
 """
 import base64
+import datetime
 import hashlib
 import hmac
 import html
+import json
+import math
 import re
 import secrets
 import time
@@ -77,10 +80,27 @@ def hash_join_code(server_secret: bytes, code: str) -> str:
                     hashlib.sha256).hexdigest()
 
 
-def _remaining(player: PlayerRecord, now: float) -> int:
-    if player.ends_at is None:
-        return 0
-    return max(0, int(player.ends_at - now))
+def _remaining_from(end: Optional[float], now: float) -> int:
+    """Seconds left until ``end`` (0 once past it or when there is no end)."""
+    return max(0, int((end or 0) - now))
+
+
+def effective_run_end(comp: Optional[CompetitionRecord],
+                      player: PlayerRecord) -> Optional[float]:
+    """When this run actually stops: the run clock, or the scheduled end.
+
+    A scheduled competition end (``scheduled_end_at``) is a hard ceiling on
+    every run still in progress: once it arrives the competition ends and
+    the run stops with it, so a live countdown must aim at the earlier of
+    the two deadlines. Only a live competition's schedule binds — an ended
+    competition has already frozen every run at its ``ends_at``.
+    """
+    end = player.ends_at if player is not None else None
+    scheduled = getattr(comp, "scheduled_end_at", None) if comp is not None else None
+    if (comp is not None and comp.status == "live"
+            and scheduled is not None and (end is None or scheduled < end)):
+        return scheduled
+    return end
 
 
 def _service_rows(store: Store, comp: CompetitionRecord,
@@ -142,7 +162,12 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
     scored = []
     for p in players:
         status = p.status
-        if status == "running" and p.ends_at is not None and now >= p.ends_at:
+        # The run's effective deadline includes a scheduled competition end:
+        # once that wall time passes the run is over even before the sweeper
+        # has persisted the competition's end (same lazy-finish rule as the
+        # per-player clock: the clock is the truth, the row catches up).
+        effective_end = effective_run_end(comp, p)
+        if status == "running" and effective_end is not None and now >= effective_end:
             status = "finished"
         score = store.get_score(p.box_id) if p.box_id else None
         total = score["total"] if score else 0
@@ -198,7 +223,10 @@ def leaderboard_payload(store: Store, comp: CompetitionRecord,
                 "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
                 "started_at": p.started_at,
                 "ends_at": p.ends_at,
-                "remaining_s": _remaining(p, now) if status == "running" else 0,
+                # Countdown target: the run clock or an earlier scheduled
+                # competition end (effective_run_end), whichever is sooner.
+                "remaining_s": (_remaining_from(effective_run_end(comp, p), now)
+                                if status == "running" else 0),
                 "last_checkin": score["updated_at"] if score else None,
                 "services": _service_rows(store, comp, p.box_id),
                 "box_bound": bool(p.box_id),
@@ -223,7 +251,6 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
     count = store.count_players(comp.id)
     theme = {}
     if comp.theme_json:
-        import json
         try:
             theme = json.loads(comp.theme_json) or {}
         except (ValueError, TypeError):
@@ -242,6 +269,10 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
         "duration_s": comp.duration_s,
         "started_at": comp.started_at,
         "ended_at": comp.ended_at,
+        # Wall-clock automatic end for the whole competition (None = none).
+        # Runs still in progress stop when it arrives; the competitor pages
+        # count down to it.
+        "scheduled_end_at": getattr(comp, "scheduled_end_at", None),
         "theme": theme,
         "join_instructions": comp.join_instructions,
         "can_join": (comp.status == "live" and comp.join_open
@@ -304,6 +335,122 @@ class ExtendRefused(Exception):
     """The competition is not in a state that accepts an extension."""
 
 
+#: A scheduled end may sit at most this far in the future (30 days) — far
+#: enough for any multi-day event, tight enough to catch a fat-fingered year.
+MAX_SCHEDULE_HORIZON_S = 30 * 24 * 3600
+
+
+class ScheduleRefused(Exception):
+    """The competition is not in a state that accepts a scheduled end."""
+
+
+def parse_scheduled_end(raw: str, now: float) -> float:
+    """Parse an admin-supplied wall-clock time into an epoch (local time).
+
+    Accepts the datetime-local forms a browser sends (``YYYY-MM-DDTHH:MM``
+    and with ``:SS``), the same with a space instead of ``T``, and full ISO
+    strings with an explicit offset (honored as-is). A naive time is read in
+    the engine's local zone — the same zone every page renders timestamps
+    in. The value must land strictly in the future and within
+    ``MAX_SCHEDULE_HORIZON_S``; anything else raises ``ScheduleRefused``.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise ScheduleRefused("no time given")
+    normalized = text.replace(" ", "T", 1) if " " in text and "T" not in text else text
+    try:
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        raise ScheduleRefused(
+            "could not read that time; use YYYY-MM-DD HH:MM (server time)")
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()  # naive -> engine's local zone
+    when = parsed.timestamp()
+    if not math.isfinite(when):
+        raise ScheduleRefused("could not read that time")
+    if when <= now:
+        raise ScheduleRefused("that time is in the past; pick a future moment")
+    if when > now + MAX_SCHEDULE_HORIZON_S:
+        raise ScheduleRefused("that time is too far out (30 days at most)")
+    return when
+
+
+def format_scheduled_end(when: Optional[float]) -> str:
+    """Human form for flash messages and audit rows (server-local time)."""
+    if not when:
+        return ""
+    return datetime.datetime.fromtimestamp(float(when)).strftime("%Y-%m-%d %H:%M")
+
+
+def schedule_end(store: Store, comp: CompetitionRecord,
+                 when: Optional[float], *, now: Optional[float] = None) -> CompetitionRecord:
+    """Set (``when`` as an epoch) or clear (``None``) the competition's
+    scheduled end and return the fresh record.
+
+    The schedule is metadata, exactly like ``Extend``: nothing about the box
+    side changes when it is set. When the time arrives, the sweeper ends the
+    competition exactly as an admin End would — every run still in progress
+    stops, the score freezes, and the pool is torn down.
+    """
+    now = time.time() if now is None else now
+    if comp.status not in ("draft", "live"):
+        raise ScheduleRefused(
+            f"only a draft or live competition can schedule its end; "
+            f"this one is {comp.status}")
+    if when is not None:
+        when = float(when)
+        if when <= now:
+            raise ScheduleRefused("that time is in the past; pick a future moment")
+        if when > now + MAX_SCHEDULE_HORIZON_S:
+            raise ScheduleRefused("that time is too far out (30 days at most)")
+    store.update_competition(comp.id, scheduled_end_at=when)
+    return store.get_competition(comp.id)
+
+
+def sweep_scheduled_ends(store: Store, *, now: Optional[float] = None,
+                         cleanup=None) -> list:
+    """End every live competition whose scheduled end has arrived.
+
+    Runs once per sweep tick, before and independent of the VM-claim sweep:
+    a scheduled end must fire even where no workshop portal is configured.
+    Ending is the exact admin-End path (``end_competition`` freezes every
+    still-running player at the receipt clock, then the pool teardown
+    releases the boxes); ``cleanup`` is the caller-injected pool teardown
+    (``claims.cleanup_pool`` — importing it here would be circular, and the
+    regular sweeper re-runs pool cleanup for ended competitions anyway, so a
+    ``None`` merely defers the VM work one tick). Returns one summary dict
+    per ended competition for logging and tests. Best effort per competition:
+    one failure never skips the others.
+    """
+    now = time.time() if now is None else now
+    ended = []
+    for comp in store.list_competitions():
+        if comp.status != "live":
+            continue
+        scheduled = getattr(comp, "scheduled_end_at", None)
+        if not scheduled or now < scheduled:
+            continue
+        try:
+            stopped = store.end_competition(comp.id)
+            if not stopped:
+                continue  # already ended between the read and the write
+            store.add_audit("system", "competition_scheduled_end", comp.id,
+                            details_json=json.dumps({
+                                "scheduled_end_at": scheduled,
+                                "scheduled_end": format_scheduled_end(scheduled),
+                                "fired_at": now}))
+            summary = {"slug": comp.slug, "scheduled_end_at": scheduled}
+            if cleanup is not None:
+                try:
+                    summary["pool"] = cleanup(store, store.get_competition(comp.id))
+                except Exception as exc:  # VM work is best effort; never fatal
+                    summary["pool_error"] = str(exc)[:200]
+            ended.append(summary)
+        except Exception:  # isolate one competition's failure
+            continue
+    return ended
+
+
 def handle_join(store: Store, body: dict, sig: bytes, server_secret: bytes,
                 now: Optional[float] = None) -> tuple:
     """Verify and bind a box to a player. Returns (status, payload).
@@ -358,7 +505,7 @@ def handle_join(store: Store, body: dict, sig: bytes, server_secret: bytes,
         code_, msg = messages.get(status, (409, status))
         return code_, {"error": msg}
     store.add_audit("system", "join", comp.id, player.player_id,
-                    details_json='{"box_id": %s}' % __import__("json").dumps(body["box_id"]))
+                    details_json='{"box_id": %s}' % json.dumps(body["box_id"]))
     return 200, {
         "ok": True,
         "player_id": player.player_id,

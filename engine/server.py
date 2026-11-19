@@ -26,7 +26,7 @@ import time
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote
 
 from common.schema import Bundle, CollectorStatus, Evidence, SCHEMA_VERSION
 from engine import auth, build as engine_build, claims, competition, enrollment, leaderboard, web, workshop
@@ -1251,11 +1251,20 @@ class Handler(BaseHTTPRequestHandler):
             except workshop.WorkshopError as exc:
                 # The runs keep their overtime; flag the portal miss.
                 bump = {"bumped": False, "reason": str(exc)[:200]}
+            # A scheduled end moves with the overtime: leaving it fixed would
+            # cut the extended runs off at the old wall time and turn the
+            # extension into a silent no-op.
+            scheduled_moved_to = None
+            if comp.scheduled_end_at is not None:
+                scheduled_moved_to = comp.scheduled_end_at + seconds
+                self.store.update_competition(
+                    comp.id, scheduled_end_at=scheduled_moved_to)
             self.store.add_audit(actor, "competition_extend", comp.id,
                                  details_json=json.dumps(
                                      {"minutes": minutes,
                                       "extended": len(report["extended"]),
                                       "resumed": len(report["resumed"]),
+                                      "scheduled_end_moved_to": scheduled_moved_to,
                                       "vm_bump": bump}),
                                  remote_addr=self.client_address[0]
                                  if self.client_address else None)
@@ -1267,12 +1276,79 @@ class Handler(BaseHTTPRequestHandler):
             resumed = len(report["resumed"])
             if resumed:
                 note += f" {resumed} finished run(s) resumed."
+            if scheduled_moved_to is not None:
+                note += (f" Scheduled end moved to "
+                         f"{competition.format_scheduled_end(scheduled_moved_to)}.")
             if not bump.get("bumped"):
                 reason = bump.get("reason") or ""
                 if reason and "headroom" not in reason:
                     note += f" VM clocks: {reason}"
             self._redirect(f"/admin/competitions/{comp.id}?msg="
                            + note.replace(" ", "+"))
+            return
+        if action == "schedule-end":
+            # Schedule (or cancel) a wall-clock end for the whole comp. Like
+            # Extend this is metadata until the moment fires; the sweeper
+            # then runs the exact admin-End path (runs still in progress
+            # stop, scores freeze, pool torn down) with no operator present.
+            if comp.status not in ("draft", "live"):
+                message = (f"A scheduled end can only be set on a draft or "
+                           f"live competition; this one is {comp.status}.")
+                if session is None:
+                    self._send_json(409, {"error": message})
+                else:
+                    self._render_admin_competition(session, comp.id,
+                                                   error=message)
+                return
+            raw = str(form.get("ends_at", "")).strip()
+            if not raw:
+                # Empty value cancels the schedule: back to manual ending.
+                was = comp.scheduled_end_at
+                self.store.update_competition(comp.id, scheduled_end_at=None)
+                self.store.add_audit(
+                    actor, "competition_schedule_end_cleared", comp.id,
+                    details_json=json.dumps({"scheduled_end_at": was}),
+                    remote_addr=self.client_address[0]
+                    if self.client_address else None)
+                if session is None:
+                    self._send_json(200, {"ok": True, "scheduled_end_at": None})
+                    return
+                self._redirect(f"/admin/competitions/{comp.id}?msg="
+                               + quote("Scheduled end removed; the "
+                                       "competition is ended by hand again."))
+                return
+            try:
+                when = competition.parse_scheduled_end(raw, time.time())
+                comp = competition.schedule_end(self.store, comp, when)
+            except competition.ScheduleRefused as exc:
+                if session is None:
+                    self._send_json(400, {"error": str(exc)})
+                else:
+                    self._render_admin_competition(session, comp.id,
+                                                   error=str(exc))
+                return
+            cut = sum(1 for p in self.store.list_players(comp.id)
+                      if p.status == "running" and p.ends_at is not None
+                      and p.ends_at > when)
+            self.store.add_audit(
+                actor, "competition_schedule_end", comp.id,
+                details_json=json.dumps({
+                    "scheduled_end_at": when,
+                    "scheduled_end": competition.format_scheduled_end(when),
+                    "runs_cut_short": cut}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
+            note = (f"Competition ends automatically at "
+                    f"{competition.format_scheduled_end(when)} "
+                    f"(in {web._fmt_duration(when - time.time())}).")
+            if cut:
+                note += (f" {cut} running player"
+                         f"{'s' if cut != 1 else ''} will be stopped then.")
+            if session is None:
+                self._send_json(200, {"ok": True, "scheduled_end_at": when})
+                return
+            self._redirect(f"/admin/competitions/{comp.id}?msg="
+                           + quote(note))
             return
         if action == "rerun":
             if comp.status != "ended":
@@ -1309,6 +1385,9 @@ class Handler(BaseHTTPRequestHandler):
                     # A rerun is a new competition: it provisions its own pool.
                     # Inheriting the old pin could hand out last event's clones
                     # (and the old pool is normally deleted at End anyway).
+                    # The scheduled end is deliberately not inherited either:
+                    # a rerun started after the old wall time would be ended
+                    # by the sweeper on its first tick.
                     workshop_pool_code=None,
                     theme_json=comp.theme_json,
                     join_instructions=comp.join_instructions,
@@ -1480,6 +1559,30 @@ class Handler(BaseHTTPRequestHandler):
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
             self.store.start_competition(comp.id)
+            # A schedule set on the draft whose moment already passed would
+            # end this fresh competition on the next sweep tick; drop it and
+            # say so instead of an instant, baffling end.
+            if (comp.scheduled_end_at is not None
+                    and comp.scheduled_end_at <= time.time()):
+                self.store.update_competition(comp.id, scheduled_end_at=None)
+                self.store.add_audit(
+                    actor, "competition_schedule_end_cleared", comp.id,
+                    details_json=json.dumps({
+                        "scheduled_end_at": comp.scheduled_end_at,
+                        "reason": "start after the scheduled end had passed"}),
+                    remote_addr=self.client_address[0]
+                    if self.client_address else None)
+                if session is None:
+                    self._send_json(200, {
+                        "ok": True, "action": "start",
+                        "scheduled_end_cleared": True,
+                        "competition": competition.public_competition_payload(
+                            self.store, self.store.get_competition(comp.id))})
+                    return
+                self._redirect(f"/admin/competitions/{comp.id}?msg="
+                               + quote("Competition started. Its scheduled end "
+                                       "had already passed and was cleared."))
+                return
         elif action == "end":
             self.store.end_competition(comp.id)
             # Best effort: hand the pool's VMs back and drop the pool config.
@@ -2132,6 +2235,15 @@ def main() -> None:
                     print(f"scenario sync: {message}", file=sys.stderr)
             except Exception as exc:  # one bad sweep must not kill the loop
                 print(f"scenario sync error: {exc}", file=sys.stderr)
+            # Scheduled competition ends fire here, deliberately before and
+            # independent of the claim sweep's portal gate: a scheduled end
+            # must be kept even where no workshop portal is configured.
+            try:
+                for note in competition.sweep_scheduled_ends(
+                        store, cleanup=claims.cleanup_pool):
+                    print(f"scheduled end: {note}", file=sys.stderr)
+            except Exception as exc:  # one bad sweep must not kill the loop
+                print(f"scheduled end error: {exc}", file=sys.stderr)
             if not claims.enabled():
                 continue
             try:

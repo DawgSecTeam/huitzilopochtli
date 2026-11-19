@@ -35,6 +35,7 @@ from typing import Optional
 from common.schema import SLA_HISTORY_MAX
 from engine import build as engine_build
 from engine import claims
+from engine import competition
 from engine.store import AuditRecord, CompetitionRecord, PlayerRecord
 
 _ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -201,6 +202,72 @@ def _fmt_duration(seconds) -> str:
     return f"{m} min"
 
 
+def _fmt_short_ts(ts) -> str:
+    """Compact timestamp for tight table cells: today shows the time only."""
+    if not ts:
+        return "—"
+    dt = datetime.datetime.fromtimestamp(float(ts))
+    now = datetime.datetime.now()
+    if dt.date() == now.date():
+        return dt.strftime("%H:%M")
+    return dt.strftime("%m-%d %H:%M")
+
+
+def _fmt_dt_input(ts) -> str:
+    """Value for a datetime-local input (server-local wall clock)."""
+    return datetime.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%dT%H:%M")
+
+
+def _countdown_span(seconds: int, title: str = "") -> str:
+    """A ticking countdown: server-rendered value + client-side JS tick.
+
+    The JS (bottom of this file) turns any ``[data-remaining]`` into a live
+    countdown seeded by this many seconds; page polling swaps in fresh
+    values. An optional ``title`` carries the absolute target for a
+    hover/focus read.
+    """
+    seconds = max(0, int(seconds))
+    title_attr = f' title="{esc(title)}"' if title else ""
+    return (f'<span class="cd" data-remaining="{seconds}"{title_attr}'
+            f'>{esc(_fmt_countdown(seconds))}</span>')
+
+
+def _scheduled_end_of(comp) -> Optional[float]:
+    """The competition's scheduled end, from a record or a public payload."""
+    if isinstance(comp, dict):
+        value = comp.get("scheduled_end_at")
+    else:
+        value = getattr(comp, "scheduled_end_at", None)
+    return float(value) if value else None
+
+
+def _scheduled_end_line(comp, now: Optional[float] = None) -> str:
+    """'· ends in <countdown>' for a live competition with a schedule."""
+    now = time.time() if now is None else now
+    scheduled = _scheduled_end_of(comp)
+    status = comp.get("status") if isinstance(comp, dict) else comp.status
+    if not scheduled or status != "live":
+        return ""
+    title = f"Scheduled end: {_fmt_ts(scheduled)}"
+    return (f' · <span title="{esc(title)}">ends in '
+            f'{_countdown_span(scheduled - now)}</span>')
+
+
+def _competition_ends_line(comp, now: Optional[float] = None) -> str:
+    """Sentence body for a player page: how long until the competition ends.
+
+    Wrapped by each page in its own markup (a dd, a small line); empty when
+    no schedule is set or the competition is not live.
+    """
+    now = time.time() if now is None else now
+    scheduled = _scheduled_end_of(comp)
+    status = comp.get("status") if isinstance(comp, dict) else comp.status
+    if not scheduled or status != "live":
+        return ""
+    return (f'ends in {_countdown_span(scheduled - now)} '
+            f'<span class="muted small">({_fmt_ts(scheduled)})</span>')
+
+
 def _rel_ts(ts, now: Optional[float] = None) -> str:
     if not ts:
         return "—"
@@ -340,8 +407,7 @@ def _score_cell(row: dict) -> str:
 def _time_cell(row: dict) -> str:
     """Live countdown while the run is on; a quiet dot once the clock stops."""
     if row.get("status") == "running" and row.get("remaining_s", 0) > 0:
-        return (f'<span class="cd" data-remaining="{int(row["remaining_s"])}"'
-                f'>{esc(_fmt_countdown(row["remaining_s"]))}</span>')
+        return _countdown_span(int(row["remaining_s"]))
     return '<span class="muted">⋅</span>'
 
 
@@ -546,7 +612,7 @@ def competition_page(data: dict, *, refresh: int = 5,
     full_flag = ' · <span class="fullflag">full</span>' if full else ""
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div>
-<p class="meta">{esc(comp['player_count'])} joined of {esc(comp['max_players'])} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a></p>
+<p class="meta">{esc(comp['player_count'])} joined of {esc(comp['max_players'])} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a>{_scheduled_end_line(comp)}</p>
 {f'<p class="small muted">{esc(comp.get("join_instructions") or "")}</p>' if comp.get('join_instructions') else ''}</div>
 {f'<div class="joinbox">{join_box}</div>' if join_box else ''}
 </section>
@@ -580,7 +646,7 @@ def display_page(data: dict) -> str:
     body = f"""<section class="display-head"><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div></section>
 <div id="board" data-poll="5000">
 <section class="display-board">{board}</section>
-<p class="display-meta">{esc(len(rows))} on the board</p>
+<p class="display-meta">{esc(len(rows))} on the board{_scheduled_end_line(comp)}</p>
 </div>"""
     accent = (comp.get("theme") or {}).get("accent")
     return layout(comp["name"], body, refresh=5, body_class="display", accent=accent, chrome=False)
@@ -655,6 +721,7 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
     bound = bool(player.box_id)
     pending = bool(player.claim_ticket and not url)
     err = (player.claim_error or "").strip()
+    competition_ends = _competition_ends_line(comp)
 
     parts = []
     if player.status == "disqualified":
@@ -728,7 +795,7 @@ when it does.</p></li>"""
 
     body = f"""<section class="page-head-row"><div>
 <div class="title-line"><h1>You're in, {esc(player.display_name)}</h1></div>
-<p class="meta">Competition: {esc(comp.name)} · your clock starts when you open the VM.</p></div></section>
+<p class="meta">Competition: {esc(comp.name)} · your clock starts when you open the VM.{f' · Competition {competition_ends}' if competition_ends else ''}</p></div></section>
 <section class="card narrow">
 <ol class="steps">
 <li><h2>Your VM</h2>{step1}</li>{vm_script}
@@ -748,7 +815,16 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
     row = board_row or {}
     joined = bool(player.box_id)
     running = player.status == "running"
-    remaining = max(0, int(player.ends_at - time.time())) if (running and player.ends_at) else 0
+    # The run clock counts to the run's effective end: the run's own deadline
+    # or an earlier scheduled competition end, whichever comes first.
+    effective_end = competition.effective_run_end(comp, player) if running else None
+    remaining = max(0, int((effective_end or 0) - time.time())) if (running and effective_end) else 0
+    end_note = competition_ends = ""
+    if effective_end:
+        end_note = f"ends {esc(_fmt_ts(effective_end))}"
+        if player.ends_at is not None and effective_end != player.ends_at:
+            end_note += " (competition end)"
+    competition_ends = _competition_ends_line(comp)
     if row:
         score = (f'<div class="bigscore">{esc(row.get("total", 0))}</div>'
                  f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
@@ -797,7 +873,8 @@ box joins.</p>'''
 <div>{score}</div>
 <div class="me-right"><div class="muted small">Time remaining</div>
 <div class="bigtime">{time_block}</div>
-<div class="muted small">ends {esc(_fmt_ts(player.ends_at))}</div></div>
+<div class="muted small">{end_note}</div>
+{f'<div class="muted small">Competition {competition_ends}</div>' if competition_ends else ''}</div>
 </div>
 <dl class="kv">
 <dt>Status</dt><dd>{player_badge(player.status)}</dd>
@@ -901,7 +978,16 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                 else (row.get("services") or []))
     joined = comp.max_players if player_count is None else player_count
     running = player.status == "running"
-    remaining = max(0, int(player.ends_at - time.time())) if (running and player.ends_at) else 0
+    # The run clock counts to the run's effective end: its own deadline or an
+    # earlier scheduled competition end, whichever comes first.
+    effective_end = competition.effective_run_end(comp, player) if running else None
+    remaining = max(0, int((effective_end or 0) - time.time())) if (running and effective_end) else 0
+    end_note = ""
+    if effective_end:
+        end_note = f"ends {esc(_fmt_ts(effective_end))}"
+        if player.ends_at is not None and effective_end != player.ends_at:
+            end_note += " (competition end)"
+    competition_ends = _competition_ends_line(comp)
     if running:
         time_block = (f'<span data-remaining="{remaining}">'
                       f'{esc(_fmt_countdown(remaining))}</span>')
@@ -944,7 +1030,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 <section class="card home-card">
 <div class="card-head"><h2>Run clock</h2>{player_badge(player.status)}</div>
 <div class="stat-clock">{time_block}</div>
-<p class="muted small">ends {esc(_fmt_ts(player.ends_at))}</p>
+<p class="muted small">{end_note if end_note else 'ends when your run ends'}</p>
 <dl class="kv">
 <dt>Last check-in</dt><dd>{esc(_rel_ts(row.get("last_checkin")))}</dd>
 <dt>Services</dt><dd>{_service_dots(services)}</dd>
@@ -965,6 +1051,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 <dt>Scenario</dt><dd>{esc(comp.scenario_name)}</dd>
 <dt>Players</dt><dd>{esc(joined)} of {esc(comp.max_players)}</dd>
 <dt>Duration</dt><dd>{esc(_fmt_duration(comp.duration_s))}</dd>
+{f'<dt>Scheduled end</dt><dd>{competition_ends}</dd>' if competition_ends else ''}
 </dl>
 </section>
 {_home_leave_card(comp, player, leave_csrf)}
@@ -1044,10 +1131,16 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
         # The whole row is one click target (the name link stays for
         # keyboard/middle-click use); the JS delegates so polling can swap
         # rows freely.
+        # A scheduled end rides under the duration so the operator sees, at
+        # a glance, which competitions end themselves and when.
+        schedule_note = ""
+        if c.status in ("draft", "live") and c.scheduled_end_at:
+            schedule_note = (f'<div class="muted small">ends '
+                             f'{esc(_fmt_short_ts(c.scheduled_end_at))}</div>')
         cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
 <td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
 <td class="num r">{pool_cell}</td>
-<td class="num r">{esc(_fmt_duration(c.duration_s))}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
+<td class="num r">{esc(_fmt_duration(c.duration_s))}{schedule_note}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
     live_note = (f'<p class="meta">{live} competition{"s" if live != 1 else ""} '
                  f'live right now &middot; each holds its own VM pool.</p>'
                  if live else "")
@@ -1365,6 +1458,42 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
     # The pool code is portal plumbing (audit log / journal carry it for
     # debugging); the UI stays quiet about pools unless a claim actually fails,
     # in which case the error text lands on the player row.
+    # Scheduled end: a wall-clock auto-End for the whole competition. The
+    # sweeper fires it (runs still in progress stop, pool torn down, exactly
+    # like pressing End); players see a countdown. Setting/cancelling is a
+    # plain form like the other controls.
+    schedule_value = "—"
+    schedule_controls = ""
+    if comp.status in ("draft", "live"):
+        scheduled = comp.scheduled_end_at
+        cancel_btn = ""
+        if scheduled:
+            cancel_btn = (
+                f' <form method="post" action="/admin/api/competitions/'
+                f'{esc(comp.id)}/schedule-end" class="inline">'
+                f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+                f'<input type="hidden" name="ends_at" value="">'
+                f'<button class="btn">Cancel</button></form>')
+            schedule_value = (f'{esc(_fmt_ts(scheduled))} · in '
+                              f'{_countdown_span(scheduled - now)}'
+                              f'{cancel_btn}')
+        confirm = (' onsubmit="return confirm(\'End the competition '
+                   'automatically at the picked time? Runs still in progress '
+                   'stop and boxes are torn down. Continue?\')"'
+                   if comp.status == "live" else "")
+        schedule_controls = (
+            f'<form method="post" action="/admin/api/competitions/'
+            f'{esc(comp.id)}/schedule-end" class="inline"{confirm}>'
+            f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+            f'<label class="small">Ends at '
+            f'<input type="datetime-local" name="ends_at" step="60" '
+            f'value="{_fmt_dt_input(scheduled) if scheduled else ""}" '
+            f'min="{_fmt_dt_input(now)}"></label> '
+            f'<button class="btn">{"Update" if scheduled else "Schedule end"}</button>'
+            f'</form>')
+    elif comp.scheduled_end_at:
+        # Kept for the record on an ended competition.
+        schedule_value = esc(_fmt_ts(comp.scheduled_end_at))
     auto_end_btn = ""
     if comp.status in ("draft", "live"):
         verb = "Disable" if comp.auto_end else "Enable"
@@ -1383,6 +1512,9 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <div class="fact"><span class="fact-label">Status</span><span class="fact-value">{esc(comp_status_label(comp.status))} {comp_badge(comp.status)}</span></div>
 <div class="fact"><span class="fact-label">Players</span><span class="fact-value">{esc(len(players))} / {esc(comp.max_players)} joined</span></div>
 <div class="fact"><span class="fact-label">Run duration</span><span class="fact-value">{_fmt_duration(comp.duration_s)} runs</span></div>
+<div class="fact wide"><span class="fact-label">Scheduled end</span>
+<span class="fact-value">{schedule_value}{schedule_controls}
+<span class="help">Ends the competition automatically at this time (server clock): every run still in progress stops and boxes are torn down. Competitors see a countdown; Extend moves this along too.</span></span></div>
 <div class="fact"><span class="fact-label">Auto-end</span><span class="fact-value">{'On' if comp.auto_end else 'Off'}{auto_end_btn}</span></div>
 <div class="fact wide"><span class="fact-label">Join URL</span>
 <span class="fact-value"><code>{esc(join_url)}</code> {_copy_btn(join_url, "Copy")}
@@ -1560,6 +1692,11 @@ html[data-theme=dark] .ic-moon{display:none}html[data-theme=light] .ic-sun{displ
 .title-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .meta{margin:.3rem 0 0;color:var(--muted);font-size:.9rem}
 .actions{display:flex;gap:var(--s2);flex-wrap:wrap}
+/* Header action forms follow the row-action / pre-deploy shape: a captioned
+   field keeps its caption above the input and the button base-aligns with the
+   input, so Extend doesn't drop its button onto a third row beside the plain
+   buttons. */
+.actions form{display:inline-flex;align-items:flex-end;gap:var(--s2)}
 /* Status is a colored dot beside the text it describes; the word rides in the
 hover/focus tooltip (data-tip), so color is never the only signal. */
 .sdot{display:inline-block;width:8px;height:8px;border-radius:50%;position:relative;border:0;padding:0;background:transparent;cursor:help;color:var(--muted)}

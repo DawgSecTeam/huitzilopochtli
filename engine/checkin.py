@@ -268,9 +268,9 @@ def run_state_for(player, comp, now: float) -> "tuple[bool, str]":
     exclusion, not an eviction. A disqualified run keeps its VM, keeps its
     clock and keeps checking in -- it is told via the response's
     ``disqualified`` flag while ``run_status`` stays ``running``. Only a
-    Remove (tombstone), the run's own clock, or the competition ending
-    terminates it. The order of the remaining checks is preserved verbatim
-    from the inline chain this replaces.
+    Remove (tombstone), the run's own clock, the competition ending, or the
+    competition's scheduled end terminates it. The order of the remaining
+    checks is preserved verbatim from the inline chain this replaces.
     """
     if player is None:
         return False, "running"
@@ -282,6 +282,14 @@ def run_state_for(player, comp, now: float) -> "tuple[bool, str]":
         return True, "finished"
     if player.ends_at is not None and now >= player.ends_at:
         return True, "finished"
+    # A scheduled competition end is a hard stop for every still-running
+    # run (the sweeper persists the competition's end within one tick; the
+    # clock is the truth, so stop scoring at the wall time, not at the
+    # sweep). "ended", not "finished": the whole competition is over, so no
+    # per-run post-run access window is promised.
+    if getattr(comp, "scheduled_end_at", None) is not None and comp.status == "live" \
+            and now >= comp.scheduled_end_at:
+        return True, "ended"
     if comp is not None and comp.status != "live":
         return True, "ended"
     return False, "running"

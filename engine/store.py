@@ -96,6 +96,9 @@ class CompetitionRecord:
     workshop_pool_name: Optional[str] = None
     #: End automatically when joins are closed and every run has finished.
     auto_end: bool = False
+    #: Wall-clock time (engine receipt clock) at which the competition ends
+    #: itself (runs still in progress stop, pool torn down); None = none set.
+    scheduled_end_at: Optional[float] = None
     leaderboard_hidden: bool = False
 
 
@@ -272,6 +275,9 @@ class Store:
                 # ("demo" used to match "demo-2").
                 ("workshop_pool_name", "TEXT"),
                 ("auto_end", "INTEGER NOT NULL DEFAULT 0"),
+                # Scheduled competition end (wall-clock auto-End); see
+                # engine.competition.sweep_scheduled_ends.
+                ("scheduled_end_at", "REAL"),
             )),
             ("boxes", (("competition_id", "TEXT"), ("player_id", "TEXT"))),
             ("scores", (
@@ -928,6 +934,7 @@ class Store:
             workshop_pool_code=row["workshop_pool_code"],
             workshop_pool_name=row["workshop_pool_name"],
             auto_end=bool(row["auto_end"]),
+            scheduled_end_at=row["scheduled_end_at"],
             theme_json=row["theme_json"],
             join_instructions=row["join_instructions"],
             created_at=row["created_at"], started_at=row["started_at"],
@@ -1005,6 +1012,7 @@ class Store:
         allowed = {"slug", "name", "scenario_name", "scenario_version", "status",
                    "join_open", "max_players", "duration_s", "workshop_pool_code",
                    "workshop_pool_name", "auto_end", "leaderboard_hidden",
+                   "scheduled_end_at",
                    "theme_json", "join_instructions", "started_at", "ended_at"}
         sets, vals = [], []
         for k, v in fields.items():

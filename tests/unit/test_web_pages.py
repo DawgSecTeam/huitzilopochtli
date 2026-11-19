@@ -1035,6 +1035,17 @@ def test_draft_can_be_discarded_and_ended_page_offers_remove():
     assert "Remove competition" in ended
 
 
+def test_extend_control_keeps_its_button_on_the_input_baseline():
+    page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
+    # The Extend form lives in .actions beside plain single-button forms; its
+    # captioned number field must not leave the button on a third row (the
+    # screenshot bug). CSS is inlined on every page, so the layout rule is
+    # checkable here as well as the form markup.
+    assert '/extend" class="inline"' in page
+    assert 'class="small">Extend (min)<input name="minutes"' in page
+    assert '.actions form{display:inline-flex;align-items:flex-end' in page
+
+
 def test_export_csv_appears_only_once_the_run_exists():
     draft = web.admin_competition_page(_comp(status="draft"),
                                        {"leaderboard": []}, [], "csrf")

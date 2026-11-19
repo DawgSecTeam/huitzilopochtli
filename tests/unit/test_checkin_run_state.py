@@ -17,8 +17,8 @@ def _player(status="running", ends_at=NOW + 3600):
     return SimpleNamespace(status=status, ends_at=ends_at)
 
 
-def _comp(status="live"):
-    return SimpleNamespace(status=status)
+def _comp(status="live", scheduled_end_at=None):
+    return SimpleNamespace(status=status, scheduled_end_at=scheduled_end_at)
 
 
 def test_disqualified_run_keeps_playing():
@@ -55,3 +55,32 @@ def test_paused_or_draft_competition_holds_no_run_open():
 
 def test_no_competition_legacy_honor_box_keeps_playing():
     assert run_state_for(_player("running"), None, NOW) == (False, "running")
+
+
+def test_scheduled_end_before_the_sweep_stops_the_run():
+    # The clock is the truth: between the scheduled moment and the sweeper's
+    # next tick a check-in is already stopped (and not scored). "ended", not
+    # "finished": the whole competition is over, so no per-run access window.
+    assert run_state_for(_player(), _comp(scheduled_end_at=NOW - 1), NOW) \
+        == (True, "ended")
+
+
+def test_scheduled_end_in_the_future_keeps_the_run_running():
+    assert run_state_for(_player(), _comp(scheduled_end_at=NOW + 60), NOW) \
+        == (False, "running")
+
+
+def test_run_owns_clock_loses_to_scheduled_end_only_when_later():
+    # A run whose own clock expired first is still the ordinary "finished"
+    # (wall + access window); the scheduled end only caps later runs.
+    assert run_state_for(_player(ends_at=NOW - 2),
+                         _comp(scheduled_end_at=NOW - 1), NOW) \
+        == (True, "finished")
+
+
+def test_scheduled_end_ignored_on_ended_or_draft_competition():
+    # Those paths already stop the run as "ended"; the schedule adds nothing.
+    assert run_state_for(_player(), _comp("ended", scheduled_end_at=NOW - 1), NOW) \
+        == (True, "ended")
+    assert run_state_for(_player(), _comp("draft", scheduled_end_at=NOW - 1), NOW) \
+        == (True, "ended")

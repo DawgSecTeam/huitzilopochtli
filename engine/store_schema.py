@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS competitions (
     -- End automatically once joins are closed and every run has finished
     -- (multi-event hygiene: a forgotten live competition pins a whole pool).
     auto_end INTEGER NOT NULL DEFAULT 0,
+    -- Wall-clock time (engine receipt clock) at which the competition ends
+    -- itself: every run still in progress stops and the pool is torn down,
+    -- exactly as if an admin had pressed End. NULL = not scheduled.
+    scheduled_end_at REAL,
     theme_json TEXT,
     join_instructions TEXT,
     leaderboard_hidden INTEGER NOT NULL DEFAULT 0,
