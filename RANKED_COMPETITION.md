@@ -120,6 +120,28 @@ portal's reclaim clock is bumped alongside when the new deadline closes on it.
 Slots that never claimed a box have no clock to move; removed and disqualified
 slots are never resurrected.
 
+**Schedule the end** (draft and live competitions) sets a wall-clock time at
+which the competition ends itself: within one sweep interval (~15 s) of the
+moment, the sweeper runs the exact admin-End path — every run still in
+progress stops, scores freeze, and the pool is torn down. Set or change it in
+the **Scheduled end** field on the competition page (server-local time; the
+field shows the live countdown) and clear it with **Cancel**. Competitors see
+the countdown on the competition board, the big screen, and their own run
+page, and a box that checks in after the moment is already stopped even
+before the sweep persists the end. Two interactions to know: **Extend moves a
+scheduled end along with the overtime** (otherwise the extension would be
+silently cut off at the old wall time), and **starting a competition whose
+scheduled end has already passed clears the schedule** (and says so) instead
+of ending the fresh competition on the next tick. A rerun never inherits a
+schedule. Over the API the field is a form field holding a local
+`datetime-local` value (empty cancels):
+
+```bash
+curl -sS -X POST "$HUITZILOPOCHTLI_ENGINE_URL/admin/api/competitions/<id>/schedule-end" \
+  -H "X-HUITZILOPOCHTLI-Admin-Token: $HUITZILOPOCHTLI_ADMIN_TOKEN" \
+  -d 'ends_at=2026-11-14T17:00:00'
+```
+
 **When a run's clock ends, the box gets a wall and a 30-minute window.** The
 first check-in past the run's `ends_at` freezes the score and issues an
 engine-issued `wall_message` directive (agent-reserved action; a scenario
@@ -129,9 +151,13 @@ down and deleted when it closes. The window is `HUITZILOPOCHTLI_POST_RUN_GRACE_S
 (default 1800 s); the claim sweeper closes it — a bound box whose run end
 (receipt clock: `finished_at` when a check-in confirmed expiry, else
 `ends_at`) is past the window is released, which destroys the clone and
-frees the seat for the next claim. Within the window the player keeps the
-box but nothing scores; an admin can end the window early on the roster
-(**Release box**), and ending the competition (End, or auto-end — which now
+frees the seat for the next claim. The run-over response also re-renders the
+box's final board with the frozen score's forensics results: a wrong answer
+shows as **answered — not correct** (per-question results are hidden until
+exactly this moment — during the run they would be an oracle for iterating
+answers). Within the window the player keeps the box but nothing scores; an
+admin can end the window early on the roster (**Release box**), and ending
+the competition (End, or auto-end — which now
 waits until the last window would have closed before releasing the pool)
 tears every box down as before. A window that has closed is final: Extend
 skips such slots (`reason: box released`) because there is no agent left to
@@ -174,6 +200,10 @@ What to know before a day of back-to-back events:
   competition page) and the sweeper ends the competition once joins are closed
   and every run has finished *plus its post-run access window has closed*,
   releasing the pool without an operator.
+- **Schedule the end.** For a hard finish line (venue closes, next event
+  starts) set a **Scheduled end** on each competition page: the competition
+  ends itself at that wall time, runs still in progress included. Independent
+  of auto-end — whichever fires first wins.
 - **A player is in one competition at a time** (by cookie and by live display
   name). Overlapping rosters produce "already competing in X" join failures;
   that is intentional, not a bug.
@@ -465,6 +495,12 @@ CSRF applies to session forms only. A sweeper
 (`$HUITZILOPOCHTLI_SWEEP_INTERVAL_S`, 15s) retries failed claims, rotates
 expiring codes, and cleans ended pools. Engine install, upgrade, and
 backup/restore are in `engine/deploy/README.md`.
+
+## After the event: team debrief reports
+
+`python3 -m debrief --db <engine.db> --out <dir>` produces one PDF per
+team from the ended competition's store -- scores, check verdicts,
+uptime, incidents, and an optional model-written coaching note (`debrief/README.md`).
 
 ## AD scenarios: build order that actually works
 
