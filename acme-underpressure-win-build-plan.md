@@ -317,3 +317,37 @@ Sequencing: Phase 1 first (everything else wall-chains on it), Phases 2–3 can 
 6. **flush_firewall no-op on Windows** and **AD auth windows after boot** — don't fight either.
 7. **First-score latency** on an ~90-check Windows rubric (minutes) — budget patience in validation.
 8. ** krbtgt**: intentional plant; never pre-fix at build time.
+
+## 8. Range field test (2026-11-19, engine 10.67.2.2) — results
+
+- Registered on the range engine `http://10.67.2.2:8080` (admin picker lists
+  "Gavelport Courthouse|1"); pool entry in `/etc/huitzilopochtli/pools.yaml`
+  points at template **vmid 108** (`huitz-ranked-gavelport-courthouse-range-v2`,
+  vm2, DawgSec_Sandbox pool; 9600 kept as the pre-fix template, 419 as the
+  original build VM). Portal: `http://10.67.70.254:5000`.
+- **Manifest id remap gotcha (important):** the working tree carries an
+  uncommitted "ranked anti-oracle" chk-NNN remap in `authoring/compile.py` +
+  `common/scenario_record.py`. The deployed engine runs committed code and
+  expects authored ids (`w1_01…`). A manifest compiled with the remap scores
+  0 hardening ("missing field 'data'") against the deployed engine. The
+  shipped manifest must use authored ids; do not deploy the remap without
+  deploying the matching engine.
+- **Signature gotcha:** `artifacts/*/authoring.key` is a hex-encoded 32-byte
+  Ed25519 seed (see `boxbuilder/keys.py`); loading it as base64 produces a
+  manifest that fails agent-side verification. Sign with
+  `authoring.sign_scenario.sign_manifest` + hex-decoded key.
+- **IIS 500.19 at seal time:** the SaltmarshPortal site root
+  (`C:\inetpub\saltmarsh\wwwroot`) was missing and the only :80 binding was
+  host-named. Fixed in template 108: hostless `*:80:` binding + index.html
+  in site root. svc_iis then scored UP.
+- **Field round 2** (`gavelport-field-round-2`, comp ebb485d4…): player join
+  + claim + `agent.pyz join --code` + hardening + forensics answers →
+  **hardening 460/465, forensics 10/10, all 6 services UP** (total 934 and
+  accruing). Only `w3_08_krbtgt_enabled` stays red: AD refuses
+  `Set-ADUser -Enabled $true` on krbtgt ("Cannot perform this operation on
+  built-in accounts") on this build — flag as a scenario defect (either the
+  plant should not disable krbtgt, or the check should accept the platform
+  behavior). `w4_12_locked_service_removed` flapped once until the service
+  was `sc delete`d (not just stopped).
+- **Teardown verified:** ending the comp made the portal destroy only its own
+  clones (442-444); templates 108/419/9600 untouched.
