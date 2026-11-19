@@ -5,6 +5,7 @@
   "category": "misconfiguration",
   "type": "powershell",
   "run_as": "Administrator",
-  "script": "if (-not $USERNAME) { throw 'USERNAME is required' }\nAdd-LocalGroupMember -Group 'Remote Desktop Users' -Member $USERNAME -ErrorAction Ignore\n",
-  "depends_on": []
+  "depends_on": [],
+  "script": "$Error.Clear()\nif (-not $USERNAME) { throw 'USERNAME is required' }\n# Already a member? (DC: the group is domain Builtin, not a local SAM group.)\nImport-Module ActiveDirectory -ErrorAction SilentlyContinue\n$member = @(Get-ADGroupMember -Identity 'Remote Desktop Users' -EA SilentlyContinue |\n    Where-Object { $_.SamAccountName -eq $USERNAME })\nif ($member.Count -gt 0) {\n    Write-Output \"$USERNAME already in Remote Desktop Users; no change\"\n    exit 0\n}\ntry {\n    # Member server: the group lives in the local SAM.\n    Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $USERNAME -ErrorAction Stop\n    Write-Output \"$USERNAME added to local Remote Desktop Users\"\n} catch {\n    # Domain controller: the group lives in AD Builtin.\n    if (Get-Command Add-ADGroupMember -EA SilentlyContinue) {\n        Add-ADGroupMember -Identity 'Remote Desktop Users' -Members $USERNAME -ErrorAction Stop\n        Write-Output \"$USERNAME added to domain Builtin Remote Desktop Users\"\n    } else {\n        throw\n    }\n    # the caught (expected) error record would trip the rc heuristic below;\n    # only the success path reaches this line.\n    $Error.Clear()\n}\n",
+  "required_vars": []
 }

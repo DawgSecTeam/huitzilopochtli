@@ -1,0 +1,13 @@
+{
+  "name": "rdp-secondary-port-win",
+  "description": " (TermService cannot be stopped live on Server 2025; second listener materialises at next reboot)",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "depends_on": [
+    "RDP misconfigs"
+  ],
+  "script": "$Error.Clear()\nif (-not $RDP_EXTRA_PORT) { $RDP_EXTRA_PORT = '3388' }\n# Secondary RDP listener on a nonstandard port (W5-08).\n$ts = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server'\nSet-ItemProperty $ts fDenyTSConnections 0 -Force\n$ws = Join-Path $ts 'WinStations'\nif (-not (Test-Path (Join-Path $ws 'RDP-Tcp2'))) {\n    $src = Get-Item (Join-Path $ws 'RDP-Tcp')\n    $dst = New-Item -Path (Join-Path $ws 'RDP-Tcp2') -Force\n    foreach ($n in $src.GetValueNames()) {\n        $dst.SetValue($n, $src.GetValue($n), $src.GetValueKind($n))\n    }\n}\nSet-ItemProperty (Join-Path $ws 'RDP-Tcp2') PortNumber ([int]$RDP_EXTRA_PORT) -Force\nNew-NetFirewallRule -DisplayName 'RDP-Secondary' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $RDP_EXTRA_PORT -ErrorAction Ignore | Out-Null\n# TermService cannot be stopped live on a DC: Restart-Service waits forever. The\n# second listener materialises at the next boot from the WinStations key.\nWrite-Output \"RDP-Tcp2 key set on port $RDP_EXTRA_PORT; RDP-Secondary rule open; listener materialises at next boot\"\n",
+  "required_vars": []
+}

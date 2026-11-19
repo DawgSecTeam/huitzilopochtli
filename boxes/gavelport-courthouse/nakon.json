@@ -347,7 +347,7 @@
           }
         },
         {
-          "name": "domain-host-on-wan-subnet-win",
+          "name": "domain-host-secondary-nic-win",
           "vars": {
             "IP": "10.250.250.10",
             "PREFIX": "24",

