@@ -565,7 +565,7 @@ def test_sweep_does_nothing_without_a_portal(store, comp, player, monkeypatch):
     assert claims.sweep(store, b"secret") == {
         "retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
         "auto_ended": 0, "deferred": 0, "released_boxes": 0,
-        "release_errors": 0}
+        "release_errors": 0, "autowarmed": 0}
 
 
 def test_sweep_skips_bound_and_running_players(store, comp, player,
@@ -581,7 +581,7 @@ def test_sweep_skips_bound_and_running_players(store, comp, player,
     assert claims.sweep(store, b"secret") == {
         "retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
         "auto_ended": 0, "deferred": 0, "released_boxes": 0,
-        "release_errors": 0}
+        "release_errors": 0, "autowarmed": 0}
 
 
 # --- pool cleanup (competition end) --------------------------------------------

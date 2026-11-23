@@ -26,7 +26,7 @@ from engine.store import (CompetitionRecord, JoinCodeCollision, PlayerRecord,
 
 # Unambiguous alphabet (no 0/O/1/I/L) for codes that get typed off a screen.
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-_CODE_LEN = 8
+_CODE_LEN = 4
 _NAME_MAX = 40
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _WS_RE = re.compile(r"\s+")

@@ -807,9 +807,8 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
     codebox = (f'<div class="codebox"><code id="joincode">{esc(code)}</code>'
                f'{_copy_btn(code, "Copy code")}</div>' if code else
                '<p class="muted small">No fallback code is available.</p>')
-    fallback = f"""<li><h2>Join from the terminal (only if needed)</h2>
-<p class="small">You normally never need this — the VM joins itself when
-you open the link. If it doesn't, open a terminal in the VM and run
+    fallback = f"""<li><h2>Join from the terminal</h2>
+<p class="small">Open a terminal in the VM and run
 <code>huitz join</code> followed by the code below (or run it alone and
 enter the code when prompted):</p>
 <pre><code>huitz join {esc(code)}</code></pre>

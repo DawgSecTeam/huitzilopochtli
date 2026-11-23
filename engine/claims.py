@@ -340,8 +340,82 @@ def portal_pool_counts(max_age: float = 10.0) -> dict:
     return dict(data)
 
 
-#: Standing reasons a competition has nothing to pre-deploy from, phrased for
-#: the admin page. Each names the knob to touch and carries no secret. The
+#: Auto-warm: keep a small buffer of unclaimed, available (cloned, booted,
+#: past their access-port wait) boxes in each live competition's pool, so the
+#: next claim dispenses a preheated box instead of waiting on a cold clone.
+#: The portal clones on demand either way; auto-warm only hides that latency.
+#: Target is env-tunable (HUITZILOPOCHTLI_AUTOWARM_TARGET, 0 disables);
+#: HUITZILOPOCHTLI_AUTOWARM=0 turns the feature off entirely. Topping up is
+#: asynchronous on the portal, so its ``available`` count stays low for
+#: minutes after a request — a cooldown per competition keeps the sweeper
+#: from stacking redundant redeploy jobs against a slow provisioning run.
+AUTOWARM_TARGET_DEFAULT = 2
+AUTOWARM_COOLDOWN_S = 120.0
+
+_AUTOWARM_LAST_LOCK = threading.Lock()
+_AUTOWARM_LAST: dict = {}  # comp id -> last top-up attempt time
+
+
+def autowarm_target() -> int:
+    """Unclaimed-buffer size the engine keeps warm (env-tunable; 0 = off)."""
+    try:
+        return max(0, int(os.environ.get("HUITZILOPOCHTLI_AUTOWARM_TARGET",
+                                         AUTOWARM_TARGET_DEFAULT)))
+    except (TypeError, ValueError):
+        return AUTOWARM_TARGET_DEFAULT
+
+
+def autowarm_enabled() -> bool:
+    raw = os.environ.get("HUITZILOPOCHTLI_AUTOWARM", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def autowarm_tick(store: Store, comp: CompetitionRecord, *,
+                  now: Optional[float] = None, stats: Optional[dict] = None,
+                  force: bool = False) -> int:
+    """Top the competition's pool back up to the auto-warm buffer.
+
+    Runs from the claim sweep (every sweep interval, ~15 s) and after each
+    successful claim. Reads the pinned pool's snapshot; if fewer boxes are
+    available than the target, asks the portal for the deficit. Never raises:
+    a portal blip is logged and left to the next tick. Returns the requested
+    count (0 when nothing was asked for). A dead pin is left to the claim
+    path's own recovery logic — auto-warm never provisions a fresh pool.
+    """
+    target = autowarm_target()
+    if not autowarm_enabled() or target < 1 or comp.status != "live":
+        return 0
+    base, _secret = config()
+    password = _admin_password()
+    pool_code = comp.workshop_pool_code
+    if not (base and password and pool_code):
+        return 0
+    now = time.time() if now is None else now
+    with _AUTOWARM_LAST_LOCK:
+        if not force and now - _AUTOWARM_LAST.get(comp.id, 0.0) \
+                < AUTOWARM_COOLDOWN_S:
+            return 0
+        _AUTOWARM_LAST[comp.id] = now
+    try:
+        snap = workshop.pool_snapshot(base, password, pool_code)
+        if snap is None:
+            return 0
+        deficit = target - int(snap.get("available") or 0)
+        if deficit > 0:
+            workshop.provision_more(base, password, pool_code, deficit)
+    except workshop.WorkshopError as exc:
+        print(f"competition {comp.slug}: auto-warm failed: {exc}", flush=True)
+        return 0
+    if deficit > 0:
+        store.add_audit("system", "competition_autowarm", comp.id,
+                        details_json=json.dumps({"deficit": deficit,
+                                                 "target": target}))
+        if stats is not None:
+            stats["autowarmed"] = stats.get("autowarmed", 0) + 1
+    return deficit
+
+
+#: Standing reasons a competition has nothing to pre-deploy from, phrased for#: the admin page. Each names the knob to touch and carries no secret. The
 #: dashboard shows them before the click (and the click is refused) so a
 #: scenario nobody gave a pool to does not look like a broken button: the
 #: failure used to arrive seconds later as a background job note, after the
@@ -855,6 +929,19 @@ def _apply_ready(store: Store, player: PlayerRecord, result: dict) -> None:
         claim_error=None,
         claim_attempts=(player.claim_attempts or 0) + 1,
         claim_last_attempt_at=time.time())
+    # Auto-warm: a box just left the unclaimed buffer, so ask (in the
+    # background, best effort) for a replacement rather than waiting for the
+    # next sweep tick. The per-competition cooldown keeps a rapid run of
+    # claims from stacking redeploy jobs; the sweep fills any remainder.
+    threading.Thread(target=autowarm_thread_entry, name="autowarm-fire",
+                     args=(store, player.competition_id),
+                     daemon=True).start()
+
+
+def autowarm_thread_entry(store: Store, competition_id: str) -> None:
+    comp = store.get_competition(competition_id)
+    if comp is not None:
+        autowarm_tick(store, comp)
 
 
 def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
@@ -1145,6 +1232,10 @@ def _sweep_one(store: Store, comp: CompetitionRecord, server_secret: bytes,
         out = start(store, comp, fresh, back_url=back)
         if out.get("ok"):
             stats["retried"] += 1
+    # Auto-warm: refill the pool's unclaimed buffer (self-cooled; see
+    # autowarm_tick). After the player work so a claim this tick just won
+    # counts against the snapshot.
+    autowarm_tick(store, comp, now=now, stats=stats)
     # Post-run access windows: once a run's clock ends (score frozen — the
     # governing receipt time is ``finished_at`` when a check-in confirmed it,
     # else ``ends_at``), the box stays up ``post_run_grace_s`` so the player
@@ -1217,7 +1308,7 @@ def sweep(store: Store, server_secret: bytes, *,
     now = time.time() if now is None else now
     stats = {"retried": 0, "polled": 0, "rotated": 0, "cleaned": 0,
              "auto_ended": 0, "deferred": 0, "released_boxes": 0,
-             "release_errors": 0}
+             "release_errors": 0, "autowarmed": 0}
     if not enabled():
         return stats
     for comp in store.list_competitions():
