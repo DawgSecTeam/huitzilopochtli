@@ -12,10 +12,18 @@ checks:
     max_points: 5
     collect:
       script: |
-        if [ ! -e /etc/cron.d/nightcast-sync ] && [ ! -e /opt/nightcast/nightcast-sync ]; then echo true; else echo false; fi
+        [ -e /etc/cron.d/nightcast-sync ] && a=1 || a=0
+        [ -e /opt/nightcast/nightcast-sync ] && b=1 || b=0
+        printf '{"cron_job": %s, "payload_on_disk": %s}\n' "$a" "$b"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: cron_job
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 5
     solution: |
       **1. Sweep the system cron directories.** Anything under /etc/cron.d
@@ -51,10 +59,12 @@ checks:
     max_points: 5
     collect:
       script: |
-        if crontab -l 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' | grep -q .; then echo false; else echo true; fi
+        n=$(crontab -l 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' | grep -c .)
+        printf '{"job_lines": %s}\n' "$n"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: job_lines
+      value: 0
       points: 5
     solution: |
       **1. /etc/cron.d is not the only cron.** Root can hold a personal
@@ -84,10 +94,12 @@ checks:
     max_points: 20
     collect:
       script: |
-        if crontab -u tapeops -l 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' | grep -q .; then echo false; else echo true; fi
+        n=$(crontab -u tapeops -l 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)' | grep -c .)
+        printf '{"job_lines": %s}\n' "$n"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: job_lines
+      value: 0
       points: 20
     solution: |
       **1. Enumerate users, then ask each one.** A crontab can belong to ANY
@@ -153,12 +165,14 @@ checks:
     max_points: 5
     collect:
       script: |
-        f=/home/stationlead/.bashrc
-        if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fiq nightcast "$f" && echo false || echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"bashrc": %s}\n' "$(cat /home/stationlead/.bashrc 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: bashrc
+        pattern: (?i)nightcast
       points: 5
     solution: |
       **1. Read your own shell setup.** Attackers love dotfiles: they run in
@@ -190,12 +204,14 @@ checks:
     max_points: 5
     collect:
       script: |
-        f=/etc/bash.bashrc
-        if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fiq nightcast "$f" && echo false || echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"bash_bashrc": %s}\n' "$(cat /etc/bash.bashrc 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: bash_bashrc
+        pattern: (?i)nightcast
       points: 5
     solution: |
       **1. The user file has a system-wide sibling.** /etc/bash.bashrc is
@@ -287,12 +303,14 @@ checks:
     max_points: 5
     collect:
       script: |
-        f=/home/stationlead/.ssh/authorized_keys
-        if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fq 'nightcast@88.3' "$f" && echo false || echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"authorized_keys": %s}\n' "$(cat /home/stationlead/.ssh/authorized_keys 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: authorized_keys
+        pattern: nightcast@88\.3
       points: 5
     solution: |
       **1. Keys outlive passwords.** A public key in authorized_keys gives
@@ -323,12 +341,18 @@ checks:
     max_points: 10
     collect:
       script: |
-        if systemctl is-enabled nightcast.service 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
-        if [ -e /opt/nightcast/carrier-daemon ]; then echo false; exit 0; fi
-        echo true
+        e=$(systemctl is-enabled nightcast.service 2>/dev/null | tr -d '"\')
+        [ -e /opt/nightcast/carrier-daemon ] && p=1 || p=0
+        printf '{"launcher_enabled": "%s", "payload_on_disk": %s}\n' "$e" "$p"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_not_equals
+        field: launcher_enabled
+        value: enabled
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 10
     solution: |
       **1. Find it by unit review** -- this one holds no port and hides in
@@ -366,13 +390,22 @@ checks:
     max_points: 20
     collect:
       script: |
-        if systemctl is-enabled nightcast-rebroadcast.timer 2>/dev/null | grep -q '^enabled$'; then echo false; exit 0; fi
-        if [ -e /etc/systemd/system/nightcast-rebroadcast.timer ]; then echo false; exit 0; fi
-        if [ -e /opt/nightcast/rebroadcast ]; then echo false; exit 0; fi
-        echo true
+        e=$(systemctl is-enabled nightcast-rebroadcast.timer 2>/dev/null | tr -d '"\')
+        [ -e /etc/systemd/system/nightcast-rebroadcast.timer ] && t=1 || t=0
+        [ -e /opt/nightcast/rebroadcast ] && p=1 || p=0
+        printf '{"timer_enabled": "%s", "timer_on_disk": %s, "payload_on_disk": %s}\n' "$e" "$t" "$p"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_not_equals
+        field: timer_enabled
+        value: enabled
+      - tag: data_equals
+        field: timer_on_disk
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 20
     solution: |
       **1. Timers are the cron of systemd -- review them like it:**
@@ -415,10 +448,12 @@ checks:
     max_points: 10
     collect:
       script: |
-        if atq 2>/dev/null | grep -q .; then echo false; else echo true; fi
+        n=$(atq 2>/dev/null | grep -c .)
+        printf '{"queued_jobs": %s}\n' "$n"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: queued_jobs
+      value: 0
       points: 10
     solution: |
       **1. at is cron's one-shot cousin, and nobody checks it.** Jobs sit in
@@ -455,12 +490,18 @@ checks:
     max_points: 10
     collect:
       script: |
-        if [ -e /etc/init.d/nightcast-agent ]; then echo false; exit 0; fi
-        if ls /etc/rc*.d/S*nightcast-agent >/dev/null 2>&1; then echo false; exit 0; fi
-        echo true
+        [ -e /etc/init.d/nightcast-agent ] && a=1 || a=0
+        n=$(ls /etc/rc*.d/S*nightcast-agent 2>/dev/null | grep -c .)
+        printf '{"initd_script": %s, "rc_links": %s}\n' "$a" "$n"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: initd_script
+        value: 0
+      - tag: data_equals
+        field: rc_links
+        value: 0
       points: 10
     solution: |
       **1. Old boot order survives under systemd.** SysV init scripts in
@@ -500,12 +541,18 @@ checks:
     max_points: 10
     collect:
       script: |
-        f=/etc/rc.local
-        if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fq '/opt/nightcast/sign-on' "$f" && echo false || echo true
+        [ -f /etc/rc.local ] && e=1 || e=0
+        n=$(grep -Fc '/opt/nightcast/sign-on' /etc/rc.local 2>/dev/null || echo 0)
+        printf '{"rc_local_present": %s, "payload_refs": %s}\n' "$e" "$n"
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: rc_local_present
+        value: 0
+      - tag: data_equals
+        field: payload_refs
+        value: 0
       points: 10
     solution: |
       **1. The oldest trick in the book, enabled by a condition.** On
@@ -541,14 +588,18 @@ checks:
     max_points: 10
     collect:
       script: |
-        p=/etc/ld.so.preload
-        l=/usr/local/lib/libnightcast.so
-        if [ -e "$l" ]; then echo false; exit 0; fi
-        if [ -e "$p" ] && grep -Ev '^[[:space:]]*(#|$)' "$p" | grep -q .; then echo false; exit 0; fi
-        echo true
+        [ -e /usr/local/lib/libnightcast.so ] && l=1 || l=0
+        n=$(grep -Ev '^[[:space:]]*(#|$)' /etc/ld.so.preload 2>/dev/null | grep -c .)
+        printf '{"lib_on_disk": %s, "preload_lines": %s}\n' "$l" "$n"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: lib_on_disk
+        value: 0
+      - tag: data_equals
+        field: preload_lines
+        value: 0
       points: 10
     solution: |
       **1. The loader itself is compromised.** /etc/ld.so.preload lists
@@ -583,12 +634,18 @@ checks:
     max_points: 20
     collect:
       script: |
-        if [ -e /home/tapeops/.config/systemd/user/tape-scan.service ]; then echo false; exit 0; fi
-        if [ -e /var/lib/systemd/linger/tapeops ]; then echo false; exit 0; fi
-        echo true
+        [ -e /home/tapeops/.config/systemd/user/tape-scan.service ] && u=1 || u=0
+        [ -e /var/lib/systemd/linger/tapeops ] && l=1 || l=0
+        printf '{"unit_on_disk": %s, "linger_on_disk": %s}\n' "$u" "$l"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: unit_on_disk
+        value: 0
+      - tag: data_equals
+        field: linger_on_disk
+        value: 0
       points: 20
     solution: |
       **1. systemd runs for USERS too.** Every account gets a private user

@@ -461,7 +461,8 @@ def test_account_checks_score_the_disabled_flag():
     """An account check must grade the Disabled flag, not an account's
     absence: a deleted account can otherwise score nothing while an untouched
     one scores full points, and evidence a forensics question asks about is
-    destroyed by the fix."""
+    destroyed by the fix. Collectors emit raw facts ({exists, disabled});
+    the verdict is an all_of data_equals matcher in the rubric."""
     import yaml
     checked = 0
     for box_dir in _box_dirs():
@@ -473,6 +474,14 @@ def test_account_checks_score_the_disabled_flag():
             if ".Disabled" not in script or "Name='" not in script:
                 continue
             checked += 1
-            assert check["expect"].get("equals") is True, check["id"]
-            assert check["expect"].get("field") == "data", check["id"]
+            expect = check["expect"]
+            assert expect.get("tag") in ("all_of", "any_of"), check["id"]
+            sub = {m.get("field"): m for m in expect.get("matchers", [])}
+            # The Disabled flag must be graded (deleting the account alone
+            # must not score for checks that require it present)...
+            assert sub.get("disabled", {}).get("value") is True, check["id"]
+            # ...and where the check requires the account to still exist,
+            # that is explicit too.
+            if expect.get("tag") == "all_of":
+                assert sub.get("exists", {}).get("value") is True, check["id"]
     assert checked, "no account checks found -- the rule is no longer enforced"

@@ -249,7 +249,14 @@ fingerprints it and `install` refuses state from different inputs.
 places the agent, the signed manifest, the authoring public key, and an
 `agent_config.json` whose `enrollment_token` is null — **no rubric, no engine
 record, no answer key** — and leaves the agent unit (or Windows task)
-disabled. Confirm no `identity.json*` or report artifacts remain, then seal;
+disabled. The ranked manifest is also built to carry no *passive* answer
+oracle: collectors ship raw facts only (no boolean verdicts in the scripts),
+check ids and display titles are genericized at compile (the authored wording
+stays engine-side and is sent back only for passed checks), and the handbook
+lint blocks planted names / scored end-states in ranked builds. A root player
+can still reverse-engineer the agent and forge evidence — that is the
+documented, accepted limit — but cannot reconstruct the answer key by reading
+the box's own files. Confirm no `identity.json*` or report artifacts remain, then seal;
 `huitz join` enables and starts the unit on the player's clone.
 
 **Seal on a network that can reach the engine.** A template on an isolated
@@ -360,6 +367,17 @@ does with it:
   the competition ending releases its VM promptly — or until the portal's
   dispenser adds one. Size it to expected concurrency; joining into a
   saturated pool is not an error, but the player sees a wait.
+- **Auto-warm.** Independently of pre-deploy, the engine keeps a buffer of
+  **2 unclaimed, available boxes** in each live competition's pool (the
+  sweeper checks every tick; a successful claim fires an immediate refill).
+  When the buffer drops below target — two players claim, or a box is
+  released/expired — the engine asks the portal for exactly the deficit via
+  `POST /api/admin/redeploy` (audit event `competition_autowarm`). Topping up
+  is asynchronous on the portal, so refill requests are rate-limited
+  (`HUITZILOPOCHTLI_AUTOWARM_TARGET`, default 2, `0` disables;
+  `HUITZILOPOCHTLI_AUTOWARM=0` turns the feature off). Auto-warm only tops up
+  an already-pinned pool; it never provisions a fresh pool, and an ended
+  competition's pool is still torn down normally.
 
 ### 3.2 Pre-bound joins (no terminal, no code)
 

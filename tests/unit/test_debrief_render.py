@@ -40,6 +40,19 @@ def test_pdf_carries_team_name(tmp_path):
     name = digest["team"]["display_name"]
     out = tmp_path / "debrief.pdf"
     render_pdf(digest, out)
-    assert name.encode("latin-1") in _pdf_text(out.read_bytes())
+    text = _pdf_text(out.read_bytes())
+    assert name.encode("latin-1") in text
+
+
+def test_pdf_splits_caught_and_missed(tmp_path):
+    digest = _digest(tmp_path)
+    checks = digest["team"]["checks"]
+    solved = next(c["id"] for c in checks if c["solved"])
+    missed = next(c["id"] for c in checks if not c["solved"])
+    out = tmp_path / "debrief.pdf"
+    render_pdf(digest, out)
+    text = _pdf_text(out.read_bytes())
+    assert b"Caught" in text and b"Missed" in text
+    assert solved.encode() in text and missed.encode() in text
 
 

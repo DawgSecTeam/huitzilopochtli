@@ -227,6 +227,71 @@ def _catalog_errors(spec, nakon_dir: str = None) -> tuple:
     return errors, warnings
 
 
+# A shipped collector script that prints a bare boolean is an on-box verdict:
+# the pass condition must live in the rubric (engine-side in ranked), not in
+# the signed manifest the player can read. See authoring/readme_lint.py and
+# architecture.md §2.4.
+_VERDICT_ECHO_RE = re.compile(r"\becho\s+(?:true|false|yes|no)\b", re.I)
+
+
+def _ranked_oracle_gates(spec) -> list:
+    """Ranked-only hard errors: the manifest must not be a local answer oracle.
+
+    Checks, for the ranked variant of the scenario (when it has one):
+    - no command_json/powershell_json collect script may compute a boolean
+      verdict (``echo true``/``echo false``) or pair it with an
+      equals/not_equals-on-``data`` matcher — collectors must emit raw facts
+      and the condition moves to a data_* rubric matcher;
+    - the handbook must be free of the tier-5 leaks (planted names, scored
+      end-state paraphrases, count reveals, prose fix instructions) — these
+      block the ranked compile already; lint surfaces them here too.
+    """
+    from common.scenario_record import merge_effective, ScenarioModeError
+    from authoring.readme_lint import lint_readme
+
+    errors = []
+    try:
+        ranked = merge_effective(spec.scenario, "ranked",
+                                 engine_url=spec.engine_url_override,
+                                 source=spec.scenario_path)
+    except ScenarioModeError:
+        return errors  # no ranked variant: nothing to gate
+    except Exception as exc:
+        if "unset environment variable" in str(exc):
+            return errors  # deployment-env placeholder; not a consistency bug
+        raise
+
+    for check in ranked.get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("type") not in ("command_json", "powershell_json"):
+            continue
+        cid = check.get("id", "?")
+        script = str((check.get("collect") or {}).get("script", ""))
+        if _VERDICT_ECHO_RE.search(script):
+            errors.append(
+                f"ranked: {cid} collect script computes a boolean verdict "
+                f"({_VERDICT_ECHO_RE.search(script).group(0)!r}) — emit raw facts "
+                "and move the condition to a data_* rubric matcher")
+        expect = check.get("expect") or {}
+        if (expect.get("field") == "data"
+                and isinstance(expect.get("equals", expect.get("not_equals")), bool)):
+            errors.append(
+                f"ranked: {cid} expect is a boolean on raw field 'data' — the verdict "
+                "belongs to a data_* rubric matcher, not the shipped script")
+
+    theme = ranked.get("theme") or {}
+    readme_rel = theme.get("readme")
+    if readme_rel:
+        readme_path = readme_rel if os.path.isabs(readme_rel) else \
+            os.path.join(os.path.dirname(spec.scenario_path), readme_rel)
+        if os.path.isfile(readme_path):
+            with open(readme_path, encoding="utf-8") as f:
+                readme_errors, _ = lint_readme(ranked, f.read(), mode="ranked")
+            errors.extend(f"ranked: {m}" for m in readme_errors)
+    return errors
+
+
 def lint_box(spec, seed_dir: str = None, catalog: bool = False,
              nakon_dir: str = None) -> dict:
     """Run every consistency check against one box. Returns a report dict."""
@@ -248,6 +313,8 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
                 warnings.append(f"ranked build needs deployment env: {message}")
                 continue
             errors.append(f"{target}: {message}")
+
+    errors.extend(_ranked_oracle_gates(spec))
 
     checks = _effective_checks(spec)
     if not checks:

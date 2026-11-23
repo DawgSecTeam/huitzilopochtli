@@ -38,7 +38,7 @@ State this in user-facing docs; do not let it be implied.
 
 **What ranked still buys** over offline honor mode:
 
-1. **The rubric never touches the box.** The operator cannot read the answers and cannot fake a perfect score without reverse-engineering the agent and forging internally consistent evidence — the primary anti-casual-cheat lever.
+1. **The rubric never touches the box — and nothing else shipped does either.** The operator cannot read the answers and cannot fake a perfect score without reverse-engineering the agent and forging internally consistent evidence — the primary anti-casual-cheat lever. The signed manifest is world-readable and operators may have root, so it must not be a *passive* oracle either: ranked collectors emit raw facts only (never a boolean verdict in the shipped script), ranked manifests carry opaque check ids and generic display titles (authored wording lives in the rubric and is sent back only for passed checks), and the handbook lint blocks planted names / end-state paraphrases in ranked builds (`authoring/readme_lint.py` tier 5, `common/scenario_record.py` ranked transform). What remains is active reverse-engineering of the agent, which is out of scope (§Non-goals).
 2. **A trusted clock**, so timed scoring cannot be farmed by rolling the box clock.
 3. **Central aggregation / leaderboard** across many boxes.
 4. **Clean attribution** via per-box identity.
@@ -82,7 +82,7 @@ All types live in `common/schema.py` as stdlib `@dataclass`; serialization is JS
 
 ### 6.1 CheckSpec (in Manifest — safe to ship to box)
 
-`id`, `type`, `category`, `host_id` (`localhost` for single-host), `collect_params` (type-specific: **what to read**), `display_title`, `display_max_points` (UI only; points are rubric-side), `timeout_s` (5.0), `is_sla`, optional `requires` (list of bare binary names and/or absolute paths: what must be on the host for the check to be gradeable at all; when anything is missing the collector reports `unavailable` evidence and runs nothing, §9.1). **Invariant:** `collect_params` must be sufficient to collect but never contain the expected/correct value — a `file_regex` spec carries the path and extraction pattern, not whether the extracted value is correct.
+`id`, `type`, `category`, `host_id` (`localhost` for single-host), `collect_params` (type-specific: **what to read**), `display_title`, `display_max_points` (UI only; points are rubric-side), `timeout_s` (5.0), `is_sla`, optional `requires` (list of bare binary names and/or absolute paths: what must be on the host for the check to be gradeable at all; when anything is missing the collector reports `unavailable` evidence and runs nothing, §9.1). **Invariant:** `collect_params` must be sufficient to collect but never contain the expected/correct value — a `file_regex` spec carries the path and extraction pattern, not whether the extracted value is correct; a `command_json`/`powershell_json` script must emit a JSON object of raw facts, never a bare `true`/`false` verdict (the pass condition is a `data_*`/`all_of`/`any_of`/`not` matcher in the rubric, §10.2). In **ranked** builds the compiler additionally rewrites `id` to an opaque `chk-NNN` (authored ids name planted artifacts) and `display_title` to a generic category label (authored titles state end-states); forensics questions and `svc_*` service checks are exempt (their text is public briefing). Honor builds ship authored ids/titles unchanged.
 
 ### 6.2 Evidence (collector output — no verdict, no points)
 
@@ -90,7 +90,7 @@ All types live in `common/schema.py` as stdlib `@dataclass`; serialization is JS
 
 ### 6.3 RubricEntry (engine-only in ranked; on-box in honor)
 
-`SlaParams`: `interval_s`, `points_per_interval`, `hysteresis_fail_n` (2), `hysteresis_ok_n` (2), `max_intervals_per_checkin` (3). `RubricEntry`: `check_id`, `category`, `matcher` (§10.2), `points` (signed; negative for penalty/prohibited), `sla` (`SlaParams | None`).
+`SlaParams`: `interval_s`, `points_per_interval`, `hysteresis_fail_n` (2), `hysteresis_ok_n` (2), `max_intervals_per_checkin` (3). `RubricEntry`: `check_id`, `category`, `matcher` (§10.2), `points` (signed; negative for penalty/prohibited), `sla` (`SlaParams | None`), `display_title` (the authored end-state wording; engine-side only in ranked — the engine sends it to the box attached to *passed* results only, as the progressive-hint UX, `engine/checkin.py`).
 
 ### 6.4 Manifest (signed, shipped to box)
 
@@ -371,7 +371,7 @@ The suite pins this document's contracts:
 
 ## 20. Non-goals & Open Items
 
-**Non-goals:** cheat-proof ranked scoring (impossible under push-only + root, §3); engine-initiated probing (transport is push-only by decision); multi-host *implementation* (schema supports `host_id`; the first build is single-host); mode conversion (a box's mode is fixed at provisioning; an offline run cannot be promoted).
+**Non-goals:** cheat-proof ranked scoring (impossible under push-only + root, §3) — but note the *passive* oracle is removed: shipped artifacts (manifest collectors, ids, titles, handbook) carry no expected values, so exploiting ranked now requires actively reverse-engineering and forging the agent, not reading files; engine-initiated probing (transport is push-only by decision); multi-host *implementation* (schema supports `host_id`; the first build is single-host); mode conversion (a box's mode is fixed at provisioning; an offline run cannot be promoted).
 
 **Open (deferred, not blocking):** optional Postgres storage behind the `store.py` interface; additional check types (sysctl, cron, scheduled tasks) and matchers via the registries; multi-host execution once single-host is proven.
 

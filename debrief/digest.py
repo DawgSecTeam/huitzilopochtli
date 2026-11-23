@@ -270,6 +270,10 @@ def build_digest(db_path: Path,
         digests = []
         for comp in competitions:
             for player in _players_for(conn, comp["id"]):
+                # a player still holding a reservation but never bound to a
+                # box has no run to debrief; skip, don't render an empty one
+                if not player.get("box_id"):
+                    continue
                 digests.append(_team_facts(conn, player, comp))
         return digests
     finally:
@@ -301,6 +305,7 @@ def _team_facts(conn, player: dict, comp: dict,
             "status": player.get("status"),
             "run_minutes": run_span["minutes"],
             "checkin_count": run_span["checkins"],
+            "ungraded_count": score.get("ungraded_count", 0),
             "score": {
                 "total": score.get("total", 0),
                 "hardening_points": score.get("hardening_points", 0),

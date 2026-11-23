@@ -103,9 +103,15 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
 
     # Spoiler lint (HANDBOOK_GUIDE.md): a forensics answer in the handbook
     # blocks the compile; lesser leaks surface as warnings on the outputs.
+    # Ranked builds additionally block on the tier-5 leaks (planted names,
+    # end-state paraphrases, count reveals, prose fix instructions) — the
+    # handbook ships on a root-capable ranked box, so it must not read as
+    # the attacker's setup playbook (see authoring/readme_lint.py).
     readme_errors, readme_warnings = [], []
     if readme_text:
-        readme_errors, readme_warnings = lint_readme(parsed, readme_text)
+        readme_errors, readme_warnings = lint_readme(
+            effective, readme_text, mode=scenario["mode"]
+        )
         if readme_errors:
             raise ValueError("\n".join(readme_errors))
 

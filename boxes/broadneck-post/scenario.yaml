@@ -13,11 +13,12 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        v=$(postconf -h myhostname 2>/dev/null) || { echo false; exit 0; }
-        [ -n "$v" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        v=$(postconf -h myhostname 2>/dev/null)
+        printf '{"hostname": %s}\n' "$(printf '%s' $v | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: data_present
+      field: hostname
       points: 2
     solution: |
       **1. See what is left.** The package is installed but its
@@ -67,10 +68,12 @@ checks:
     requires: [doveconf]
     collect:
       script: |
-        doveconf >/dev/null 2>&1 && echo true || echo false
+        doveconf >/dev/null 2>&1; rc=$?
+        printf '{"doveconf_rc": %s}\n' "$rc"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: doveconf_rc
+      value: 0
       points: 2
     solution: |
       **1. Dovecot is the same story:** the package is installed but
@@ -119,12 +122,19 @@ checks:
     max_points: 4
     collect:
       script: |
-        [ "$(systemctl is-active postfix 2>/dev/null)" = "active" ] || { echo false; exit 0; }
-        [ "$(systemctl is-enabled postfix 2>/dev/null)" = "enabled" ] || { echo false; exit 0; }
-        echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        a=$(systemctl is-active postfix 2>/dev/null)
+        e=$(systemctl is-enabled postfix 2>/dev/null)
+        printf '{"active": %s, "enabled": %s}\n' "$(printf '%s' $a | jenc)" "$(printf '%s' $e | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: active
+        value: active
+      - tag: data_equals
+        field: enabled
+        value: enabled
       points: 4
     solution: |
       **1. Look at the unit before you touch it.** It was not merely
@@ -158,12 +168,19 @@ checks:
     max_points: 4
     collect:
       script: |
-        [ "$(systemctl is-active dovecot 2>/dev/null)" = "active" ] || { echo false; exit 0; }
-        [ "$(systemctl is-enabled dovecot 2>/dev/null)" = "enabled" ] || { echo false; exit 0; }
-        echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        a=$(systemctl is-active dovecot 2>/dev/null)
+        e=$(systemctl is-enabled dovecot 2>/dev/null)
+        printf '{"active": %s, "enabled": %s}\n' "$(printf '%s' $a | jenc)" "$(printf '%s' $e | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: active
+        value: active
+      - tag: data_equals
+        field: enabled
+        value: enabled
       points: 4
     solution: |
       **1. Same hole, second service:** masked so it can never start.
@@ -193,19 +210,20 @@ checks:
     collect:
       script: |
         python3 -c '
-        import socket
+        import socket, json
         try:
             s = socket.create_connection(("127.0.0.1", 25), timeout=6)
             banner = s.recv(400).decode("utf-8", "replace")
             s.close()
         except OSError:
-            print("false")
+            print(json.dumps({"banner": ""}))
             raise SystemExit
-        print("true" if banner.startswith("220") else "false")
-        ' || { echo false; exit 0; }
+        print(json.dumps({"banner": banner}))
+        '
     expect:
-      equals: true
-      field: data
+      tag: data_regex
+      field: banner
+      pattern: ^220
       points: 4
     solution: |
       **1. Talk to the mailer the way the world does.** A service being
@@ -334,11 +352,12 @@ checks:
     collect:
       script: |
         python3 -c '
-        import socket
+        import socket, json
+        facts = {"starttls": 0, "mail_from_rejected": 0, "rcpt_rejected": 0}
         try:
             s = socket.create_connection(("127.0.0.1", 587), timeout=6)
         except OSError:
-            print("false")
+            print(json.dumps(facts))
             raise SystemExit
         f = s.makefile("rwb", buffering=0)
         f.readline()
@@ -349,21 +368,33 @@ checks:
             ext += line.decode("utf-8", "replace")
             if line[3:4] != b"-":
                 break
-        if "STARTTLS" not in ext:
-            print("false")
-            raise SystemExit
+        if "STARTTLS" in ext:
+            facts["starttls"] = 1
         f.write(b"MAIL FROM:<probe@broadneckpost.org>\r\n")
         code = f.readline()[:3].decode()
         if code >= "500":
-            print("true")
-            raise SystemExit
-        f.write(b"RCPT TO:<route.slips@postal-audit.example>\r\n")
-        code = f.readline()[:3].decode()
-        print("true" if code >= "500" else "false")
-        ' || { echo false; exit 0; }
+            facts["mail_from_rejected"] = 1
+        else:
+            f.write(b"RCPT TO:<route.slips@postal-audit.example>\r\n")
+            code = f.readline()[:3].decode()
+            if code >= "500":
+                facts["rcpt_rejected"] = 1
+        print(json.dumps(facts))
+        '
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: starttls
+        value: 1
+      - tag: any_of
+        matchers:
+        - tag: data_equals
+          field: mail_from_rejected
+          value: 1
+        - tag: data_equals
+          field: rcpt_rejected
+          value: 1
       points: 6
     solution: |
       **1. Prove the door actually locks.** The attack that wrecked this
@@ -423,13 +454,21 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        MYNET=$(postconf -h mynetworks 2>/dev/null) || { echo false; exit 0; }
-        echo "$MYNET" | grep -Eq '0\.0\.0\.0/0|::/0' && { echo false; exit 0; }
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        MYNET=$(postconf -h mynetworks 2>/dev/null)
         RELAY=$(postconf -h smtpd_relay_restrictions smtpd_recipient_restrictions 2>/dev/null)
-        echo "$RELAY" | grep -q 'unauth_destination' && echo true || echo false
+        printf '{"mynetworks": %s, "relay_restrictions": %s}\n' "$(printf '%s' $MYNET | jenc)" "$(printf '%s' $RELAY | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: not
+        matcher:
+          tag: data_regex
+          field: mynetworks
+          pattern: 0\.0\.0\.0/0|::/0
+      - tag: data_regex
+        field: relay_restrictions
+        pattern: unauth_destination
       points: 6
     solution: |
       **1. Understand how the depot's mailer was left open.** The
@@ -472,13 +511,19 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        MYNET=$(postconf -h mynetworks 2>/dev/null) || { echo false; exit 0; }
-        [ -n "$MYNET" ] || { echo false; exit 0; }
-        echo "$MYNET" | grep -Eq '0\.0\.0\.0/0|::/0' && { echo false; exit 0; }
-        echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        MYNET=$(postconf -h mynetworks 2>/dev/null)
+        printf '{"mynetworks": %s}\n' "$(printf '%s' $MYNET | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_present
+        field: mynetworks
+      - tag: not
+        matcher:
+          tag: data_regex
+          field: mynetworks
+          pattern: 0\.0\.0\.0/0|::/0
       points: 4
     solution: |
       **1. The trusted list is the relay's guest list.** Any network
@@ -509,10 +554,13 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        [ "$(postconf -h disable_vrfy_command 2>/dev/null)" = "yes" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        v=$(postconf -h disable_vrfy_command 2>/dev/null)
+        printf '{"value": %s}\n' "$(printf '%s' $v | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 'yes'
       points: 2
     solution: |
       **1. VRFY is an address book for attackers.** Anyone who connects
@@ -544,10 +592,13 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        [ "$(postconf -h smtpd_helo_required 2>/dev/null)" = "yes" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        v=$(postconf -h smtpd_helo_required 2>/dev/null)
+        printf '{"value": %s}\n' "$(printf '%s' $v | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 'yes'
       points: 2
     solution: |
       **1. Politeness is policy.** SMTP clients announce themselves with
@@ -576,12 +627,19 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        B=$(postconf -h smtpd_banner 2>/dev/null) || { echo false; exit 0; }
-        echo "$B" | grep -Eq 'mail_version|[0-9]+\.[0-9]+' && { echo false; exit 0; }
-        [ -n "$B" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        B=$(postconf -h smtpd_banner 2>/dev/null)
+        printf '{"banner": %s}\n' "$(printf '%s' $B | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_present
+        field: banner
+      - tag: not
+        matcher:
+          tag: data_regex
+          field: banner
+          pattern: mail_version|[0-9]+\.[0-9]+
       points: 2
     solution: |
       **1. Read your own front sign:**
@@ -613,10 +671,13 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        [ "$(postconf -h smtpd_tls_auth_only 2>/dev/null)" = "yes" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        v=$(postconf -h smtpd_tls_auth_only 2>/dev/null)
+        printf '{"value": %s}\n' "$(printf '%s' $v | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 'yes'
       points: 4
     solution: |
       **1. Credentials on an unencrypted session are broadcast.** With
@@ -647,14 +708,20 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        CERT=$(postconf -h smtpd_tls_cert_file 2>/dev/null) || { echo false; exit 0; }
-        KEY=$(postconf -h smtpd_tls_key_file 2>/dev/null) || { echo false; exit 0; }
-        [ -n "$CERT" ] && [ -f "$CERT" ] || { echo false; exit 0; }
-        [ -n "$KEY" ] && [ -f "$KEY" ] || { echo false; exit 0; }
-        echo true
+        CERT=$(postconf -h smtpd_tls_cert_file 2>/dev/null)
+        KEY=$(postconf -h smtpd_tls_key_file 2>/dev/null)
+        [ -n "$CERT" ] && [ -f "$CERT" ] && a=1 || a=0
+        [ -n "$KEY" ] && [ -f "$KEY" ] && b=1 || b=0
+        printf '{"cert_present": %s, "key_present": %s}\n' "$a" "$b"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: cert_present
+        value: 1
+      - tag: data_equals
+        field: key_present
+        value: 1
       points: 4
     solution: |
       **1. The intruder deleted the depot's certificates along with the
@@ -694,13 +761,20 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        KEY=$(postconf -h smtpd_tls_key_file 2>/dev/null) || { echo false; exit 0; }
-        [ -n "$KEY" ] && [ -f "$KEY" ] || { echo false; exit 0; }
-        M=$(stat -c '%a' "$KEY" 2>/dev/null) || { echo false; exit 0; }
-        [ $(( 0$M & 0077 )) -eq 0 ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        KEY=$(postconf -h smtpd_tls_key_file 2>/dev/null)
+        [ -n "$KEY" ] && [ -f "$KEY" ] || { printf '{"key_present": 0, "key_go_bits": -1}\n'; exit 0; }
+        M=$(stat -c '%a' "$KEY" 2>/dev/null)
+        printf '{"key_present": %s, "key_mode": %s, "key_go_bits": %s}\n' "1" "$(printf '%s' $M | jenc)" "$(( 0$M & 0077 ))"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: key_present
+        value: 1
+      - tag: data_equals
+        field: key_go_bits
+        value: 0
       points: 2
     solution: |
       **1. The private key IS the certificate.** Anyone on the box who
@@ -727,13 +801,22 @@ checks:
     max_points: 4
     collect:
       script: |
-        [ -f /etc/postfix/main.cf ] || { echo false; exit 0; }
-        find /etc/postfix -type f -perm -o+w 2>/dev/null | grep -q . && { echo false; exit 0; }
-        find /etc/postfix -type d -perm -o+w 2>/dev/null | grep -q . && { echo false; exit 0; }
-        echo true
+        if [ -f /etc/postfix/main.cf ]; then a=1; else a=0; fi
+        n=$(find /etc/postfix -type f -perm -o+w 2>/dev/null | grep -c .)
+        m=$(find /etc/postfix -type d -perm -o+w 2>/dev/null | grep -c .)
+        printf '{"main_cf_present": %s, "world_writable_files": %s, "world_writable_dirs": %s}\n' "$a" "$n" "$m"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: main_cf_present
+        value: 1
+      - tag: data_equals
+        field: world_writable_files
+        value: 0
+      - tag: data_equals
+        field: world_writable_dirs
+        value: 0
       points: 4
     solution: |
       **1. The mail configuration is root's authority over the mailer.**
@@ -765,18 +848,26 @@ checks:
     requires: [postmap]
     collect:
       script: |
-        if [ -f /etc/aliases ]; then
-          grep -Eq 'routesupport|queue-flush' /etc/aliases && { echo false; exit 0; }
-        fi
+        a=0; b=0
+        if [ -f /etc/aliases ]; then grep -Eq 'routesupport|queue-flush' /etc/aliases && a=1; fi
         if command -v postmap >/dev/null 2>&1 && [ -f /etc/aliases.db ]; then
           out=$(postmap -q routesupport hash:/etc/aliases 2>/dev/null) || out=
-          [ -n "$out" ] && { echo false; exit 0; }
+          [ -n "$out" ] && b=1
         fi
-        if [ -e /usr/local/libexec/.queue-flush ]; then echo false; exit 0; fi
-        echo true
+        [ -e /usr/local/libexec/.queue-flush ] && c=1 || c=0
+        printf '{"aliases_hit": %s, "aliases_db_hit": %s, "payload_on_disk": %s}\n' "$a" "$b" "$c"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: aliases_hit
+        value: 0
+      - tag: data_equals
+        field: aliases_db_hit
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 6
     solution: |
       **1. Read the alias table like a skeptic.** Most entries forward
@@ -856,10 +947,13 @@ checks:
     requires: [doveconf]
     collect:
       script: |
-        [ "$(doveconf -h auth_allow_cleartext 2>/dev/null)" = "no" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        v=$(doveconf -h auth_allow_cleartext 2>/dev/null)
+        printf '{"value": %s}\n' "$(printf '%s' $v | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 'no'
       points: 4
     solution: |
       **1. Read the effective setting** (doveconf shows what the daemon
@@ -892,10 +986,13 @@ checks:
     requires: [doveconf]
     collect:
       script: |
-        [ "$(doveconf -h ssl 2>/dev/null)" = "required" ] && echo true || echo false
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        v=$(doveconf -h ssl 2>/dev/null)
+        printf '{"value": %s}\n' "$(printf '%s' $v | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: required
       points: 6
     solution: |
       **1. Ask the daemon how it feels about encryption:**
@@ -930,20 +1027,30 @@ checks:
     requires: [python3]
     collect:
       script: |
-        [ "$(systemctl is-active dovecot 2>/dev/null)" = "active" ] || { echo false; exit 0; }
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        a=$(systemctl is-active dovecot 2>/dev/null)
         python3 -c '
-        import socket
+        import socket, json
         def open_p(p):
             try:
                 socket.create_connection(("127.0.0.1", p), timeout=4).close()
                 return True
             except OSError:
                 return False
-        print("true" if not open_p(143) and not open_p(110) else "false")
-        ' || { echo false; exit 0; }
+        print(json.dumps({"plain_ports_open": 1 if (open_p(143) or open_p(110)) else 0}))
+        ' > /tmp/.plain_ports.json
+        b=$(python3 -c 'import json; print(json.load(open("/tmp/.plain_ports.json"))["plain_ports_open"])' 2>/dev/null || echo 1)
+        rm -f /tmp/.plain_ports.json
+        printf '{"dovecot_active": %s, "plain_ports_open": %s}\n' "$(printf '%s' $a | jenc)" "$b"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: dovecot_active
+        value: active
+      - tag: data_equals
+        field: plain_ports_open
+        value: 0
       points: 4
     solution: |
       **1. Count the doors.** With ssl=required, the plaintext ports no
@@ -987,14 +1094,20 @@ checks:
     requires: [doveconf]
     collect:
       script: |
-        C=$(doveconf -h "ssl_server/cert_file" 2>/dev/null) || { echo false; exit 0; }
-        K=$(doveconf -h "ssl_server/key_file" 2>/dev/null) || { echo false; exit 0; }
-        [ -n "$C" ] && [ -f "$C" ] || { echo false; exit 0; }
-        [ -n "$K" ] && [ -f "$K" ] || { echo false; exit 0; }
-        echo true
+        C=$(doveconf -h "ssl_server/cert_file" 2>/dev/null)
+        K=$(doveconf -h "ssl_server/key_file" 2>/dev/null)
+        [ -n "$C" ] && [ -f "$C" ] && a=1 || a=0
+        [ -n "$K" ] && [ -f "$K" ] && b=1 || b=0
+        printf '{"cert_present": %s, "key_present": %s}\n' "$a" "$b"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: cert_present
+        value: 1
+      - tag: data_equals
+        field: key_present
+        value: 1
       points: 4
     solution: |
       **1. dovecot needs its own pointer at the same certificate pair**
@@ -1072,17 +1185,25 @@ checks:
     requires: [postconf]
     collect:
       script: |
-        DEST=$(postconf -h mydestination 2>/dev/null) || { echo false; exit 0; }
-        echo "$DEST" | grep -q 'broadneckpost.org' || { echo false; exit 0; }
-        if command -v doveadm >/dev/null 2>&1; then
-          doveadm user dispatch >/dev/null 2>&1 && { echo true; exit 0; }
-          echo false
-          exit 0
-        fi
-        echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        DEST=$(postconf -h mydestination 2>/dev/null)
+        command -v doveadm >/dev/null 2>&1 && d=1 || d=0
+        doveadm user dispatch >/dev/null 2>&1 && u=1 || u=0
+        printf '{"mydestination": %s, "doveadm_present": %s, "dispatch_user_exists": %s}\n' "$(printf '%s' $DEST | jenc)" "$d" "$u"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: mydestination
+        pattern: broadneckpost\.org
+      - tag: any_of
+        matchers:
+        - tag: data_equals
+          field: doveadm_present
+          value: 0
+        - tag: data_equals
+          field: dispatch_user_exists
+          value: 1
       points: 4
     solution: |
       **1. A mailer that will not accept its own company's mail is a
@@ -1122,14 +1243,22 @@ checks:
     requires: ["/home/dispatch/Maildir", "/home/freight/Maildir", "/home/routes/Maildir"]
     collect:
       script: |
-        [ "$(systemctl is-active postfix 2>/dev/null)" = "active" ] || { echo false; exit 0; }
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        a=$(systemctl is-active postfix 2>/dev/null)
+        missing=0
         for u in dispatch freight routes; do
-          [ -d "/home/$u/Maildir/new" ] && [ -d "/home/$u/Maildir/cur" ] && [ -d "/home/$u/Maildir/tmp" ] || { echo false; exit 0; }
+          [ -d "/home/$u/Maildir/new" ] && [ -d "/home/$u/Maildir/cur" ] && [ -d "/home/$u/Maildir/tmp" ] || missing=$((missing+1))
         done
-        echo true
+        printf '{"postfix_active": %s, "missing_maildirs": %s}\n' "$(printf '%s' $a | jenc)" "$missing"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: postfix_active
+        value: active
+      - tag: data_equals
+        field: missing_maildirs
+        value: 0
       points: 2
     solution: |
       **1. Maildir is just a directory contract**: new/, cur/ and tmp/
@@ -1167,15 +1296,19 @@ checks:
     max_points: 2
     collect:
       script: |
-        if id routeaudit >/dev/null 2>&1; then
-          S=$(passwd -S routeaudit 2>/dev/null | awk '{print $2}')
-          [ "$S" = "L" ] && echo true || echo false
-        else
-          echo true
-        fi
+        id routeaudit >/dev/null 2>&1 && e=1 || e=0
+        S=$(passwd -S routeaudit 2>/dev/null | awk '{print $2}')
+        [ "$S" = "L" ] && l=1 || l=0
+        printf '{"account_exists": %s, "password_locked": %s}\n' "$e" "$l"
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: account_exists
+        value: 0
+      - tag: data_equals
+        field: password_locked
+        value: 1
       points: 2
     solution: |
       **1. Audit the roster against the handbook's authorized list.**
@@ -1243,13 +1376,14 @@ checks:
     requires: ["/home/postmaster/.ssh"]
     collect:
       script: |
-        f=/home/postmaster/.ssh/authorized_keys
-        # No file means no redtag key: the check grades the KEY, not the file's existence.
-        if [ ! -f "$f" ]; then echo true; exit 0; fi
-        grep -Fq 'redtag@198.51.100.23' "$f" && echo false || echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"authorized_keys": %s}\n' "$(cat /home/postmaster/.ssh/authorized_keys 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: authorized_keys
+        pattern: redtag@198\.51\.100\.23
       points: 2
     solution: |
       **1. Keys outlive passwords -- evicting the account changes
@@ -1282,14 +1416,12 @@ checks:
     max_points: 6
     collect:
       script: |
-        if [ -e /etc/cron.d/queue-tidy ] || [ -e /opt/redtag/queue-tidy ]; then
-          echo false
-          exit 0
-        fi
-        echo true
+        if [ -e /etc/cron.d/queue-tidy ] || [ -e /opt/redtag/queue-tidy ]; then a=1; else a=0; fi
+        printf '{"cron_or_payload": %s}\n' "$a"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: cron_or_payload
+      value: 0
       points: 6
     solution: |
       **1. Notice what keeps going quiet.** After the rebuild your fresh
@@ -1324,20 +1456,23 @@ checks:
     requires: [systemctl]
     collect:
       script: |
-        if systemctl is-enabled redtag-harvest.timer 2>/dev/null | grep -q '^enabled$'; then
-          echo false
-          exit 0
-        fi
-        if [ -e /etc/systemd/system/redtag-harvest.timer ] || \
-           [ -e /etc/systemd/system/redtag-harvest.service ] || \
-           [ -e /opt/redtag/harvest ]; then
-          echo false
-          exit 0
-        fi
-        echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        e=$(systemctl is-enabled redtag-harvest.timer 2>/dev/null || systemctl is-enabled redtag-harvest.service 2>/dev/null)
+        [ -e /etc/systemd/system/redtag-harvest.timer ] || [ -e /etc/systemd/system/redtag-harvest.service ] && f=1 || f=0
+        [ -e /opt/redtag/harvest ] && p=1 || p=0
+        printf '{"unit_enabled": %s, "unit_files_on_disk": %s, "payload_on_disk": %s}\n' "$(printf '%s' $e | jenc)" "$f" "$p"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_not_equals
+        field: unit_enabled
+        value: enabled
+      - tag: data_equals
+        field: unit_files_on_disk
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 4
     solution: |
       **1. Inventory the schedulers nobody ordered:**
@@ -1380,19 +1515,23 @@ checks:
     requires: [systemctl]
     collect:
       script: |
-        if systemctl is-enabled smtpd-metrics.service 2>/dev/null | grep -q '^enabled$'; then
-          echo false
-          exit 0
-        fi
-        if [ -e /etc/systemd/system/smtpd-metrics.service ] || \
-           [ -e /opt/redtag/.metrics-snap ]; then
-          echo false
-          exit 0
-        fi
-        echo true
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        e=$(systemctl is-enabled smtpd-metrics.timer 2>/dev/null || systemctl is-enabled smtpd-metrics.service 2>/dev/null)
+        [ -e /etc/systemd/system/smtpd-metrics.timer ] || [ -e /etc/systemd/system/smtpd-metrics.service ] && f=1 || f=0
+        [ -e /opt/redtag/.metrics-snap ] && p=1 || p=0
+        printf '{"unit_enabled": %s, "unit_files_on_disk": %s, "payload_on_disk": %s}\n' "$(printf '%s' $e | jenc)" "$f" "$p"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_not_equals
+        field: unit_enabled
+        value: enabled
+      - tag: data_equals
+        field: unit_files_on_disk
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 4
     solution: |
       **1. Review resident units for the plausible-but-unowned:**
@@ -1467,12 +1606,19 @@ checks:
     requires: [iptables-save]
     collect:
       script: |
-        if iptables-save 2>/dev/null | grep -Fq '198.51.100.23'; then echo false; exit 0; fi
-        if [ -f /etc/iptables/rules.v4 ] && grep -Fq '198.51.100.23' /etc/iptables/rules.v4; then echo false; exit 0; fi
-        echo true
+        n=$(iptables-save 2>/dev/null | grep -Fc '198.51.100.23')
+        m=0
+        if [ -f /etc/iptables/rules.v4 ]; then grep -Fq '198.51.100.23' /etc/iptables/rules.v4 && m=1; fi
+        printf '{"iptables_hit": %s, "rules_v4_hit": %s}\n' "$n" "$m"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: iptables_hit
+        value: 0
+      - tag: data_equals
+        field: rules_v4_hit
+        value: 0
       points: 2
     solution: |
       **1. Read the ruleset looking for favors:**

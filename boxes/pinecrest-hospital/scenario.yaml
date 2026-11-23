@@ -14,14 +14,17 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # Win32_UserAccount.Disabled, not Get-LocalUser: authoritative on this
-        # image. Points require the account to exist AND be disabled -- an
-        # account that was deleted instead of disabled scores nothing here.
         $u = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='mharding'"
-        ($null -ne $u -and $u.Disabled) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); disabled = [bool]$u.Disabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: disabled
+        value: true
       points: 10
     solution: |
       **1. Find the account.** lusrmgr.msc (or `Get-LocalUser`) shows
@@ -54,10 +57,16 @@ checks:
     collect:
       script: |
         $u = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='jweaver'"
-        ($null -ne $u -and $u.Disabled) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); disabled = [bool]$u.Disabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: disabled
+        value: true
       points: 10
     solution: |
       Same drill as mharding: `jweaver` -- "Ward clerk (transferred)" --
@@ -83,15 +92,13 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # Win32_UserAccount, not Get-LocalUser: this image's LocalAccounts
-        # module returns null for some boolean properties (PasswordRequired is
-        # reliable there, but WMI is authoritative for both flags).
         $blank = @(Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
-            Where-Object { -not $_.Disabled -and -not $_.PasswordRequired }).Count
-        ($blank -eq 0) | ConvertTo-Json -Compress
+            Where-Object { -not $_.Disabled -and -not $_.PasswordRequired })
+        [pscustomobject]@{ count = $blank.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 10
     solution: |
       **1. Sweep for passwordless accounts.** An ENABLED account that
@@ -125,15 +132,13 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # Win32_UserAccount, not Get-LocalUser: PasswordNeverExpires reads as
-        # null for every account on this image; PasswordExpires (WMI) is the
-        # reliable mirror of the same flag (false = never expires).
         $pne = @(Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
-            Where-Object { -not $_.Disabled -and -not $_.PasswordExpires }).Count
-        ($pne -eq 0) | ConvertTo-Json -Compress
+            Where-Object { -not $_.Disabled -and -not $_.PasswordExpires })
+        [pscustomobject]@{ count = $pne.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 10
     solution: |
       **1. Sweep every enabled account.** "Password never expires"
@@ -243,13 +248,17 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # WMI Disabled flag, not Get-LocalUser .Enabled: authoritative on this
-        # image and unaffected by the LocalAccounts module's null quirks.
-        $g = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='Guest'"
-        (-not $g -or $g.Disabled) | ConvertTo-Json -Compress
+        $u = Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True and Name='Guest'"
+        [pscustomobject]@{ exists = ($null -ne $u); disabled = [bool]$u.Disabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: false
+      - tag: data_equals
+        field: disabled
+        value: true
       points: 10
     solution: |
       **1. Check it.** In lusrmgr.msc the enabled Guest carries the
@@ -282,14 +291,15 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # This Server image prints "Minimum password length:" WITHOUT the
-        # "(chars)" suffix other Windows builds use -- tolerate both.
         $out = net accounts 2>$null | Out-String
         $m = [regex]::Match($out, 'Minimum password length\s*(?:\(chars\))?\s*:\s*(\d+)')
-        ([int]$m.Groups[1].Value -ge 8) | ConvertTo-Json -Compress
+        $n = if ($m.Success) { [int]$m.Groups[1].Value } else { -1 }
+        [pscustomobject]@{ min_len = $n } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: min_len
+      min: 8
+      max: 2147483647
       points: 10
     solution: |
       **1. Read the policy.**
@@ -325,10 +335,13 @@ checks:
       script: |
         $out = net accounts 2>$null | Out-String
         $m = [regex]::Match($out, 'Lockout threshold\s*:\s*(\d+)')
-        ([int]$m.Groups[1].Value -ge 5) | ConvertTo-Json -Compress
+        $n = if ($m.Success) { [int]$m.Groups[1].Value } else { -1 }
+        [pscustomobject]@{ lockout = $n } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: lockout
+      min: 5
+      max: 2147483647
       points: 10
     solution: |
       **1. Read the policy.**
@@ -516,10 +529,12 @@ checks:
     collect:
       script: |
         $off = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled }).Count
-        ($off -eq 0) | ConvertTo-Json -Compress
+        $off
+        [pscustomobject]@{ count = $off.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 10
     solution: |
       **1. See what is dark.**
@@ -555,13 +570,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # ground truth = the registry value the seed sets (the SMB WMI Set path
-        # is unreliable on some hardened images; Get mirrors it only sometimes)
         $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -ErrorAction Ignore).SMB1
-        ($v -ne 1) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_not_equals
+      field: value
+      value: 1
       points: 10
     solution: |
       **1. Check the server side.** SMB1 is the protocol of the
@@ -598,10 +612,16 @@ checks:
     collect:
       script: |
         $out = auditpol /get /subcategory:'Logon' 2>$null | Out-String
-        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ output = $out } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: output
+        pattern: Success
+      - tag: data_regex
+        field: output
+        pattern: Failure
       points: 10
     solution: |
       **1. See what is being ignored.**
@@ -705,11 +725,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        (-not (Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdateCore' -ErrorAction SilentlyContinue)) |
-            ConvertTo-Json -Compress
+        $t = Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdateCore' -ErrorAction Ignore
+        [pscustomobject]@{ task_present = ($null -ne $t) } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: task_present
+      value: false
       points: 10
     solution: |
       **1. Find the impostor.** `MicrosoftEdgeUpdateCore` sits in the
@@ -1064,13 +1085,20 @@ checks:
     collect:
       script: |
         $p = 'C:\HospitalData\billing-export.csv'
-        if (-not (Test-Path $p)) { $false | ConvertTo-Json -Compress; exit }
-        $bad = Get-Acl $p | Select-Object -ExpandProperty Access |
-            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference -match 'Everyone' }
-        (-not $bad) | ConvertTo-Json -Compress
+        $present = Test-Path $p
+        $bad = @()
+        if ($present) { $bad = @(Get-Acl $p | Select-Object -ExpandProperty Access |
+            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference -match 'Everyone' }) }
+        [pscustomobject]@{ file_present = $present; everyone_allow_count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: file_present
+        value: true
+      - tag: data_equals
+        field: everyone_allow_count
+        value: 0
       points: 10
     solution: |
       **1. Read the ACL.**
@@ -1106,14 +1134,20 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        $share = Get-SmbShare -Name 'Records' -ErrorAction SilentlyContinue
-        if (-not $share) { $true | ConvertTo-Json -Compress; exit }
-        $bad = Get-SmbShareAccess -Name 'Records' |
-            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.AccountName -match 'Everyone' }
-        (-not $bad) | ConvertTo-Json -Compress
+        $share = Get-SmbShare -Name 'Records' -ErrorAction Ignore
+        $bad = @()
+        if ($share) { $bad = @(Get-SmbShareAccess -Name 'Records' |
+            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.AccountName -match 'Everyone' }) }
+        [pscustomobject]@{ share_present = ($null -ne $share); everyone_allow_count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: share_present
+        value: false
+      - tag: data_equals
+        field: everyone_allow_count
+        value: 0
       points: 10
     solution: |
       **1. Inspect the share.**

@@ -71,7 +71,8 @@ def _forensics_check_ids(rubric: Optional[Rubric]) -> set:
 
 def _redact_for_box(score, evidence_by_check_id: dict,
                     *, hide_forensics: bool = False,
-                    forensics_ids: Optional[set] = None) -> None:
+                    forensics_ids: Optional[set] = None,
+                    titles: Optional[dict] = None) -> None:
     """Reduce the score to the positive-only facts the box may see.
 
     Matcher reasons embed expected values (the answer key), so they are
@@ -112,6 +113,9 @@ def _redact_for_box(score, evidence_by_check_id: dict,
             continue  # a failed zero-point check is the answer key
         ev = evidence_by_check_id.get(result.check_id)
         result.reason = ev.reason if ev is not None and ev.reason else ""
+        # Ranked manifests ship generic display titles; the real wording may
+        # ride back only for results the box is already allowed to see.
+        result.title = (titles or {}).get(result.check_id, "")
         visible.append(result)
     score.results = visible
 
@@ -168,7 +172,8 @@ def _stored_sla_status(data: dict) -> list:
 
 def _frozen_score(store: Store, box_id: str, scenario_name: str,
                   scenario_version: int, received_at: float,
-                  forensics_ids: Optional[set] = None) -> ScoreBreakdown:
+                  forensics_ids: Optional[set] = None,
+                  titles: Optional[dict] = None) -> ScoreBreakdown:
     """Return the last stored authoritative score, or a zero placeholder.
 
     The stored score_json still contains matcher reasons (the answer key), so
@@ -211,6 +216,7 @@ def _frozen_score(store: Store, box_id: str, scenario_name: str,
                     check_id=check_id, category=category,
                     awarded_points=awarded, passed=passed,
                     reason=str(raw.get("reason", "")) if is_forensics else "",
+                    title=(titles or {}).get(check_id, ""),
                 ))
             return ScoreBreakdown(
                 scenario_name=data.get("scenario_name", scenario_name),
@@ -384,6 +390,10 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     if event_pool is None:
         event_pool = []
     forensics_ids = _forensics_check_ids(rubric)
+    # Rubric-side display titles: the only place real check wording survives
+    # a ranked build (manifest titles are generic there). Sent to the box
+    # only for results the box may already see.
+    titles = {e.check_id: e.display_title for e in rubric.entries if e.display_title}
 
     # 3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
     if bundle.seq <= box.last_seq:
@@ -420,7 +430,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             )
         frozen = _frozen_score(store, bundle.box_id, box.scenario_name,
                                box.scenario_version, now_for_run,
-                               forensics_ids=forensics_ids)
+                               forensics_ids=forensics_ids, titles=titles)
         rank, rank_total = competition.rank_for_player(
             store, comp, player, now_for_run)
         return CheckinResponse(
@@ -585,7 +595,7 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     # them entirely, so the per-question oracle only opens once scoring has.
     _redact_for_box(score, evidence_by_check_id,
                     hide_forensics=(run_status == "running"),
-                    forensics_ids=forensics_ids)
+                    forensics_ids=forensics_ids, titles=titles)
 
     # Scoreboard position is a presentation fact, not a scoring input: derive
     # it after the score write so it reflects this check-in, including ties.

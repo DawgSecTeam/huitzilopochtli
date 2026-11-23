@@ -135,6 +135,31 @@ severities:
     locations are exempt, and a parent directory does not fire for a longer
     briefed path.
 
+### Ranked builds are stricter (tier 5)
+
+In **ranked** compiles the lint promotes a second class of findings from
+warnings to compile-blocking errors, because the handbook ships on a
+root-capable box next to the signed manifest and must not read as the
+attacker's setup playbook:
+
+- a **planted unit/account name** — a `collect` service/unit/username of a
+  `vuln`/`prohibited` check, a `user_absent` username, or a systemd unit
+  (or its bare stem) from a `solution:` — appearing in the handbook.
+  The must-stay-up set (penalty checks and the scored `services:` block)
+  stays legal: the critical-services briefing names exactly those;
+- a **scored end-state paraphrase** — a 6-word n-gram of a check's
+  `display:` title appearing in the handbook;
+- a **finding-count reveal** — the numeric answer to a "how many …" forensics
+  question appearing in the handbook (list ordinals don't count);
+- a **prose fix instruction** — a mutation verb aimed at a specific artifact
+  ("disable its launcher", "delete the beacon's binary"). Generic mission
+  verbs ("remove unauthorized users") and the do-not-delete-the-scoring-
+  engine warning stay legal.
+
+In honor builds these remain warnings (honor players are trusted). The
+all-boxes regression test lints every box in **both** modes, so a ranked box
+with any of these fails its build.
+
 Run it directly:
 
 ```bash

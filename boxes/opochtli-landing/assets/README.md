@@ -12,7 +12,7 @@ predecessor left in a hurry. Everything the attackers touched is still here.
 
 This box has no desktop — you work from the terminal. Start with `huitz score`
 (your current standing), `huitz readme` (this handbook again), and `huitz
-forensics` (the questions at the bottom). `huitz watch` re-grades live.
+forensics` (the question file). `huitz watch` re-grades live.
 
 Your job: **harden this box before the next ship docks.**
 
@@ -35,40 +35,35 @@ Your job: **harden this box before the next ship docks.**
   a firewall that locks you out ends your shift. Rule zero of default-deny:
   allow your management path *before* you drop the default.
 
-## The audit findings (what the Harbor Office is asking for)
+## Where to look
 
-1. Set up a **default deny** firewall — and make sure the critical services
-   above still work through it. Discover what each service actually needs
-   *before* you drop the default; over-blocking is a finding, not a fix.
-2. Something answering on a port nobody asked for is an **admin web
-   console**. Find it and remove it — package or socket, your call — and
-   confirm it went quiet.
-3. A service that **calls home** (beacon) is running on this box under a name
-   that sounds almost legitimate. Find it, stop it, and disable its launcher.
-4. Delete the beacon's binary from disk so it cannot be restarted by hand.
-5. A **bind shell** is waiting for a connection. Kill it — and make sure it
-   cannot simply come back after the next reboot.
+The audit says the box is compromised. Rather than a checklist, these are
+the places an intruder leaves traces — work through them and let the
+evidence tell you what actually happened:
 
-Hints, if you want them: `ss -tlnp` shows every *listener* — but the thing in
-finding 3 never listens on anything. For that one: `ps aux` and
-`systemctl list-units --type=service`.
+- **The firewall.** Set up a **default deny** policy — and make sure the
+  critical services above still work through it. Discover what each service
+  actually needs *before* you drop the default; over-blocking is a finding,
+  not a fix.
+- **Listeners.** Something may be answering on a port nobody asked for.
+  Find anything that should not be there and make sure it stays gone.
+- **Running software.** Something may be running that calls home, under a
+  name that sounds almost legitimate. Find it — and find everything that
+  would restart it, because stopping one process is not enough if a service,
+  a timer, or a startup hook launches it again.
+- **Persistence.** Check the places software hides so it survives a reboot
+  and manual restarts alike.
 
 ## Forensics
 
-Answer these in `huitz forensics` (they live in
-`~/Desktop/Forensics-Questions.txt`):
-
-- **Q1 (20 pts):** The beacon is phoning home. What destination **address and
-  port** is it dialing?
-- **Q2 (20 pts):** Same question for the bind shell: what **address and port**
-  is it bound on?
+Scored questions live in `~/Desktop/Forensics-Questions.txt` — answer them
+in `huitz forensics`. Each wants one short, specific answer.
 
 ## Scoring
 
 - Graded automatically about once a minute. `huitz score` shows the current
   report; `huitz watch` follows it live.
-- Checks are **weighted by difficulty** (EASY 5 / MODERATE 10 / HARD 20) —
-  the report shows the point value of each finding.
+- Checks are **weighted by difficulty** (EASY 5 / MODERATE 10 / HARD 20).
 - Wrong forensics answers cost nothing, so always guess.
 - Do **not** delete or tamper with the scoring agent.
 
@@ -78,8 +73,7 @@ Answer these in `huitz forensics` (they live in
   Policies (`-P`) are the default-deny knob; `-A` lines are the rules.
 - `ss -tlnp` — who is *listening*.
 - `ps aux` and `systemctl list-units --type=service` — who is *running*.
-  **Port scans will not find everything on this box.** One of the intruders
-  never listens on any port at all.
+  **Port scans will not find everything on this box.**
 - `systemctl cat UNIT` — read what a service actually executes.
 - `sudo tcpdump -i any -nn` — when listening sockets aren't the whole story,
   watch what actually leaves the box.

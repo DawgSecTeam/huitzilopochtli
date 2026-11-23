@@ -208,6 +208,16 @@ def _compile_requires(check: dict) -> list:
     return out
 
 
+#: Generic manifest display titles for ranked builds, by category. The real
+#: per-check wording stays in the rubric entries (engine-side) — see the
+#: ranked anti-oracle transform in build_scenario_parts.
+_RANKED_GENERIC_TITLES = {
+    "vuln": "Hardening finding",
+    "penalty": "Protective constraint",
+    "prohibited": "Prohibited item",
+}
+
+
 def _build_check_spec(check: dict) -> CheckSpec:
     expect = check.get("expect", {}) or {}
     return CheckSpec(
@@ -264,6 +274,9 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
         matcher=matcher,
         points=points,
         sla=sla,
+        # Ranked builds overwrite check["display"] with a generic label for
+        # the manifest; the authored wording survives here (engine-side only).
+        display_title=str(check.get("_ranked_title") or check.get("display", "")),
     )
 
 
@@ -391,6 +404,33 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
     checks = list(effective["checks"])
     forensics = effective["forensics"]
 
+    # Ranked anti-oracle transform: the signed manifest is world-readable on
+    # the box and players may have root, so it must not carry the answer key
+    # in its metadata. In ranked builds, non-forensics check ids become
+    # opaque (authored ids like "no_vega" name planted artifacts) and the
+    # manifest's display titles become generic category labels (authored
+    # titles state exact end-states). The real titles ride in the rubric
+    # entries (engine-side only) so the engine can still name PASSED checks
+    # back to the box as progressive hints. Forensics questions are exempt:
+    # their ids and question text are public (the question file ships on the
+    # box). Honor builds are unchanged — the honor box holds the rubric and
+    # the player is trusted.
+    ranked = scenario["mode"] == "ranked"
+    id_map = {}
+    if ranked:
+        for ordinal, check in enumerate(checks, start=1):
+            old_id = check.get("id")
+            if not old_id:
+                continue
+            new_id = f"chk-{ordinal:03d}"
+            id_map[old_id] = new_id
+            check["id"] = new_id
+            # Keep the authored wording for the rubric entry (engine-side)
+            # before the manifest-facing display becomes generic.
+            check["_ranked_title"] = str(check.get("display", ""))
+            check["display"] = _RANKED_GENERIC_TITLES.get(
+                check.get("category"), "Hardening check")
+
     service_specs = []
     service_check_ids = {}
     for service in effective["services"]:
@@ -401,15 +441,20 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
 
     # Let an adversary event name a service id (`web`) instead of the
     # generated check id (`svc_web`); the rubric/scheduler needs the latter.
+    # Ranked id remap (above) applies first so events naming an authored
+    # check id land on its opaque replacement.
     adversary_raw = effective["adversary"] or {}
-    if service_check_ids and isinstance(adversary_raw, dict):
+    if (service_check_ids or id_map) and isinstance(adversary_raw, dict):
         rewritten = []
         for event in adversary_raw.get("events", []):
             if isinstance(event, dict):
                 target = event.get("affects_check")
-                if isinstance(target, str) and target in service_check_ids:
+                if isinstance(target, str):
+                    target = id_map.get(target, target)
+                    if target in service_check_ids:
+                        target = service_check_ids[target]
                     event = dict(event)
-                    event["affects_check"] = service_check_ids[target]
+                    event["affects_check"] = target
             rewritten.append(event)
         adversary_raw = dict(adversary_raw)
         adversary_raw["events"] = rewritten

@@ -19,10 +19,10 @@ Ridge branch. The branch's teller operations must remain usable:
   administrator.
 - The scoring agent must stay installed.
 
-Remove the attacker's registry persistence, restore the weakened platform
-controls, and leave the legitimate vendor services working. Some changes
-take effect at the next reboot; record evidence before you reboot or
-delete anything.
+Investigate the registry for persistence the attacker left behind, review
+the weakened platform controls, and leave the legitimate vendor services
+working. Some changes take effect at the next reboot; record evidence
+before you reboot or delete anything.
 
 **Authorized administrator:** `sysadmin`. No other account should be in the
 local Administrators group. (The built-in `Administrator` account may remain

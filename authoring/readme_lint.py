@@ -304,10 +304,214 @@ def _planted_paths(parsed: dict, readme_norm: str) -> list:
     return warnings
 
 
+# --- tier 5: ranked answer-reconstruction leaks -------------------------------
+#
+# The tiers above are content leaks that matter most in honor mode (the
+# handbook is the whole assignment there). Tier 5 catches the leaks that
+# matter specifically in ranked mode, where the handbook ships on a box a
+# root-capable agent can read alongside the signed manifest: a handbook that
+# reads as the attacker's setup playbook hands over the answer key passively.
+# In ranked builds these are compile-blocking errors; in honor they stay
+# warnings (honor players are trusted — architecture.md §3).
+
+# Difficulty prefixes on check display titles ("EASY: ..."); not content.
+_DIFFICULTY_PREFIX_RE = re.compile(
+    r"^(?:easy|moderate|hard|trivial|advanced|critical|penalty)\s+", re.I
+)
+
+# systemd unit names as they appear in solution: walkthroughs.
+_UNIT_NAME_RE = re.compile(r"\b[a-z0-9_.@-]+\.(?:service|timer|socket|path|mount|target)\b", re.I)
+
+# Values too generic to identify a planted artifact.
+_GENERIC_NAMES = {
+    "root", "admin", "administrator", "sudo", "shadow", "www-data", "nobody",
+    "daemon", "service", "cron", "atd", "ssh", "sshd", "ssh.service",
+}
+
+# n-gram length for paraphrase detection against display titles. 6 words:
+# shorter grams ("is in the sudo group") collide with legitimate roster
+# briefing like "check who is in the sudo group".
+_END_STATE_NGRAM = 6
+
+# Imperative fix-instruction prose: a mutation verb aimed at a *specific*
+# artifact (possessive or "its" + a system noun). Generic mission/category
+# coaching ("remove unauthorized users and malicious services") is the
+# assignment itself and does not match; "disable its launcher" does.
+_PROSE_MUTATION_RE = re.compile(
+    r"(?:disable|enable|mask|stop|kill|remove|delete|uninstall|purge|turn\s+off|turn\s+on)\b"
+    r"[^\n]*?(?:\w+'s|\bits\b)[^\n]*?"
+    r"\b(?:launcher|drop-?in|timer|unit|service|daemon|beacon|payload|malware|"
+    r"persistence|hook|cron\s+job|startup\s+script|sudoers|binary|registry)\b",
+    re.I,
+)
+
+# "How many ..." forensics questions whose numeric answer must not appear.
+_COUNT_QUESTION_RE = re.compile(r"\b(?:how many|number of|count of|total of)\b", re.I)
+
+# Required mechanics, not a fix instruction: the do-not-delete-the-scoring-
+# engine warning (HANDBOOK_GUIDE.md "Mechanics" belongs in the handbook).
+_PROSE_MUTATION_EXCLUSION_RE = re.compile(r"scoring engine|\bhuitz\b|the agent\b", re.I)
+
+
+def _walk_strings(node):
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _walk_strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_strings(value)
+    elif isinstance(node, str):
+        yield node
+
+
+def _allowed_names(parsed: dict) -> set:
+    """Names the handbook may legitimately carry: the must-stay-up set.
+
+    That is the penalty checks' collected service/unit/port names plus
+    every string in the scored `services:` (SLA) block — the handbook's
+    "critical services" section is required briefing and names exactly
+    these.
+    """
+    allowed = set()
+    for check in parsed.get("checks") or []:
+        if check.get("category") == "penalty":
+            for value in _walk_strings(check.get("collect") or {}):
+                allowed.add(_norm(value))
+    for service in parsed.get("services") or []:
+        for value in _walk_strings(service):
+            allowed.add(_norm(value))
+    return allowed
+
+
+def _planted_identifiers(parsed: dict, readme_norm: str) -> list:
+    """Planted unit/account names that appear in the handbook."""
+    findings = []
+    allowed = _allowed_names(parsed)
+    seen = set()
+
+    def flag(name: str, source: str):
+        needle = _norm(name).strip(".")
+        if len(needle) < 3 or needle in seen or needle in _GENERIC_NAMES:
+            return
+        if any(needle in a or a in needle for a in allowed if len(a) >= 3):
+            return  # a must-stay-up service / SLA string: required briefing
+        seen.add(needle)
+        if _contains(readme_norm, needle):
+            findings.append(
+                f"readme leak: planted name {name!r} ({source}) appears in the "
+                "handbook — planted units/accounts are the player's job to find"
+            )
+
+    for check in parsed.get("checks") or []:
+        cid = check.get("id", "?")
+        if check.get("category") not in ("vuln", "prohibited"):
+            continue
+        collect = check.get("collect") or {}
+        for key in ("service", "unit", "timer", "username", "account", "user"):
+            value = collect.get(key)
+            if isinstance(value, str):
+                flag(value, f"collect.{key} of {cid}")
+        expect = check.get("expect") or {}
+        if expect.get("user_absent"):
+            flag(str(expect.get("username", "")), f"expect.username of {cid}")
+        solution = check.get("solution")
+        items = solution if isinstance(solution, list) else ([solution] if solution else [])
+        for item in items:
+            for token in _UNIT_NAME_RE.findall(str(item)):
+                flag(token, f"solution: of {cid}")
+                # The bare stem too: the handbook may name the unit without
+                # its suffix ("nightcast-rebroadcast" for the .timer).
+                stem = re.split(r"[.(]", token)[0]
+                if len(stem) >= 5:
+                    flag(stem, f"solution: of {cid}")
+    return findings
+
+
+def _end_state_paraphrases(parsed: dict, readme_norm: str) -> list:
+    """Long n-grams of a scored end-state (check display title) in the handbook."""
+    findings = []
+    seen = set()
+    for check in parsed.get("checks") or []:
+        display = check.get("display")
+        if not isinstance(display, str):
+            continue
+        words = _norm(_DIFFICULTY_PREFIX_RE.sub("", display)).split()
+        if len(words) < _END_STATE_NGRAM:
+            continue
+        grams = {" ".join(words[i:i + _END_STATE_NGRAM])
+                 for i in range(len(words) - _END_STATE_NGRAM + 1)}
+        for gram in grams:
+            if gram in seen:
+                continue
+            if _contains(readme_norm, gram):
+                seen.add(gram)
+                findings.append(
+                    f"readme leak: handbook text paraphrases the scored end-state of "
+                    f"{check.get('id', '?')}: {gram!r} — end-states live in the rubric"
+                )
+                break
+    return findings
+
+
+def _count_reveals(parsed: dict, readme_text: str) -> list:
+    """Numeric answers to 'how many' forensics questions appearing in the handbook."""
+    findings = []
+    for question in parsed.get("forensics") or []:
+        qtext = _norm(question.get("question", ""))
+        if not _COUNT_QUESTION_RE.search(qtext):
+            continue
+        answers = []
+        if question.get("answer") is not None:
+            answers.append(str(question["answer"]))
+        answers.extend(str(a) for a in (question.get("answers") or []))
+        for raw in answers:
+            needle = _strip_punct(_norm(raw))
+            if not needle.isdigit():
+                continue
+            # Scan line by line so a bare number that is only a list ordinal
+            # ("4. Read the record.") is not mistaken for the answer.
+            for line in readme_text.splitlines():
+                body = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line)
+                if re.search(r"(?<!\d)" + re.escape(needle) + r"(?!\d)", body):
+                    findings.append(
+                        f"readme leak: the count answer {raw!r} "
+                        f"({question.get('id', '?')}) appears in the handbook — "
+                        "finding counts are the player's to discover"
+                    )
+                    break
+    return findings
+
+
+def _prose_mutations(readme_text: str) -> list:
+    """Fix instructions in prose (not code spans): 'disable its launcher'."""
+    findings = []
+    in_fence = False
+    for line in readme_text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or _INLINE_SPAN_RE.search(line):
+            continue
+        if _PROSE_MUTATION_EXCLUSION_RE.search(line):
+            continue
+        if _PROSE_MUTATION_RE.search(line):
+            findings.append(
+                f"readme leak: prose fix instruction in the handbook: {line.strip()[:80]!r} "
+                "— the handbook teaches inspection, not fixes"
+            )
+    return findings
+
+
 # --- entry point --------------------------------------------------------------
 
-def lint_readme(parsed: dict, readme_text: str) -> tuple:
+def lint_readme(parsed: dict, readme_text: str, mode: str = "honor") -> tuple:
     """Lint the handbook (theme.readme text) against a parsed scenario.
+
+    ``parsed`` is the effective (per-target merged) scenario dict.
+    ``mode`` is the build target ("honor" | "ranked"): tier-5 findings
+    (planted names, end-state paraphrases, count reveals, prose fix
+    instructions) are compile-blocking errors in ranked builds and
+    warnings otherwise.
 
     Returns (errors, warnings): errors block the compile; warnings are
     surfaced by boxbuilder and must stay empty for the boxes in-repo (the
@@ -315,9 +519,19 @@ def lint_readme(parsed: dict, readme_text: str) -> tuple:
     """
     readme_norm = _norm(readme_text)
     errors = _forensics_answer_leaks(parsed, readme_norm)
+    tier5 = (
+        _planted_identifiers(parsed, readme_norm)
+        + _end_state_paraphrases(parsed, readme_norm)
+        + _count_reveals(parsed, readme_text)
+        + _prose_mutations(readme_text)
+    )
     warnings = (
         _solution_copy_paste(parsed, readme_norm)
         + _mutation_commands(readme_text)
         + _planted_paths(parsed, readme_norm)
     )
+    if mode == "ranked":
+        errors = errors + tier5
+    else:
+        warnings = warnings + tier5
     return errors, warnings

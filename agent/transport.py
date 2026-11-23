@@ -48,6 +48,7 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
             awarded_points=r["awarded_points"],
             passed=r["passed"],
             reason=r["reason"],
+            title=r.get("title", ""),
         )
         for r in score_data.get("results", [])
     ]

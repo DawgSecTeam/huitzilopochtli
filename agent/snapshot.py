@@ -170,6 +170,9 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "awarded_points": r.awarded_points,
                 "passed": bool(r.passed),
                 "reason": r.reason,
+                # Engine-sent title for visible results (ranked progressive
+                # hints); empty when the engine does not send one.
+                "title": getattr(r, "title", "") or "",
             }
             for r in (score.results or [])
             if r.passed or r.awarded_points != 0 or r.check_id in forensics_ids

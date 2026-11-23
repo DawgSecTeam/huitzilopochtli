@@ -8,7 +8,7 @@ You have inherited the public catalog server, and it has had... a week.
 
 The catalog has been misbehaving for days. Patron holds cancel
 themselves. Shelf codes sprout X's. This morning the reading-room page
-was replaced by something called a "promo portal" nobody commissioned.
+was replaced by something nobody commissioned.
 
 This was not gremlins. Someone broke in — and they are probably still
 able to come back. The good news: this server keeps honest records from
@@ -20,8 +20,7 @@ catalog itself serving patrons.** Over-breaking is a finding, not a fix:
 the site and its database must stay up.
 
 This host runs no desktop. Work from the terminal: `huitz score` shows
-your current standing (the report lists every issue the Board expects
-addressed), `huitz readme` reopens this handbook, `huitz watch`
+your current standing, `huitz readme` reopens this handbook, `huitz watch`
 re-grades live, `huitz forensics` opens the question file.
 
 **Your login:** you are signed in as **`librarian`**, and the sudo
@@ -47,21 +46,15 @@ in — this is here so a dropped session never strands you.)
 questions about what happened to this box (`huitz forensics` opens it).
 Type your answers over the `____` blanks and save; questions are graded
 automatically. Each question wants one short, specific answer (a
-filename, an account name, a path) — not yes/no.
-
-The thirteen questions (10 pts each) walk the investigation in order.
-The trail crosses four kinds of records, and each question points at a
-kind: the login journal, the audit trail, the catalog app's service
-journal (`journalctl -u library-app`), and the database's own query
-log. Earlier questions teach the trails the
-later ones follow — and several answers live inside files whose removal
-is itself scored, so **read before you delete**.
+filename, an account name, a path) — not yes/no. The box keeps records
+in several places — journals, logs, the audit trail — and the answers
+are in the evidence you will collect while hunting, so **read before
+you delete**.
 
 ## Viewing score report
 
-To view the current score and which issues are addressed, run
-`huitz score`. The report shows every check, its point value, and
-whether it currently passes.
+To view your current standing, run `huitz score`. The report updates
+every few minutes.
 
 ## Other
 

@@ -255,6 +255,93 @@ def test_invalid_readme_lint_allow_fails_validation(tmp_path):
                          signing.keypair()[0])
 
 
+# --- tier 5: ranked answer-reconstruction leaks ---------------------------------
+#
+# Tier-5 findings are warnings in honor mode but compile-blocking errors in
+# ranked mode: the handbook ships on a root-capable ranked box next to the
+# signed manifest, so planted names / end-state paraphrases / count reveals /
+# prose fix instructions must not survive a ranked compile.
+
+def _vuln_check(**overrides):
+    check = {
+        "id": "c2", "type": "service_state", "category": "vuln",
+        "display": "MODERATE: The rogue beacon service is disabled so it cannot restart",
+        "max_points": 4, "collect": {"service": "beacon-callback.service"},
+        "expect": {"equals": False, "field": "enabled", "points": 4},
+        "solution": "Stop the beacon-callback.service unit and mask it.",
+    }
+    check.update(overrides)
+    return check
+
+
+def test_ranked_blocks_on_planted_unit_name():
+    parsed = _parsed(checks=[_vuln_check()])
+    errors, warnings = lint_readme(parsed, "The beacon-callback timer comes back nightly.")
+    assert not errors and warnings, "honor keeps tier-5 as warnings"
+    errors, warnings = lint_readme(parsed, "The beacon-callback timer comes back nightly.", mode="ranked")
+    assert errors and any("beacon-callback" in e for e in errors)
+    assert not warnings
+
+
+def test_ranked_blocks_on_planted_username():
+    check = {
+        "id": "no_rogue", "type": "user_group", "category": "vuln",
+        "display": "EASY: The unauthorized account is removed",
+        "max_points": 2, "collect": {},
+        "expect": {"user_absent": True, "username": "vega", "points": 2},
+    }
+    parsed = _parsed(checks=[check])
+    errors, _ = lint_readme(parsed, "The account vega is not on the roster.", mode="ranked")
+    assert errors and any("vega" in e for e in errors)
+
+
+def test_critical_services_and_roster_stay_legal():
+    check = {
+        "id": "pen1", "type": "service_state", "category": "penalty",
+        "display": "PENALTY: The cron daemon is not running",
+        "max_points": -5, "collect": {"service": "cron"},
+        "expect": {"equals": True, "field": "active", "points": -5},
+    }
+    parsed = _parsed(checks=[check])
+    parsed["services"] = [{"id": "web", "display": "Portal (apache2)", "type": "http_uptime",
+                           "collect": {"url": "http://127.0.0.1/"}, "expect": {"equals": 200},
+                           "interval_s": 30, "points_per_interval": 2, "max_intervals_per_checkin": 3}]
+    errors, warnings = lint_readme(
+        parsed, "Keep cron and apache2 running; the cron daemon must stay up.", mode="ranked")
+    assert not errors and not warnings
+
+
+def test_ranked_blocks_on_end_state_paraphrase():
+    parsed = _parsed(checks=[_vuln_check()])
+    readme = "The rogue beacon service is disabled so it cannot restart at boot."
+    errors, _ = lint_readme(parsed, readme, mode="ranked")
+    assert errors and any("end-state" in e for e in errors)
+
+
+def test_ranked_blocks_on_count_reveal_but_not_list_ordinals():
+    parsed = _parsed(forensics=[{
+        "id": "fq-count", "question": "How many failed password attempts were logged in total?",
+        "answer": "37", "points": 10,
+    }])
+    errors, _ = lint_readme(parsed, "The guessing run logged 37 attempts.", mode="ranked")
+    assert errors and any("37" in e for e in errors)
+    errors, _ = lint_readme(parsed, "4. Read the record.\n5. Then check the log.", mode="ranked")
+    assert not errors
+
+
+def test_ranked_blocks_on_prose_fix_instruction():
+    parsed = _parsed()
+    errors, _ = lint_readme(parsed, "3. Find it, stop it, and disable its launcher.", mode="ranked")
+    assert errors and any("prose fix" in e for e in errors)
+    # Generic mission coaching and the do-not-delete-the-engine warning stay legal.
+    errors, _ = lint_readme(
+        parsed,
+        "Remove unauthorized users and malicious services.\n"
+        "Do not remove the scoring engine or its unit — that breaks scoring.",
+        mode="ranked")
+    assert not errors
+
+
 # --- all-boxes regression -------------------------------------------------------
 
 def test_every_box_in_repo_is_lint_clean():
@@ -262,6 +349,7 @@ def test_every_box_in_repo_is_lint_clean():
     scenario_paths = sorted(
         glob.glob(os.path.join(repo_root, "boxes", "*", "scenario*.yaml")))
     assert scenario_paths, "no boxes found — run from a repo checkout"
+    from common.scenario_record import merge_effective
     leaks = []
     for scenario_path in scenario_paths:
         parsed = yaml.safe_load(open(scenario_path, encoding="utf-8"))
@@ -271,9 +359,14 @@ def test_every_box_in_repo_is_lint_clean():
             continue
         readme_path = os.path.join(os.path.dirname(scenario_path), readme_rel)
         text = open(readme_path, encoding="utf-8").read()
-        errors, warnings = lint_readme(parsed, text)
         box = os.path.basename(os.path.dirname(scenario_path))
-        leaks.extend(f"{box}: {m}" for m in errors + warnings)
+        for mode in ("honor", "ranked"):
+            try:
+                effective = merge_effective(parsed, mode)
+            except Exception:
+                continue  # box has no variant for this mode
+            errors, warnings = lint_readme(effective, text, mode=mode)
+            leaks.extend(f"{box} [{mode}]: {m}" for m in errors + warnings)
     assert leaks == [], "\n".join(leaks)
 
 

@@ -235,7 +235,11 @@ def build_board(score, manifest, evidence=None) -> Board:
     penalties = []
     for r in score.results or []:
         cat = _category_str(r.category)
-        title = (lookup.get(r.check_id, {}) or {}).get("display_title") or r.check_id
+        # Ranked manifests ship generic display titles; the engine sends the
+        # real wording only for results the box may see (passed / incurred
+        # penalties), so prefer it when present.
+        title = (getattr(r, "title", "") or "") or \
+            (lookup.get(r.check_id, {}) or {}).get("display_title") or r.check_id
         if cat == "vuln":
             # Only surfaced once passed; failed vulns stay anonymous. Do not
             # filter on awarded_points: a zero-point VULN (legacy artifact or

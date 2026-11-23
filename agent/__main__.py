@@ -684,6 +684,7 @@ def _cached_ranked_response(config, manifest):
                 awarded_points=r["awarded_points"],
                 passed=r["passed"],
                 reason=r.get("reason", ""),
+                title=r.get("title", ""),
             )
             for r in snap.get("results") or []
         ]

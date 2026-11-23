@@ -372,7 +372,14 @@ The handbook is the assignment, not the answer key — write it to the bar in
 (`authoring/readme_lint.py`): a forensics answer verbatim in the handbook **fails
 the compile**, while lesser leaks (copied walkthrough lines, mutation commands,
 planted paths) surface as `readme_warnings` and `[boxbuilder] WARNING:` log
-lines. `theme.readme_lint_allow` lists answer aliases the lint may ignore.
+lines. `theme.readme_lint_allow` lists answer aliases the lint may ignore. In
+**ranked** builds the lint is stricter: planted unit/account names, scored
+end-state paraphrases, finding-count reveals, and prose fix instructions also
+fail the compile (the handbook ships on a root-capable ranked box). `lint --all`
+additionally hard-fails any ranked box whose `command_json`/`powershell_json`
+collector script computes a boolean verdict — collectors must emit raw facts
+and the pass condition moves to a `data_*` matcher in the rubric
+(`common/matchers.py`).
 
 A **themed** compile therefore needs vulndb-ui reachable (`--vulndb-url` or
 `$VULNDB_UI_URL`, default `http://127.0.0.1:3000`) on top of the catalog nakon

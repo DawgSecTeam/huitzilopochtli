@@ -21,14 +21,19 @@ from debrief.render import render_pdf
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    digests = build_digest(Path(args.db))
+    digests = build_digest(Path(args.db), args.competition)
+    if args.players is not None:
+        digests = [d for d in digests
+                   if (d.get("team", {}).get("display_name") or "").lower()
+                   in args.players]
     if not digests:
         print("no competitions found; nothing to report", flush=True)
         return 1
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for digest_row in digests:
+
+    def _one(digest_row: dict) -> None:
         digest_row["narration"] = narrate(
             digest_row,
             model=args.model,
@@ -38,6 +43,16 @@ def main(argv: list[str] | None = None) -> int:
         pdf_path = Path(args.out) / f"{_slug(digest_row)}.pdf"
         render_pdf(digest_row, pdf_path)
         print(f"wrote {pdf_path}", flush=True)
+
+    workers = max(1, args.jobs)
+    if workers == 1:
+        for digest_row in digests:
+            _one(digest_row)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for _ in pool.map(_one, digests):
+                pass
     return 0
 
 
@@ -50,6 +65,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="path to the engine SQLite database")
     parser.add_argument("--competition", default=None,
                         help="competition slug (default: all in the store)")
+    parser.add_argument("--player", default=None,
+                        help="only this team's display name (repeat ignored, "
+                             "comma-separated list accepted)")
     parser.add_argument("--out", default="debrief-out",
                         help="output directory for the PDF reports")
     parser.add_argument("--model", default=None,
@@ -58,12 +76,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--llm-url", default=None,
                         help="OpenAI-compatible chat endpoint "
                              "(default %s or $DEBRIEF_LLM_URL)" % DEFAULT_LLM_URL)
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="narrations to run concurrently (default 3)")
     parser.add_argument("--api-key", default=None,
                         help="bearer token for the endpoint "
                              "(default $DEBRIEF_LLM_API_KEY)")
     args = parser.parse_args(argv)
     args.llm_url = args.llm_url or os.environ.get("DEBRIEF_LLM_URL")
     args.api_key = args.api_key or os.environ.get("DEBRIEF_LLM_API_KEY")
+    args.players = ({p.strip().lower()
+                     for p in args.player.split(",") if p.strip()}
+                    if args.player else None)
+    args.jobs = args.jobs if args.jobs is not None else 3
     return args
 
 

@@ -195,8 +195,31 @@ def _strip_reasoning(text: str) -> str:
     return text.strip()
 
 
+_RETRY_CODES = {500, 502, 503, 504, 524, 529}
+
+
 def _default_transport(messages: list[dict], options: dict,
                        url: str) -> str:
+    """One streaming chat completion against an OpenAI-compatible endpoint,
+    retried with backoff on the transient failures the endpoint actually
+    shows (edge 5xx, gateway resets). Validation and fallback stay as they
+    are: retries only buy connection odds, never output leniency."""
+    last: Exception = NarrationError("LLM transport never ran")
+    for attempt in range(3):
+        try:
+            return _stream_once(messages, options, url)
+        except NarrationError as exc:
+            last = exc
+            transient = getattr(exc, "transient", True)
+            if not transient:
+                raise
+            if attempt < 2:
+                import time
+                time.sleep(2.0 * (attempt + 1))
+    raise last
+
+
+def _stream_once(messages: list[dict], options: dict, url: str) -> str:
     """One streaming chat completion against an OpenAI-compatible endpoint.
 
     Streamed on purpose: reasoning models can spend minutes before the
@@ -252,8 +275,12 @@ def _default_transport(messages: list[dict], options: dict,
                 thought = delta.get("reasoning_content")
                 if isinstance(thought, str):
                     reasoning_parts.append(thought)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError) as exc:
+    except urllib.error.HTTPError as exc:
+        retry = exc.code in _RETRY_CODES
+        err = NarrationError(f"LLM endpoint unreachable: {exc}")
+        err.transient = retry
+        raise err from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise NarrationError(f"LLM endpoint unreachable: {exc}") from exc
 
     content = "".join(content_parts)

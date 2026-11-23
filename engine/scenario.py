@@ -33,6 +33,7 @@ def rubric_from_dict(d: dict) -> Rubric:
                 matcher=e["matcher"],
                 points=e["points"],
                 sla=sla_obj,
+                display_title=str(e.get("display_title", "")),
             )
         )
     return Rubric(

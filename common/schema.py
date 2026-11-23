@@ -95,6 +95,12 @@ class RubricEntry:
     matcher: dict
     points: int  # SIGNED; negative for penalty/prohibited
     sla: Optional[SlaParams] = None
+    # Human title for leaderboards/admin views and for the engine to send
+    # back to a ranked box for PASSED checks only. The ranked manifest ships
+    # generic display titles (see common/scenario_record.py), so this is the
+    # only place the real wording exists — and it never touches the box
+    # except as a per-passed-check hint. Honor boxes carry the rubric anyway.
+    display_title: str = ""
 
 
 # --- §6.4 Manifest (signed, shipped to box) ---------------------------------
@@ -163,6 +169,11 @@ class CheckResult:
     awarded_points: int
     passed: bool
     reason: str
+    # Engine -> box only, set for results the box is allowed to see (passed /
+    # incurred penalties): the rubric-side display title, so a ranked box
+    # whose manifest ships generic titles can still name what was fixed.
+    # Empty when the engine does not send one; legacy engines omit it.
+    title: str = ""
 
 
 @dataclass

@@ -19,6 +19,28 @@ conventional keys are:
   group_members_subset_of  {"tag": "group_members_subset_of", "group": <str>, "allowed": [<str>, ...]}
   answer_equals            {"tag": "answer_equals", "value": <str>, "accept": [<str>, ...]}
 
+The data_* matchers read a subfield of raw["data"] (the parsed JSON document a
+command_json/powershell_json collector emitted) instead of a top-level raw
+field. "field" is a dotted path into the data object. They exist so ranked
+collectors can ship raw facts only — the pass condition lives in the rubric
+(engine-side), never in the on-box script:
+
+  data_equals              {"tag": "data_equals", "field": <str>, "value": <any>}
+  data_not_equals          {"tag": "data_not_equals", "field": <str>, "value": <any>}
+  data_contains            {"tag": "data_contains", "field": <str>, "value": <any>}
+  data_regex               {"tag": "data_regex", "field": <str>, "pattern": <str>}
+  data_in_range            {"tag": "data_in_range", "field": <str>, "min": <num>, "max": <num>}
+  data_present             {"tag": "data_present", "field": <str>}
+  data_absent              {"tag": "data_absent", "field": <str>}
+
+Combinators (work over any sub-matchers, including the data_* ones) so a
+compound pass condition — several facts that must all hold — lives in the
+rubric rather than as an OR/AND chain inside an on-box script:
+
+  all_of                   {"tag": "all_of", "matchers": [<matcher>, ...]}
+  any_of                   {"tag": "any_of", "matchers": [<matcher>, ...]}
+  not                      {"tag": "not", "matcher": <matcher>}
+
 "field" defaults to "matched" for equals/not_equals/contains/regex (the
 common single-value raw field, e.g. file_regex's raw["matched"]) when not
 given explicitly.
@@ -155,6 +177,49 @@ def validate_matcher(matcher: dict) -> list:
             not isinstance(accept, list) or not all(isinstance(a, str) for a in accept)
         ):
             errors.append("answer_equals accept must be a list of strings")
+    elif tag in ("data_equals", "data_not_equals", "data_contains"):
+        if "value" not in matcher and tag not in matcher:
+            errors.append(f"{tag} matcher is missing its expected value")
+        if "field" not in matcher:
+            errors.append(f"{tag} matcher requires a 'field' (dotted path into raw data)")
+    elif tag == "data_regex":
+        pattern = _expected_value(matcher, "data_regex", "pattern")
+        if pattern is _MISSING:
+            errors.append("data_regex matcher is missing its pattern")
+        elif not isinstance(pattern, str):
+            errors.append("data_regex pattern must be a string")
+        elif "field" not in matcher:
+            errors.append("data_regex matcher requires a 'field'")
+        else:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                errors.append(f"data_regex pattern does not compile: {exc}")
+    elif tag == "data_in_range":
+        if "field" not in matcher:
+            errors.append("data_in_range matcher requires a 'field'")
+        for bound in ("min", "max"):
+            if bound not in matcher or isinstance(matcher[bound], bool) or \
+                    not isinstance(matcher[bound], (int, float)):
+                errors.append(f"data_in_range {bound} must be a number")
+    elif tag in ("data_present", "data_absent"):
+        if not matcher.get("field"):
+            errors.append(f"{tag} matcher requires a non-empty 'field'")
+    elif tag in ("all_of", "any_of"):
+        sub = matcher.get("matchers")
+        if not isinstance(sub, list) or not sub:
+            errors.append(f"{tag} requires a non-empty 'matchers' list")
+        elif not all(isinstance(m, dict) for m in sub):
+            errors.append(f"{tag} matchers must all be objects")
+        else:
+            for m in sub:
+                errors.extend(f"{tag}: {e}" for e in validate_matcher(m))
+    elif tag == "not":
+        sub = matcher.get("matcher")
+        if not isinstance(sub, dict):
+            errors.append("not requires a 'matcher' object")
+        else:
+            errors.extend(f"not: {e}" for e in validate_matcher(sub))
     return errors
 
 
@@ -404,6 +469,175 @@ def _user_present(matcher: dict, raw: dict) -> tuple:
     if present:
         return True, f"user {username!r} is present"
     return False, f"user {username!r} is absent"
+
+
+# --- data_* matchers: subfields of raw["data"] (command_json / powershell_json)
+#
+# Ranked collectors must emit raw facts only; the pass condition is expressed
+# here, in the rubric, so the on-box script never contains the verdict.
+
+def _get_data_field(raw: dict, field: str):
+    """Dotted-path lookup into raw["data"]; _MISSING when absent/not an object."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("data"), dict):
+        return _MISSING
+    node = raw["data"]
+    for part in field.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _MISSING
+        node = node[part]
+    return node
+
+
+@register("data_equals")
+def _data_equals(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field", "value")
+    expected = _expected_value(matcher, "data_equals")
+    if expected is _MISSING:
+        return False, f"matcher missing expected value for data field {field!r}"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING:
+        return False, f"raw data missing field {field!r}"
+    if actual == expected:
+        return True, f"data.{field}={actual!r} equals expected {expected!r}"
+    return False, f"data.{field}={actual!r} does not equal expected {expected!r}"
+
+
+@register("data_not_equals")
+def _data_not_equals(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field", "value")
+    expected = _expected_value(matcher, "data_not_equals")
+    if expected is _MISSING:
+        return False, f"matcher missing expected value for data field {field!r}"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING:
+        return False, f"raw data missing field {field!r}"
+    if actual != expected:
+        return True, f"data.{field}={actual!r} does not equal forbidden {expected!r}"
+    return False, f"data.{field}={actual!r} equals forbidden {expected!r}"
+
+
+@register("data_contains")
+def _data_contains(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field", "value")
+    expected = _expected_value(matcher, "data_contains")
+    if expected is _MISSING:
+        return False, f"matcher missing expected value for data field {field!r}"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING:
+        return False, f"raw data missing field {field!r}"
+    try:
+        found = expected in actual
+    except TypeError:
+        return False, f"data.{field}={actual!r} is not a container/string; cannot check containment"
+    if found:
+        return True, f"data.{field} contains {expected!r}"
+    return False, f"data.{field}={actual!r} does not contain {expected!r}"
+
+
+@register("data_regex")
+def _data_regex(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field", "value")
+    pattern = _expected_value(matcher, "data_regex", "pattern")
+    if pattern is _MISSING:
+        return False, f"matcher missing pattern for data field {field!r}"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING:
+        return False, f"raw data missing field {field!r}"
+    if actual is None:
+        return False, f"data.{field} is None; cannot match pattern {pattern!r}"
+    haystack = str(actual)
+    if len(haystack) > _REGEX_HAYSTACK_LIMIT:
+        return False, f"data.{field} exceeds length limit {_REGEX_HAYSTACK_LIMIT}; not evaluated"
+    try:
+        compiled = _compile_pattern(pattern)
+    except re.error as e:
+        return False, f"invalid regex pattern {pattern!r}: {e}"
+    try:
+        hit = compiled.search(haystack)
+    except RecursionError:
+        return False, f"regex {pattern!r} hit recursion limit"
+    if hit:
+        return True, f"data.{field}={actual!r} matches pattern {pattern!r}"
+    return False, f"data.{field}={actual!r} does not match pattern {pattern!r}"
+
+
+@register("data_in_range")
+def _data_in_range(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field", "value")
+    lo = matcher.get("min")
+    hi = matcher.get("max")
+    if lo is None or hi is None:
+        return False, "data_in_range requires numeric min and max"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING or actual is None:
+        return False, f"raw data missing field {field!r}"
+    try:
+        value = float(actual)
+        lo_f, hi_f = float(lo), float(hi)
+    except (TypeError, ValueError):
+        return False, f"data.{field}={actual!r} is not numeric"
+    if lo_f <= value <= hi_f:
+        return True, f"data.{field}={actual!r} is within [{lo}, {hi}]"
+    return False, f"data.{field}={actual!r} is outside [{lo}, {hi}]"
+
+
+@register("data_present")
+def _data_present(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field")
+    if not field:
+        return False, "data_present requires a field"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING or actual is None or actual == "":
+        return False, f"data.{field} is absent or empty"
+    return True, f"data.{field}={actual!r} is present"
+
+
+@register("data_absent")
+def _data_absent(matcher: dict, raw: dict) -> tuple:
+    field = matcher.get("field")
+    if not field:
+        return False, "data_absent requires a field"
+    actual = _get_data_field(raw, field)
+    if actual is _MISSING or actual is None or actual == "":
+        return True, f"data.{field} is absent"
+    return False, f"data.{field}={actual!r} is present"
+
+
+@register("all_of")
+def _all_of(matcher: dict, raw: dict) -> tuple:
+    sub = matcher.get("matchers")
+    if not isinstance(sub, list) or not sub:
+        return False, "all_of requires a non-empty 'matchers' list"
+    for sub_matcher in sub:
+        passed, reason = evaluate_matcher(sub_matcher, raw)
+        if not passed:
+            return False, f"not all conditions hold: {reason}"
+    return True, "all conditions hold"
+
+
+@register("any_of")
+def _any_of(matcher: dict, raw: dict) -> tuple:
+    sub = matcher.get("matchers")
+    if not isinstance(sub, list) or not sub:
+        return False, "any_of requires a non-empty 'matchers' list"
+    reasons = []
+    for sub_matcher in sub:
+        passed, reason = evaluate_matcher(sub_matcher, raw)
+        if passed:
+            return True, f"at least one condition holds: {reason}"
+        reasons.append(reason)
+    return False, "no condition holds: " + "; ".join(reasons)
+
+
+@register("not")
+def _not(matcher: dict, raw: dict) -> tuple:
+    sub = matcher.get("matcher")
+    if not isinstance(sub, dict):
+        return False, "not requires a 'matcher' object"
+    passed, reason = evaluate_matcher(sub, raw)
+    if passed:
+        return False, f"negated condition held: {reason}"
+    return True, f"negated condition did not hold: {reason}"
 
 
 @register("group_members_subset_of")

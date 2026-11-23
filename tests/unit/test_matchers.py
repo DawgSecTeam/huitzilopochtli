@@ -428,3 +428,56 @@ def test_malformed_matcher_never_raises_at_evaluation():
         passed, reason = evaluate_matcher(matcher, {"matched": "x"})
         assert passed is False
         assert reason
+
+
+# --- data_* matchers (raw["data"] subfields; ranked raw-fact collectors) ------
+
+_RAW_DATA = {"data": {"hostname": "relay7", "days": 120, "hash": "SHA512",
+                      "flags": ["a", "b"], "nested": {"mode": "0600"}}, "text": "..."}
+
+
+def test_data_equals_and_not_equals():
+    assert evaluate_matcher({"tag": "data_equals", "field": "hostname", "value": "relay7"}, _RAW_DATA)[0]
+    assert not evaluate_matcher({"tag": "data_equals", "field": "hostname", "value": "x"}, _RAW_DATA)[0]
+    assert evaluate_matcher({"tag": "data_not_equals", "field": "hostname", "value": "x"}, _RAW_DATA)[0]
+    assert not evaluate_matcher({"tag": "data_not_equals", "field": "hostname", "value": "relay7"}, _RAW_DATA)[0]
+
+
+def test_data_regex_and_contains():
+    assert evaluate_matcher({"tag": "data_regex", "field": "hash", "pattern": "^SHA512$"}, _RAW_DATA)[0]
+    assert not evaluate_matcher({"tag": "data_regex", "field": "hash", "pattern": "^MD5$"}, _RAW_DATA)[0]
+    assert evaluate_matcher({"tag": "data_contains", "field": "flags", "value": "b"}, _RAW_DATA)[0]
+    assert not evaluate_matcher({"tag": "data_contains", "field": "flags", "value": "z"}, _RAW_DATA)[0]
+
+
+def test_data_in_range_numeric_bounds():
+    assert evaluate_matcher({"tag": "data_in_range", "field": "days", "min": 0, "max": 365}, _RAW_DATA)[0]
+    assert not evaluate_matcher({"tag": "data_in_range", "field": "days", "min": 200, "max": 365}, _RAW_DATA)[0]
+    passed, reason = evaluate_matcher({"tag": "data_in_range", "field": "hash", "min": 0, "max": 1}, _RAW_DATA)
+    assert not passed and "not numeric" in reason
+
+
+def test_data_present_absent_and_dotted_path():
+    assert evaluate_matcher({"tag": "data_present", "field": "hostname"}, _RAW_DATA)[0]
+    assert not evaluate_matcher({"tag": "data_present", "field": "missing"}, _RAW_DATA)[0]
+    assert evaluate_matcher({"tag": "data_absent", "field": "missing"}, _RAW_DATA)[0]
+    assert evaluate_matcher({"tag": "data_equals", "field": "nested.mode", "value": "0600"}, _RAW_DATA)[0]
+
+
+def test_data_matchers_fail_closed_without_data_object():
+    for matcher in (
+        {"tag": "data_equals", "field": "hostname", "value": "relay7"},
+        {"tag": "data_present", "field": "hostname"},
+        {"tag": "data_in_range", "field": "days", "min": 0, "max": 1},
+    ):
+        assert evaluate_matcher(matcher, {"text": "true"})[0] is False
+        assert evaluate_matcher(matcher, {"data": None})[0] is False
+
+
+def test_validate_matcher_covers_data_tags():
+    assert validate_matcher({"tag": "data_equals", "field": "h", "value": "x"}) == []
+    assert validate_matcher({"tag": "data_in_range", "field": "d", "min": 0, "max": 5}) == []
+    assert validate_matcher({"tag": "data_present", "field": "h"}) == []
+    assert validate_matcher({"tag": "data_equals", "value": "x"})  # missing field
+    assert validate_matcher({"tag": "data_in_range", "field": "d", "min": 0, "max": "5"})
+    assert validate_matcher({"tag": "data_present"})

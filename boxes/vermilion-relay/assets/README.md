@@ -1,11 +1,9 @@
 # Vermilion Deep-Space Relay: Operator Hardening Handbook
 
 Relay Vermilion-7 is an uncrewed deep-space communications relay. Ground
-control lost clean telemetry weeks ago. Whoever has been listening on the far
-end seeded the relay's control stack from top to bottom: extra operator
-accounts nobody added, services that phone home across the void, and startup
-hooks that put everything back every time the watch officer thinks the box is
-clean.
+control lost clean telemetry weeks ago. Whoever is on the far end left their
+mark on the relay's control stack, and they have ways of putting it all back
+every time the watch officer thinks the box is clean.
 
 Your shift is simple to state and long to finish: harden the relay before the
 next uplink window. This is the capstone box, so it is large on purpose. You

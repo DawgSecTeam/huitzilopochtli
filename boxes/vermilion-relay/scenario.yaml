@@ -110,10 +110,11 @@ checks:
       script: |
         n=$(awk -F: '($2 == "") {c++} END{print c+0}' /etc/shadow 2>/dev/null)
         [ -z "$n" ] && n=0
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Find blank-password accounts.** An empty second field in
@@ -166,11 +167,13 @@ checks:
     collect:
       script: |
         v=$(awk '/^PASS_MAX_DAYS/{print $2}' /etc/login.defs | tail -n1)
-        [ -z "$v" ] && v=-1
-        if [ "$v" -ge 0 ] && [ "$v" -le 365 ]; then echo true; else echo false; fi
+        case "$v" in ''|*[!0-9]*) v=-1;; esac
+        printf '{"max_days": %s}\n' "$v"
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: max_days
+      min: 0
+      max: 365
       points: 4
     solution: |
       **1. Read the policy.** `login.defs` ships the default aging for new
@@ -199,11 +202,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        m=$(awk '/^ENCRYPT_METHOD/{print $2}' /etc/login.defs | tail -n1)
-        if [ "$m" = "SHA512" ]; then echo true; else echo false; fi
+        m=$(awk '/^ENCRYPT_METHOD/{print $2}' /etc/login.defs | tail -n1 | tr -d '"\\')
+        printf '{"encrypt_method": "%s"}\n' "$m"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: encrypt_method
+      value: SHA512
       points: 2
     solution: |
       **1. Read the hashing method:**
@@ -232,10 +236,11 @@ checks:
     collect:
       script: |
         d=$(awk -F: '{print $3}' /etc/passwd | sort | uniq -d | grep -vc '^0$')
-        echo "$d"
+        printf '{"count": %s}\n' "$d"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Find shared UIDs.** Two accounts with the same non-zero UID are
@@ -369,10 +374,11 @@ checks:
     collect:
       script: |
         extra=$(getent group shadow | awk -F: '{print $4}' | tr ',' '\n' | grep -vx '' | grep -vx 'relayadmin' | grep -c .)
-        echo "$extra"
+        printf '{"count": %s}\n' "$extra"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Read the group.** Membership in `shadow` grants read access to
@@ -404,11 +410,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        s=$(getent passwd relaybot | cut -d: -f7)
-        case "$s" in */nologin|*/false) echo true;; *) echo false;; esac
+        s=$(getent passwd relaybot | cut -d: -f7 | tr -d '"\\')
+        printf '{"shell": "%s"}\n' "$s"
     expect:
-      equals: true
-      field: data
+      tag: data_regex
+      field: shell
+      pattern: (nologin|false)$
       points: 2
     solution: |
       **1. Check the shell.** Service accounts should never be able to log in
@@ -434,11 +441,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        s=$(getent passwd uplinkd | cut -d: -f7)
-        case "$s" in */nologin|*/false) echo true;; *) echo false;; esac
+        s=$(getent passwd uplinkd | cut -d: -f7 | tr -d '"\\')
+        printf '{"shell": "%s"}\n' "$s"
     expect:
-      equals: true
-      field: data
+      tag: data_regex
+      field: shell
+      pattern: (nologin|false)$
       points: 2
     solution: |
       Same as the relaybot finding, for the `uplinkd` daemon account:
@@ -457,10 +465,12 @@ checks:
     max_points: 8
     collect:
       script: |
-        if grep -rIlE 'NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false; else echo true; fi
+        n=$(grep -rIlE 'NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -c .)
+        printf '{"matches": %s}\n' "$n"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: matches
+      value: 0
       points: 8
     solution: |
       **1. Hunt the drop-ins.** Files under `/etc/sudoers.d/` are as powerful
@@ -490,10 +500,12 @@ checks:
     max_points: 8
     collect:
       script: |
-        if grep -rIhE 'NOPASSWD:.*(/vim|/vi|/less|/more|/find|/nmap|/awk|/env|/man)($|[[:space:],])' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false; else echo true; fi
+        n=$(grep -rIhE 'NOPASSWD:.*(/vim|/vi|/less|/more|/find|/nmap|/awk|/env|/man)($|[[:space:],])' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -c .)
+        printf '{"matches": %s}\n' "$n"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: matches
+      value: 0
       points: 8
     solution: |
       **1. Read every sudo rule, not just the obvious ones.** A rule can look
@@ -525,10 +537,12 @@ checks:
     max_points: 4
     collect:
       script: |
-        if grep -rIhE '^[^#]*Defaults.*!authenticate' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -q .; then echo false; else echo true; fi
+        n=$(grep -rIhE '^[^#]*Defaults.*!authenticate' /etc/sudoers /etc/sudoers.d 2>/dev/null | grep -c .)
+        printf '{"matches": %s}\n' "$n"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: matches
+      value: 0
       points: 4
     solution: |
       **1. Look for a global authentication bypass.** One line disables the
@@ -557,11 +571,12 @@ checks:
     max_points: 4
     collect:
       script: |
-        v=$(sshd -T 2>/dev/null | awk '/^permitrootlogin/{print $2}')
-        if [ "$v" = "no" ]; then echo true; else echo false; fi
+        v=$(sshd -T 2>/dev/null | awk '/^permitrootlogin/{print $2}' | tr -d '"\\')
+        printf '{"permitrootlogin": "%s"}\n' "$v"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: permitrootlogin
+      value: 'no'
       points: 4
     solution: |
       **1. Read the effective setting** (this shows the value in force, not
@@ -592,11 +607,12 @@ checks:
     max_points: 4
     collect:
       script: |
-        v=$(sshd -T 2>/dev/null | awk '/^permitemptypasswords/{print $2}')
-        if [ "$v" = "no" ]; then echo true; else echo false; fi
+        v=$(sshd -T 2>/dev/null | awk '/^permitemptypasswords/{print $2}' | tr -d '"\\')
+        printf '{"permitemptypasswords": "%s"}\n' "$v"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: permitemptypasswords
+      value: 'no'
       points: 4
     solution: |
       **1. Read the setting:**
@@ -626,10 +642,16 @@ checks:
       script: |
         x=$(sshd -T 2>/dev/null | awk '/^x11forwarding/{print $2}')
         t=$(sshd -T 2>/dev/null | awk '/^allowtcpforwarding/{print $2}')
-        if [ "$x" = "no" ] && [ "$t" = "no" ]; then echo true; else echo false; fi
+        printf '{"x11forwarding": "%s", "allowtcpforwarding": "%s"}\n' "$x" "$t"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: x11forwarding
+        value: 'no'
+      - tag: data_equals
+        field: allowtcpforwarding
+        value: 'no'
       points: 2
     solution: |
       **1. Read both forwarding settings:**
@@ -662,10 +684,14 @@ checks:
     collect:
       script: |
         f=/home/relayadmin/.ssh/authorized_keys
-        if [ ! -e "$f" ] || ! grep -q 'voidkey@relay' "$f" 2>/dev/null; then echo true; else echo false; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"authorized_keys": %s}\n' "$(cat "$f" 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: authorized_keys
+        pattern: voidkey@relay
       points: 2
     solution: |
       **1. Read the authorized keys.** Any key here can log in as
@@ -695,10 +721,14 @@ checks:
     collect:
       script: |
         f=/home/uplinkd/.ssh/authorized_keys
-        if [ ! -e "$f" ] || ! grep -q 'voidkey@relay' "$f" 2>/dev/null; then echo true; else echo false; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"authorized_keys": %s}\n' "$(cat "$f" 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: authorized_keys
+        pattern: voidkey@relay
       points: 4
     solution: |
       **1. Question why a service account has any keys at all.** `uplinkd`
@@ -876,12 +906,16 @@ checks:
     collect:
       script: |
         d=/srv/relay-shared
-        if [ ! -d "$d" ]; then echo false; else
-          m=$(stat -c '%A' "$d"); case "$m" in *t|*T) echo true;; *) echo false;; esac
-        fi
+        if [ ! -d "$d" ]; then printf '{"exists": false, "mode": ""}\n'; else printf '{"exists": true, "mode": "%s"}\n' "$(stat -c '%A' "$d")"; fi
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_regex
+        field: mode
+        pattern: '[tT]$'
       points: 4
     solution: |
       **1. Check the sticky bit.** `/srv/relay-shared` is a world-writable
@@ -911,10 +945,11 @@ checks:
     collect:
       script: |
         n=$(find /usr/local /opt /home /srv /tmp /var/tmp -xdev -type f -perm -4000 2>/dev/null | grep -c .)
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 8
     solution: |
       **1. Hunt setuid binaries in the wrong places.** A setuid-root file runs
@@ -946,10 +981,11 @@ checks:
     collect:
       script: |
         n=$(getcap -r /opt /usr/local /home 2>/dev/null | grep -c cap_setuid)
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 8
     solution: |
       **1. Look for file capabilities, the quieter cousin of setuid.** A
@@ -978,11 +1014,12 @@ checks:
     max_points: 4
     collect:
       script: |
-        o=$(stat -c '%U' /etc/vermilion/relay.conf 2>/dev/null)
-        if [ "$o" = "root" ]; then echo true; else echo false; fi
+        o=$(stat -c '%U' /etc/vermilion/relay.conf 2>/dev/null | tr -d '"\\')
+        printf '{"owner": "%s"}\n' "$o"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: owner
+      value: root
       points: 4
     solution: |
       **1. Check ownership.** A root-read config that a normal user owns can
@@ -1011,11 +1048,12 @@ checks:
     max_points: 4
     collect:
       script: |
-        v=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
-        if [ "$v" = "0" ]; then echo true; else echo false; fi
+        v=$(sysctl -n net.ipv4.ip_forward 2>/dev/null | tr -d '"\\')
+        printf '{"ip_forward": "%s"}\n' "$v"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: ip_forward
+      value: '0'
       points: 4
     solution: |
       **1. Read the value.** A relay endpoint is not a router; IP forwarding
@@ -1045,11 +1083,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        v=$(sysctl -n kernel.randomize_va_space 2>/dev/null)
-        if [ "$v" = "2" ]; then echo true; else echo false; fi
+        v=$(sysctl -n kernel.randomize_va_space 2>/dev/null | tr -d '"\\')
+        printf '{"randomize_va_space": "%s"}\n' "$v"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: randomize_va_space
+      value: '2'
       points: 2
     solution: |
       **1. Read the value.** ASLR randomizes memory layout so exploits cannot
@@ -1079,10 +1118,16 @@ checks:
       script: |
         rp=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)
         rd=$(sysctl -n net.ipv4.conf.all.accept_redirects 2>/dev/null)
-        if [ "$rp" = "1" ] && [ "$rd" = "0" ]; then echo true; else echo false; fi
+        printf '{"rp_filter": "%s", "accept_redirects": "%s"}\n' "$rp" "$rd"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: rp_filter
+        value: '1'
+      - tag: data_equals
+        field: accept_redirects
+        value: '0'
       points: 4
     solution: |
       **1. Read both values.** Reverse-path filtering drops spoofed source
@@ -1113,11 +1158,17 @@ checks:
     max_points: 4
     collect:
       script: |
-        s=$(ufw status verbose 2>/dev/null)
-        if echo "$s" | grep -qi 'Status: active' && echo "$s" | grep -qiE 'Default:.*deny \(incoming\)'; then echo true; else echo false; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"ufw_status": %s}\n' "$(ufw status verbose 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: ufw_status
+        pattern: (?i)Status:\s*active
+      - tag: data_regex
+        field: ufw_status
+        pattern: (?i)Default:.*deny \(incoming\)
       points: 4
     solution: |
       **1. Check the firewall.** The relay shipped with its firewall off:
@@ -1148,10 +1199,14 @@ checks:
     max_points: 4
     collect:
       script: |
-        if grep -qiE '^[^#]*\b(security\.ubuntu\.com|archive\.ubuntu\.com|updates\.vermilion\.example)\b' /etc/hosts; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"hosts": %s}\n' "$(cat /etc/hosts 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: hosts
+        pattern: (?im)^[^#\n]*\b(security\.ubuntu\.com|archive\.ubuntu\.com|updates\.vermilion\.example)\b
       points: 4
     solution: |
       **1. Read /etc/hosts.** A planted mapping silently sends update or relay
@@ -1181,10 +1236,14 @@ checks:
     max_points: 2
     collect:
       script: |
-        if ufw show added 2>/dev/null | grep -q '31337'; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"ufw_added": %s}\n' "$(ufw show added 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: ufw_added
+        pattern: '31337'
       points: 2
     solution: |
       **1. List the rules the firewall was told to add**, not just the active
@@ -1213,10 +1272,14 @@ checks:
     max_points: 4
     collect:
       script: |
-        if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ':23$'; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"tcp_listeners": %s}\n' "$(ss -H -ltn 2>/dev/null | awk '{print $4}' | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: tcp_listeners
+        pattern: :23$
       points: 4
     solution: |
       **1. Find the listener.** Telnet carries passwords in the clear and has
@@ -1244,10 +1307,19 @@ checks:
     collect:
       script: |
         c=/etc/vsftpd.conf
-        if [ ! -e "$c" ]; then echo true; elif grep -qiE '^[[:space:]]*anonymous_enable[[:space:]]*=[[:space:]]*YES' "$c"; then echo false; else echo true; fi
+        if [ ! -e "$c" ]; then printf '{"conf_present": false, "anonymous_enable": ""}\n'; else
+          v=$(grep -iE '^[[:space:]]*anonymous_enable' "$c" 2>/dev/null | tail -n1 | awk -F= '{print tolower($2)}' | tr -d '[:space:]"\\')
+          printf '{"conf_present": true, "anonymous_enable": "%s"}\n' "$v"
+        fi
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: conf_present
+        value: false
+      - tag: data_not_equals
+        field: anonymous_enable
+        value: 'yes'
       points: 4
     solution: |
       **1. Read the FTP config.** Anonymous FTP lets anyone pull (and often
@@ -1275,10 +1347,14 @@ checks:
     max_points: 2
     collect:
       script: |
-        if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ':(512|513|514)$'; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"tcp_listeners": %s}\n' "$(ss -H -ltn 2>/dev/null | awk '{print $4}' | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: tcp_listeners
+        pattern: :(512|513|514)$
       points: 2
     solution: |
       **1. Find the listener.** The r-services (rsh, rlogin, rexec) trust
@@ -1303,10 +1379,14 @@ checks:
     max_points: 2
     collect:
       script: |
-        if ss -H -lun 2>/dev/null | awk '{print $4}' | grep -qE ':69$'; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"udp_listeners": %s}\n' "$(ss -H -lun 2>/dev/null | awk '{print $4}' | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: udp_listeners
+        pattern: :69$
       points: 2
     solution: |
       **1. Find the listener.** TFTP has no authentication at all:
@@ -1331,10 +1411,14 @@ checks:
     max_points: 8
     collect:
       script: |
-        if [ -e /etc/exports ] && grep -qiE '^[^#]*no_root_squash' /etc/exports; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        if [ -e /etc/exports ]; then printf '{"exports": %s}\n' "$(cat /etc/exports | jenc)"; else echo '{"exports": null}'; fi
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: exports
+        pattern: (?im)^[^#]*no_root_squash
       points: 8
     solution: |
       **1. Read the exports.** `no_root_squash` means a client's root is
@@ -1364,10 +1448,19 @@ checks:
     collect:
       script: |
         c=/etc/samba/smb.conf
-        if [ ! -e "$c" ]; then echo true; elif grep -qiE '^[[:space:]]*guest ok[[:space:]]*=[[:space:]]*yes' "$c"; then echo false; else echo true; fi
+        if [ ! -e "$c" ]; then printf '{"conf_present": false, "guest_ok": ""}\n'; else
+          v=$(grep -iE '^[[:space:]]*guest ok[[:space:]]*=[[:space:]]*yes' "$c" 2>/dev/null | grep -c .)
+          printf '{"conf_present": true, "guest_ok_hits": %s}\n' "$v"
+        fi
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: conf_present
+        value: false
+      - tag: data_equals
+        field: guest_ok_hits
+        value: 0
       points: 4
     solution: |
       **1. Read the Samba config.** A `guest ok = yes` share lets anyone on
@@ -1488,10 +1581,16 @@ checks:
         t=$(apache2ctl -t -D DUMP_RUN_CFG 2>/dev/null; grep -rhiE '^\s*ServerTokens|^\s*ServerSignature' /etc/apache2 2>/dev/null)
         tok=$(echo "$t" | grep -iE '^\s*ServerTokens' | tail -n1 | awk '{print tolower($2)}')
         sig=$(echo "$t" | grep -iE '^\s*ServerSignature' | tail -n1 | awk '{print tolower($2)}')
-        if [ "$tok" = "prod" ] && [ "$sig" = "off" ]; then echo true; else echo false; fi
+        printf '{"server_tokens": "%s", "server_signature": "%s"}\n' "$tok" "$sig"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: server_tokens
+        value: prod
+      - tag: data_equals
+        field: server_signature
+        value: 'off'
       points: 2
     solution: |
       **1. Read the security config.** Verbose banners hand an attacker the
@@ -1521,10 +1620,14 @@ checks:
     max_points: 4
     collect:
       script: |
-        if grep -rhiE '^\s*Options[^#]*\bIndexes\b' /etc/apache2/sites-enabled /etc/apache2/apache2.conf 2>/dev/null | grep -qvE '\-Indexes'; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"options_lines": %s}\n' "$(grep -rhiE '^\s*Options[^#]*\bIndexes\b' /etc/apache2/sites-enabled /etc/apache2/apache2.conf 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: options_lines
+        pattern: (?im)^\s*Options[^#\n]*\bIndexes\b(?![^\n]*-Indexes)
       points: 4
     solution: |
       **1. Find the Indexes option.** With directory listing on, a visitor
@@ -1555,10 +1658,11 @@ checks:
         [ -e /var/www/relay/.git ] && n=$((n+1))
         [ -e /var/www/relay/db-backup.sql ] && n=$((n+1))
         ls /var/www/relay/phpinfo*.php >/dev/null 2>&1 && n=$((n+1))
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Look at what the web root actually serves.** A `.git` directory
@@ -1588,10 +1692,11 @@ checks:
       script: |
         n=$(mysql -N -B -e "SELECT COUNT(*) FROM mysql.user WHERE User='';" 2>/dev/null)
         [ -z "$n" ] && n=0
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. List the database accounts.** An anonymous account (empty User)
@@ -1842,10 +1947,14 @@ checks:
     max_points: 4
     collect:
       script: |
-        if systemctl cat array-cooling.service 2>/dev/null | grep -qi 'exfil'; then echo false; else echo true; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"unit": %s}\n' "$(systemctl cat array-cooling.service 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: unit
+        pattern: (?i)exfil
       points: 4
     solution: |
       **1. Read the whole unit.** `array-cooling.service` is a real relay
@@ -1876,14 +1985,26 @@ checks:
     max_points: 8
     collect:
       script: |
-        if pgrep -f '[n]cat .*[-]e /bin/bash' >/dev/null 2>&1; then echo false; exit 0; fi
-        if pgrep -x ncat >/dev/null 2>&1; then echo false; exit 0; fi
-        if ss -tlnH 'sport = :4444' 2>/dev/null | grep -q .; then echo false; exit 0; fi
-        if systemctl is-enabled system-update.service >/dev/null 2>&1; then echo false; exit 0; fi
-        echo true
+        n1=$(pgrep -f '[n]cat .*[-]e /bin/bash' 2>/dev/null | grep -c .)
+        n2=$(pgrep -x ncat 2>/dev/null | grep -c .)
+        n3=$(ss -tlnH 'sport = :4444' 2>/dev/null | grep -c .)
+        systemctl is-enabled system-update.service >/dev/null 2>&1; rc=$?
+        printf '{"ncat_e_procs": %s, "ncat_procs": %s, "port_4444_listeners": %s, "launcher_is_enabled_rc": %s}\n' "$n1" "$n2" "$n3" "$rc"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: ncat_e_procs
+        value: 0
+      - tag: data_equals
+        field: ncat_procs
+        value: 0
+      - tag: data_equals
+        field: port_4444_listeners
+        value: 0
+      - tag: data_not_equals
+        field: launcher_is_enabled_rc
+        value: 0
       points: 8
     solution: |
       **1. Spot it by port review.** Unlike the beacon, this one advertises
@@ -1918,13 +2039,26 @@ checks:
     max_points: 8
     collect:
       script: |
-        if systemctl is-enabled starlight-sync.timer >/dev/null 2>&1; then echo false; exit 0; fi
-        if systemctl is-active starlight-sync.timer >/dev/null 2>&1; then echo false; exit 0; fi
-        if [ -e /etc/systemd/system/starlight-sync.timer ] || [ -e /etc/systemd/system/starlight-sync.service ]; then echo false; exit 0; fi
-        echo true
+        systemctl is-enabled starlight-sync.timer >/dev/null 2>&1; erc=$?
+        a=$(systemctl is-active starlight-sync.timer 2>/dev/null | tr -d '"\\')
+        [ -e /etc/systemd/system/starlight-sync.timer ] && t=1 || t=0
+        [ -e /etc/systemd/system/starlight-sync.service ] && s=1 || s=0
+        printf '{"timer_is_enabled_rc": %s, "timer_active": "%s", "timer_on_disk": %s, "service_on_disk": %s}\n' "$erc" "$a" "$t" "$s"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_not_equals
+        field: timer_is_enabled_rc
+        value: 0
+      - tag: data_not_equals
+        field: timer_active
+        value: active
+      - tag: data_equals
+        field: timer_on_disk
+        value: 0
+      - tag: data_equals
+        field: service_on_disk
+        value: 0
       points: 8
     solution: |
       **1. List the timers.** A timer fires a payload on a schedule, so
@@ -1956,10 +2090,18 @@ checks:
     max_points: 2
     collect:
       script: |
-        if [ ! -e /etc/cron.d/void-sync ] && [ ! -e /opt/void/void-sync ]; then echo true; else echo false; fi
+        [ -e /etc/cron.d/void-sync ] && a=1 || a=0
+        [ -e /opt/void/void-sync ] && b=1 || b=0
+        printf '{"cron_d_job": %s, "payload_on_disk": %s}\n' "$a" "$b"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: cron_d_job
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 2
     solution: |
       **1. Sweep the system cron directories.** Anything under `/etc/cron.d`
@@ -1990,10 +2132,11 @@ checks:
     collect:
       script: |
         n=$(crontab -l -u root 2>/dev/null | grep -vE '^\s*(#|$)' | grep -c .)
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 2
     solution: |
       **1. Read root's personal crontab** (separate from `/etc/cron.d`):
@@ -2019,10 +2162,11 @@ checks:
     collect:
       script: |
         n=$(crontab -l -u relaydash 2>/dev/null | grep -vE '^\s*(#|$)' | grep -c .)
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 8
     solution: |
       **1. Do not stop at root.** Every user can hold a crontab; a decoy
@@ -2049,10 +2193,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        if [ ! -e /etc/profile.d/zz-void.sh ]; then echo true; else echo false; fi
+        [ -e /etc/profile.d/zz-void.sh ] && p=1 || p=0
+        printf '{"present": %s}\n' "$p"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: present
+      value: 0
       points: 2
     solution: |
       **1. Check the login-shell hooks.** Every script in `/etc/profile.d`
@@ -2078,10 +2224,18 @@ checks:
     max_points: 2
     collect:
       script: |
-        if grep -q 'void-beacon' /home/relayadmin/.bashrc 2>/dev/null || grep -q 'void-beacon' /etc/bash.bashrc 2>/dev/null; then echo false; else echo true; fi
+        n1=$(grep -c 'void-beacon' /home/relayadmin/.bashrc 2>/dev/null || echo 0)
+        n2=$(grep -c 'void-beacon' /etc/bash.bashrc 2>/dev/null || echo 0)
+        printf '{"bashrc_hits": %s, "bash_bashrc_hits": %s}\n' "$n1" "$n2"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: bashrc_hits
+        value: 0
+      - tag: data_equals
+        field: bash_bashrc_hits
+        value: 0
       points: 2
     solution: |
       **1. Read both bashrc files.** A line in a shell startup file runs every
@@ -2107,10 +2261,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        if [ ! -e /etc/update-motd.d/99-void ]; then echo true; else echo false; fi
+        [ -e /etc/update-motd.d/99-void ] && p=1 || p=0
+        printf '{"present": %s}\n' "$p"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: present
+      value: 0
       points: 2
     solution: |
       **1. Check the message-of-the-day hooks.** Scripts in
@@ -2136,13 +2292,30 @@ checks:
     max_points: 8
     collect:
       script: |
-        if systemctl is-enabled relay-resync.timer >/dev/null 2>&1; then echo false; exit 0; fi
-        if systemctl is-active relay-resync.timer >/dev/null 2>&1; then echo false; exit 0; fi
-        if [ -e /etc/systemd/system/relay-resync.timer ] || [ -e /etc/systemd/system/relay-resync.service ] || [ -e /opt/void/relay-resync ]; then echo false; exit 0; fi
-        echo true
+        systemctl is-enabled relay-resync.timer >/dev/null 2>&1; erc=$?
+        a=$(systemctl is-active relay-resync.timer 2>/dev/null | tr -d '"\\')
+        [ -e /etc/systemd/system/relay-resync.timer ] && t=1 || t=0
+        [ -e /etc/systemd/system/relay-resync.service ] && s=1 || s=0
+        [ -e /opt/void/relay-resync ] && p=1 || p=0
+        printf '{"timer_is_enabled_rc": %s, "timer_active": "%s", "timer_on_disk": %s, "service_on_disk": %s, "payload_on_disk": %s}\n' "$erc" "$a" "$t" "$s" "$p"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_not_equals
+        field: timer_is_enabled_rc
+        value: 0
+      - tag: data_not_equals
+        field: timer_active
+        value: active
+      - tag: data_equals
+        field: timer_on_disk
+        value: 0
+      - tag: data_equals
+        field: service_on_disk
+        value: 0
+      - tag: data_equals
+        field: payload_on_disk
+        value: 0
       points: 8
     solution: |
       **1. List all timers.** A timer is the systemd version of cron
@@ -2175,10 +2348,11 @@ checks:
     collect:
       script: |
         n=$(atq 2>/dev/null | grep -c .)
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Read the at queue.** A one-shot `at` job can re-plant everything
@@ -2207,10 +2381,18 @@ checks:
     max_points: 4
     collect:
       script: |
-        if [ -e /etc/init.d/voidlink ] || ls /etc/rc*.d/*voidlink >/dev/null 2>&1; then echo false; else echo true; fi
+        [ -e /etc/init.d/voidlink ] && a=1 || a=0
+        n=$(ls /etc/rc*.d/*voidlink 2>/dev/null | grep -c .)
+        printf '{"initd_script": %s, "rc_links": %s}\n' "$a" "$n"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: initd_script
+        value: 0
+      - tag: data_equals
+        field: rc_links
+        value: 0
       points: 4
     solution: |
       **1. Check the SysV init path.** systemd still honors `/etc/init.d`
@@ -2237,10 +2419,18 @@ checks:
     max_points: 4
     collect:
       script: |
-        if [ -e /etc/rc.local ] && grep -qE '/opt/void|void-sync' /etc/rc.local; then echo false; else echo true; fi
+        [ -e /etc/rc.local ] && e=1 || e=0
+        n=$(grep -cE '/opt/void|void-sync' /etc/rc.local 2>/dev/null || echo 0)
+        printf '{"rc_local_exists": %s, "payload_refs": %s}\n' "$e" "$n"
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: rc_local_exists
+        value: 0
+      - tag: data_equals
+        field: payload_refs
+        value: 0
       points: 4
     solution: |
       **1. Read rc.local.** A payload line here runs as root at every boot:
@@ -2266,10 +2456,18 @@ checks:
     max_points: 4
     collect:
       script: |
-        if { [ -e /etc/ld.so.preload ] && grep -q 'libvoidhook' /etc/ld.so.preload; } || [ -e /opt/void/libvoidhook.so ]; then echo false; else echo true; fi
+        if [ -e /etc/ld.so.preload ] && grep -q 'libvoidhook' /etc/ld.so.preload 2>/dev/null; then a=1; else a=0; fi
+        [ -e /opt/void/libvoidhook.so ] && b=1 || b=0
+        printf '{"preload_hook": %s, "lib_on_disk": %s}\n' "$a" "$b"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: preload_hook
+        value: 0
+      - tag: data_equals
+        field: lib_on_disk
+        value: 0
       points: 4
     solution: |
       **1. Read the global preload file.** Every library listed in
@@ -2301,10 +2499,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        if [ ! -e /home/relayadmin/.config/autostart/void-agent.desktop ]; then echo true; else echo false; fi
+        [ -e /home/relayadmin/.config/autostart/void-agent.desktop ] && p=1 || p=0
+        printf '{"present": %s}\n' "$p"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: present
+      value: 0
       points: 2
     solution: |
       **1. Check what launches at login.** XFCE runs every `.desktop` file in
@@ -2367,10 +2567,12 @@ checks:
     max_points: 2
     collect:
       script: |
-        if [ ! -e /etc/xdg/autostart/void-sync.desktop ]; then echo true; else echo false; fi
+        [ -e /etc/xdg/autostart/void-sync.desktop ] && p=1 || p=0
+        printf '{"present": %s}\n' "$p"
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: present
+      value: 0
       points: 2
     solution: |
       **1. Check the system-wide autostart too.** `/etc/xdg/autostart` runs
@@ -2396,12 +2598,18 @@ checks:
     max_points: 8
     collect:
       script: |
-        if [ -e /home/relaydash/.config/systemd/user/void-user.service ]; then echo false; exit 0; fi
-        if [ -e /var/lib/systemd/linger/relaydash ]; then echo false; exit 0; fi
-        echo true
+        [ -e /home/relaydash/.config/systemd/user/void-user.service ] && u=1 || u=0
+        [ -e /var/lib/systemd/linger/relaydash ] && l=1 || l=0
+        printf '{"unit_on_disk": %s, "linger_on_disk": %s}\n' "$u" "$l"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: unit_on_disk
+        value: 0
+      - tag: data_equals
+        field: linger_on_disk
+        value: 0
       points: 8
     solution: |
       **1. systemd runs for users too.** Each account has a private user
@@ -2431,10 +2639,14 @@ checks:
     collect:
       script: |
         f=/home/relaydash/.ssh/authorized_keys
-        if [ ! -e "$f" ] || ! grep -q 'voidkey@relay' "$f" 2>/dev/null; then echo true; else echo false; fi
+        jenc() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+        printf '{"authorized_keys": %s}\n' "$(cat "$f" 2>/dev/null | jenc)"
     expect:
-      equals: true
-      field: data
+      tag: not
+      matcher:
+        tag: data_regex
+        field: authorized_keys
+        pattern: voidkey@relay
       points: 4
     solution: |
       **1. Sweep every account's authorized_keys, not just the admin's.** A
@@ -2495,10 +2707,11 @@ checks:
           perm=$(stat -L -c '%a' "$d")
           case "$perm" in *[2367]) n=$((n+1));; esac
         done
-        echo "$n"
+        printf '{"count": %s}\n' "$n"
     expect:
-      equals: 0
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Check the permissions of the binary directories.** If a directory
@@ -2526,10 +2739,18 @@ checks:
     max_points: 2
     collect:
       script: |
-        if [ -e /etc/hosts.equiv ] || ls /root/.rhosts /home/*/.rhosts 2>/dev/null | grep -q .; then echo false; else echo true; fi
+        [ -e /etc/hosts.equiv ] && a=1 || a=0
+        n=$(ls /root/.rhosts /home/*/.rhosts 2>/dev/null | grep -c .)
+        printf '{"hosts_equiv": %s, "rhosts_files": %s}\n' "$a" "$n"
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: hosts_equiv
+        value: 0
+      - tag: data_equals
+        field: rhosts_files
+        value: 0
       points: 2
     solution: |
       **1. Look for legacy trust files.** An `.rhosts` or `/etc/hosts.equiv`

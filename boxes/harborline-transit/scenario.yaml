@@ -18,10 +18,16 @@ checks:
         $members = @(Get-ADGroupMember -Identity 'Domain Admins' -ErrorAction Ignore |
             ForEach-Object { $_.SamAccountName })
         $stray = @($members | Where-Object { $allowed -notcontains $_ })
-        (($stray.Count -eq 0) -and ($members -contains 'sysadmin')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ stray_count = $stray.Count; has_authorized_admin = ($members -contains 'sysadmin') } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: stray_count
+        value: 0
+      - tag: data_equals
+        field: has_authorized_admin
+        value: true
       points: 4
     solution: |
       **1. Audit the group.** Domain Admins is the most powerful group in
@@ -62,10 +68,16 @@ checks:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
         $u = Get-ADUser -Filter "SamAccountName -eq 'bprieto'" -ErrorAction Ignore
-        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); enabled = [bool]$u.Enabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: false
       points: 2
     solution: |
       **1. Find the account.** `Get-ADUser bprieto -Properties Enabled,
@@ -96,10 +108,16 @@ checks:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
         $u = Get-ADUser -Filter "SamAccountName -eq 'lhaight'" -ErrorAction Ignore
-        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); enabled = [bool]$u.Enabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: false
       points: 2
     solution: |
       **1. Find the account.** The description says the person is gone
@@ -132,10 +150,12 @@ checks:
                          'Backup Operators', 'Print Operators')) {
             $bad += @(Get-ADGroupMember -Identity $g -ErrorAction Ignore).Count
         }
-        ($bad -eq 0) | ConvertTo-Json -Compress
+        $bad
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Audit the operator groups.** The built-in operator groups are
@@ -171,10 +191,11 @@ checks:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
         $members = @(Get-ADGroupMember -Identity 'Remote Desktop Users' -ErrorAction Ignore)
-        ($members.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $members.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 2
     solution: |
       **1. List the group.** On a domain controller "Remote Desktop
@@ -211,11 +232,17 @@ checks:
     collect:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
-        $g = Get-ADUser -Filter "SamAccountName -eq 'Guest'" -ErrorAction Ignore
-        ($null -ne $g -and $g.Enabled -eq $false) | ConvertTo-Json -Compress
+        $u = Get-ADUser -Filter "SamAccountName -eq 'Guest'" -ErrorAction Ignore
+        [pscustomobject]@{ exists = ($null -ne $u); enabled = [bool]$u.Enabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: false
       points: 2
     solution: |
       **1. Check it.** In a domain, the Guest account lives in AD (not
@@ -246,16 +273,14 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # "Password not required" is the domain-side blank-password flag:
-        # an ENABLED account carrying it logs on with an empty password.
-        # Disabled accounts are exempt (they cannot log on).
         Import-Module ActiveDirectory -ErrorAction Ignore
         $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -Properties PasswordNotRequired -ErrorAction Ignore |
             Where-Object { $_.PasswordNotRequired })
-        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Sweep for the flag** (the same sweep the check runs -- do it
@@ -294,17 +319,14 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # A trailing '$' in the NAME makes a rogue account fade into the
-        # computer-object noise of every account listing -- the classic
-        # hidden-account costume (real computer objects end in $, but
-        # these are USER objects). Sweep ENABLED user objects only.
         Import-Module ActiveDirectory -ErrorAction Ignore
         $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -ErrorAction Ignore |
             Where-Object { $_.SamAccountName -like '*$' })
-        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Sweep for the costume** (do it before you disable anything --
@@ -338,46 +360,39 @@ checks:
     timeout_s: 45
     collect:
       script: |
-        # The roasting fix is the ROTATION: the account must still exist
-        # and be enabled, but its ORIGINAL planted password must stop
-        # authenticating. ValidateCredentials does one real credential
-        # check: True = the weak original still works (no points), False
-        # = rotated (points), throw = DC unreachable (fail closed).
-        # FRESH-CLONE GOTCHA (observed live on the meridian round): for
-        # the first minutes after boot the DC's auth path rejects even
-        # VALID credentials, which would fake a rotation -- so nothing
-        # is scored until the box has been up 8+ minutes; the next
-        # 5-minute pass re-scores once the DC is up, so early-boot noise
-        # never sticks.
         Import-Module ActiveDirectory -ErrorAction Ignore
-        $rotated = $false
         $u = Get-ADUser -Filter "SamAccountName -eq 'svc_sched'" -Properties LockedOut -ErrorAction Ignore
-        if ($null -ne $u -and $u.Enabled) {
-            $uptimeMin = ((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalMinutes
-            if ($uptimeMin -ge 8) {
-                try {
-                    # A LOCKED-OUT account rejects even the CORRECT password,
-                    # which would read as rotated -- fail closed while locked.
-                    if ($u.LockedOut) {
-                        $rotated = $false
-                    } else {
-                        Add-Type -AssemblyName System.DirectoryServices.AccountManagement -ErrorAction Ignore
-                        $pc = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(
-                            [System.DirectoryServices.AccountManagement.ContextType]::Domain,
-                            'harborline.local')
-                        $rotated = -not $pc.ValidateCredentials('svc_sched', 'SchedSpring2026!')
-                    }
-                } catch {
-                    # DC auth path unavailable: fail closed -- a throw must
-                    # never read as "rotated"
-                    $rotated = $false
-                }
-            }
+        $uptimeMin = ((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalMinutes
+        $valid = $false
+        if ($null -ne $u -and $u.Enabled -and $uptimeMin -ge 8 -and -not $u.LockedOut) {
+            try {
+                Add-Type -AssemblyName System.DirectoryServices.AccountManagement -ErrorAction Ignore
+                $pc = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(
+                    [System.DirectoryServices.AccountManagement.ContextType]::Domain,
+                    'harborline.local')
+                $valid = $pc.ValidateCredentials('svc_sched', 'SchedSpring2026!')
+            } catch { $valid = $false }
         }
-        $rotated | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); enabled = [bool]$u.Enabled; locked_out = [bool]$u.LockedOut; uptime_min = [int]$uptimeMin; original_password_valid = $valid } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: true
+      - tag: data_equals
+        field: locked_out
+        value: false
+      - tag: data_in_range
+        field: uptime_min
+        min: 8
+        max: 2147483647
+      - tag: data_equals
+        field: original_password_valid
+        value: false
       points: 8
     solution: |
       **1. See the target.** The account carries a service principal
@@ -416,17 +431,14 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # "Password never expires" quietly exempts an account from the
-        # domain policy forever. The krbtgt account carries it by
-        # design (the KRBTGT key must not roll casually) -- that is the
-        # one allowed exception. Sweep ENABLED user objects only.
         Import-Module ActiveDirectory -ErrorAction Ignore
         $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -Properties PasswordNeverExpires -ErrorAction Ignore |
             Where-Object { $_.PasswordNeverExpires -and $_.SamAccountName -ne 'krbtgt' })
-        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Sweep every enabled account** (the same query the check
@@ -463,10 +475,16 @@ checks:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
         $u = Get-ADUser -Filter "SamAccountName -eq 'svc_faxrelay'" -ErrorAction Ignore
-        ($null -ne $u -and $u.Enabled -eq $false) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); enabled = [bool]$u.Enabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: false
       points: 2
     solution: |
       **1. Find the orphan.** The description says the fax relay was
@@ -496,15 +514,15 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # This Server image prints "Minimum password length:" WITHOUT the
-        # "(chars)" suffix other Windows builds use -- tolerate both. On a
-        # DC `net accounts` reads the DOMAIN policy, not a local one.
         $out = net accounts 2>$null | Out-String
         $m = [regex]::Match($out, 'Minimum password length\s*(?:\(chars\))?\s*:\s*(\d+)')
-        ([int]$m.Groups[1].Value -ge 8) | ConvertTo-Json -Compress
+        $n = if ($m.Success) { [int]$m.Groups[1].Value } else { -1 }
+        [pscustomobject]@{ min_len = $n } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: min_len
+      min: 8
+      max: 2147483647
       points: 4
     solution: |
       **1. Read the policy.** On a domain controller this IS the domain
@@ -546,18 +564,16 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # "Maximum password age: Unlimited" means a password set today is
-        # valid forever -- the planted policy ships it unlimited. Scored
-        # state: a numeric age of 90 days or less.
         $out = net accounts 2>$null | Out-String
         $m = [regex]::Match($out, 'Maximum password age\s*(?:\(days\))?\s*:\s*(\d+|Unlimited|Never)')
-        if (-not $m.Success) { $false | ConvertTo-Json -Compress; exit }
-        $raw = $m.Groups[1].Value
-        if ($raw -match '^\d+$') { ([int]$raw -le 90) | ConvertTo-Json -Compress }
-        else { $false | ConvertTo-Json -Compress }
+        $raw = if ($m.Success) { $m.Groups[1].Value } else { ' absent ' }
+        $n = if ($raw -match '^\d+$') { [int]$raw } else { -1 }
+        [pscustomobject]@{ max_age_days = $n; raw = $raw } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: max_age_days
+      min: 0
+      max: 90
       points: 4
     solution: |
       **1. Read the policy.**
@@ -592,10 +608,13 @@ checks:
       script: |
         $out = net accounts 2>$null | Out-String
         $m = [regex]::Match($out, 'Lockout threshold\s*(?:\(chars\))?\s*:\s*(\d+)')
-        ([int]$m.Groups[1].Value -ge 5) | ConvertTo-Json -Compress
+        $n = if ($m.Success) { [int]$m.Groups[1].Value } else { -1 }
+        [pscustomobject]@{ lockout = $n } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: lockout
+      min: 5
+      max: 2147483647
       points: 8
     solution: |
       **1. Read the policy.**
@@ -634,10 +653,16 @@ checks:
     collect:
       script: |
         $out = auditpol /get /subcategory:'Logon' 2>$null | Out-String
-        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ output = $out } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: output
+        pattern: Success
+      - tag: data_regex
+        field: output
+        pattern: Failure
       points: 4
     solution: |
       **1. See what is being ignored.**
@@ -674,10 +699,16 @@ checks:
     collect:
       script: |
         $out = auditpol /get /subcategory:'Credential Validation' 2>$null | Out-String
-        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ output = $out } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: output
+        pattern: Success
+      - tag: data_regex
+        field: output
+        pattern: Failure
       points: 2
     solution: |
       **1. Check the category.** Credential Validation is the subcategory
@@ -711,10 +742,16 @@ checks:
     collect:
       script: |
         $out = auditpol /get /subcategory:'Process Creation' 2>$null | Out-String
-        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ output = $out } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: output
+        pattern: Success
+      - tag: data_regex
+        field: output
+        pattern: Failure
       points: 2
     solution: |
       **1. Notice the default.** Nothing was planted here -- Windows
@@ -749,10 +786,16 @@ checks:
     collect:
       script: |
         $out = auditpol /get /subcategory:'User Account Management' 2>$null | Out-String
-        (($out -match 'Success') -and ($out -match 'Failure')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ output = $out } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_regex
+        field: output
+        pattern: Success
+      - tag: data_regex
+        field: output
+        pattern: Failure
       points: 2
     solution: |
       **1. Read the category.** User Account Management covers account
@@ -821,15 +864,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # ConsentPromptBehaviorAdmin 0 = "Elevate without prompting" --
-        # an admin process gets its full token silently. Any other value
-        # (the stock default is 5) restores a consent prompt. Absent
-        # value = the default = prompt, which is the scored state.
         $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name ConsentPromptBehaviorAdmin -ErrorAction Ignore).ConsentPromptBehaviorAdmin
-        ($v -ne 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_not_equals
+      field: value
+      value: 0
       points: 2
     solution: |
       **1. Read the toggle.** EnableLUA is only half of UAC -- check
@@ -862,15 +902,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # PromptOnSecureDesktop 0 = the consent dialog draws on the same
-        # desktop as everything else, so any running program can click
-        # it or draw over it. Hardened state: 1 (the isolated secure
-        # desktop), or the value gone (default is on).
         $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name PromptOnSecureDesktop -ErrorAction Ignore).PromptOnSecureDesktop
-        ($v -eq 1) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 1
       points: 2
     solution: |
       **1. Read the toggle.** A UAC prompt that renders on the ordinary
@@ -1013,13 +1050,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # ground truth = the registry value the seed sets (the SMB WMI Set path
-        # is unreliable on some hardened images; Get mirrors it only sometimes)
         $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -ErrorAction Ignore).SMB1
-        ($v -ne 1) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_not_equals
+      field: value
+      value: 1
       points: 4
     solution: |
       **1. Check the server side.** SMB1 is the protocol of the
@@ -1057,10 +1093,11 @@ checks:
     collect:
       script: |
         $r = Get-NetFirewallRule -Name 'FleetCommand' -ErrorAction Ignore
-        ($null -eq $r) | ConvertTo-Json -Compress
+        [pscustomobject]@{ rule_present = ($null -ne $r) } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: rule_present
+      value: false
       points: 2
     solution: |
       The second backdoor door -- attackers never leave just one, so a
@@ -1129,16 +1166,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # UseLogonCredential=1 makes WDigest leave a PLAINTEXT password
-        # for every interactive logon in LSASS memory -- one admin-level
-        # dump later and the attacker holds real passwords, not hashes.
-        # The hardened state is anything but 1 (0, or the value gone --
-        # the Windows default).
         $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name UseLogonCredential -ErrorAction Ignore).UseLogonCredential
-        ($v -ne 1) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_not_equals
+      field: value
+      value: 1
       points: 8
     solution: |
       **1. Read the setting.** WDigest is an ancient protocol provider
@@ -1173,14 +1206,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # RunAsPPL=1 makes lsass.exe a protected process light:
-        # admin-level tools can no longer open it to read credential
-        # material. The planted state is 0; hardened is exactly 1.
         $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name RunAsPPL -ErrorAction Ignore).RunAsPPL
-        ($v -eq 1) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 1
       points: 8
     solution: |
       **1. Read the protection.** LSA is the process that holds every
@@ -1212,17 +1243,13 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # LmCompatibilityLevel 0 = send LM + NTLMv1 responses: the
-        # challenge/response format crackable at dictionary speeds.
-        # Hardened state: present AND >= 5 (send NTLMv2 only, refuse
-        # legacy). An ABSENT value is the machine default (3), which
-        # still ACCEPTS legacy clients -- set the explicit 5.
         $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name LmCompatibilityLevel -ErrorAction Ignore).LmCompatibilityLevel
-        if ($null -eq $v) { $false | ConvertTo-Json -Compress }
-        else { ([int]$v -ge 5) | ConvertTo-Json -Compress }
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: value
+      min: 5
+      max: 2147483647
       points: 8
     solution: |
       **1. Read the level.**
@@ -1259,16 +1286,19 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # RestrictAnonymous and RestrictAnonymousSAM both 0 = an
-        # UNAUTHENTICATED session can list users and shares -- free
-        # recon for the next attack stage. Hardened: both = 1.
         $lsa = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
         $a = (Get-ItemProperty $lsa -Name RestrictAnonymous -ErrorAction Ignore).RestrictAnonymous
         $s = (Get-ItemProperty $lsa -Name RestrictAnonymousSAM -ErrorAction Ignore).RestrictAnonymousSAM
-        (($a -eq 1) -and ($s -eq 1)) | ConvertTo-Json -Compress
+        [pscustomobject]@{ restrict_anonymous = $a; restrict_anonymous_sam = $s } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: restrict_anonymous
+        value: 1
+      - tag: data_equals
+        field: restrict_anonymous_sam
+        value: 1
       points: 4
     solution: |
       **1. Read both switches.** Two sibling values govern what an
@@ -1303,15 +1333,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # Nothing was planted here -- LLMNR ships ON by default, and ON
-        # is the finding: any workstation can answer a mistyped name and
-        # capture authentication hashes (the Responder playbook). The
-        # hardened state is the policy value at 0.
         $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name EnableMulticast -ErrorAction Ignore).EnableMulticast
-        ($v -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: 0
       points: 2
     solution: |
       **1. Notice the default.** Nothing was planted -- Link-Local
@@ -1346,16 +1373,13 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # "Interactive logon: Machine inactivity limit" -- the security
-        # policy that locks the console after N idle seconds. Absent =
-        # no automatic lock, the shipped default and the finding.
-        # Hardened: 900 seconds (15 min) or less.
         $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name InactivityTimeoutSecs -ErrorAction Ignore).InactivityTimeoutSecs
-        if ($null -eq $v) { $false | ConvertTo-Json -Compress }
-        else { ([int]$v -ge 1 -and [int]$v -le 900) | ConvertTo-Json -Compress }
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_in_range
+      field: value
+      min: 1
+      max: 900
       points: 2
     solution: |
       **1. Read the limit.** A console session on a domain controller
@@ -1386,14 +1410,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # AlwaysInstallElevated=1 (both hives) = any user can install an
-        # .MSI that the Installer service runs as SYSTEM -- a direct
-        # user-to-SYSTEM escalation. Hardened: anything but 1.
         $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -ErrorAction Ignore).AlwaysInstallElevated
-        ($v -ne 1) | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_not_equals
+      field: value
+      value: 1
       points: 2
     solution: |
       **1. Read the policy.** Two values must agree for the danger --
@@ -1425,15 +1447,17 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # The operations share (its own task handles WHO can access it;
-        # this one handles the wire): SMB encryption scrambles share
-        # traffic end to end. Removing the share outright also scores.
         $s = Get-SmbShare -Name 'TransitData' -ErrorAction Ignore
-        if (-not $s) { $true | ConvertTo-Json -Compress; exit }
-        ([bool]$s.EncryptData) | ConvertTo-Json -Compress
+        [pscustomobject]@{ share_present = ($null -ne $s); encrypt_data = [bool]$s.EncryptData } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: share_present
+        value: false
+      - tag: data_equals
+        field: encrypt_data
+        value: true
       points: 4
     solution: |
       **1. Ask how the share travels.** The access task next door fixes
@@ -1466,16 +1490,17 @@ checks:
     timeout_s: 120
     collect:
       script: |
-        # Nothing was planted here -- the PowerShell 2.0 optional feature
-        # ships ENABLED on this Server image, and that is the finding:
-        # version 2 has no AMSI, no script-block logging, and is the
-        # classic downgrade path around every newer defense. Hardened:
-        # the feature removed (or the image without it).
         $f = Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2 -ErrorAction Ignore
-        (($null -eq $f) -or ($f.State -ne 'Enabled')) | ConvertTo-Json -Compress
+        [pscustomobject]@{ feature_present = ($null -ne $f); state = $f.State } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: feature_present
+        value: false
+      - tag: data_not_equals
+        field: state
+        value: Enabled
       points: 4
     solution: |
       **1. Notice the default.** Nothing was planted -- the PowerShell
@@ -1543,19 +1568,25 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # An exclusion path is a standing "never scan here" sign. The
-        # planted one points at the folder every payload on this box
-        # lives in. Hardened: no path and no process exclusions at all.
-        # (Where-Object filters the empty-list $null: @($null).Count
-        # is 1, which would fail a perfectly clean box.)
         $p = Get-MpPreference -ErrorAction Ignore
-        if ($null -eq $p) { $false | ConvertTo-Json -Compress; exit }
-        $paths = @($p.ExclusionPath | Where-Object { $_ })
-        $procs = @($p.ExclusionProcess | Where-Object { $_ })
-        (($paths.Count -eq 0) -and ($procs.Count -eq 0)) | ConvertTo-Json -Compress
+        $paths = @(); $procs = @()
+        if ($null -ne $p) {
+            $paths = @($p.ExclusionPath | Where-Object { $_ })
+            $procs = @($p.ExclusionProcess | Where-Object { $_ })
+        }
+        [pscustomobject]@{ pref_present = ($null -ne $p); path_exclusions = $paths.Count; process_exclusions = $procs.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: pref_present
+        value: true
+      - tag: data_equals
+        field: path_exclusions
+        value: 0
+      - tag: data_equals
+        field: process_exclusions
+        value: 0
       points: 4
     solution: |
       **1. Read the exclusion list** (the same query the check runs --
@@ -1911,13 +1942,19 @@ checks:
     collect:
       script: |
         $share = Get-SmbShare -Name 'TransitData' -ErrorAction Ignore
-        if (-not $share) { $true | ConvertTo-Json -Compress; exit }
-        $bad = Get-SmbShareAccess -Name 'TransitData' |
-            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.AccountName -match 'Everyone' }
-        (-not $bad) | ConvertTo-Json -Compress
+        $bad = @()
+        if ($share) { $bad = @(Get-SmbShareAccess -Name 'TransitData' |
+            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.AccountName -match 'Everyone' }) }
+        [pscustomobject]@{ share_present = ($null -ne $share); everyone_allow_count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: share_present
+        value: false
+      - tag: data_equals
+        field: everyone_allow_count
+        value: 0
       points: 4
     solution: |
       **1. Inspect the share.**
@@ -1956,13 +1993,20 @@ checks:
     collect:
       script: |
         $p = 'C:\HarborlineData\payroll-export.csv'
-        if (-not (Test-Path $p)) { $false | ConvertTo-Json -Compress; exit }
-        $bad = Get-Acl $p | Select-Object -ExpandProperty Access |
-            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference -match 'Everyone' }
-        (-not $bad) | ConvertTo-Json -Compress
+        $present = Test-Path $p
+        $bad = @()
+        if ($present) { $bad = @(Get-Acl $p | Select-Object -ExpandProperty Access |
+            Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference -match 'Everyone' }) }
+        [pscustomobject]@{ file_present = $present; everyone_allow_count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: file_present
+        value: true
+      - tag: data_equals
+        field: everyone_allow_count
+        value: 0
       points: 4
     solution: |
       **1. Read the ACL.**
@@ -2105,16 +2149,21 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # Both delegation flags must be clear while the computer object
-        # still exists: unconstrained delegation ("Trust this computer
-        # for delegation to any service") makes every visiting admin's
-        # ticket grantable to anyone who compromises that host.
         Import-Module ActiveDirectory -ErrorAction Ignore
         $c = Get-ADComputer -Filter 'Name -eq "FAREGW01"' -Properties TrustedForDelegation, TrustedToAuthForDelegation -ErrorAction Ignore
-        ($null -ne $c -and -not $c.TrustedForDelegation -and -not $c.TrustedToAuthForDelegation) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $c); trusted_for_delegation = [bool]$c.TrustedForDelegation; trusted_to_auth = [bool]$c.TrustedToAuthForDelegation } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: trusted_for_delegation
+        value: false
+      - tag: data_equals
+        field: trusted_to_auth
+        value: false
       points: 8
     solution: |
       **1. Find the delegation.** A computer (or user) object trusted
@@ -2150,10 +2199,16 @@ checks:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
         $c = Get-ADComputer -Filter 'Name -eq "WS-OLD2301"' -ErrorAction Ignore
-        ($null -ne $c -and $c.Enabled -eq $false) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $c); enabled = [bool]$c.Enabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: false
       points: 2
     solution: |
       **1. Find the orphan.** An enabled computer account whose machine
@@ -2186,17 +2241,14 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # Sweep every ENABLED account: "Do not require Kerberos
-        # preauthentication" is the AS-REP-roasting misconfiguration --
-        # anyone can request that account's crackable hash without a
-        # ticket first. Disabled accounts are exempt (they cannot roast).
         Import-Module ActiveDirectory -ErrorAction Ignore
         $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -Properties DoesNotRequirePreauth -ErrorAction Ignore |
             Where-Object { $_.DoesNotRequirePreauth })
-        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Sweep for the misconfiguration** -- the same sweep the check
@@ -2235,17 +2287,14 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # Sweep every ENABLED account for the DES-only downgrade: the
-        # msDS-SupportedEncryptionTypes bit 0x1 (DES) makes every ticket
-        # for that account crackable at 1999 speeds. $null/0 = allowed to
-        # negotiate modern AES -- the hardened state.
         Import-Module ActiveDirectory -ErrorAction Ignore
         $bad = @(Get-ADUser -Filter 'Enabled -eq $true' -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Ignore |
             Where-Object { ($_.'msDS-SupportedEncryptionTypes' -band 1) -ne 0 })
-        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 8
     solution: |
       **1. Sweep for the downgrade** (before you fix anything -- a
@@ -2281,16 +2330,9 @@ checks:
     timeout_s: 45
     collect:
       script: |
-        # DS-Replication-Get-Changes / -All on the domain root is the
-        # DCSync primitive: with it, an account asks the DC to hand
-        # over every hash in the domain without logging on anywhere.
-        # Only DCs themselves should hold it. The scored state: the
-        # account still exists (it is the replication monitor; the fix
-        # is the ACL, not the guillotine) with no Allow ACE on either
-        # replication GUID.
         Import-Module ActiveDirectory -ErrorAction Ignore
         $t = Get-ADUser -Filter "SamAccountName -eq 'svc_repl'" -ErrorAction Ignore
-        $clean = $false
+        $bad = @()
         if ($null -ne $t) {
             $rootDn = (Get-ADDomain).DistinguishedName
             $acl = Get-Acl "AD:\$rootDn"
@@ -2301,12 +2343,17 @@ checks:
                 ($_.AccessControlType.ToString() -eq 'Allow') -and
                 ($guids -contains $_.ObjectType.ToString())
             })
-            $clean = ($bad.Count -eq 0)
         }
-        $clean | ConvertTo-Json -Compress
+        [pscustomobject]@{ account_exists = ($null -ne $t); bad_ace_count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: account_exists
+        value: true
+      - tag: data_equals
+        field: bad_ace_count
+        value: 0
       points: 8
     solution: |
       **1. Read the domain root's ACL.** Two extended rights matter:
@@ -2342,18 +2389,13 @@ checks:
     timeout_s: 45
     collect:
       script: |
-        # The MS14-025 finding: GPP Groups.xml carries the local-account
-        # password AES-encrypted with a key Microsoft published in 2014
-        # -- any domain user decrypts it (gpp-decrypt). The fix is the
-        # cpassword gone (delete the file or the preference), anywhere
-        # under SYSVOL. A dynamic recurse, not a fixed GPO-GUID path:
-        # New-GPO GUIDs are random.
         $hits = @(Get-ChildItem 'C:\Windows\SYSVOL\domain\Policies' -Recurse -Filter 'Groups.xml' -ErrorAction Ignore |
             Select-String -Pattern 'cpassword' -ErrorAction Ignore)
-        ($hits.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $hits.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Sweep SYSVOL the way the check does** (record what you find
@@ -2389,16 +2431,13 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # DNSAdmins membership is a standing escalation: a member can
-        # make the DNS Server service load an arbitrary DLL -- as
-        # SYSTEM on the DC. On this box nobody needs the seat, so the
-        # scored state is an EMPTY group.
         Import-Module ActiveDirectory -ErrorAction Ignore
         $members = @(Get-ADGroupMember -Identity 'DNSAdmins' -ErrorAction Ignore)
-        ($members.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $members.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. List the group.** DNSAdmins looks like a harmless operations
@@ -2427,25 +2466,24 @@ checks:
     timeout_s: 45
     collect:
       script: |
-        # Domain-level persistence: a GPO whose registry preference
-        # writes an HKLM Run-key value on every machine it applies to.
-        # Unlike a local Run key, deleting the local value is pointless
-        # -- the next policy refresh re-writes it. The fix is the GPO
-        # gone or its registry value gone.
         Import-Module GroupPolicy -ErrorAction Ignore
-        $clean = $true
         $g = Get-GPO -Name 'TransitPulse' -ErrorAction Ignore
+        $v = $null
         if ($null -ne $g) {
-            $v = $null
             try {
                 $v = Get-GPRegistryValue -Name 'TransitPulse' -Key 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' -ValueName 'EdgeUpdateOrchestrator' -ErrorAction Ignore
             } catch { $v = $null }
-            $clean = ($null -eq $v)
         }
-        $clean | ConvertTo-Json -Compress
+        [pscustomobject]@{ gpo_present = ($null -ne $g); registry_value_present = ($null -ne $v) } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: any_of
+      matchers:
+      - tag: data_equals
+        field: gpo_present
+        value: false
+      - tag: data_equals
+        field: registry_value_present
+        value: false
       points: 8
     solution: |
       **1. Hunt the attacker's GPO.** List every GPO and look for one
@@ -2488,10 +2526,12 @@ checks:
     collect:
       script: |
         $off = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled }).Count
-        ($off -eq 0) | ConvertTo-Json -Compress
+        $off
+        [pscustomobject]@{ count = $off.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. See what is dark.** Every profile off on the machine that
@@ -2528,10 +2568,11 @@ checks:
     collect:
       script: |
         $r = Get-NetFirewallRule -Name 'TransitSync' -ErrorAction Ignore
-        ($null -eq $r) | ConvertTo-Json -Compress
+        [pscustomobject]@{ rule_present = ($null -ne $r) } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: rule_present
+      value: false
       points: 4
     solution: |
       **1. Read the ruleset with fresh eyes** -- after re-enabling the
@@ -2685,11 +2726,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        (-not (Get-ScheduledTask -TaskName 'ChromeUpdateCore' -ErrorAction Ignore)) |
-            ConvertTo-Json -Compress
+        $t = Get-ScheduledTask -TaskName 'ChromeUpdateCore' -ErrorAction Ignore
+        [pscustomobject]@{ task_present = ($null -ne $t) } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: task_present
+      value: false
       points: 4
     solution: |
       **1. Find the impostor.** It sits in the Task Scheduler Library
@@ -2758,11 +2800,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        (-not (Get-ScheduledTask -TaskName 'OfficeTelemetryAgent' -ErrorAction Ignore)) |
-            ConvertTo-Json -Compress
+        $t = Get-ScheduledTask -TaskName 'OfficeTelemetryAgent' -ErrorAction Ignore
+        [pscustomobject]@{ task_present = ($null -ne $t) } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: task_present
+      value: false
       points: 4
     solution: |
       The second impostor in the Task Scheduler Library -- an
@@ -2871,14 +2914,12 @@ checks:
     timeout_s: 20
     collect:
       script: |
-        # Userinit runs, comma-separated, inside EVERY interactive
-        # logon. The stock value ends with a trailing comma and nothing
-        # else; an appended payload exe rides every sign-in.
         $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -ErrorAction Ignore).Userinit
-        ($v -eq 'C:\Windows\system32\userinit.exe,') | ConvertTo-Json -Compress
+        [pscustomobject]@{ value = $v } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: value
+      value: C:\Windows\system32\userinit.exe,
       points: 4
     solution: |
       **1. Read the value.** The Userinit value is the list of
@@ -2915,19 +2956,14 @@ checks:
     timeout_s: 30
     collect:
       script: |
-        # WMI subscriptions are fileless persistence: an event filter
-        # fires, a command-line consumer runs, a binding couples them --
-        # no Run key, no service, no scheduled task for autoruns tools
-        # to list. Windows DOES ship one legit binding (SCM Event Log,
-        # an NTEventLogEventConsumer) -- the finding is any binding
-        # that runs a COMMAND or SCRIPT consumer. Hardened: zero.
         $bad = @(Get-CimInstance -Namespace root\subscription -ClassName __FilterToConsumerBinding -ErrorAction Ignore |
             Where-Object { ($_.Consumer -match 'CommandLineEventConsumer') -or
                            ($_.Consumer -match 'ActiveScriptEventConsumer') })
-        ($bad.Count -eq 0) | ConvertTo-Json -Compress
+        [pscustomobject]@{ count = $bad.Count } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: data_equals
+      field: count
+      value: 0
       points: 4
     solution: |
       **1. Sweep the WMI graveyard.** A stock Windows box ships exactly
@@ -3119,10 +3155,16 @@ checks:
       script: |
         Import-Module ActiveDirectory -ErrorAction Ignore
         $u = Get-ADUser -Filter "SamAccountName -eq 'rcastillo'" -ErrorAction Ignore
-        ($null -ne $u -and $u.Enabled) | ConvertTo-Json -Compress
+        [pscustomobject]@{ exists = ($null -ne $u); enabled = [bool]$u.Enabled } | ConvertTo-Json -Compress
     expect:
-      equals: true
-      field: data
+      tag: all_of
+      matchers:
+      - tag: data_equals
+        field: exists
+        value: true
+      - tag: data_equals
+        field: enabled
+        value: true
       points: -10
     solution: |
       This one only ever subtracts: the moment the payroll staff user

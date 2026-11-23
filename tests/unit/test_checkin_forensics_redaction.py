@@ -48,3 +48,26 @@ def test_rubric_ids_drive_hiding_not_the_fq_prefix():
     _redact_for_box(score, _evidence(), hide_forensics=True,
                     forensics_ids={"question-nine"})
     assert [r.check_id for r in score.results] == ["banner"]
+
+
+def test_redact_sends_rubric_titles_only_for_visible_results():
+    """Ranked manifests ship generic display titles; the engine may send the
+    real wording back only for results the box may already see (passed /
+    incurred penalties) — never for failed checks."""
+    passed = CheckResult(check_id="chk-001", category=Category.VULN,
+                         awarded_points=4, passed=True, reason="m")
+    failed = CheckResult(check_id="chk-002", category=Category.VULN,
+                         awarded_points=0, passed=False, reason="m")
+    score = SimpleNamespace(results=[passed, failed])
+    _redact_for_box(score, {}, titles={"chk-001": "Real title one",
+                                       "chk-002": "Secret end-state"})
+    visible = score.results
+    assert [r.check_id for r in visible] == ["chk-001"]
+    assert visible[0].title == "Real title one"
+    assert failed.title == ""
+
+
+def test_redact_without_titles_leaves_title_empty():
+    score = _score("banner")
+    _redact_for_box(score, _evidence())
+    assert score.results[0].title == ""
