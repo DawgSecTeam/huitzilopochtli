@@ -106,12 +106,8 @@ def test_admin_login_page_start_and_csrf(tmp_path):
         status, body, _ = _req(port, "GET", "/admin/styleguide")
         assert status == 401 and "Admin login" in body
 
-        status, _body, headers = _req(
-            port, "POST", "/admin/login",
-            "username=admin&password=pass",
-            {"Content-Type": "application/x-www-form-urlencoded"})
-        assert status == 303
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        from tests.helpers import login_session
+        cookie = login_session(_req, port)
         status, dashboard, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
         assert status == 200 and "Admin console" in dashboard
         assert 'id="theme-toggle"' in dashboard and 'data-poll="30000"' in dashboard
@@ -253,12 +249,8 @@ def test_reissue_shows_the_fresh_code_once_and_roster_never(tmp_path):
             {"Content-Type": "application/x-www-form-urlencoded"})
         assert status == 303, _body
 
-        status, _body, headers = _req(
-            port, "POST", "/admin/login",
-            "username=admin&password=pass",
-            {"Content-Type": "application/x-www-form-urlencoded"})
-        assert status == 303
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        from tests.helpers import login_session
+        cookie = login_session(_req, port)
 
         status, comp_page, _ = _req(
             port, "GET", f"/admin/competitions/{comp_id}", headers={"Cookie": cookie})
@@ -333,12 +325,8 @@ def test_picker_ignores_uploaded_records_without_a_box_folder(tmp_path):
         }, auth)
         assert status == 200, body
 
-        status, _body, headers = _req(
-            port, "POST", "/admin/login",
-            "username=admin&password=pass",
-            {"Content-Type": "application/x-www-form-urlencoded"})
-        assert status == 303
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        from tests.helpers import login_session
+        cookie = login_session(_req, port)
 
         # The picker is the box folder, full stop: an uploaded record with no
         # box folder behind it is never offered (the upload only seeds the

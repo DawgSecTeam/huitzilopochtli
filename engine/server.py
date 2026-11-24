@@ -280,6 +280,16 @@ class Handler(BaseHTTPRequestHandler):
     # --- response helpers ------------------------------------------------
 
     def _send_html(self, status: int, body: str, extra_headers=None) -> None:
+        # ?frag=<id> (sent by the in-page poller) answers with just that poll
+        # node's HTML instead of the whole page; anything else is untouched.
+        try:
+            frag = parse_qs(urlsplit(self.path).query).get("frag", [None])[0]
+        except Exception:
+            frag = None
+        if frag and status == 200 and body:
+            fragment = web.extract_fragment(body, frag)
+            if fragment is not None:
+                body = fragment
         payload = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -288,12 +298,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Referrer-Policy", "no-referrer")
-        for k, v in (extra_headers or {}).items():
-            self.send_header(k, v)
+        # No inline scripts anywhere on the site (assets are /static/ hashed
+        # files, confirms run through one modal, countdowns are data-driven),
+        # so script-src needs no 'unsafe-inline'. The per-competition accent
+        # body attribute is why style-src keeps 'unsafe-inline'.
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; script-src 'self'; "
+                         "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                         "font-src 'self'; connect-src 'self'; frame-ancestors 'self'; "
+                         "base-uri 'none'; form-action 'self'")
         pending = getattr(self, "_pending_cookie", None)
         if pending:
+            # Sent before extra_headers so a response carrying both (a login
+            # redirect clearing the pre-session csrf cookie) leaves the
+            # *session* cookie last -- dict(getheaders()) keeps the last.
             self.send_header("Set-Cookie", pending)
             self._pending_cookie = None
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -388,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
         ok, actor, session, via_header = self._admin_actor()
         if not ok:
             if html:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
             else:
                 self._send_json(403, {"error": "admin authentication required"})
             return None, None, None, None
@@ -466,11 +488,50 @@ class Handler(BaseHTTPRequestHandler):
             return False, 503, "admin endpoints disabled (set HUITZILOPOCHTLI_ADMIN_TOKEN or HUITZILOPOCHTLI_ADMIN_PASSWORD)"
         return False, 403, "bad admin token or credentials"
 
+    LOGIN_CSRF_COOKIE = "huitz_login_csrf"
+
+    def _render_login_page(self, error: str = "", status: int = 401) -> None:
+        """The login page with a fresh pre-session CSRF token.
+
+        The token lives in a cookie scoped to /admin/login and is checked
+        against the hidden form field on POST -- it is not tied to any
+        session, it only proves the form was served to this browser
+        (login-CSRF defense).
+        """
+        token = self._cookie(self.LOGIN_CSRF_COOKIE)
+        extra = {}
+        if not token:
+            token = secrets.token_urlsafe(24)
+            extra["Set-Cookie"] = (f"{self.LOGIN_CSRF_COOKIE}={token}; "
+                                   "Path=/admin/login; HttpOnly; SameSite=Lax")
+        self._send_html(status, web.login_page(error, csrf=token or ""),
+                        extra_headers=extra)
+
+    def _send_static(self, content_type: str, body: str) -> None:
+        """Hashed, immutable static asset (web.css / web.js / theme-init.js)."""
+        payload = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(payload)
+
     # --- routing -------------------------------------------------------
 
     def do_GET(self):
         parts = urlsplit(self.path)
         path = parts.path
+        if path.startswith("/static/"):
+            # Public, cacheable assets -- no auth, no cookies.
+            asset = web.static_asset(path)
+            if asset is None:
+                self._send_html(404, web.error_page(
+                    404, "Not found", "No such asset.", "/"))
+            else:
+                self._send_static(asset[0], asset[1])
+            return
         if path == "/health":
             comps = self.store.list_competitions()
             live = [c for c in comps if c.status == "live"]
@@ -543,8 +604,14 @@ class Handler(BaseHTTPRequestHandler):
                                   "/join/success"))
                     player = self.store.get_player(player.player_id)
                 data = competition.leaderboard_payload(self.store, current)
-                row = next((r for r in data["leaderboard"]
-                            if r["player_id"] == player.player_id), None)
+                if current.leaderboard_hidden:
+                    # The public board is withheld, but the player's own row
+                    # (score/rank) is theirs -- it must never read as
+                    # "not joined" or "waiting for the first check-in".
+                    row = competition.player_board_row(self.store, current, player)
+                else:
+                    row = next((r for r in data["leaderboard"]
+                                if r["player_id"] == player.player_id), None)
                 services = (row.get("services") if row else None) or \
                     competition.service_rows(self.store, current, player.box_id)
                 player_csrf = claims.player_csrf(self.server_secret,
@@ -565,12 +632,12 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_public_competition(path, parts)
             return
         if path == "/admin/login":
-            self._send_html(200, web.login_page())
+            self._render_login_page("", status=200)
             return
         if path == "/admin":
             session = self._admin_page_session()
             if session is None:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
                 return
             self._render_admin_dashboard(session)
             return
@@ -578,7 +645,7 @@ class Handler(BaseHTTPRequestHandler):
             # Component reference for design rounds; not linked from the nav.
             session = self._admin_page_session()
             if session is None:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
                 return
             self._send_html(200, web.styleguide_page())
             return
@@ -589,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
             # which mints a page session on the way through).
             session = self._admin_page_session()
             if session is None:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
                 return
             self._render_admin_audit(parse_qs(parts.query))
         if path == "/admin/api/build":
@@ -659,14 +726,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/competitions/new":
             session = self._admin_page_session()
             if session is None:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
                 return
             self._render_admin_new_competition(session)
             return
         if path.startswith("/admin/competitions/"):
             session = self._admin_page_session()
             if session is None:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
                 return
             qs = parse_qs(parts.query)
             msg = (qs.get("msg") or [""])[0][:200]
@@ -793,8 +860,11 @@ class Handler(BaseHTTPRequestHandler):
                     back_url=f"{self._public_base()}/c/{comp.slug}/join/success")
                 player = self.store.get_player(player.player_id)
             data = competition.leaderboard_payload(self.store, comp)
-            row = next((r for r in data["leaderboard"]
-                        if r["player_id"] == player.player_id), None)
+            if comp.leaderboard_hidden:
+                row = competition.player_board_row(self.store, comp, player)
+            else:
+                row = next((r for r in data["leaderboard"]
+                            if r["player_id"] == player.player_id), None)
             self._send_html(200, web.player_page(
                 comp, player, row, player.claim_url,
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
@@ -977,15 +1047,24 @@ class Handler(BaseHTTPRequestHandler):
         try:
             form = self._read_form()
         except Exception:
-            self._send_html(400, web.login_page("Malformed login request."))
+            self._render_login_page("Malformed login request.", status=400)
+            return
+        cookie_tok = self._cookie(self.LOGIN_CSRF_COOKIE) or ""
+        if not cookie_tok or not hmac.compare_digest(str(form.get("csrf", "")),
+                                                      cookie_tok):
+            self._render_login_page("This form expired — reload and try again.",
+                                    status=403)
             return
         username = str(form.get("username", ""))
         password = str(form.get("password", ""))
         if not auth.check_credentials(username, password):
-            self._send_html(401, web.login_page("Invalid username or password."))
+            self._render_login_page("Invalid username or password.")
             return
         token, _csrf = auth.new_session(self.store, username)
         secure = os.environ.get("HUITZILOPOCHTLI_PUBLIC_URL", "").startswith("https")
+        # Single-use: the pre-session token dies with the successful login.
+        self._pending_cookie = (f"{self.LOGIN_CSRF_COOKIE}=; Path=/admin/login; "
+                                "HttpOnly; SameSite=Lax; Max-Age=0")
         self._send_html(303, "", extra_headers={
             "Location": "/admin",
             "Set-Cookie": auth.cookie_value(token, secure=secure),
@@ -1990,7 +2069,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/competitions/new":
             session = self._admin_page_session()
             if session is None:
-                self._send_html(401, web.login_page("Sign in to continue."))
+                self._render_login_page("Sign in to continue.")
                 return
             self._handle_admin_new_competition(session)
             return

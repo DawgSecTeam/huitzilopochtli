@@ -133,11 +133,8 @@ def test_admin_audit_page_gates_filters_and_shows_logged_actions(tmp_path):
 
         # The session path, like every other admin page, reached from the
         # dashboard link.
-        status, _, headers = _req(
-            port, "POST", "/admin/login", "username=admin&password=pass",
-            {"Content-Type": "application/x-www-form-urlencoded"})
-        assert status == 303
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        from tests.helpers import login_session
+        cookie = login_session(_req, port)
         status, dash, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
         assert status == 200 and 'href="/admin/audit"' in dash
         status, page, _ = _req(port, "GET", "/admin/audit",

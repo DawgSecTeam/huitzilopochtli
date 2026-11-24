@@ -66,7 +66,7 @@ def test_theme_logo_embedded_as_data_uri():
 
 def test_theme_valid_accent_injects_root_variable():
     out = render_report(_score(), Mode.HONOR, None, theme={"accent": "#C8102E"})
-    assert ":root { --accent: #C8102E; }" in out
+    assert ":root { --accent: #C8102E; --accent-text: " in out
 
 
 def test_theme_invalid_accent_is_dropped_defensively():
@@ -96,7 +96,7 @@ def test_ranked_awaiting_engine_with_theme():
 def test_ranked_confirmed_with_theme():
     out = render_report(_score(), Mode.RANKED, 1700000000.0, theme={"title": "Op X", "accent": "#c8102e"})
     assert "last confirmed by engine" in out
-    assert ":root { --accent: #c8102e; }" in out
+    assert ":root { --accent: #c8102e; --accent-text: " in out
 
 
 # --- Honor positive-only + countdown (CyberPatriot-style) -----------------
@@ -406,3 +406,26 @@ def test_honor_report_has_no_event_bar_or_tabs():
     assert "data-tabs" not in body
     assert "Service uptime" not in body
     assert "Configuration &amp; forensics" not in body
+
+
+def test_accent_text_variant_is_contrast_guarded_on_paper():
+    # A dark-enough accent passes through untouched...
+    out = render_report(_score(), Mode.HONOR, None, theme={"accent": "#C8102E"})
+    assert "--accent: #C8102E; --accent-text: #C8102E;" in out
+    # ...a too-light accent keeps --accent for fills but blends --accent-text
+    # toward ink until it clears 4.5:1 on the paper ground (links stay brand-
+    # colored instead of the old hardcoded blue).
+    out = render_report(_score(), Mode.HONOR, None, theme={"accent": "#FFD700"})
+    assert "--accent: #FFD700; --accent-text: #847416;" in out
+    assert "a { color: var(--accent-text, #0b63ce);" in out
+    # No accent at all: no :root override block is emitted (the CSS var
+    # fallbacks still apply, so links keep the default blue).
+    out = render_report(_score(), Mode.HONOR, None)
+    assert ":root { --accent:" not in out
+
+
+def test_page_shell_has_favicon_and_color_scheme():
+    from agent.report_page import page_shell
+    out = page_shell("T", "<p>x</p>")
+    assert '<meta name="color-scheme" content="light">' in out
+    assert '<link rel="icon" href="data:image/svg+xml,' in out

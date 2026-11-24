@@ -203,34 +203,62 @@ def rank_for_player(store: Store, comp: Optional[CompetitionRecord],
     return None, len(scored)
 
 
+def _row_for(store: Store, comp: CompetitionRecord, p, status, score, total,
+             now: float) -> dict:
+    """One leaderboard row, shared by the public payload and player_board_row."""
+    return {
+        "player_id": p.player_id,
+        "name": p.display_name,
+        "status": status,
+        "total": total,
+        "hardening_points": score["hardening_points"] if score else 0,
+        "service_points": score["service_points"] if score else 0,
+        "forensics_points": (score.get("forensics_points", 0)
+                             if score else 0),
+        # Checks the agent reported `unavailable` at the last check-in
+        # (required software missing); 0 keeps healthy rows unchanged.
+        "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
+        "started_at": p.started_at,
+        "ends_at": p.ends_at,
+        # Countdown target: the run clock or an earlier scheduled
+        # competition end (effective_run_end), whichever is sooner.
+        "remaining_s": (_remaining_from(effective_run_end(comp, p), now)
+                        if status == "running" else 0),
+        "last_checkin": score["updated_at"] if score else None,
+        "services": _service_rows(store, comp, p.box_id),
+        "box_bound": bool(p.box_id),
+    }
+
+
+def player_board_row(store: Store, comp: CompetitionRecord, player,
+                     now: Optional[float] = None) -> Optional[dict]:
+    """The leaderboard row for one player, even when the public board is hidden.
+
+    A hidden leaderboard withholds everyone's standings, but a player's own
+    score and rank are their own data (the on-box report shows them too), so
+    /me and the run home page use this: a hidden board must never read as
+    "not joined" or "waiting for the first check-in". Returns None when the
+    player has no scored check-in yet. Adds ``board_total`` (players on the
+    board) so the rank line can say "of N" without the public rows.
+    """
+    now = time.time() if now is None else now
+    scored = _scored_players(store, comp, now)
+    for p, status, score, total in scored:
+        if p.player_id == player.player_id:
+            row = _row_for(store, comp, p, status, score, total, now)
+            row["rank"] = _shared_rank(scored, total)
+            row["board_total"] = len(scored)
+            return row
+    return None
+
+
 def leaderboard_payload(store: Store, comp: CompetitionRecord,
                         now: Optional[float] = None) -> dict:
     now = time.time() if now is None else now
     rows = []
     if not comp.leaderboard_hidden:
         for p, status, score, total in _scored_players(store, comp, now):
-            rows.append({
-                "player_id": p.player_id,
-                "name": p.display_name,
-                "status": status,
-                "total": total,
-                "hardening_points": score["hardening_points"] if score else 0,
-                "service_points": score["service_points"] if score else 0,
-                "forensics_points": (score.get("forensics_points", 0)
-                                     if score else 0),
-                # Checks the agent reported `unavailable` at the last check-in
-                # (required software missing); 0 keeps healthy rows unchanged.
-                "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
-                "started_at": p.started_at,
-                "ends_at": p.ends_at,
-                # Countdown target: the run clock or an earlier scheduled
-                # competition end (effective_run_end), whichever is sooner.
-                "remaining_s": (_remaining_from(effective_run_end(comp, p), now)
-                                if status == "running" else 0),
-                "last_checkin": score["updated_at"] if score else None,
-                "services": _service_rows(store, comp, p.box_id),
-                "box_bound": bool(p.box_id),
-            })
+            rows.append(_row_for(store, comp, p, status, score, total, now))
     previous_total = None
     previous_rank = 0
     for position, row in enumerate(rows, start=1):

@@ -93,3 +93,31 @@ _SCORE_JSON = (
     ' "state": "UP", "accrued_points": 3}]}'
 )
 _BUNDLE_JSON = '{"evidence": [{"check_id": "banner", "status": "ok"}]}'
+
+
+def login_session(req, port, username="admin", password="pass"):
+    """Two-step admin login against a running engine: GET the form to receive
+    the pre-session csrf cookie + hidden token, then POST both back.
+
+    ``req`` is a test file's ``_req(port, method, path, body, headers)`` helper
+    returning ``(status, body_text, headers_dict)``. Returns the admin session
+    cookie ("name=value").
+    """
+    import re
+    import urllib.parse
+    status, body, headers = req(port, "GET", "/admin/login")
+    assert status == 200, status
+    m = re.search(r'name="csrf" value="([^"]+)"', body)
+    assert m, "login form carries no csrf token"
+    pre = (headers.get("Set-Cookie") or "").split(";", 1)[0]
+    assert pre.startswith("huitz_login_csrf="), pre
+    form = urllib.parse.urlencode(
+        {"username": username, "password": password, "csrf": m.group(1)})
+    status, _b, headers = req(
+        port, "POST", "/admin/login", form,
+        {"Content-Type": "application/x-www-form-urlencoded",
+         "Cookie": pre})
+    assert status == 303, (status, _b[:200])
+    session = (headers.get("Set-Cookie") or "").split(";", 1)[0]
+    assert session and not session.startswith("huitz_login_csrf="), session
+    return session

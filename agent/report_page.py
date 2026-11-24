@@ -23,10 +23,61 @@ import re
 # Defensive accent validation: only a 6-digit hex may reach the <style> block.
 ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
+# Paper ground the box pages paint on (body background below).
+_PAPER = "#fbfbf9"
+_INK = "#1f2328"
+
+
+def _rel_lum(hex_color: str) -> float:
+    def channel(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def _mix(hex_a: str, hex_b: str, t: float) -> str:
+    a = [int(hex_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(hex_b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x * (1 - t) + y * t) for x, y in zip(a, b))
+
+
+def _readable_on_paper(accent: str, target: float = 4.5) -> str:
+    """The accent as *text* on the paper ground, blended toward ink until the
+    pair clears 4.5:1 -- so links can wear the brand accent on any organizer
+    color instead of a hardcoded blue (same contract as engine/web.py)."""
+    def ratio(fg):
+        hi, lo = sorted((_rel_lum(fg), _rel_lum(_PAPER)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+    if ratio(accent) >= target:
+        return accent
+    for i in range(1, 41):
+        cand = _mix(accent, _INK, i / 40)
+        if ratio(cand) >= target:
+            return cand
+    return _INK
+
 
 def accent_css(accent) -> str:
-    """:root override for a theme accent, or "" if absent/invalid."""
-    return f":root {{ --accent: {accent}; }}\n" if accent and ACCENT_RE.match(str(accent)) else ""
+    """:root overrides for a theme accent, or "" if absent/invalid.
+
+    Emits --accent (fills, rules, the big total) and --accent-text (links),
+    the latter blended until it is readable as text on the paper ground.
+    """
+    if not (accent and ACCENT_RE.match(str(accent))):
+        return ""
+    accent = str(accent)
+    return (f":root {{ --accent: {accent}; "
+            f"--accent-text: {_readable_on_paper(accent)}; }}\n")
+
+
+# Inline SVG favicon (an "H" monogram on paper) so opening the report over
+# http does not log a /favicon.ico 404.
+_FAVICON = ("data:image/svg+xml,"
+            "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
+            "%3Crect width='32' height='32' fill='%23fbfbf9'/%3E"
+            "%3Cpath d='M7 6h5v8h8V6h5v20h-5v-8h-8v8H7z' fill='%231f2328'/%3E"
+            "%3C/svg%3E")
 
 
 def masthead_html(title: str, organization=None, logo_b64=None) -> str:
@@ -155,6 +206,8 @@ def page_shell(title: str, body_html: str, accent: str = "",
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="{_FAVICON}">
 {head_extra}<title>{html.escape(title)}</title>
 <style>{accent}{_STYLE}</style>
 </head>
@@ -186,7 +239,7 @@ h1 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.01em;
 .org { color: var(--muted); margin: 0.4rem 0 0; font-size: 0.9rem; }
 .sub, .org { color: var(--muted); }
 .sub { margin: 0.5rem 0 0; font-size: 0.85rem; }
-a { color: #0b63ce; text-underline-offset: 2px; }
+a { color: var(--accent-text, #0b63ce); text-underline-offset: 2px; }
 strong { font-weight: 700; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
        font-size: 0.88em; background: #f0f0ec; border-radius: 3px; padding: 0.1em 0.35em; }

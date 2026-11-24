@@ -26,6 +26,7 @@ text on dark roast -- plus whisper-fill variants (``--accent-fill-dk`` /
 ``--accent-fill-lt``) for the primary button's resting state.
 """
 import datetime
+import hashlib
 import html
 import json
 import re
@@ -84,15 +85,21 @@ _SEMANTIC_BG = {
 
 
 def _theme_css() -> str:
-    blocks = []
-    for theme in ("dark", "light"):
-        selector = ":root" if theme == "dark" else "html[data-theme=light]"
-        decls = [f"color-scheme:{theme}"]
-        decls += [f"--{name}:{value}" for name, value in _THEMES[theme].items()]
-        decls += [f"--{name}-bg:{value}"
-                  for name, value in _SEMANTIC_BG[theme].items()]
-        blocks.append(f"{selector}{{" + ";".join(decls) + "}")
-    return "\n".join(blocks)
+    def decls(theme: str) -> str:
+        d = [f"color-scheme:{theme}"]
+        d += [f"--{name}:{value}" for name, value in _THEMES[theme].items()]
+        d += [f"--{name}-bg:{value}" for name, value in _SEMANTIC_BG[theme].items()]
+        return ";".join(d)
+    dark, light = decls("dark"), decls("light")
+    # Dark roast is the :root base; with JS off, a light-OS preference arrives
+    # through the media query. An explicit data-theme attribute (set by the
+    # init script, or server-side for the projector board) outranks both.
+    return "\n".join([
+        f":root{{{dark}}}",
+        f"@media (prefers-color-scheme: light){{:root{{{light}}}}}",
+        f"html[data-theme=light]{{{light}}}",
+        f"html[data-theme=dark]{{{dark}}}",
+    ])
 
 
 # Inline SVG favicon: a warm "H" monogram. A data URI avoids a server route and
@@ -224,12 +231,15 @@ def _countdown_span(seconds: int, title: str = "") -> str:
     The JS (bottom of this file) turns any ``[data-remaining]`` into a live
     countdown seeded by this many seconds; page polling swaps in fresh
     values. An optional ``title`` carries the absolute target for a
-    hover/focus read.
+    hover/focus read. ``data-final`` keeps the zero read in the same format
+    as the running clock (0:00:00 for hour-plus runs, never a bare 0:00).
     """
     seconds = max(0, int(seconds))
     title_attr = f' title="{esc(title)}"' if title else ""
-    return (f'<span class="cd" data-remaining="{seconds}"{title_attr}'
-            f'>{esc(_fmt_countdown(seconds))}</span>')
+    final = "0:00:00" if seconds >= 3600 else "0:00"
+    return (f'<span class="cd" role="timer" data-remaining="{seconds}" '
+            f'data-final="{final}"{title_attr}>'
+            f'{esc(_fmt_countdown(seconds))}</span>')
 
 
 def _scheduled_end_of(comp) -> Optional[float]:
@@ -292,10 +302,17 @@ _PLAYER_STATUS = {"invited": ("Invited", "muted"), "running": ("Running", "ok"),
 
 
 def _status_dot(status: str, table: dict, prefix: str) -> str:
-    """One colored dot; the status word rides in the hover/focus tooltip."""
+    """One colored dot; the status word rides in the hover/focus tooltip.
+
+    A <span>, not a <button>: the dot is a read-only indicator, and a button
+    announced as pressable is a lie. ``tabindex=0`` keeps the tooltip
+    keyboard-reachable; the JS (bottom of this file) toggles it on tap so
+    touch users -- who have no hover -- still get the word.
+    """
     label, cls = table.get(status, ((status or "?").title(), "muted"))
-    return (f'<button class="sdot {cls}" type="button" data-tip="{esc(label)}" '
-            f'aria-label="{prefix} status: {esc(label)}"></button>')
+    return (f'<span class="sdot {cls}" tabindex="0" role="img" '
+            f'data-tip="{esc(label)}" '
+            f'aria-label="{prefix} status: {esc(label)}"></span>')
 
 
 def comp_badge(status: str) -> str:
@@ -309,8 +326,7 @@ def comp_status_label(status: str) -> str:
 def comp_status_tag(status: str) -> str:
     """Admin view: the dot AND the word, for operator-at-a-glance reads."""
     label, cls = _COMP_STATUS.get(status, ((status or "?").title(), "muted"))
-    return (f'<span class="stwdot {cls}"><button class="sdot {cls}" type="button" '
-            f'data-tip="{esc(label)}" aria-label="Competition status: {esc(label)}"></button>'
+    return (f'<span class="stwdot {cls}">{_status_dot(status, _COMP_STATUS, "Competition")}'
             f'<span class="word">{esc(label)}</span></span>')
 
 
@@ -418,12 +434,24 @@ def _copy_btn(value: str, label: str) -> str:
 
 # --- layout -------------------------------------------------------------------
 
+# Applied before first paint from an external (cacheable) script in <head>.
+# A data-theme attribute already on <html> (server-pinned on the projector
+# board) always wins; otherwise the stored choice, else the OS preference --
+# which the CSS mirrors for the no-JS case via prefers-color-scheme. Also
+# keeps the theme-color meta in step so mobile browser chrome follows.
 THEME_INIT = (
-    "(function(){try{var t=localStorage.getItem('huitz-theme');"
+    "(function(){try{var d=document.documentElement;"
+    "var cur=d.getAttribute('data-theme');"
+    "if(cur==='light'||cur==='dark'){var m0=document.querySelector("
+    "'meta[name=theme-color]');if(m0)m0.setAttribute('content',"
+    "cur==='light'?'#f7f1e3':'#181410');return;}"
+    "var t=localStorage.getItem('huitz-theme');"
     "if(t!=='light'&&t!=='dark'){t=(window.matchMedia&&"
-    "matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}"
-    "document.documentElement.setAttribute('data-theme',t);}"
-    "catch(e){document.documentElement.setAttribute('data-theme','light');}})();"
+    "matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark';}"
+    "d.setAttribute('data-theme',t);"
+    "var m=document.querySelector('meta[name=theme-color]');"
+    "if(m)m.setAttribute('content',t==='light'?'#f7f1e3':'#181410');}"
+    "catch(e){d.setAttribute('data-theme','light');}})();"
 )
 
 _THEME_TOGGLE = (
@@ -455,7 +483,6 @@ def layout(title: str, body: str, *, comp: Optional[CompetitionRecord] = None,
     accent_vars = (f"--accent:{esc(accent_hex)};--on-accent:{esc(_on_accent(accent_hex))};"
                    f"--accent-dk:{dk};--accent-lt:{lt};"
                    f"--accent-fill-dk:{_rgba(dk, .16)};--accent-fill-lt:{_rgba(lt, .10)}")
-    theme_init = THEME_INIT if chrome else 'document.documentElement.setAttribute("data-theme","dark");'
     theme_attr = "" if chrome else ' data-theme="dark"'
     noscript = (f'<noscript><meta http-equiv="refresh" content="{int(refresh)}"></noscript>'
                 if refresh else "")
@@ -467,7 +494,9 @@ def layout(title: str, body: str, *, comp: Optional[CompetitionRecord] = None,
     cur_home = ' aria-current="page"' if current == "home" else ""
     cur_admin = ' aria-current="page"' if current == "admin" else ""
     header = ""
+    skip = ""
     if chrome:
+        skip = '<a class="skip" href="#main">Skip to content</a>'
         header = (
             '<header class="top"><div class="wrap">'
             '<a class="brand" href="/">Huitzilopochtli</a>'
@@ -475,16 +504,20 @@ def layout(title: str, body: str, *, comp: Optional[CompetitionRecord] = None,
             f'{logout}{_THEME_TOGGLE}</nav>'
             '</div></header>'
         )
+    # CSS/JS/theme-init ship as hashed static assets (cacheable, and they keep
+    # the page payload -- and the CSP -- free of inline script/style blocks);
+    # only the per-competition accent vars stay as a body style attribute.
     return f"""<!doctype html>
 <html lang="en"{theme_attr}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" id="theme-color" content="#181410">
 <link rel="icon" href="{_FAVICON}">
 <title>{esc(title)} · Huitzilopochtli</title>{noscript}
-<script>{theme_init}</script>
-<style>{CSS}</style>
+<script src="{static_url('theme-init.js')}"></script>
+<link rel="stylesheet" href="{static_url('web.css')}">
 </head><body class="{esc(body_class)}" style="{accent_vars}">
-{header}<main class="wrap">{body}</main>
-<script>{JS}</script>
+{skip}{header}<main class="wrap" id="main">{body}</main>
+<script src="{static_url('web.js')}"></script>
 </body></html>"""
 
 
@@ -510,10 +543,25 @@ def _page_head(title: str, back_href: str = "/admin") -> str:
             f'<a class="btn" href="{esc(back_href)}">Back</a></section>')
 
 
+def _players_joined(joined, max_players) -> str:
+    """'3 of 32 joined' -- or plain '3 joined' when the cap is unlimited (<=0)."""
+    if max_players and int(max_players) > 0:
+        return f"{esc(joined)} of {esc(max_players)} joined"
+    return f"{esc(joined)} joined"
+
+
+def _players_capacity(max_players) -> str:
+    """The no-count card meta: 'up to 32 players', 'unlimited players' at <=0."""
+    if max_players and int(max_players) > 0:
+        return f"up to {esc(max_players)} players"
+    return "unlimited players"
+
+
 def _comp_cards(comps: list, players_by_comp: Optional[dict] = None,
-                show_status: bool = True) -> str:
+                show_status: bool = True,
+                empty: str = "No open competitions.") -> str:
     if not comps:
-        return '<p class="empty">No open competitions.</p>'
+        return f'<p class="empty">{esc(empty)}</p>'
     counts = players_by_comp or {}
     rows = []
     for c in comps:
@@ -526,13 +574,13 @@ def _comp_cards(comps: list, players_by_comp: Optional[dict] = None,
         if c.status == "ended":
             meta = "finished"
         elif joined is not None:
-            meta = f"{esc(joined)} of {esc(c.max_players)} joined · {_fmt_duration(c.duration_s)} runs"
+            meta = f"{_players_joined(joined, c.max_players)} · {_fmt_duration(c.duration_s)} runs"
             # Fullness rides in the meta line; the action slot only ever
             # carries a real button, never a floating word beside one.
             if full:
                 meta += ' · <span class="fullflag">full</span>'
         else:
-            meta = f"{_fmt_duration(c.duration_s)} runs · up to {esc(c.max_players)} players"
+            meta = f"{_fmt_duration(c.duration_s)} runs · {_players_capacity(c.max_players)}"
         # The section header already says "Live", so live-section cards skip
         # the status dot; mixed-status sections keep it as the differentiator.
         badge = comp_badge(c.status) if show_status else ""
@@ -555,9 +603,10 @@ def index_page(comps: list, admin_view: bool = False,
     if admin_view:
         other = [c for c in comps if c.status != "live"]
         body += f"""
-<h2 class="section-title">Other competitions</h2>{_comp_cards(other, players_by_comp)}"""
+<h2 class="section-title">Other competitions</h2>{_comp_cards(other, players_by_comp, empty="No other competitions.")}"""
     body += "</div>"
-    return layout("Competitions", body, admin=admin_view, current="home")
+    return layout("Competitions", body, admin=admin_view, current="home",
+                  refresh=15)
 
 
 def _join_box(comp: dict, viewer_comp: Optional[CompetitionRecord] = None) -> str:
@@ -584,20 +633,22 @@ def _join_box(comp: dict, viewer_comp: Optional[CompetitionRecord] = None) -> st
 
 
 def _leader_row(r: dict) -> str:
+    # data-th feeds the mobile card layout's per-cell labels (see the 720px
+    # media query); the thead stays in the a11y tree via scope="col".
     return f"""<tr>
-<td class="rank">{esc(r['rank'])}</td>
-<td><div class="pname"><strong>{esc(r['name'])}</strong>{player_badge(r['status'])}</div></td>
-<td class="r">{_score_cell(r)}</td>
-<td>{_service_dots(r.get("services"))}</td>
-<td class="num r">{_time_cell(r)}</td></tr>"""
+<td class="rank" data-th="#">{esc(r['rank'])}</td>
+<td data-th="Player"><div class="pname"><strong>{esc(r['name'])}</strong>{player_badge(r['status'])}</div></td>
+<td class="r" data-th="Score">{_score_cell(r)}</td>
+<td data-th="Services up">{_service_dots(r.get("services"))}</td>
+<td class="num r" data-th="Time">{_time_cell(r)}</td></tr>"""
 
 
 def _board_table(rows: list) -> str:
     body_rows = "".join(_leader_row(r) for r in rows) \
-        or '<tr><td colspan="5" class="empty">No players yet.</td></tr>'
+        or '<tr><td colspan="5" class="empty" data-th="">No players yet.</td></tr>'
     return (f'<div class="table-wrap"><table><thead><tr>'
-            f'<th class="r">#</th><th>Player</th><th class="r">Score</th>'
-            f'<th>Services up</th><th class="r">Time</th></tr></thead>'
+            f'<th class="r" scope="col">#</th><th scope="col">Player</th><th class="r" scope="col">Score</th>'
+            f'<th scope="col">Services up</th><th class="r" scope="col">Time</th></tr></thead>'
             f'<tbody>{body_rows}</tbody></table></div>')
 
 
@@ -618,7 +669,7 @@ def competition_page(data: dict, *, refresh: int = 5,
                     if waiting and comp["status"] == "live" else "")
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp['name'])}</h1>{comp_badge(comp['status'])}</div>
-<p class="meta">{esc(comp['player_count'])} joined of {esc(comp['max_players'])}{waiting_line} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a>{_scheduled_end_line(comp)}</p>
+<p class="meta">{_players_joined(comp['player_count'], comp['max_players'])}{waiting_line} · {_fmt_duration(comp['duration_s'])} runs{full_flag} · <a href="/c/{esc(comp['slug'])}/display">Big screen</a>{_scheduled_end_line(comp)}</p>
 {f'<p class="small muted">{esc(comp.get("join_instructions") or "")}</p>' if comp.get('join_instructions') else ''}</div>
 {f'<div class="joinbox">{join_box}</div>' if join_box else ''}
 </section>
@@ -782,27 +833,14 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
         parts.append(_claim_retry_form(player, csrf))
     step1 = "".join(parts)
 
-    vm_script = ""
+    # Claim-status polling is data-driven: web.js watches #vm-poll and reloads
+    # the page when the box binds or the claim url/error/code-expiry changes,
+    # so no inline script is needed on this page.
+    vm_poll = ""
     if not bound:
-        vm_script = f"""
-<script>
-(function(){{
-  var pid={json.dumps(player.player_id)};
-  var startUrl={json.dumps(url or "")};
-  var startErr={json.dumps(err)};
-  var startCodeExp={json.dumps(player.join_code_expires_at or 0)};
-  var polls=0;
-  var t=setInterval(function(){{
-    if(++polls>200){{ clearInterval(t); return; }}
-    fetch('/api/public/join/'+pid+'/status').then(function(r){{return r.ok?r.json():null;}}).then(function(d){{
-      if(!d) return;
-      if(d.box_bound){{ location.reload(); return; }}
-      if((d.claim_url||'')!==startUrl||(d.claim_error||'')!==startErr||
-         (d.code_expires_at||0)!==startCodeExp){{ location.reload(); }}
-    }}).catch(function(){{}});
-  }},3000);
-}})();
-</script>"""
+        vm_poll = (f'<div id="vm-poll" hidden data-pid="{esc(player.player_id)}"'
+                   f' data-url="{esc(url or "")}" data-err="{esc(err)}"'
+                   f' data-code-exp="{esc(player.join_code_expires_at or 0)}"></div>')
 
     codebox = (f'<div class="codebox"><code id="joincode">{esc(code)}</code>'
                f'{_copy_btn(code, "Copy code")}</div>' if code else
@@ -821,7 +859,7 @@ when it does.</p></li>"""
 <p class="meta">Competition: {esc(comp.name)} · your clock starts when you open the VM.{f' · Competition {competition_ends}' if competition_ends else ''}</p></div></section>
 <section class="card narrow">
 <ol class="steps">
-<li><h2>Your VM</h2>{step1}</li>{vm_script}
+<li><h2>Your VM</h2>{step1}</li>{vm_poll}
 {fallback if (code and not bound) else ''}
 <li><h2>Watch the board</h2>
 <p><a href="/c/{esc(comp.slug)}">Leaderboard</a> · <a href="/c/{esc(comp.slug)}/me">My status</a></p></li>
@@ -831,39 +869,63 @@ when it does.</p></li>"""
                   refresh=None if bound else 5)
 
 
+def _run_clock(comp: CompetitionRecord, player: PlayerRecord,
+               now: Optional[float] = None):
+    """Shared clock computation for the two player run pages (/me and home).
+
+    Returns (time_block, end_note, competition_ends, remaining). The run
+    clock counts to the run's effective end: the run's own deadline or an
+    earlier scheduled competition end, whichever comes first.
+    """
+    now = time.time() if now is None else now
+    running = player.status == "running"
+    effective_end = competition.effective_run_end(comp, player) if running else None
+    remaining = max(0, int((effective_end or 0) - now)) if (running and effective_end) else 0
+    end_note = ""
+    if effective_end:
+        end_note = f"ends {esc(_fmt_ts(effective_end))}"
+        if player.ends_at is not None and effective_end != player.ends_at:
+            end_note += " (competition end)"
+    competition_ends = _competition_ends_line(comp, now)
+    if running:
+        time_block = _countdown_span(remaining, title=end_note)
+    elif player.status == "invited":
+        time_block = '<span class="muted small">starts when your box joins</span>'
+    else:
+        time_block = '<span class="muted">—</span>'
+    return time_block, end_note, competition_ends, remaining
+
+
+def _run_score_block(row: dict, player: PlayerRecord, big_class: str) -> str:
+    """The score area for player run pages, in one place so /me and the run
+    home page cannot drift apart. ``big_class`` is the page's big-number class."""
+    joined = bool(player.box_id)
+    if row:
+        return (f'<div class="{big_class}">{esc(row.get("total", 0))}</div>'
+                f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
+                f'<span>services {esc(row.get("service_points", 0))}</span></div>'
+                + _ungraded_note(row))
+    if joined and player.status == "disqualified":
+        return (f'<div class="{big_class} muted">off-board</div>'
+                '<div class="muted small">Disqualified: the box keeps '
+                'scoring its own report; the board is closed to this run.</div>')
+    if joined:
+        return (f'<div class="{big_class} muted">—</div>'
+                '<div class="muted small">Your box is joined — waiting for its '
+                'first engine check-in.</div>')
+    return (f'<div class="{big_class} muted">—</div>'
+            '<div class="muted small">Not scoring: your box has not joined yet — '
+            'open your VM, then run <code>huitz join</code> with your code.</div>')
+
+
 def player_page(comp: CompetitionRecord, player: PlayerRecord,
                 board_row: Optional[dict], claim_url: Optional[str],
                 csrf: str = "", admin: bool = False,
                 join_code: str = "") -> str:
     row = board_row or {}
     joined = bool(player.box_id)
-    running = player.status == "running"
-    # The run clock counts to the run's effective end: the run's own deadline
-    # or an earlier scheduled competition end, whichever comes first.
-    effective_end = competition.effective_run_end(comp, player) if running else None
-    remaining = max(0, int((effective_end or 0) - time.time())) if (running and effective_end) else 0
-    end_note = competition_ends = ""
-    if effective_end:
-        end_note = f"ends {esc(_fmt_ts(effective_end))}"
-        if player.ends_at is not None and effective_end != player.ends_at:
-            end_note += " (competition end)"
-    competition_ends = _competition_ends_line(comp)
-    if row:
-        score = (f'<div class="bigscore">{esc(row.get("total", 0))}</div>'
-                 f'<div class="scoresplit"><span>hardening {esc(row.get("hardening_points", 0))}</span>'
-                 f'<span>services {esc(row.get("service_points", 0))}</span></div>'
-                 + _ungraded_note(row))
-    elif joined and player.status == "disqualified":
-        score = ('<div class="bigscore muted">off-board</div>'
-                 '<div class="muted small">Disqualified: the box keeps '
-                 'scoring its own report; the board is closed to this run.</div>')
-    elif joined:
-        score = ('<div class="bigscore muted">—</div>'
-                 '<div class="muted small">Your box is joined — waiting for its '
-                 'first engine check-in.</div>')
-    else:
-        score = ('<div class="bigscore muted">—</div>'
-                 '<div class="muted small">Not scoring: your box has not joined yet.</div>')
+    time_block, end_note, competition_ends, _remaining = _run_clock(comp, player)
+    score = _run_score_block(row, player, "bigscore")
     join_panel = ""
     if not joined:
         code = (join_code or player.join_code_plain or "").strip()
@@ -879,12 +941,6 @@ this code:</div>
 <p class="small">1. Open your VM. 2. In its terminal run
 <code>huitz join</code>. 3. Enter the code above. This page updates when the
 box joins.</p>'''
-    if running:
-        time_block = (f'<span data-remaining="{remaining}">{esc(_fmt_countdown(remaining))}</span>')
-    elif player.status == "invited":
-        time_block = '<span class="muted small">starts when your box joins</span>'
-    else:
-        time_block = '<span class="muted">—</span>'
     body = f"""<section class="page-head-row"><div>
 <div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}{'' if joined else '<span class="fullflag">not joined</span>'}</div>
 <p class="meta">{esc(comp.name)}</p></div></section>
@@ -910,7 +966,7 @@ box joins.</p>'''
 </section>
 </div>"""
     return layout(player.display_name, body, comp=comp, admin=admin,
-                  current="home")
+                  current="home", refresh=15)
 
 
 def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
@@ -974,7 +1030,7 @@ def _home_leave_card(comp: CompetitionRecord, player: PlayerRecord,
 <h2>Leave competition</h2>
 <p class="muted small">{esc(consequence)} This cannot be undone.</p>
 <form method="post" action="/c/{esc(comp.slug)}/leave" class="inline"
-      onsubmit="return confirm('Leave this competition? This cannot be undone.')">
+      data-confirm="Leave this competition? This cannot be undone.">
 <input type="hidden" name="csrf" value="{esc(leave_csrf)}">
 <button class="btn danger" type="submit">Leave competition</button>
 </form>
@@ -1000,36 +1056,15 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
     services = (services if services is not None
                 else (row.get("services") or []))
     joined = comp.max_players if player_count is None else player_count
-    running = player.status == "running"
-    # The run clock counts to the run's effective end: its own deadline or an
-    # earlier scheduled competition end, whichever comes first.
-    effective_end = competition.effective_run_end(comp, player) if running else None
-    remaining = max(0, int((effective_end or 0) - time.time())) if (running and effective_end) else 0
-    end_note = ""
-    if effective_end:
-        end_note = f"ends {esc(_fmt_ts(effective_end))}"
-        if player.ends_at is not None and effective_end != player.ends_at:
-            end_note += " (competition end)"
-    competition_ends = _competition_ends_line(comp)
-    if running:
-        time_block = (f'<span data-remaining="{remaining}">'
-                      f'{esc(_fmt_countdown(remaining))}</span>')
-    elif player.status == "invited":
-        time_block = '<span class="muted small">starts when your box joins</span>'
-    else:
-        time_block = '<span class="muted">—</span>'
+    time_block, end_note, competition_ends, _remaining = _run_clock(comp, player)
+    score_block = _run_score_block(row, player, "stat-big")
     if row:
-        score_block = (f'<div class="stat-big">{esc(row.get("total", 0))}</div>'
-                       f'<div class="scoresplit"><span>hardening '
-                       f'{esc(row.get("hardening_points", 0))}</span>'
-                       f'<span>services {esc(row.get("service_points", 0))}</span></div>'
-                       + _ungraded_note(row))
-        rank_line = (f'Rank {esc(row.get("rank"))} of {esc(len(rows))} on the board'
-                     if row.get("rank") else "On the board")
+        # With a hidden board the server still sends the player's own row
+        # (carrying board_total); the public rows list stays empty.
+        board_total = row.get("board_total") or len(rows)
+        rank_line = (f'Rank {esc(row.get("rank"))} of {esc(board_total)} on the board'
+                     if row.get("rank") and board_total else "On the board")
     else:
-        score_block = ('<div class="stat-big muted">—</div>'
-                       '<div class="muted small">Your box hasn\'t joined yet — open '
-                       'your VM, then run <code>huitz join</code> with your code.</div>')
         rank_line = "Not on the board yet"
     # The organizers can pause the public standings for the run; while they
     # are hidden the player's board shows a quiet note instead of scores
@@ -1072,7 +1107,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 <a class="small" href="/c/{esc(comp.slug)}/display">Big screen →</a></div>
 <dl class="kv home-facts">
 <dt>Scenario</dt><dd>{esc(comp.scenario_name)}</dd>
-<dt>Players</dt><dd>{esc(joined)} of {esc(comp.max_players)}</dd>
+<dt>Players</dt><dd>{_players_joined(joined, comp.max_players)}</dd>
 <dt>Duration</dt><dd>{esc(_fmt_duration(comp.duration_s))}</dd>
 {f'<dt>Scheduled end</dt><dd>{competition_ends}</dd>' if competition_ends else ''}
 </dl>
@@ -1088,17 +1123,22 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 </div>
 <p class="home-note">You can join another competition once this run ends.</p>"""
     return layout("My competition", body, comp=comp, admin=admin,
-                  current="home")
+                  current="home", refresh=15)
 
 
 # --- admin pages -----------------------------------------------------------------
 
 
-def login_page(error: str = "") -> str:
+def login_page(error: str = "", csrf: str = "") -> str:
+    # csrf is a pre-session token (cookie-paired by the server): it defends
+    # against login-CSRF even though no session exists yet.
+    csrf_input = (f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+                  if csrf else "")
     body = f"""<section class="login-page">
 <h1>Admin login</h1>
 {f'<p class="error">{esc(error)}</p>' if error else ''}
 <form method="post" action="/admin/login" class="stack">
+{csrf_input}
 <label>Username<input name="username" autocomplete="username" autofocus required></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
 <button class="btn primary" type="submit">Sign in</button>
@@ -1160,10 +1200,12 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
         if c.status in ("draft", "live") and c.scheduled_end_at:
             schedule_note = (f'<div class="muted small">ends '
                              f'{esc(_fmt_short_ts(c.scheduled_end_at))}</div>')
-        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
-<td>{comp_status_tag(c.status)}</td><td class="num r">{esc(n)}/{esc(c.max_players)}</td>
-<td class="num r">{pool_cell}</td>
-<td class="num r">{esc(_fmt_duration(c.duration_s))}{schedule_note}</td><td><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
+        players_cell = (f'{esc(n)}/{esc(c.max_players)}'
+                        if c.max_players and c.max_players > 0 else f'{esc(n)}')
+        cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td data-th="Name"><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
+<td data-th="Status">{comp_status_tag(c.status)}</td><td class="num r" data-th="Players">{players_cell}</td>
+<td class="num r" data-th="Pool ready">{pool_cell}</td>
+<td class="num r" data-th="Duration">{esc(_fmt_duration(c.duration_s))}{schedule_note}</td><td data-th=""><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
     live_note = (f'<p class="meta">{live} competition{"s" if live != 1 else ""} '
                  f'live right now &middot; each holds its own VM pool.</p>'
                  if live else "")
@@ -1175,7 +1217,7 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
 <div id="dash" data-poll="30000">
 <section class="card"><div class="card-head"><h2>Competitions</h2>
 </div>
-<div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th class="r">Players</th><th class="r">Pool ready</th><th class="r">Duration</th><th></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="6" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
+<div class="table-wrap"><table><thead><tr><th scope="col">Name</th><th scope="col">Status</th><th class="r" scope="col">Players</th><th class="r" scope="col">Pool ready</th><th class="r" scope="col">Duration</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>{''.join(cards) or '<tr><td colspan="6" class="empty">No competitions yet.</td></tr>'}</tbody></table></div></section>
 </div>
 {_build_line()}"""
     return layout("Admin", body, admin=True, current="admin")
@@ -1246,9 +1288,9 @@ def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
         actor = esc(r.actor)
         if r.remote_addr:
             actor += f'<div class="muted small">{esc(r.remote_addr)}</div>'
-        out.append(f"""<tr><td class="num">{esc(_fmt_ts(r.ts))}</td><td>{actor}</td>
-<td><code>{esc(r.action)}</code></td><td>{target}</td>
-<td>{_audit_detail_cell(r.details_json)}</td></tr>""")
+        out.append(f"""<tr><td class="num" data-th="Time">{esc(_fmt_ts(r.ts))}</td><td data-th="Actor">{actor}</td>
+<td data-th="Action"><code>{esc(r.action)}</code></td><td data-th="Competition">{target}</td>
+<td data-th="Detail">{_audit_detail_cell(r.details_json)}</td></tr>""")
     empty = ("No matching audit entries." if competition_id or unknown_filter
              else "Nothing logged yet.")
     meta = "Newest first &middot; times are engine-local"
@@ -1258,14 +1300,14 @@ def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
         meta += f" &middot; filter searched the newest {esc(scan)} entries"
     filters = f"""<form method="get" action="/admin/audit" class="filter-form">
 <label class="small">Competition<select name="competition">{"".join(opts)}</select></label>
-<label class="small">Rows<input name="limit" type="number" min="1" max="{esc(limit_max)}" value="{esc(limit)}" style="width:6rem"></label>
+<label class="small">Rows<input class="input-md" name="limit" type="number" min="1" max="{esc(limit_max)}" value="{esc(limit)}"></label>
 <button class="btn" type="submit">Apply</button></form>"""
     body = f"""{_page_head("Audit log")}
 {f'<p class="warnmsg">No competition matches <code>{esc(unknown_filter)}</code>.</p>' if unknown_filter else ''}
 <section class="card"><div class="card-head"><h2>Entries</h2>
 {filters}</div>
 <p class="meta">{meta}</p>
-<div class="table-wrap"><table><thead><tr><th>Time (local)</th><th>Actor</th><th>Action</th><th>Competition</th><th>Detail</th></tr></thead><tbody>{"".join(out) or f'<tr><td colspan="5" class="empty">{empty}</td></tr>'}</tbody></table></div></section>"""
+<div class="table-wrap"><table><thead><tr><th scope="col">Time (local)</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Competition</th><th scope="col">Detail</th></tr></thead><tbody>{"".join(out) or f'<tr><td colspan="5" class="empty">{empty}</td></tr>'}</tbody></table></div></section>"""
     return layout("Audit log", body, admin=True, current="admin")
 
 
@@ -1299,7 +1341,7 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <div class="form-grid form-lead">
 <label>Name<input name="name" required placeholder="Friday Night Ranked" autofocus></label>
-<label>Scenario<select name="scenario" required>{"".join(opts) or '<option value="">No ranked scenarios found</option>'}</select><span class="help">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
+<label>Scenario<select name="scenario" required aria-describedby="help-scenario">{"".join(opts) or '<option value="">No ranked scenarios found</option>'}</select><span class="help" id="help-scenario">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
 </div>
 {unusable_block}
 <div class="form-grid form-cols">
@@ -1307,7 +1349,7 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 <label>Run duration (minutes)<input name="duration_min" type="number" min="1" value="120"></label>
 <label>Accent color<input name="accent" type="color" value="#5f4a38"></label>
 </div>
-<label class="check"><input type="checkbox" name="auto_end" value="1"> End automatically once joins are closed and every run has finished<span class="help">Releases the competition's VM pool without an operator pressing End. Off by default; you can flip it on the competition page.</span></label>
+<label class="check"><input type="checkbox" name="auto_end" value="1" aria-describedby="help-auto-end"> End automatically once joins are closed and every run has finished<span class="help" id="help-auto-end">Releases the competition's VM pool without an operator pressing End. Off by default; you can flip it on the competition page.</span></label>
 <div class="form-foot"><button class="btn primary" type="submit">Create draft</button></div>
 </form></div>"""
     return layout("New competition", body, admin=True, current="admin")
@@ -1350,7 +1392,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            f'<button class="btn">Reissue code</button></form>')
         if p.status in ("running", "finished"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/disqualify" class="inline"'
-                          f' onsubmit="return confirm(\'Disqualify: keeps their box and clock, drops them from the board. Continue?\')">'
+                          f' data-confirm="Disqualify: keeps their box and clock, drops them from the board. Continue?">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Disqualify</button></form>')
         if p.status == "disqualified":
@@ -1363,7 +1405,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            f'<button class="btn">Reinstate</button></form>')
         if p.status in ("invited", "running", "finished", "disqualified"):
             danger.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/remove" class="inline"'
-                          f' onsubmit="return confirm(\'Remove this player from the competition?\')">'
+                          f' data-confirm="Remove this player from the competition?">'
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Remove</button></form>')
         if p.box_id and p.claim_uid:
@@ -1371,22 +1413,31 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
             # destroying the VM (the seat frees for the next claim). Player
             # status, score and history stay.
             neutral.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/release_box" class="inline"'
-                           f' onsubmit="return confirm(\'Release (destroy) this player\\\'s box now? Their run is over even if their clock says otherwise. Continue?\')">'
+                           f' data-confirm="Release (destroy) this player\'s box now? Their run is over even if their clock says otherwise. Continue?">'
                            f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                            f'<button class="btn">Release box</button></form>')
         sep = '<span class="act-sep" aria-hidden="true"></span>' if neutral and danger else ""
         actions = "".join(neutral) + sep + "".join(danger)
+        # Up to four verbs per row was a button wall; they now live behind one
+        # "Actions" menu per row (delegated open/close in web.js, so polling
+        # can swap rows freely). The forms keep their own buttons + confirms.
+        actions_cell = '<span class="muted">—</span>'
+        if actions:
+            actions_cell = (f'<div class="menu-wrap"><button type="button" class="btn" '
+                            f'data-menu-btn aria-haspopup="true" aria-expanded="false">'
+                            f'Actions <span aria-hidden="true">▾</span></button>'
+                            f'<div class="menu" hidden>{actions}</div></div>')
         claim_note = (f'<div class="small error">{esc(p.claim_error)}</div>'
                       if getattr(p, "claim_error", None) else "")
-        rows.append(f"""<tr><td><div class="pname"><strong>{esc(p.display_name)}</strong>{player_badge(p.status)}</div>{claim_note}</td>
-<td class="r">{score}</td>
-<td>{_service_dots(row.get('services'))}</td>
-<td class="num r">{checkin}</td>
-<td class="small">{f'<div class="row-actions">{actions}</div>' if actions else '<span class="muted">—</span>'}</td></tr>""")
+        rows.append(f"""<tr><td data-th="Player"><div class="pname"><strong>{esc(p.display_name)}</strong>{player_badge(p.status)}</div>{claim_note}</td>
+<td class="r" data-th="Score">{score}</td>
+<td data-th="Services">{_service_dots(row.get('services'))}</td>
+<td class="num r" data-th="Check-in">{checkin}</td>
+<td class="small" data-th="Actions">{actions_cell}</td></tr>""")
     controls = []
     if comp.status == "draft":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/start" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Start competition</button></form>')
-        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'Discard this draft and release any pre-deployed boxes?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Discard draft</button></form>')
+        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" data-confirm="Discard this draft and release any pre-deployed boxes?"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Discard draft</button></form>')
     if comp.status == "live":
         if comp.join_open:
             controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
@@ -1397,11 +1448,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         # Overtime: nudging the run deadline is metadata on the engine side
         # (the boxes and the scoring do not change), so it is offered as a
         # plain form like the other controls.
-        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/extend" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><label class="small">Extend (min)<input name="minutes" type="number" min="1" max="360" value="15" style="width:4.5rem"></label><button class="btn">Extend</button></form>')
-        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" onsubmit="return confirm(\'End the competition for everyone?\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">End competition</button></form>')
+        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/extend" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><label class="small">Extend (min)<input class="input-sm" name="minutes" type="number" min="1" max="360" value="15"></label><button class="btn">Extend</button></form>')
+        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/end" class="inline" data-confirm="End the competition for everyone?"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">End competition</button></form>')
     if comp.status == "ended":
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/rerun" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Rerun competition</button></form>')
-        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/delete" class="inline" onsubmit="return confirm(\'Remove this competition and its player records? This cannot be undone.\')"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Remove competition</button></form>')
+        controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/delete" class="inline" data-confirm="Remove this competition and its player records? This cannot be undone."><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Remove competition</button></form>')
     join_path = f"/c/{comp.slug}/join"
     # Copy hands the player the whole URL their browser needs, not just the
     # path tail; without a public base the path is all we know.
@@ -1476,7 +1527,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <div id="warm" data-poll="10000">{pool_line}{note}
 <form method="post" action="/admin/api/competitions/{esc(comp.id)}/warm" class="warm-form">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
-<label class="small">Boxes <input name="count" type="number" min="1" max="64" value="{default_count}" style="width:6rem"></label>
+<label class="small">Boxes <input class="input-md" name="count" type="number" min="1" max="64" value="{default_count}"></label>
 {button}</form></div></section>"""
     # The pool code is portal plumbing (audit log / journal carry it for
     # debugging); the UI stays quiet about pools unless a claim actually fails,
@@ -1500,16 +1551,17 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
             schedule_value = (f'{esc(_fmt_ts(scheduled))} · in '
                               f'{_countdown_span(scheduled - now)}'
                               f'{cancel_btn}')
-        confirm = (' onsubmit="return confirm(\'End the competition '
-                   'automatically at the picked time? Runs still in progress '
-                   'stop and boxes are torn down. Continue?\')"'
-                   if comp.status == "live" else "")
+        confirm_attr = (' data-confirm="End the competition automatically at '
+                        'the picked time? Runs still in progress stop and '
+                        'boxes are torn down. Continue?"'
+                        if comp.status == "live" else "")
         schedule_controls = (
             f'<form method="post" action="/admin/api/competitions/'
-            f'{esc(comp.id)}/schedule-end" class="inline"{confirm}>'
+            f'{esc(comp.id)}/schedule-end" class="inline"{confirm_attr}>'
             f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
             f'<label class="small">Ends at '
             f'<input type="datetime-local" name="ends_at" step="60" '
+            f'aria-describedby="help-scheduled-end" '
             f'value="{_fmt_dt_input(scheduled) if scheduled else ""}" '
             f'min="{_fmt_dt_input(now)}"></label> '
             f'<button class="btn">{"Update" if scheduled else "Schedule end"}</button>'
@@ -1533,11 +1585,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <section class="card"><div class="card-head"><h2>Settings</h2></div>
 <div class="facts">
 <div class="fact"><span class="fact-label">Status</span><span class="fact-value">{esc(comp_status_label(comp.status))} {comp_badge(comp.status)}</span></div>
-<div class="fact"><span class="fact-label">Players</span><span class="fact-value">{esc(len(players))} / {esc(comp.max_players)} joined</span></div>
+<div class="fact"><span class="fact-label">Players</span><span class="fact-value">{_players_joined(len(players), comp.max_players)}</span></div>
 <div class="fact"><span class="fact-label">Run duration</span><span class="fact-value">{_fmt_duration(comp.duration_s)} runs</span></div>
 <div class="fact wide"><span class="fact-label">Scheduled end</span>
 <span class="fact-value">{schedule_value}{schedule_controls}
-<span class="help">Ends the competition automatically at this time (server clock): every run still in progress stops and boxes are torn down. Competitors see a countdown; Extend moves this along too.</span></span></div>
+<span class="help" id="help-scheduled-end">Ends the competition automatically at this time (server clock): every run still in progress stops and boxes are torn down. Competitors see a countdown; Extend moves this along too.</span></span></div>
 <div class="fact"><span class="fact-label">Auto-end</span><span class="fact-value">{'On' if comp.auto_end else 'Off'}{auto_end_btn}</span></div>
 <div class="fact wide"><span class="fact-label">Join URL</span>
 <span class="fact-value"><code>{esc(join_url)}</code> {_copy_btn(join_url, "Copy")}
@@ -1547,7 +1599,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <div id="roster" data-poll="15000">
 <section class="card"><div class="card-head"><h2>Players</h2>
 </div>
-<div class="table-wrap"><table class="roster"><thead><tr><th>Player</th><th class="r">Score</th><th>Services</th><th class="r">Check-in</th><th>Actions</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="5" class="empty">No players yet.</td></tr>'}</tbody></table></div></section>
+<div class="table-wrap"><table class="roster"><thead><tr><th scope="col">Player</th><th class="r" scope="col">Score</th><th scope="col">Services</th><th class="r" scope="col">Check-in</th><th scope="col">Actions</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="5" class="empty">No players yet.</td></tr>'}</tbody></table></div></section>
 </div>"""
     return layout(comp.name, body, comp=comp, admin=True, current="admin")
 
@@ -1589,7 +1641,7 @@ def styleguide_page() -> str:
     body = f"""{_page_head("Styleguide")}
 <section class="card"><div class="card-head"><h2>Typography</h2>
 <span class="meta">serif display · sans labels</span></div>
-<h1 style="font-size:1.6rem">Heading one (serif)</h1>
+<h1 class="demo-h1">Heading one (serif)</h1>
 <h2>Heading two</h2>
 <p>Body copy runs in the sans face at 16px. <a href="#">A link</a> takes the
 readable accent; <span class="muted">muted text</span> and
@@ -1604,9 +1656,10 @@ readable accent; <span class="muted">muted text</span> and
 <button class="btn danger" type="button">Danger</button>
 <button class="btn copied" type="button">Copied (transient)</button>
 {_THEME_TOGGLE}</p>
-<div class="row-actions"><form class="inline" onsubmit="return false"><button class="btn" type="submit">Row action</button></form>
+<div class="menu-wrap"><button type="button" class="btn" data-menu-btn aria-haspopup="true" aria-expanded="false">Actions <span aria-hidden="true">▾</span></button>
+<div class="menu" hidden><form class="inline" data-confirm="Styleguide demo — this form goes nowhere."><button class="btn" type="submit">Row action</button></form>
 <span class="act-sep" aria-hidden="true"></span>
-<form class="inline" onsubmit="return false"><button class="btn danger" type="submit">Destructive</button></form></div>
+<form class="inline" data-confirm="Styleguide demo — this form goes nowhere."><button class="btn danger" type="submit">Destructive</button></form></div></div>
 </section>
 <section class="card"><div class="card-head"><h2>Fields</h2>
 <span class="meta">the new-competition grid</span></div>
@@ -1677,7 +1730,7 @@ CSS = _theme_css() + """
 --font-serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
 --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px;
 --pad-card:var(--s4) var(--s5);--pad-cell:var(--s2) var(--s3);
---control:32px;--gap-stack:var(--s4);--margin-trail:var(--s7)}
+--control:32px;--gap-stack:var(--s4);--margin-trail:var(--s7);--header-h:56px}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--font-sans);
 --accent-text:var(--accent-dk);--accent-fill:var(--accent-fill-dk)}
@@ -1689,8 +1742,11 @@ a{color:var(--accent-text);text-decoration:none}a:hover{text-decoration:underlin
 :focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
 .wrap{max-width:1180px;margin:0 auto;padding:0 var(--s5)}
 main.wrap{display:flex;flex-direction:column;gap:var(--gap-stack);padding:var(--s6) var(--s5) var(--s7)}
+.skip{position:absolute;left:-9999px;top:0;z-index:200}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.skip:focus-visible{left:var(--s2);top:var(--s2);background:var(--surface);border:1px solid var(--line-2);padding:var(--s2) var(--s3);color:var(--ink);font-weight:700;font-size:.8rem;text-transform:uppercase;letter-spacing:.07em;text-decoration:none}
 .top{position:sticky;top:0;z-index:20;background:var(--header);border-bottom:1px solid var(--line-2)}
-.top .wrap{display:flex;align-items:center;justify-content:space-between;gap:var(--s5);min-height:56px}
+.top .wrap{display:flex;align-items:center;justify-content:space-between;gap:var(--s5);min-height:var(--header-h)}
 .brand{font-weight:700;color:var(--ink);font-size:1.08rem}
 nav{display:flex;gap:var(--s5);align-items:center}
 nav form{display:flex}
@@ -1726,7 +1782,10 @@ hover/focus tooltip (data-tip), so color is never the only signal. */
 .sdot::before{content:"";display:block;width:100%;height:100%;border-radius:50%;background:currentColor}
 .sdot.ok{color:var(--ok)}.sdot.warn{color:var(--warn)}.sdot.danger{color:var(--danger)}
 .sdot.lg{width:10px;height:10px}
-.sdot:hover::after,.sdot:focus-visible::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;line-height:1;padding:5px 8px;white-space:nowrap;z-index:40;pointer-events:none;border-radius:2px}
+.sdot:hover::after,.sdot:focus-visible::after,.sdot.show::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;line-height:1;padding:5px 8px;white-space:nowrap;z-index:40;pointer-events:none;border-radius:2px}
+/* Near the viewport top (first table rows under the sticky header) the
+   tooltip flips below the dot instead of clipping; JS toggles .below. */
+.sdot.below:hover::after,.sdot.below:focus-visible::after,.sdot.below.show::after{bottom:auto;top:calc(100% + 7px)}
 .sdot:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
 .pname{display:flex;align-items:center;gap:var(--s2);min-width:0}
 /* Admin reads: dot + written-out word, same slot either theme. */
@@ -1744,6 +1803,8 @@ button rests on a quiet tint and empties to an outline on hover. */
 .btn.danger{color:var(--danger);background:var(--danger-bg)}
 .btn.danger:hover{background:transparent;border-color:var(--danger);color:var(--danger)}
 .btn.copied{color:var(--ok);border-color:var(--ok);background:transparent}
+.btn:active{transform:translateY(1px)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 /* A refused action (no pool to pre-deploy from) must not look pressable. */
 .btn[disabled],.btn:disabled{opacity:.55;cursor:not-allowed}
 .btn[disabled]:hover,.btn:disabled:hover{background:var(--surface-2);border-color:transparent;color:var(--ink-2)}
@@ -1779,11 +1840,21 @@ td.rank{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 .svcs .dot.up{background:var(--ok)}.svcs .dot.down{background:var(--danger)}.svcs .dot.pending{background:var(--muted)}
 .svcs .lbl{color:var(--muted);font-size:.8rem;margin-left:4px;font-variant-numeric:tabular-nums}
 .muted{color:var(--muted)}.small{font-size:.82rem}
+.cd{font-variant-numeric:tabular-nums}
+.input-sm{width:4.5rem}.input-md{width:6rem}
+.demo-h1{font-size:1.6rem}
 .empty{color:var(--muted);text-align:center;padding:var(--pad-card)}
 .inline{display:inline}
 .row-actions{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
 .row-actions form{display:inline-flex}
 .act-sep{width:1px;height:16px;background:var(--line-2);flex:none;margin:0 2px}
+/* Per-row action menu (admin roster): one trigger, forms stack inside. */
+.menu-wrap{position:relative;display:inline-block}
+.menu{position:absolute;right:0;top:calc(100% + 4px);z-index:60;min-width:13rem;background:var(--surface);border:1px solid var(--line-2);padding:var(--s1);display:flex;flex-direction:column;gap:2px}
+.menu[hidden]{display:none}
+.menu form{display:flex}
+.menu .btn{width:100%;justify-content:flex-start}
+.menu .act-sep{width:auto;height:1px;margin:2px 0}
 .joinbox{min-width:220px;display:flex;flex-direction:column;gap:var(--s2);align-items:flex-end;text-align:right}
 .comp-list{display:flex;flex-direction:column;gap:var(--s3)}
 .comp-row{display:flex;align-items:center;justify-content:space-between;gap:var(--s5);flex-wrap:wrap}
@@ -1817,8 +1888,8 @@ the page keeps the button/field baseline without a rule of its own. */
 code{background:var(--surface-2);border-radius:0;padding:.08rem .35rem;font-size:.9em}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:0;padding:var(--pad-card);overflow:auto}
 pre code{background:none;padding:0}
-.codebox{display:flex;align-items:center;justify-content:center;gap:var(--s3);font-size:1.9rem;letter-spacing:.28em;text-align:center;background:var(--bg);border:1px dashed var(--line-2);border-radius:0;padding:var(--pad-card);font-weight:800}
-.codebox code{background:none;letter-spacing:inherit;padding:0}
+.codebox{display:flex;align-items:center;justify-content:center;gap:var(--s3);font-size:1.9rem;letter-spacing:.28em;text-align:center;background:var(--bg);border:1px dashed var(--line-2);border-radius:0;padding:var(--pad-card);font-weight:800;max-width:100%}
+.codebox code{background:none;letter-spacing:inherit;padding:0;overflow-wrap:anywhere}
 .vm-actions{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2)}
 .okmsg{color:var(--ok);background:var(--ok-bg);border:1px solid var(--ok);border-radius:0;padding:.6rem .85rem}
 .warnmsg{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);border-radius:0;padding:.6rem .85rem}
@@ -1834,8 +1905,9 @@ pre code{background:none;padding:0}
 .steps>li::before{counter-increment:step;content:counter(step);position:absolute;left:0;top:-.1rem;width:1.75rem;height:1.75rem;border-radius:0;background:var(--accent);color:var(--on-accent);font-weight:700;font-size:.9rem;display:flex;align-items:center;justify-content:center;font-family:var(--font-sans)}
 .steps>li:not(:last-child)::after{content:"";position:absolute;left:.85rem;top:1.9rem;bottom:.25rem;width:1px;background:var(--line)}
 .steps h2{font-size:1.02rem}
-/* Admin login owns the viewport: no card, vertically centered, wide type. */
-body.login-body main.wrap{min-height:calc(100vh - 57px);justify-content:center}
+/* Admin login owns the viewport: no card, vertically centered, wide type.
+   The header is --header-h tall plus its 1px bottom border. */
+body.login-body main.wrap{min-height:calc(100vh - var(--header-h) - 1px);justify-content:center}
 .login-page{width:100%;max-width:36rem;margin:0 auto}
 .login-page h1{font-size:clamp(2.2rem,5vw,3.1rem);line-height:1.05;margin-bottom:var(--s3)}
 .login-page .stack{gap:var(--s4)}
@@ -1874,6 +1946,13 @@ body.login-body main.wrap{min-height:calc(100vh - 57px);justify-content:center}
 .svc-history-state.up{color:var(--ok)}.svc-history-state.down{color:var(--danger)}
 .home-note{margin:var(--s4) 0 0;color:var(--muted);font-size:.86rem}
 .leave-card{border-color:var(--danger)}
+/* Polling lost its connection: one quiet banner, added by JS only on failure. */
+.poll-err{position:fixed;left:50%;bottom:var(--s4);transform:translateX(-50%);background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:.5rem .9rem;font-size:.8rem;font-weight:700;letter-spacing:.04em;z-index:90;white-space:nowrap}
+/* Confirm modal for [data-confirm] forms (built once by JS, no inline handlers). */
+.modal-back{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:100;padding:var(--s4)}
+.modal{background:var(--surface);border:1px solid var(--line-2);padding:var(--pad-card);max-width:26rem}
+.modal-msg{margin:0 0 var(--s4);font-weight:600}
+.modal-actions{display:flex;gap:var(--s2);justify-content:flex-end}
 @media(max-width:900px){.home-grid{grid-template-columns:1fr}.home-hero h1{font-size:clamp(1.7rem,6vw,2.6rem)}}
 body.display{background:var(--display-bg)}
 body.display main{display:block;max-width:1200px;padding:2.2rem 2rem}
@@ -1896,6 +1975,21 @@ nav{gap:var(--s3)}
 .hero h1{font-size:1.35rem}
 .joinbox{align-items:flex-start;text-align:left}
 .form-grid{grid-template-columns:1fr}
+.codebox{font-size:1.35rem;letter-spacing:.18em;padding:var(--s3) var(--s4)}
+/* Wide tables become stacked cards: each row is a framed card, each cell a
+   label/value pair fed by its data-th attribute. The thead stays in the
+   a11y tree (scope="col" still applies), just visually hidden. */
+.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:100%}
+.table-wrap thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.table-wrap tbody tr{border:1px solid var(--line);margin:0 0 var(--s3);padding:var(--s1) 0}
+.table-wrap tbody tr:hover td{background:transparent}
+.table-wrap tbody tr:hover{background:var(--surface-2)}
+.table-wrap td{border:0;border-bottom:1px solid var(--line);padding:.35rem var(--s3);display:flex;align-items:baseline;justify-content:space-between;gap:var(--s3)}
+.table-wrap td:last-child{border-bottom:0}
+.table-wrap td::before{content:attr(data-th);flex:none;color:var(--muted);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em}
+.table-wrap td[data-th=""]::before{content:none}
+.table-wrap td.empty{display:block;text-align:center;padding:var(--pad-card)}
+.table-wrap td.empty::before{content:none}
 .display-row{font-size:.95rem;grid-template-columns:36px 1fr 90px;gap:.6rem}
 .display-row .time,.display-row .svcs{display:none}
 .display-head h1{font-size:1.5rem}
@@ -1907,6 +2001,11 @@ JS = """
 'use strict';
 function $all(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s));}
 var tbtn=document.getElementById('theme-toggle');
+function themeLabel(t){return t==='dark'?'Switch to light theme':'Switch to dark theme';}
+function setThemeMeta(t){
+  var m=document.querySelector('meta[name=theme-color]');
+  if(m)m.setAttribute('content',t==='light'?'#f7f1e3':'#181410');
+}
 if(tbtn){
   tbtn.addEventListener('click',function(){
     var r=document.documentElement;
@@ -1914,10 +2013,85 @@ if(tbtn){
     r.setAttribute('data-theme',next);
     try{localStorage.setItem('huitz-theme',next);}catch(e){}
     tbtn.setAttribute('aria-pressed',next==='dark'?'true':'false');
+    tbtn.setAttribute('title',themeLabel(next));
+    tbtn.setAttribute('aria-label',themeLabel(next));
+    setThemeMeta(next);
   });
-  tbtn.setAttribute('aria-pressed',
-    document.documentElement.getAttribute('data-theme')==='dark'?'true':'false');
+  var curTheme=document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';
+  tbtn.setAttribute('aria-pressed',curTheme==='dark'?'true':'false');
+  tbtn.setAttribute('title',themeLabel(curTheme));
+  tbtn.setAttribute('aria-label',themeLabel(curTheme));
 }
+/* Status dots: tap toggles the tooltip (touch has no hover), and dots near the
+   viewport top flip the tooltip below themselves. */
+document.addEventListener('click',function(ev){
+  var d=ev.target.closest?ev.target.closest('.sdot'):null;
+  if(d){d.classList.toggle('show');}
+});
+document.addEventListener('mouseover',function(ev){
+  var d=ev.target.closest?ev.target.closest('.sdot'):null;
+  if(d){d.classList.toggle('below',d.getBoundingClientRect().top<64);}
+});
+document.addEventListener('focusin',function(ev){
+  var d=ev.target.closest?ev.target.closest('.sdot'):null;
+  if(d){d.classList.toggle('below',d.getBoundingClientRect().top<64);}
+});
+/* [data-confirm] forms: one shared modal instead of per-form inline handlers.
+   The message arrives as plain text (textContent), never as HTML. */
+var modal=null,modalMsg=null,modalOk=null,modalForm=null,modalReturn=null;
+function closeModal(ok){
+  if(!modal)return;
+  modal.remove();modal=null;
+  if(modalReturn){modalReturn.focus();modalReturn=null;}
+  if(ok&&modalForm){modalForm._confirmed=true;modalForm.requestSubmit?modalForm.requestSubmit():modalForm.submit();}
+  modalForm=null;
+}
+document.addEventListener('submit',function(ev){
+  var f=ev.target;
+  if(!f||!f.getAttribute)return;
+  var msg=f.getAttribute('data-confirm');
+  if(!msg||f._confirmed)return;
+  ev.preventDefault();
+  if(!modal){
+    modal=document.createElement('div');
+    modal.className='modal-back';
+    modal.innerHTML='<div class="modal" role="alertdialog" aria-modal="true" aria-label="Confirm action"><p class="modal-msg"></p><div class="modal-actions"><button type="button" class="btn" data-mc="cancel">Cancel</button><button type="button" class="btn danger" data-mc="ok">Confirm</button></div></div>';
+    document.body.appendChild(modal);
+    modalMsg=modal.querySelector('.modal-msg');
+    modalOk=modal.querySelector('[data-mc=ok]');
+    modalOk.addEventListener('click',function(){closeModal(true);});
+    modal.querySelector('[data-mc=cancel]').addEventListener('click',function(){closeModal(false);});
+    modal.addEventListener('click',function(ev){if(ev.target===modal)closeModal(false);});
+    document.addEventListener('keydown',function(ev){
+      if(ev.key==='Escape'&&modal){ev.preventDefault();closeModal(false);}
+    });
+  }
+  modalMsg.textContent=msg;
+  modalForm=f;
+  modalReturn=document.activeElement;
+  modal.hidden=false;
+  modalOk.focus();
+},true);
+/* Per-row action menus ([data-menu-btn] + .menu): one open at a time, close
+   on outside click or Esc. Delegated, so polled row swaps need no rewiring. */
+function closeMenus(){
+  $all('.menu').forEach(function(m){m.hidden=true;});
+  $all('[data-menu-btn]').forEach(function(b){b.setAttribute('aria-expanded','false');});
+}
+document.addEventListener('click',function(ev){
+  var b=ev.target.closest?ev.target.closest('[data-menu-btn]'):null;
+  if(b){
+    var wrap=b.closest('.menu-wrap'), m=wrap&&wrap.querySelector('.menu');
+    var wasOpen=!!(m&&!m.hidden);
+    closeMenus();
+    if(m&&!wasOpen){m.hidden=false;b.setAttribute('aria-expanded','true');}
+    return;
+  }
+  if(!(ev.target.closest&&ev.target.closest('.menu')))closeMenus();
+});
+document.addEventListener('keydown',function(ev){
+  if(ev.key==='Escape')closeMenus();
+});
 function flash(btn,label){
   var lbl=btn.querySelector('span');if(!lbl)return;
   var old=lbl.textContent;lbl.textContent=label||'Copied';btn.classList.add('copied');
@@ -2134,6 +2308,22 @@ var lastTouch=0;
 document.addEventListener('click',function(ev){
   if(ev.target.closest&&ev.target.closest('[data-poll]')){lastTouch=Date.now();}
 },true);
+var pollFails=0,pollBanner=null;
+function pollFail(){
+  pollFails++;
+  if(pollFails>=2&&!pollBanner){
+    pollBanner=document.createElement('div');
+    pollBanner.className='poll-err';
+    pollBanner.setAttribute('role','status');
+    pollBanner.textContent='Connection lost — retrying…';
+    document.body.appendChild(pollBanner);
+  }
+  if(pollBanner)pollBanner.hidden=false;
+}
+function pollOk(){
+  pollFails=0;
+  if(pollBanner)pollBanner.hidden=true;
+}
 function poll(){
   if(document.hidden){return;}
   var ae=document.activeElement;
@@ -2141,20 +2331,101 @@ function poll(){
   if(Date.now()-lastTouch<8000){return;}
   $all('[data-poll]').forEach(function(node){
     if(!node.id){return;}
-    fetch(location.href,{credentials:'same-origin'}).then(function(r){
+    /* Ask for just this node (?frag=<id>): the server answers with the
+       fragment alone, so a poll costs a few hundred bytes, not the page. */
+    var url=location.href+(location.href.indexOf('?')>=0?'&':'?')+
+            'frag='+encodeURIComponent(node.id);
+    fetch(url,{credentials:'same-origin'}).then(function(r){
       if(!r.ok){throw 0;}return r.text();
     }).then(function(text){
+      pollOk();
       var doc=new DOMParser().parseFromString(text,'text/html');
       var fresh=doc.getElementById(node.id);
       if(fresh&&fresh.outerHTML!==node.outerHTML){
         node.replaceWith(fresh);armCountdowns();
       }
-    }).catch(function(){});
+    }).catch(pollFail);
   });
 }
 var rates=$all('[data-poll]').map(function(n){
   return parseInt(n.getAttribute('data-poll'),10)||0;
 }).filter(function(v){return v>=2000;});
 if(rates.length){setInterval(poll,Math.min.apply(null,rates));}
+/* Join-success claim polling: #vm-poll carries the player id and the claim
+   state at render time; reload when the box binds or any of it changes. */
+var vmp=document.getElementById('vm-poll');
+if(vmp){
+  (function(){
+    var pid=vmp.getAttribute('data-pid')||'';
+    var startUrl=vmp.getAttribute('data-url')||'';
+    var startErr=vmp.getAttribute('data-err')||'';
+    var startCodeExp=parseFloat(vmp.getAttribute('data-code-exp')||'0');
+    var polls=0;
+    var t=setInterval(function(){
+      if(++polls>200){clearInterval(t);return;}
+      fetch('/api/public/join/'+encodeURIComponent(pid)+'/status').then(function(r){return r.ok?r.json():null;}).then(function(d){
+        if(!d)return;
+        if(d.box_bound){location.reload();return;}
+        if((d.claim_url||'')!==startUrl||(d.claim_error||'')!==startErr||
+           (d.code_expires_at||0)!==startCodeExp){location.reload();}
+      }).catch(function(){});
+    },3000);
+  })();
+}
 })();
 """
+
+
+# --- static assets --------------------------------------------------------------
+# The theme-init script, the stylesheet and the page script ship from /static/
+# under a content-hash URL: cacheable across pages and poll fetches, and they
+# keep the page free of inline script blocks so the CSP needs no
+# 'unsafe-inline' for script-src. Only the per-competition accent variables
+# stay as a body style attribute (style-src keeps 'unsafe-inline').
+
+_STATIC_BODIES = {"theme-init.js": THEME_INIT, "web.css": CSS, "web.js": JS}
+
+
+def _h(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
+
+def static_url(logical: str) -> str:
+    """Cache-busting URL for a static asset, e.g. static_url('web.css')."""
+    return f"/static/{logical}.{_h(_STATIC_BODIES[logical])}"
+
+
+def static_asset(path: str):
+    """(content_type, body) for a /static/<logical>.<hash> request, or None."""
+    name = path.rsplit("/", 1)[-1]
+    logical = name.rpartition(".")[0]
+    if logical in _STATIC_BODIES:
+        ctype = "text/css" if logical.endswith(".css") else "application/javascript"
+        return ctype, _STATIC_BODIES[logical]
+    return None
+
+
+# --- poll fragments ---------------------------------------------------------------
+
+_FRAG_DIV = re.compile(r"<(/?)div\b[^>]*>", re.IGNORECASE)
+
+
+def extract_fragment(page_html: str, frag_id: str):
+    """The outer HTML of the ``<div id="frag_id">…</div>`` poll node, or None.
+
+    Poll fetches ask for ``?frag=<id>`` so they download only the node they
+    swap in, not the whole page. The scan is a balanced ``<div>`` count over
+    our own generated markup (no attribute value ever contains ``<div``).
+    """
+    m = re.search(r'<div\s+id="%s"[^>]*>' % re.escape(frag_id), page_html)
+    if not m:
+        return None
+    depth = 1
+    for tag in _FRAG_DIV.finditer(page_html, m.end()):
+        if tag.group(1):
+            depth -= 1
+            if depth == 0:
+                return page_html[m.start():tag.end()]
+        else:
+            depth += 1
+    return None

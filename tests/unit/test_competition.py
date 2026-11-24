@@ -430,3 +430,30 @@ def test_extend_runs_skips_invited_and_non_live(store):
     store.end_competition(comp.id)
     with pytest.raises(competition.ExtendRefused, match="only a live competition"):
         competition.extend_runs(store, store.get_competition(comp.id), 900)
+
+
+def test_player_board_row_survives_hidden_leaderboard(store):
+    """A hidden public board withholds everyone's standings, but a player's
+    own score/rank is their own data (the on-box report shows it too): /me and
+    the run home page read player_board_row so "hidden" never reads as
+    "not joined" / "waiting for the first check-in"."""
+    comp = _comp(store)
+    priv, box_id, _payload = _join(store, comp)
+    _checkin(store, priv, _bundle(box_id, 1), 1000.0)
+    now = 1002.0
+    assert competition.leaderboard_payload(store, comp, now=now)["leaderboard"]
+
+    store.set_leaderboard_hidden(comp.id, True)
+    comp = store.get_competition(comp.id)
+    assert competition.leaderboard_payload(store, comp, now=now)["leaderboard"] == []
+
+    player = store.get_player_by_box(box_id)
+    row = competition.player_board_row(store, comp, player, now=now)
+    assert row is not None
+    assert row["total"] == 10 and row["rank"] == 1 and row["board_total"] == 1
+    assert row["services"][0]["state"] == "UP"
+
+    # A seat that never joined has no row even on a hidden board.
+    other, _code, err = competition.create_player_with_code(store, comp, "Bo", b"secret")
+    assert err is None
+    assert competition.player_board_row(store, comp, other, now=now) is None

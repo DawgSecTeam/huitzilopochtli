@@ -109,11 +109,8 @@ def _launch(tmp_path):
 
 
 def _admin_login(port):
-    status, _body, headers = _req(
-        port, "POST", "/admin/login", "username=admin&password=pass",
-        {"Content-Type": "application/x-www-form-urlencoded"})
-    assert status == 303
-    return headers["Set-Cookie"].split(";", 1)[0]
+    from tests.helpers import login_session
+    return login_session(_req, port)
 
 
 def _live_comp(port, max_players):

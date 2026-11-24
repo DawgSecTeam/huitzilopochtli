@@ -78,10 +78,15 @@ def test_layout_has_both_theme_token_sets_and_no_flash_script():
     assert "--line-2:#8d7f66" in web.CSS
     assert "border-radius:50%" in web.CSS
     assert ".card{background:var(--surface);border:1px solid var(--line);border-radius:0" in web.CSS
-    # The theme-init script runs before the stylesheet (no flash of wrong theme).
-    head = page.split("<style>")[0]
-    assert "localStorage.getItem('huitz-theme')" in head
-    assert "matchMedia" in head
+    # The theme-init script runs before the stylesheet (no flash of wrong
+    # theme): it ships as a hashed static asset referenced in <head>, ahead
+    # of the stylesheet link.
+    head = page.split("</head>")[0]
+    assert '<script src="/static/theme-init.js.' in head
+    assert '<link rel="stylesheet" href="/static/web.css.' in head
+    assert head.index("theme-init.js.") < head.index("web.css.")
+    assert "localStorage.getItem('huitz-theme')" in web.THEME_INIT
+    assert "matchMedia" in web.THEME_INIT
     assert 'id="theme-toggle"' in page
 
 
@@ -259,7 +264,7 @@ def test_leaderboard_spells_out_the_score_breakdown():
     page = web.competition_page(_payload())
     assert "<th>Hardening</th>" not in page
     assert "<th>Services</th>" not in page
-    assert "<th>Services up</th>" in page
+    assert '<th scope="col">Services up</th>' in page
     assert "hardening 100 · services 20" in page  # no abbreviation to decode
 
 
@@ -282,7 +287,7 @@ def test_time_cell_counts_down_then_goes_quiet():
 def test_settings_card_is_a_fact_grid():
     page = web.admin_competition_page(_comp(), _payload(), [_player()], "csrf")
     assert 'class="facts"' in page and 'class="fact-label">Status<' in page
-    assert 'class="fact-label">Players<' in page and "1 / 32 joined" in page
+    assert 'class="fact-label">Players<' in page and "1 of 32 joined" in page
     assert 'class="fact-label">Join URL<' in page
 
 
@@ -296,7 +301,7 @@ def test_removed_player_is_not_on_the_admin_roster():
     page = web.admin_competition_page(_comp(), _payload(),
                                       [_player(), gone], "csrf")
     assert "Casey" not in page
-    assert "1 / 32 joined" in page
+    assert "1 of 32 joined" in page
 
 
 def test_admin_pages_write_out_the_status_word():
@@ -385,7 +390,7 @@ def test_join_success_pending_page_polls_without_a_dead_end():
                       claim_ticket="t1")
     page = web.join_success_page(_comp(), pending, csrf="csrf1")
     assert "being prepared" in page
-    assert "/status" in page
+    assert 'id="vm-poll"' in page and "/status" in web.JS
     assert "ask the admin" not in page
     assert "Get a new VM" in page
 
@@ -645,9 +650,10 @@ def test_admin_roster_confirmations_on_destructive_actions():
 def test_admin_roster_actions_are_spaced_and_danger_set_apart():
     invited = _player(status="invited", box_id=None)
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [invited], "csrf")
-    # Actions used to concatenate into "Retry VMReissue codeRemove".
-    assert '<div class="row-actions">' in page
-    assert 'class="act-sep"' in page        # a rule between neutral and danger
+    # The verbs live behind one Actions menu; a rule separates neutral/danger.
+    assert page.count('data-menu-btn') == 1
+    assert '<div class="menu" hidden>' in page
+    assert 'class="act-sep"' in page
     assert 'class="btn">Retry VM</button>' in page
     assert 'class="btn">Reissue code</button>' in page
     assert 'class="btn danger">Remove</button>' in page
@@ -698,7 +704,7 @@ def test_admin_roster_rows_are_single_line():
     invited = _player(status="invited", box_id=None)
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [invited], "csrf")
     # Name and status dot share one line (the join code no longer rides along).
-    assert '<div class="pname"><strong>Ada</strong><button class="sdot' in page
+    assert '<div class="pname"><strong>Ada</strong><span class="sdot' in page
     # Score breakdown rides under the total in one right-aligned cell.
     page = web.admin_competition_page(_comp(), _payload(), [_player()], "csrf")
     assert ('<div class="score-cell"><span class="score">120</span>'
@@ -820,7 +826,7 @@ def test_styleguide_page_renders_the_component_kit():
     assert 'class="btn primary"' in page and 'class="btn danger"' in page
     assert 'class="sdot ok"' in page and 'class="sdot danger"' in page
     assert 'class="score-cell"' in page and "hardening 210 · services 346" in page
-    assert "--display-bg:#0f0c09" in page and "Palette — cream (light)" in page
+    assert "--display-bg:#0f0c09" in web.CSS and "Palette — cream (light)" in page
     # The time cell shows the quiet dot, never the old status word.
     assert ">final<" not in page
     # It is an admin page: full chrome with Log out, but absent from the nav.
@@ -1039,11 +1045,10 @@ def test_extend_control_keeps_its_button_on_the_input_baseline():
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
     # The Extend form lives in .actions beside plain single-button forms; its
     # captioned number field must not leave the button on a third row (the
-    # screenshot bug). CSS is inlined on every page, so the layout rule is
-    # checkable here as well as the form markup.
+    # screenshot bug). The layout rule ships in the static stylesheet.
     assert '/extend" class="inline"' in page
-    assert 'class="small">Extend (min)<input name="minutes"' in page
-    assert '.actions form{display:inline-flex;align-items:flex-end' in page
+    assert 'class="small">Extend (min)<input class="input-sm" name="minutes"' in page
+    assert '.actions form{display:inline-flex;align-items:flex-end' in web.CSS
 
 
 def test_export_csv_appears_only_once_the_run_exists():
@@ -1104,3 +1109,263 @@ def test_join_page_states_the_post_run_access_window():
     page = web.join_success_page(_comp(), _player(claim_uid=None))
     assert "Scoring stops when your clock ends" in page
     assert "30 more minutes" in page
+
+
+# --- UI fix round: static assets, confirms, a11y, copy, hidden board --------
+
+
+def test_no_inline_scripts_styles_or_handlers_any_page():
+    pages = [
+        web.layout("T", "<p>x</p>"),
+        web.index_page([_comp()], admin_view=True, players_by_comp={"c1": 1}),
+        web.competition_page(_payload()),
+        web.display_page(_payload()),
+        web.join_form_page(_comp()),
+        web.join_success_page(_comp(), _player(), join_code="ABCD2345", csrf="c"),
+        web.player_page(_comp(), _player(), _board_row(), "http://guac/x", csrf="c"),
+        web.home_competition_page(_comp(), _player(), _board_row(), [], "http://guac/x",
+                                  csrf="c", leave_csrf="c"),
+        web.login_page("e", csrf="t"),
+        web.admin_dashboard_page([_comp()], {"c1": 0}, "c"),
+        web.admin_audit_page([], [_comp()]),
+        web.admin_new_competition_page([("demo", 1, "boxes/demo")], "c"),
+        web.admin_competition_page(_comp(), _payload(), [_player()], "c"),
+        web.styleguide_page(),
+        web.error_page(404, "Nope", "gone", "/"),
+    ]
+    for page in pages:
+        assert "<script>" not in page, "inline script block"
+        assert "<style>" not in page, "inline style block"
+        assert "onsubmit=" not in page, "inline event handler"
+        assert 'src="/static/theme-init.js.' in page
+        assert 'href="/static/web.css.' in page and 'src="/static/web.js.' in page
+
+
+def test_static_assets_round_trip_with_hash_in_url():
+    bodies = {"web.css": web.CSS, "web.js": web.JS, "theme-init.js": web.THEME_INIT}
+    for logical, body in bodies.items():
+        url = web.static_url(logical)
+        assert url.startswith(f"/static/{logical}.")
+        ctype, served = web.static_asset(url)
+        assert served == body
+        assert ctype == ("text/css" if logical.endswith(".css")
+                         else "application/javascript")
+    assert web.static_asset("/static/nope.css.deadbeef") is None
+
+
+def test_destructive_forms_use_data_confirm_and_one_modal():
+    page = web.admin_competition_page(_comp(), _payload(), [_player(claim_uid="u1")], "csrf")
+    assert "onsubmit" not in page
+    assert 'data-confirm="Disqualify: keeps their box and clock' in page
+    assert 'data-confirm="Remove this player from the competition?"' in page
+    # The old over-escaped release-box confirm is gone; the message is plain
+    # text in a data attribute (html-escaped), never parsed as JS.
+    assert "data-confirm=\"Release (destroy) this player's box now?" in page
+    assert "\\'" not in page
+    home = web.home_competition_page(_comp(), _player(), None, [], None,
+                                     csrf="c", leave_csrf="c")
+    assert 'data-confirm="Leave this competition? This cannot be undone."' in home
+    # One shared modal in the external JS drives every [data-confirm] form.
+    assert "getAttribute('data-confirm')" in web.JS
+    assert "modal-back" in web.JS and ".modal{" in web.CSS
+
+
+def test_countdown_carries_data_final_in_clock_format():
+    assert 'data-final="0:00:00"' in web._countdown_span(7200)
+    assert 'data-final="0:00"' in web._countdown_span(59)
+    assert 'role="timer"' in web._countdown_span(60)
+    assert "el.getAttribute('data-final')" in web.JS
+
+
+def test_theme_css_follows_system_without_js_and_attr_wins():
+    assert "@media (prefers-color-scheme: light){:root{" in web.CSS
+    assert "html[data-theme=dark]{" in web.CSS
+    assert "html[data-theme=light]{" in web.CSS
+    # The init script never overrides a server-pinned data-theme (projector).
+    assert "cur=d.getAttribute('data-theme')" in web.THEME_INIT
+    # theme-color meta follows the resolved theme (mobile browser chrome).
+    page = web.layout("T", "<p>x</p>")
+    assert '<meta name="theme-color" id="theme-color" content="#181410">' in page
+    assert "setThemeMeta" in web.JS and "Switch to light theme" in web.JS
+
+
+def test_empty_sections_say_the_right_thing():
+    page = web.index_page([], admin_view=True)
+    assert "No open competitions." in page       # Live section
+    assert "No other competitions." in page       # Other section, not "open"
+    assert "Nothing here." in web._comp_cards([], empty="Nothing here.")
+
+
+def test_unlimited_capacity_copy_never_says_of_zero():
+    assert web._players_joined(3, 0) == "3 joined"
+    assert web._players_joined(3, 32) == "3 of 32 joined"
+    assert web._players_capacity(0) == "unlimited players"
+    page = web.competition_page(
+        _payload(competition={"max_players": 0, "player_count": 3}))
+    assert "3 joined" in page and 'of 0"' not in page
+
+
+def test_status_dots_are_focusable_spans_with_tap_and_flip_support():
+    badge = web.comp_badge("live")
+    assert badge.startswith('<span class="sdot ok" tabindex="0" role="img"')
+    assert 'data-tip="Live"' in badge
+    assert 'aria-label="Competition status: Live"' in badge
+    assert "<button" not in badge
+    # tap toggles the tooltip (touch has no hover); near the top it flips down
+    assert ".sdot.show::after" in web.CSS and ".sdot.below" in web.CSS
+    assert "classList.toggle('show')" in web.JS
+    assert "classList.toggle('below'" in web.JS
+
+
+def test_every_live_page_has_a_noscript_refresh_fallback():
+    pages = [
+        web.index_page([_comp()]),
+        web.competition_page(_payload()),
+        web.display_page(_payload()),
+        web.player_page(_comp(), _player(), _board_row(), None),
+        web.home_competition_page(_comp(), _player(), None, [], None),
+        web.join_success_page(_comp(), _player(status="invited", box_id=None,
+                                               claim_url=None, claim_ticket="t"),
+                              csrf="c"),
+    ]
+    for page in pages:
+        assert '<noscript><meta http-equiv="refresh"' in page
+
+
+def test_poll_failure_banner_exists_in_js_and_css():
+    assert "poll-err" in web.JS and "Connection lost" in web.JS
+    assert ".poll-err{" in web.CSS
+    assert "catch(pollFail)" in web.JS
+
+
+def test_join_success_claim_poll_is_data_driven():
+    pending = _player(status="invited", box_id=None, claim_url="http://guac/y",
+                      claim_ticket="t", join_code_plain="WXYZ9999",
+                      join_code_expires_at=123.0)
+    page = web.join_success_page(_comp(), pending, join_code="WXYZ9999", csrf="c")
+    assert 'id="vm-poll"' in page
+    assert 'data-pid="p1"' in page and 'data-url="http://guac/y"' in page
+    assert 'data-code-exp="123.0"' in page
+    assert "getElementById('vm-poll')" in web.JS
+    assert "<script>" not in page
+
+
+def test_login_page_carries_csrf_field_only_when_given():
+    assert '<input type="hidden" name="csrf" value="tok123">' in web.login_page(csrf="tok123")
+    assert 'name="csrf"' not in web.login_page()
+
+
+def test_skip_link_main_landmark_and_scoped_headers():
+    page = web.layout("T", "<p>x</p>")
+    assert 'class="skip" href="#main"' in page and '<main class="wrap" id="main">' in page
+    assert ".skip:focus-visible" in web.CSS
+    board = web.competition_page(_payload())
+    assert '<th class="r" scope="col">#</th>' in board
+    dash = web.admin_dashboard_page([_comp()], {}, "c")
+    assert '<th scope="col">Name</th>' in dash
+
+
+def test_no_inline_width_styles_remain():
+    for page in (web.admin_audit_page([], [_comp()]), web.admin_competition_page(
+            _comp(), {"leaderboard": []}, [], "csrf"), web.styleguide_page()):
+        assert 'style="width:' not in page and 'style="font-size:' not in page
+    assert ".input-sm{width:4.5rem}" in web.CSS and ".input-md{width:6rem}" in web.CSS
+
+
+def test_run_pages_share_one_clock_and_score_helper():
+    # /me and the run home page render the same clock + score facts.
+    row = _board_row()
+    me = web.player_page(_comp(), _player(), row, "http://guac/x", csrf="c")
+    home = web.home_competition_page(_comp(), _player(), row, [row],
+                                     "http://guac/x", csrf="c", leave_csrf="c")
+    assert 'data-remaining="' in me and 'data-remaining="' in home
+    assert 'class="cd" role="timer"' in me and 'class="cd" role="timer"' in home
+    assert "hardening 100" in me and "hardening 100" in home
+    assert "Rank 1 of 1 on the board" in home  # board_total fallback to len(rows)
+
+
+def test_hidden_board_home_page_uses_board_total():
+    row = _board_row(board_total=7)
+    home = web.home_competition_page(_comp(leaderboard_hidden=True), _player(),
+                                     row, [], "http://guac/x", csrf="c",
+                                     leave_csrf="c")
+    assert "Rank 1 of 7 on the board" in home
+    assert "Standings are hidden" in home
+
+
+def test_cd_class_has_tabular_figures():
+    assert ".cd{font-variant-numeric:tabular-nums}" in web.CSS
+
+
+# --- larger UI changes: action menu, mobile cards, poll fragments ------------
+
+
+def test_roster_actions_live_behind_one_menu():
+    page = web.admin_competition_page(_comp(), _payload(), [_player()], "csrf")
+    assert page.count('data-menu-btn') == 1
+    assert '<div class="menu" hidden>' in page
+    assert 'aria-haspopup="true"' in page and 'aria-expanded="false"' in page
+    # Every verb form is inside the menu, confirms intact.
+    assert 'data-confirm="Disqualify' in page
+    assert 'data-confirm="Remove this player from the competition?"' in page
+    assert 'class="btn danger">Disqualify</button>' in page
+    # CSS + JS for the menu exist.
+    assert ".menu[hidden]{display:none}" in web.CSS
+    assert ".menu .btn{width:100%;justify-content:flex-start}" in web.CSS
+    assert "closeMenus()" in web.JS and "closest('[data-menu-btn]')" in web.JS
+    # Styleguide demos the menu too.
+    assert 'data-menu-btn' in web.styleguide_page()
+
+
+def test_tables_carry_data_th_for_mobile_cards():
+    board = web.competition_page(_payload())
+    assert 'data-th="#"' in board and 'data-th="Player"' in board
+    assert 'data-th="Score"' in board and 'data-th="Services up"' in board
+    assert 'data-th="Time"' in board
+    roster = web.admin_competition_page(_comp(), _payload(), [_player()], "csrf")
+    assert 'data-th="Check-in"' in roster and 'data-th="Actions"' in roster
+    dash = web.admin_dashboard_page([_comp()], {"c1": 0}, "csrf")
+    assert 'data-th="Pool ready"' in dash and 'data-th="Duration"' in dash
+    from engine.store import AuditRecord
+    arow = AuditRecord(id=1, ts=1700000000.0, actor="token", action="competition_create",
+                       competition_id="c1", player_id=None, remote_addr="10.0.0.1",
+                       details_json='{"slug": "demo"}')
+    audit = web.admin_audit_page([arow], [_comp()])
+    assert 'data-th="Actor"' in audit and 'data-th="Detail"' in audit
+    # Card-mode CSS: label/value cells, framed rows, thead kept for a11y.
+    assert ".table-wrap td::before{content:attr(data-th)" in web.CSS
+    assert ".table-wrap tbody tr{border:1px solid var(--line)" in web.CSS
+    assert ".table-wrap thead{position:absolute" in web.CSS
+    assert ".table-wrap td.empty::before{content:none}" in web.CSS
+    assert '@media(max-width:720px)' in web.CSS
+
+
+def test_extract_fragment_roundtrip_with_nested_divs():
+    page = web.competition_page(_payload())
+    frag = web.extract_fragment(page, "board")
+    assert frag is not None
+    assert frag.startswith('<div id="board" data-poll="5000">')
+    assert frag.endswith("</div>")
+    assert frag.count("<div") == frag.count("</div>")  # balanced
+    assert "Ada" in frag and "<html" not in frag
+    assert web.extract_fragment(page, "nope") is None
+    home = web.home_competition_page(_comp(), _player(), _board_row(),
+                                     [_board_row()], "http://guac/x",
+                                     csrf="c", leave_csrf="c")
+    frag = web.extract_fragment(home, "run")
+    assert frag and frag.count("<div") == frag.count("</div>")
+    assert "home-grid" in frag and "<html" not in frag
+
+
+def test_poll_fetches_only_the_fragment():
+    assert "'frag='+encodeURIComponent(node.id)" in web.JS
+    assert "location.href.indexOf('?')" in web.JS
+
+
+def test_help_texts_are_aria_describedby_wired():
+    new = web.admin_new_competition_page([("demo", 1, "boxes/demo")], "csrf")
+    assert 'aria-describedby="help-scenario"' in new and 'id="help-scenario"' in new
+    assert 'aria-describedby="help-auto-end"' in new and 'id="help-auto-end"' in new
+    page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
+    assert 'aria-describedby="help-scheduled-end"' in page
+    assert 'id="help-scheduled-end"' in page

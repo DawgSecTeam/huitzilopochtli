@@ -50,6 +50,18 @@ def _http(method, url, body=None, headers=None):
         return e.code, e.read().decode("utf-8", "replace")
 
 
+def _http_req(port, method, path, body=None, headers=None):
+    """Raw request that does not follow redirects and returns headers, for
+    flows that must observe the 303 + Set-Cookie (e.g. two-step admin login)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request(method, path, body=body, headers=dict(headers or {}))
+    r = conn.getresponse()
+    data = r.read().decode("utf-8", "replace")
+    hdrs = dict(r.getheaders())
+    conn.close()
+    return r.status, data, hdrs
+
+
 def _wait_claim_url(base, player_id, want, timeout=15.0):
     """Poll the join-page status endpoint until the claim lands.
 
@@ -693,16 +705,9 @@ def test_leaderboard_visibility_toggle(tmp_path):
         assert json.loads(body)["leaderboard"][0]["name"] == "Ada"
 
         # Login session for the dashboard route.
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        conn.request("POST", "/admin/login",
-                     body=urllib.parse.urlencode(
-                         {"username": "admin", "password": "test-pw"}),
-                     headers={"Content-Type": "application/x-www-form-urlencoded"})
-        resp = conn.getresponse()
-        resp.read()
-        assert resp.status == 303
-        dash_cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
-        conn.close()
+        from tests.helpers import login_session
+        dash_cookie = login_session(_http_req, port,
+                                    username="admin", password="test-pw")
 
         # Conceal: every read surface shows the quiet note, no standings.
         status, reason = _http("POST",

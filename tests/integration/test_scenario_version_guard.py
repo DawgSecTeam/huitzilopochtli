@@ -92,10 +92,8 @@ def _wait_health(port, proc):
 
 
 def _login(port):
-    status, _b, headers = _req(port, "POST", "/admin/login",
-                               "username=admin&password=pass")
-    assert status == 303
-    return headers["Set-Cookie"].split(";", 1)[0]
+    from tests.helpers import login_session
+    return login_session(_req, port)
 
 
 def _create_comp(port, slug, version=None, name="Guard Comp"):
