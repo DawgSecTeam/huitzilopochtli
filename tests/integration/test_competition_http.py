@@ -605,6 +605,212 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         ws.shutdown()
 
 
+def _mb_scenario_yaml(name, template, points):
+    import yaml
+    return yaml.safe_dump({
+        "scenario": {"name": name, "version": 1, "mode": "honor",
+                     "hosts": ["localhost"]},
+        "checks": [{"id": "banner", "type": "file_regex", "category": "vuln",
+                    "display": "Banner", "max_points": points,
+                    "collect": {"path": "/srv/banner", "extract": "B"},
+                    "expect": {"equals": "ok", "points": points}}],
+        "ranked": {
+            "engine_url": "http://127.0.0.1:8080",
+            "adversary": {},
+            "pool": {"template_vm_id": template,
+                     "template_vm_access_method": "ssh",
+                     "template_vm_username": "sysadmin",
+                     "template_vm_password": "asdf", "vm_count": 1},
+        },
+    })
+
+
+def test_multibox_competition_http(tmp_path):
+    """A two-scenario lineup end to end: one join, two claims, one code,
+    both boxes score, one combined board, teardown owns exactly both pools."""
+    port = _free_port()
+    workshop_port = _free_port()
+    _Workshop.server_port = workshop_port
+    _Workshop.requests = []
+    _Workshop.counter = 0
+    _Workshop.fail_claims = 0
+    _Workshop.pools = []
+    _Workshop.vms = []
+    db = tmp_path / "engine.db"
+    for sname, boxdir, template, points in (("MBX-A", "mbx-a", 174, 10),
+                                            ("MBX-B", "mbx-b", 175, 20)):
+        boxes = tmp_path / "boxes" / boxdir
+        boxes.mkdir(parents=True)
+        (boxes / "scenario.yaml").write_text(
+            _mb_scenario_yaml(sname, template, points))
+    env = dict(os.environ)
+    env.update({
+        "HUITZILOPOCHTLI_DB_PATH": str(db),
+        "HUITZILOPOCHTLI_PORT": str(port),
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": ADMIN,
+        "HUITZILOPOCHTLI_BIND": "127.0.0.1",
+        "HUITZILOPOCHTLI_WORKSHOP_URL": f"http://127.0.0.1:{workshop_port}",
+        "HUITZILOPOCHTLI_WORKSHOP_SECRET": "ws-secret",
+        "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD": "portal-pw",
+        "HUITZILOPOCHTLI_PUBLIC_URL": f"http://127.0.0.1:{port}",
+        "HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes"),
+        "HUITZILOPOCHTLI_AUTOWARM": "0",
+        "PYTHONUNBUFFERED": "1",
+    })
+    ws = ThreadingHTTPServer(("127.0.0.1", workshop_port), _Workshop)
+    threading.Thread(target=ws.serve_forever, daemon=True).start()
+    proc = subprocess.Popen([sys.executable, "-m", "engine.server"],
+                            cwd=REPO_ROOT, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    base = f"http://127.0.0.1:{port}"
+    privs, pubs = {}, {}
+    try:
+        for _ in range(100):
+            try:
+                if _http("GET", base + "/health")[0] == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        auth = {"X-HUITZILOPOCHTLI-Admin-Token": ADMIN}
+        status, body = _http("POST", base + "/admin/api/competitions", {
+            "slug": "mbx-comp", "name": "MBX Comp",
+            "scenarios": [{"name": "MBX-A"}, {"name": "MBX-B"}],
+            "max_players": 4, "duration_s": 3600,
+        }, auth)
+        assert status == 200, body
+        comp = json.loads(body)
+        assert comp["box_count"] == 2
+        status, body = _http("POST",
+                             base + f"/admin/api/competitions/{comp['id']}/start",
+                             {}, auth)
+        assert status in (200, 303), body
+
+        # One join reserves the seat and (outside the request) claims BOTH
+        # boxes, from two per-scenario pools with per-entry pool names.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("POST", "/c/mbx-comp/join",
+                     body=urllib.parse.urlencode({"name": "Alpha"}),
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
+        conn.close()
+        row = _wait_db(db, "SELECT * FROM players WHERE display_name='Alpha'",
+                       (), "join_code_plain")
+        code, player_id = row["join_code_plain"], row["player_id"]
+
+        # Both claims land. The status payload grew a per-box view.
+        deadline = time.time() + 20
+        boxes_state = None
+        while time.time() < deadline:
+            status, body = _http(
+                "GET", base + f"/api/public/join/{player_id}/status")
+            state = json.loads(body)
+            boxes_state = state.get("boxes")
+            if boxes_state and all(b.get("claim_url") for b in boxes_state):
+                break
+            time.sleep(0.2)
+        assert boxes_state and len(boxes_state) == 2, boxes_state
+        assert {b["scenario_name"] for b in boxes_state} == {"MBX-A", "MBX-B"}
+        provs = [r for r in _Workshop.requests
+                 if r[0] == "/api/admin/provision"]
+        assert {p[2]["pool_name"] for p in provs} == {
+            "huitz-ranked-mbx-comp-mbx-a", "huitz-ranked-mbx-comp-mbx-b"}, \
+            "each lineup entry provisions its own anchored pool"
+
+        # The SAME one-time code binds each box; each box self-identifies.
+        for sname, box_id in (("MBX-A", "box-ma"), ("MBX-B", "box-mb")):
+            priv, pub = signing.keypair()
+            privs[sname], pubs[sname] = priv, pub
+            jbody = {"join_code": code, "box_id": box_id,
+                     "public_key": base64.b64encode(pub).decode(),
+                     "agent_version": AGENT_VERSION, "scenario_name": sname,
+                     "scenario_version": 1}
+            sig = signing.sign(priv, canon.canonicalize(jbody))
+            status, body = _http("POST", base + "/join",
+                                 json.dumps(jbody).encode(), {
+                                     "Content-Type": "application/json",
+                                     "X-HUITZILOPOCHTLI-Sig":
+                                         base64.b64encode(sig).decode(),
+                                     "X-HUITZILOPOCHTLI-Box": box_id})
+            if sname == "MBX-A":
+                # While the code is still live (slot B unbound), a box from
+                # OUTSIDE the lineup is refused with the existing 409.
+                xbody = {"join_code": code, "box_id": "box-x",
+                         "public_key": base64.b64encode(pub).decode(),
+                         "agent_version": AGENT_VERSION,
+                         "scenario_name": "OTHER", "scenario_version": 1}
+                xsig = signing.sign(priv, canon.canonicalize(xbody))
+                xstat, xbody_r = _http(
+                    "POST", base + "/join", json.dumps(xbody).encode(), {
+                        "Content-Type": "application/json",
+                        "X-HUITZILOPOCHTLI-Sig":
+                            base64.b64encode(xsig).decode(),
+                        "X-HUITZILOPOCHTLI-Box": "box-x"})
+                assert xstat == 409, xbody_r
+            assert status == 200, (sname, body)
+
+        # Each box scores against its own rubric; the board sums the seat.
+        for sname, box_id, points in (("MBX-A", "box-ma", 10),
+                                      ("MBX-B", "box-mb", 20)):
+            # The engine compiles the ranked target of each scenario.yaml,
+            # which replaces authored ids with positional chk-NNN; agents
+            # report against those compiled ids.
+            ev = [Evidence(check_id="chk-001", check_type="file_regex",
+                           host_id="localhost", status=CollectorStatus.OK,
+                           raw={"matched": "ok", "present": True},
+                           reason="ok", collected_monotonic=0.0,
+                           collected_wall_claim=0.0)]
+            bundle = Bundle(box_id=box_id, seq=1, boot_id="b",
+                            agent_version=AGENT_VERSION, scenario_name=sname,
+                            scenario_version=1, evidence=ev,
+                            created_wall_claim=0.0,
+                            schema_version=SCHEMA_VERSION)
+            bsig = signing.sign(privs[sname],
+                                canon.canonicalize(dataclasses.asdict(bundle)))
+            status, body = _http(
+                "POST", base + "/checkin",
+                json.dumps(dataclasses.asdict(bundle)).encode(), {
+                    "Content-Type": "application/json",
+                    "X-HUITZILOPOCHTLI-Sig": base64.b64encode(bsig).decode(),
+                    "X-HUITZILOPOCHTLI-Box": box_id})
+            assert status == 200, (sname, body)
+            assert json.loads(body)["score"]["total"] == points, (sname, body)
+        status, body = _http(
+            "GET", base + "/api/public/competitions/mbx-comp/leaderboard")
+        board = json.loads(body)
+        assert board["leaderboard"][0]["total"] == 30, board
+        rows = _http("GET", base + "/api/public/competitions/mbx-comp/leaderboard")
+        assert '"boxes"' in rows[1], "multi rows carry the per-box breakdown"
+
+        # End tears down exactly both pools (and nothing else).
+        _Workshop.vms = [
+            {"vmid": 911, "pool": "PROV1",
+             "student_id": "huitz-ranked-mbx-comp-mbx-a-1",
+             "claimed": True, "expired": False},
+            {"vmid": 912, "pool": "PROV2",
+             "student_id": "huitz-ranked-mbx-comp-mbx-b-1",
+             "claimed": True, "expired": False},
+        ]
+        status, body = _http(
+            "POST", base + f"/admin/api/competitions/{comp['id']}/end",
+            {}, auth)
+        assert status in (200, 303), body
+        deadline = time.time() + 20
+        while time.time() < deadline and _Workshop.pools:
+            _http("GET", base + "/health")
+            time.sleep(0.5)
+        assert _Workshop.pools == [], _Workshop.pools
+        deletes = [r for r in _Workshop.requests if r[0].startswith("/api/admin/pools/")]
+        assert len(deletes) == 2
+    finally:
+        proc.terminate()
+        ws.shutdown()
+
+
 def test_team_link_and_roster_http(tmp_path):
     """v1.2 teams over real HTTP: the seat's shareable link, rotation, roster.
 

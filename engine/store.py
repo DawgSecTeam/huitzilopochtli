@@ -1221,6 +1221,18 @@ class Store:
         self.update_run_slot(slot_id, claim_url=url, claim_uid=uid,
                              claim_ticket=ticket, claim_expires_at=expires_at)
 
+    def get_competition_pool(self, comp_id: str,
+                             scenario_name: str) -> Optional[tuple]:
+        """(pool_code, pool_name) pinned for one lineup entry, or None when
+        the entry has no pin row yet."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT pool_code, pool_name FROM competition_pools "
+                "WHERE competition_id = ? AND scenario_name = ?",
+                (comp_id, scenario_name),
+            ).fetchone()
+        return None if row is None else (row["pool_code"], row["pool_name"])
+
     def list_competition_pools(self, comp_id: str) -> list:
         """[(scenario_name, pool_code, pool_name)] in lineup order; rows with
         no code yet (provisioning pending) are included with None."""
@@ -1611,6 +1623,15 @@ class Store:
         Returns (status, player, competition). status is one of:
         ok | unknown_code | expired_code | not_live | full | scenario_mismatch
         | already_joined | duplicate_box.
+
+        A multi-scenario seat binds one box per lineup entry with the SAME
+        one-time code: the code stays live (not NULLed) until every slot of
+        the seat's lineup is bound, so box 2 of a team can still present the
+        code box 1 used. For a single-scenario competition the lineup has one
+        entry, so the first bind nulls the code and starts the clock exactly
+        as before -- no observable change. The box's own scenario picks the
+        slot; presenting it against a scenario that is not in the competition's
+        lineup is scenario_mismatch (a box built for a different competition).
         """
         now = time.time() if now is None else now
         with self.atomic():
@@ -1620,16 +1641,39 @@ class Store:
             comp = self.get_competition(player.competition_id)
             if comp is None:
                 return "unknown_code", None, None
-            if player.status not in ("invited",) or player.box_id:
+            # Old rule was "invited only"; a multi-box seat is 'running' from
+            # its first bind and still legitimately joins its other boxes.
+            # finished/disqualified/removed seats never bind, exactly as
+            # before (their bound slots short-circuit below anyway).
+            if player.status not in ("invited", "running"):
                 return "already_joined", player, comp
             if player.join_code_expires_at is not None and player.join_code_expires_at < now:
                 return "expired_code", player, comp
             if comp.status != "live" or not comp.join_open:
                 return "not_live", player, comp
-            if comp.scenario_name != scenario_name or comp.scenario_version != scenario_version:
+            # Lineup membership decides which slot this box feeds; a scenario
+            # outside the lineup is a foreign box, not a re-join.
+            lineup = self.get_competition_scenarios(comp.id) \
+                or [(comp.scenario_name, comp.scenario_version)]
+            if scenario_name not in [n for n, _v in lineup]:
                 return "scenario_mismatch", player, comp
-            duration = comp.duration_s if duration_s is None else duration_s
-            ends_at = now + duration
+            entry_ver = next(v for n, v in lineup if n == scenario_name)
+            if scenario_version != entry_ver:
+                return "scenario_mismatch", player, comp
+            slot = self.get_run_slot(player.player_id, scenario_name)
+            if slot is not None:
+                if slot.box_id:
+                    return "already_joined", player, comp
+            else:
+                # No slot row for this entry (a seat whose rows never
+                # materialized): the boxes table says whether this seat has
+                # already joined this exact scenario.
+                dup = self._conn.execute(
+                    "SELECT 1 FROM boxes WHERE player_id = ? "
+                    "AND scenario_name = ? LIMIT 1",
+                    (player.player_id, scenario_name)).fetchone()
+                if dup is not None:
+                    return "already_joined", player, comp
             try:
                 self._conn.execute(
                     "INSERT INTO boxes (box_id, public_key, scenario_name, "
@@ -1640,12 +1684,47 @@ class Store:
                 )
             except sqlite3.IntegrityError:
                 return "duplicate_box", player, comp
+            # The team clock starts at the FIRST box bind and governs every
+            # box of the seat: a later bind does not move started_at/ends_at.
+            duration = comp.duration_s if duration_s is None else duration_s
+            first_bind = player.started_at is None
+            clock_sql = ("started_at = ?, ends_at = MIN(COALESCE(ends_at, ?), ?), "
+                         if first_bind else "")
+            clock_vals = ((now, now + duration, now + duration)
+                          if first_bind else ())
             self._conn.execute(
-                "UPDATE players SET status = 'running', started_at = ?, ends_at = ?, "
-                "box_id = ?, join_code_hash = NULL, join_code_plain = NULL, "
-                "join_code_expires_at = NULL WHERE player_id = ?",
-                (now, ends_at, box_id, player.player_id),
+                f"UPDATE players SET status = 'running', {clock_sql}"
+                "box_id = CASE WHEN box_id IS NULL THEN ? ELSE box_id END "
+                "WHERE player_id = ?",
+                (*clock_vals, box_id, player.player_id),
             )
+            # Bind the slot (creating it if the seat predates slot rows so the
+            # primary box always has a run_slots row to anchor get_player_by_box).
+            if slot is None:
+                slot_id = uuid.uuid4().hex
+                self._conn.execute(
+                    "INSERT INTO run_slots (slot_id, player_id, competition_id, "
+                    "scenario_name, scenario_version, box_id, status, bound_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
+                    (slot_id, player.player_id, comp.id, scenario_name,
+                     entry_ver, box_id, now),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE run_slots SET box_id = ?, status = 'running', "
+                    "bound_at = COALESCE(bound_at, ?), claim_error = NULL "
+                    "WHERE slot_id = ?", (box_id, now, slot.slot_id))
+            # The one-time code clears only once no unbound slot remains, so
+            # every box of the lineup can present it. Single-scenario seats
+            # have one slot, so this clears it on the first bind as always.
+            remaining = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM run_slots WHERE player_id = ? "
+                "AND box_id IS NULL", (player.player_id,)).fetchone()["n"]
+            if remaining == 0:
+                self._conn.execute(
+                    "UPDATE players SET join_code_hash = NULL, "
+                    "join_code_plain = NULL, join_code_expires_at = NULL "
+                    "WHERE player_id = ?", (player.player_id,))
             self._conn.execute(
                 "INSERT OR REPLACE INTO player_boxes (player_id, box_id, bound_at, "
                 "unbound_at, reason) VALUES (?, ?, ?, NULL, 'join')",
@@ -1666,7 +1745,8 @@ class Store:
         self.update_player(player_id, status=status)
 
     def release_player_box(self, player_id: str,
-                           now: Optional[float] = None) -> None:
+                           now: Optional[float] = None,
+                           scenario_name: Optional[str] = None) -> None:
         """Record that this run's VM is gone (destroyed via the portal).
 
         Marks the release, drops the claim bookkeeping (same shape the leave
@@ -1674,22 +1754,69 @@ class Store:
         Keeps the players row, box_id and scores intact for the leaderboard
         and history; get_player_by_box keeps resolving so a late check-in is
         still accepted unscored instead of 403'ing.
+
+        ``scenario_name`` releases one lineup entry's box; with no scenario
+        the whole seat releases (every bound slot) -- which for a
+        single-box seat is exactly the legacy behavior. The players mirror
+        fields follow only the mirror slot (position 0), so releasing a
+        secondary box leaves the seat's legacy view untouched.
         """
         now = time.time() if now is None else now
         player = self.get_player(player_id)
         if player is None:
             return
-        self.update_player(
-            player_id, claim_url=None, claim_uid=None, claim_ticket=None,
-            claim_expires_at=None, box_released_at=now)
-        if player.box_id:
-            with self._lock:
-                self._conn.execute(
-                    "UPDATE player_boxes SET unbound_at = ?, reason = 'released' "
-                    "WHERE player_id = ? AND box_id = ? AND unbound_at IS NULL",
-                    (now, player_id, player.box_id),
-                )
+        comp = self.get_competition(player.competition_id)
+        mirror_name = comp.scenario_name if comp else None
+        with self._lock:
+            if scenario_name is None:
+                rows = self._conn.execute(
+                    "SELECT slot_id, box_id, scenario_name FROM run_slots "
+                    "WHERE player_id = ? AND box_id IS NOT NULL "
+                    "AND box_released_at IS NULL", (player_id,)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT slot_id, box_id, scenario_name FROM run_slots "
+                    "WHERE player_id = ? AND scenario_name = ? "
+                    "AND box_id IS NOT NULL AND box_released_at IS NULL",
+                    (player_id, scenario_name)).fetchall()
+            if not rows and scenario_name is None:
+                # Seat without slot state (never migrated/created, or no
+                # bound slots): the legacy players-row release, unchanged --
+                # unconditional field clear, player_boxes unbind only when a
+                # box was mirrored.
+                self.update_player(
+                    player_id, claim_url=None, claim_uid=None,
+                    claim_ticket=None, claim_expires_at=None,
+                    box_released_at=now)
+                if player.box_id:
+                    self._conn.execute(
+                        "UPDATE player_boxes SET unbound_at = ?, "
+                        "reason = 'released' "
+                        "WHERE player_id = ? AND box_id = ? "
+                        "AND unbound_at IS NULL",
+                        (now, player_id, player.box_id))
                 self._commit()
+                return
+            for r in rows:
+                self._conn.execute(
+                    "UPDATE run_slots SET box_released_at = ?, claim_url = NULL, "
+                    "claim_uid = NULL, claim_ticket = NULL, "
+                    "claim_expires_at = NULL WHERE slot_id = ?",
+                    (now, r["slot_id"]))
+                if r["scenario_name"] == mirror_name:
+                    self._conn.execute(
+                        "UPDATE players SET claim_url = NULL, claim_uid = NULL, "
+                        "claim_ticket = NULL, claim_expires_at = NULL, "
+                        "box_released_at = ? WHERE player_id = ?",
+                        (now, player_id))
+                if r["box_id"]:
+                    self._conn.execute(
+                        "UPDATE player_boxes SET unbound_at = ?, "
+                        "reason = 'released' "
+                        "WHERE player_id = ? AND box_id = ? "
+                        "AND unbound_at IS NULL",
+                        (now, player_id, r["box_id"]))
+            self._commit()
 
     def remove_player(self, player_id: str) -> None:
         player = self.get_player(player_id)

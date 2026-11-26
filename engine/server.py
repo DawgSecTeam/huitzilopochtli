@@ -391,6 +391,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed = parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
         return {k: v[0] for k, v in parsed.items()}
 
+    def _read_form_lists(self) -> dict:
+        """Like _read_form but keeps repeated keys as lists -- the multi-
+        select scenario picker needs the whole lineup, not just entry 0."""
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length < 0 or length > self._MAX_BODY_BYTES:
+            raise ValueError("bad Content-Length")
+        raw = self.rfile.read(length) if length else b""
+        from urllib.parse import parse_qs
+        return parse_qs(raw.decode("utf-8", "replace"),
+                        keep_blank_values=True)
+
     def _admin_actor(self):
         """Return (ok, actor, session, via_header)."""
         token = self.headers.get("X-HUITZILOPOCHTLI-Admin-Token")
@@ -613,7 +624,8 @@ class Handler(BaseHTTPRequestHandler):
                     row = next((r for r in data["leaderboard"]
                                 if r["player_id"] == player.player_id), None)
                 services = (row.get("services") if row else None) or \
-                    competition.service_rows(self.store, current, player.box_id)
+                    competition.service_rows(self.store, current,
+                                             player.box_id, player=player)
                 player_csrf = claims.player_csrf(self.server_secret,
                                                  player.player_id)
                 self._send_html(200, web.home_competition_page(
@@ -621,6 +633,8 @@ class Handler(BaseHTTPRequestHandler):
                     csrf=player_csrf, leave_csrf=player_csrf,
                     player_count=data["competition"]["player_count"],
                     services=services, admin=self._admin_actor()[0],
+                    boxes=competition.seat_boxes_view(self.store, current,
+                                                     player),
                     **self._team_context(current, player)))
                 return
             admin_view = self._admin_actor()[0]
@@ -817,7 +831,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(200, web.join_success_page(
                 comp, player, join_code=player.join_code_plain or "",
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
-                admin=is_admin, **self._team_context(comp, player)))
+                admin=is_admin,
+                boxes=competition.seat_boxes_view(self.store, comp, player),
+                **self._team_context(comp, player)))
             return
         if rest[1] == "join":
             player, current = self._current_player()
@@ -870,6 +886,7 @@ class Handler(BaseHTTPRequestHandler):
                 comp, player, row, player.claim_url,
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
                 admin=is_admin, join_code=player.join_code_plain or "",
+                boxes=competition.seat_boxes_view(self.store, comp, player),
                 **self._team_context(comp, player)))
             return
         if rest[1] == "team" and len(rest) >= 3:
@@ -913,6 +930,11 @@ class Handler(BaseHTTPRequestHandler):
         comp = self.store.get_competition(player.competition_id)
         back = (f"{self._public_base()}/c/{comp.slug}/join/success" if comp else "")
         player = claims.poll(self.store, player)
+        # Multi-box seat: a page poll also advances every still-pending
+        # secondary ticket so the boxes panel updates without a sweep tick.
+        for s in self.store.list_run_slots(player_id):
+            if s.claim_ticket and not s.box_id and not s.claim_url:
+                claims.poll(self.store, player, slot=s)
         claims.rotate_code_if_needed(self.store, player, self.server_secret,
                                      back_url=back)
         player = self.store.get_player(player_id)
@@ -923,6 +945,10 @@ class Handler(BaseHTTPRequestHandler):
             "competition_slug": comp.slug if comp else None,
         }
         payload.update(claims.describe(player))
+        if comp is not None:
+            boxes = competition.seat_boxes_view(self.store, comp, player)
+            if boxes:
+                payload["boxes"] = boxes
         self._send_json(200, payload)
 
     def _handle_public_reclaim(self, player_id: str) -> None:
@@ -941,11 +967,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         comp = self.store.get_competition(player.competition_id)
         back = f"{self._public_base()}/c/{comp.slug}/join/success" if comp else ""
-        result = claims.reclaim(self.store, comp, player, back_url=back)
+        # A lineup page labels each box's "Get a new VM" with its scenario;
+        # no scenario means the legacy seat-wide reclaim (single box).
+        slot = None
+        wanted = str(form.get("scenario", "") or "")
+        if wanted and comp is not None:
+            slot = self.store.get_run_slot(player_id, wanted)
+            if slot is None:
+                self._send_json(400, {"error": "unknown lineup entry"})
+                return
+        result = claims.reclaim(self.store, comp, player, back_url=back,
+                                slot=slot)
         self.store.add_audit(
             "player", "claim_reclaim", comp.id if comp else None, player_id,
             details_json=json.dumps({"ok": bool(result.get("ok")),
-                                     "error": result.get("error")}),
+                                     "error": result.get("error"),
+                                     **({"scenario": wanted} if wanted else {})}),
             remote_addr=self.client_address[0] if self.client_address else None)
         if "application/json" in (self.headers.get("Accept") or ""):
             self._send_json(200 if result.get("ok") else 502, result)
@@ -1036,7 +1073,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         board = competition.leaderboard_payload(self.store, comp)
         players = self.store.list_players(comp.id)
-        pool = claims.live_pool_status(comp)
+        pool = claims.live_pool_status(comp, self.store)
         self._send_html(200, web.admin_competition_page(
             comp, board, players, session.csrf_token, msg, error,
             warm=claims.warm_status(comp.id),
@@ -1159,7 +1196,7 @@ class Handler(BaseHTTPRequestHandler):
         # and polls for the VM link; the claim sweeper picks the claim up if
         # this process dies before the thread gets to it.
         threading.Thread(
-            target=claims.start,
+            target=claims.start_seat,
             args=(self.store, comp, player),
             kwargs={"back_url":
                     f"{self._public_base()}/c/{comp.slug}/join/success"},
@@ -1357,12 +1394,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         released = False
         base, _secret = claims.config()
-        if base and player.claim_uid:
-            try:
-                workshop.release_vm(base, player.claim_uid)
-                released = True
-            except workshop.WorkshopError:
-                pass  # the portal reaper will collect it; leaving still works
+        uids = {s.claim_uid for s in self.store.list_run_slots(
+            player.player_id) if s.claim_uid}
+        if player.claim_uid:
+            uids.add(player.claim_uid)
+        if base and uids:
+            for uid in sorted(uids):
+                try:
+                    workshop.release_vm(base, uid)
+                    released = True
+                except workshop.WorkshopError:
+                    pass  # the portal reaper will collect it; leaving works
         had_box = bool(player.box_id)
         self.store.remove_player(player.player_id)
         self.store.update_player(
@@ -1378,10 +1420,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_admin_new_competition(self, session) -> None:
         try:
-            form = self._read_form()
+            raw_form = self._read_form_lists()
         except Exception:
             self._render_admin_new_competition(session, "Malformed form.")
             return
+        form = {k: v[0] for k, v in raw_form.items()}
         if not self._check_csrf(session, form):
             self._send_html(403, web.error_page(
                 403, "Invalid CSRF token",
@@ -1394,48 +1437,69 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._render_admin_new_competition(session, "Players and duration must be numbers.")
             return
-        scenario = str(form.get("scenario", ""))
-        scenario_name, _, version = scenario.rpartition("|")
-        try:
-            scenario_version = int(version)
-        except ValueError:
-            self._render_admin_new_competition(session, "Pick a scenario from the list.")
+        # The picker is a multi-select lineup (v1.2). One value -- the shape
+        # every pre-v1.2 form and script posts -- is a one-entry lineup, so
+        # nothing downstream can tell the difference for a single box.
+        scen_vals = [str(v) for v in raw_form.get("scenario", [])]
+        lineup, seen_names = [], set()
+        for val in scen_vals:
+            s_name, _, s_ver = val.rpartition("|")
+            try:
+                s_version = int(s_ver)
+            except ValueError:
+                self._render_admin_new_competition(
+                    session, "Pick a scenario from the list.")
+                return
+            if not s_name or s_name in seen_names:
+                self._render_admin_new_competition(
+                    session, "Pick at least one scenario (each only once).")
+                return
+            seen_names.add(s_name)
+            lineup.append((s_name, s_version))
+        if not lineup:
+            self._render_admin_new_competition(
+                session, "Pick a scenario from the list.")
             return
         # The picker only ever offers the box folder's current versions, so a
         # mismatch here is a stale form (or a hand-rolled POST): refuse it --
         # competitions are migrated to new versions, never run back-compatible.
+        # Enforced per lineup entry.
         sync_errors = scenario_mod.sync_box_scenarios(self.store)
         if sync_errors:
             self._render_admin_new_competition(
                 session, "Scenario folder: " + "; ".join(sync_errors[:3]))
             return
-        current = scenario_mod.current_box_scenario(scenario_name)
-        if current is not None and scenario_version != current[0]:
-            self._render_admin_new_competition(
-                session,
-                f"Scenario {scenario_name} v{scenario_version} is not current "
-                f"(engine has v{current[0]}); versions are not migrated in "
-                f"place -- discard this submission and recreate the "
-                f"competition from the current scenario with "
-                f"'New competition' on the admin console (/admin).")
-            return
-        if self.store.get_scenario(scenario_name, scenario_version) is None:
-            err = (f"Scenario {scenario_name} v{scenario_version} is not on the "
-                   f"engine; the engine's box folder has no such scenario.")
-            self._render_admin_new_competition(session, err)
-            return
+        for s_name, s_version in lineup:
+            current = scenario_mod.current_box_scenario(s_name)
+            if current is not None and s_version != current[0]:
+                self._render_admin_new_competition(
+                    session,
+                    f"Scenario {s_name} v{s_version} is not current "
+                    f"(engine has v{current[0]}); versions are not migrated in "
+                    f"place -- discard this submission and recreate the "
+                    f"competition from the current scenario with "
+                    f"'New competition' on the admin console (/admin).")
+                return
+            if self.store.get_scenario(s_name, s_version) is None:
+                self._render_admin_new_competition(
+                    session,
+                    f"Scenario {s_name} v{s_version} is not on the "
+                    "engine; the engine's box folder has no such scenario.")
+                return
         # Derive the slug from the name. No pool is chosen here: a dedicated
-        # pool is provisioned per competition at first claim (claims.ensure_pool).
+        # pool is provisioned per competition-scenario at first claim
+        # (claims.ensure_pool).
         slug = competition.derive_slug(
             name, {c.slug for c in self.store.list_competitions()})
         try:
             theme = json.dumps({"accent": web.sanitize_accent(form.get("accent") or "#5f4a38")})
             comp = competition.create_competition(
                 self.store, slug=slug, name=name,
-                scenario_name=scenario_name, scenario_version=scenario_version,
+                scenario_name=lineup[0][0], scenario_version=lineup[0][1],
                 max_players=max_players, duration_s=max(60, duration_min * 60),
                 theme_json=theme, join_instructions=None,
-                auto_end=form.get("auto_end") in ("1", "on", "true"))
+                auto_end=form.get("auto_end") in ("1", "on", "true"),
+                scenarios=lineup)
         except (ValueError, TypeError) as exc:
             self._render_admin_new_competition(session, str(exc))
             return
@@ -1718,7 +1782,9 @@ class Handler(BaseHTTPRequestHandler):
             claimed = 0
             for p in self.store.list_players(comp.id):
                 if p.status == "invited" and not p.box_id and not p.claim_url:
-                    if claims.start(self.store, comp, p, back_url=back).get("ok"):
+                    if any(r.get("ok") for r in
+                           claims.start_seat(self.store, comp, p,
+                                             back_url=back)):
                         claimed += 1
             self.store.add_audit(actor, "competition_pool", comp.id,
                                  details_json=json.dumps(
@@ -2134,40 +2200,98 @@ class Handler(BaseHTTPRequestHandler):
                         {c.slug for c in self.store.list_competitions()})
                 scenario_name = str(body.get("scenario_name", ""))
                 scenario_mod.sync_box_scenarios(self.store)
-                raw_version = body.get("scenario_version")
-                current = scenario_mod.current_box_scenario(scenario_name)
-                if raw_version is None:
-                    # Omitted version means "the box folder's current one".
-                    if current is None:
+                # v1.2: an explicit ``scenarios`` array ([{name, version?}] or
+                # ["name|version"]) is the lineup; create_competition applies
+                # the folder-currentness rule per entry. Without it, the
+                # legacy single-scenario parsing below runs verbatim.
+                raw_scenarios = body.get("scenarios")
+                lineup = None
+                if isinstance(raw_scenarios, list) and raw_scenarios:
+                    lineup = []
+                    for entry in raw_scenarios:
+                        if isinstance(entry, dict):
+                            e_name = str(entry.get("name", ""))
+                            e_ver = entry.get("version")
+                        else:
+                            e_name, _, v = str(entry).rpartition("|")
+                            e_ver = int(v) if v.strip().isdigit() else None
+                        if not e_name:
+                            raise ValueError("scenario entries need a name")
+                        if e_ver is None:
+                            cur = scenario_mod.current_box_scenario(e_name)
+                            if cur is None:
+                                raise ValueError(
+                                    f"scenario {e_name!r} is not in the box "
+                                    "folder; pass its version explicitly")
+                            e_ver = cur[0]
+                        lineup.append((e_name, int(e_ver)))
+                    scenario_name = lineup[0][0]
+                    scenario_version = lineup[0][1]
+                    if any(self.store.get_scenario(n, v) is None
+                           for n, v in lineup):
                         raise ValueError(
-                            f"scenario {scenario_name!r} is not in the engine's "
-                            f"box folder; pass scenario_version explicitly")
-                    scenario_version = current[0]
+                            "a lineup scenario is not on the engine; sync the "
+                            "box folder or upload the record")
                 else:
-                    scenario_version = int(raw_version)
-                    if current is not None and scenario_version != current[0]:
+                    raw_version = body.get("scenario_version")
+                    current = scenario_mod.current_box_scenario(scenario_name)
+                    if raw_version is None:
+                        # Omitted version means "the box folder's current one".
+                        if current is None:
+                            raise ValueError(
+                                f"scenario {scenario_name!r} is not in the engine's "
+                                f"box folder; pass scenario_version explicitly")
+                        scenario_version = current[0]
+                    else:
+                        scenario_version = int(raw_version)
+                        if current is not None and scenario_version != current[0]:
+                            raise ValueError(
+                                f"Scenario {scenario_name} v{scenario_version} is not "
+                                f"current (engine has v{current[0]}). There is no migrate "
+                                f"step: discard this competition and create it again from the "
+                                f"current scenario (New competition on the admin console at /admin).")
+                    if self.store.get_scenario(scenario_name, scenario_version) is None:
                         raise ValueError(
-                            f"Scenario {scenario_name} v{scenario_version} is not "
-                            f"current (engine has v{current[0]}). There is no migrate "
-                            f"step: discard this competition and create it again from the "
-
-                            f"current scenario (New competition on the admin console at /admin).")
-                if self.store.get_scenario(scenario_name, scenario_version) is None:
-                    raise ValueError(
-                        f"Scenario {scenario_name} v{scenario_version} is not on "
-                        f"the engine; the engine's box folder has no such "
-                        f"scenario.")
+                            f"Scenario {scenario_name} v{scenario_version} is not on "
+                            f"the engine; the engine's box folder has no such "
+                            f"scenario.")
                 # Pools are provisioned per competition at claim time
                 # (claims.ensure_pool); no caller-chosen pool is accepted.
+                # An optional ``scenarios`` array ([{name, version}]) makes the
+                # competition multi-box; absent it is the single-scenario path
+                # exactly as before. create_competition re-checks every entry.
+                raw_scenarios = body.get("scenarios")
+                lineup = None
+                if isinstance(raw_scenarios, list) and raw_scenarios:
+                    lineup = []
+                    for entry in raw_scenarios:
+                        if isinstance(entry, dict):
+                            e_name = str(entry.get("name", ""))
+                            e_ver = entry.get("version")
+                        else:
+                            e_name = str(entry)
+                            e_ver = None
+                        if not e_name:
+                            raise ValueError("scenario entries need a name")
+                        if e_ver is None:
+                            cur = scenario_mod.current_box_scenario(e_name)
+                            if cur is None:
+                                raise ValueError(
+                                    f"scenario {e_name!r} is not in the box "
+                                    "folder; pass its version explicitly")
+                            e_ver = cur[0]
+                        lineup.append((e_name, int(e_ver)))
                 comp = competition.create_competition(
                     self.store, slug=slug,
                     name=body.get("name", ""),
-                    scenario_name=scenario_name,
-                    scenario_version=scenario_version,
+                    scenario_name=(lineup[0][0] if lineup else scenario_name),
+                    scenario_version=(lineup[0][1] if lineup
+                                      else scenario_version),
                     max_players=int(body.get("max_players", 32)),
                     duration_s=int(body.get("duration_s", 7200)),
                     theme_json=theme,
                     join_instructions=body.get("join_instructions"),
+                    scenarios=lineup,
                 )
             except (ValueError, TypeError, KeyError) as exc:
                 self._send_json(400, {"error": str(exc)})

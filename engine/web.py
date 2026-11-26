@@ -770,9 +770,12 @@ competition at a time. Provisioning your VM can take a minute.</p>
                   current="home")
 
 
-def _claim_retry_form(player: PlayerRecord, csrf: str) -> str:
+def _claim_retry_form(player: PlayerRecord, csrf: str,
+                      scenario: Optional[str] = None) -> str:
+    scen = (f'<input type="hidden" name="scenario" '
+            f'value="{esc(scenario)}">' if scenario else "")
     return f"""<form method="post" action="/api/public/join/{esc(player.player_id)}/claim" class="inline">
-<input type="hidden" name="csrf" value="{esc(csrf)}">
+<input type="hidden" name="csrf" value="{esc(csrf)}">{scen}
 <button class="btn" type="submit">Get a new VM</button></form>"""
 
 
@@ -828,7 +831,7 @@ link at once.</p>
 def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
                       join_code: str = "", csrf: str = "",
                       admin: bool = False, team_members=None,
-                      team_url: str = "") -> str:
+                      team_url: str = "", boxes=None) -> str:
     code = join_code or player.join_code_plain or ""
     url = player.claim_url
     bound = bool(player.box_id)
@@ -899,6 +902,7 @@ when it does.</p></li>"""
 <section class="card narrow">
 <ol class="steps">
 <li><h2>Your VM</h2>{step1}</li>{vm_poll}
+{('<li><h2>Your boxes</h2>' + _boxes_panels(comp, player, csrf, boxes) + '</li>') if boxes else ''}
 {fallback if (code and not bound) else ''}
 {f'<li><h2>Invite your team</h2>{team}</li>' if team else ''}
 <li><h2>Watch the board</h2>
@@ -962,7 +966,7 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
                 board_row: Optional[dict], claim_url: Optional[str],
                 csrf: str = "", admin: bool = False,
                 join_code: str = "", team_members=None,
-                team_url: str = "") -> str:
+                team_url: str = "", boxes=None) -> str:
     row = board_row or {}
     joined = bool(player.box_id)
     time_block, end_note, competition_ends, _remaining = _run_clock(comp, player)
@@ -1005,6 +1009,7 @@ box joins.</p>'''
 {f'<p class="error">{esc(player.claim_error)}</p>' if player.claim_error and 'join code' not in player.claim_error.lower() else ''}
 <p><a href="/c/{esc(comp.slug)}">Leaderboard →</a></p>
 </section>
+{f'<section class="card narrow"><h2>Boxes</h2>{_boxes_panels(comp, player, csrf, boxes)}</section>' if boxes else ''}
 {f'<section class="card narrow"><h2>Team</h2>{_team_inner(comp, player, csrf, team_members or [], team_url)}</section>' if player.team_token_plain else ''}
 </div>"""
     return layout(player.display_name, body, comp=comp, admin=admin,
@@ -1061,6 +1066,62 @@ box joins.</p>'''
 </section>"""
 
 
+def _boxes_panels(comp: CompetitionRecord, player: PlayerRecord, csrf: str,
+                   boxes: list) -> str:
+    """One VM card per lineup entry (multi-box competitions only; single
+    boxes never get here -- their page renders the legacy single card).
+
+    The one-time join code belongs to the SEAT, not a box, so it is shown
+    once above the cards: the same code joins every box of the lineup (each
+    box identifies its own scenario to the engine).
+    """
+    parts = []
+    unbound = [b for b in boxes if not b["bound"]]
+    if unbound and player.join_code_plain:
+        parts.append(f"""<section class="card home-card">
+<div class="card-head"><h2>Join your boxes</h2>{player_badge(player.status)}</div>
+<div class="warnmsg"><strong>Not every box is joined yet.</strong> Open a
+box's VM, run <code>huitz join</code> in its terminal, and enter this code —
+it works on every box of this competition:</div>
+<div class="codebox"><code>{esc(player.join_code_plain)}</code></div>
+</section>""")
+    for b in boxes:
+        if b["bound"]:
+            note = ('<p class="okmsg">Joined — this box is live.</p>'
+                    if not b["released_at"] else
+                    '<p class="muted small">Released.</p>')
+        elif b["claim_url"]:
+            note = ('<p class="muted small">Opening starts scoring for this '
+                    'box. Your team clock runs from your first joined box.</p>')
+        elif b["pending"]:
+            note = '<p class="muted">This box is being prepared.</p>'
+        elif b["error"]:
+            note = f'<p class="error">We couldn\'t prepare this box: {esc(b["error"])}</p>'
+        else:
+            note = ('<p class="muted">This box will appear automatically — '
+                    'provisioning retries in the background.</p>')
+        actions = []
+        if b["claim_url"] and not b["bound"]:
+            actions.append(f'<a class="btn primary" href="{esc(b["claim_url"])}" '
+                           f'target="_blank" rel="noopener">Open VM</a>')
+            actions.append(_copy_btn(b["claim_url"], "Copy link"))
+            actions.append(_claim_retry_form(player, csrf,
+                                            scenario=b["scenario_name"]))
+        elif b["claim_url"]:
+            actions.append(f'<a class="btn" href="{esc(b["claim_url"])}" '
+                           f'target="_blank" rel="noopener">Open VM</a>')
+        elif not b["bound"]:
+            actions.append(_claim_retry_form(player, csrf,
+                                             scenario=b["scenario_name"]))
+        act = (f'<div class="home-actions">{"".join(actions)}</div>'
+               if actions else "")
+        parts.append(f"""<section class="card home-card">
+<div class="card-head"><h2>Box · {esc(b["scenario_name"])}</h2></div>
+{note}{act}
+</section>""")
+    return "".join(parts)
+
+
 def _home_leave_card(comp: CompetitionRecord, player: PlayerRecord,
                      leave_csrf: str) -> str:
     if player.status == "running":
@@ -1087,7 +1148,8 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                           services: Optional[list] = None,
                           admin: bool = False,
                           team_members=None,
-                          team_url: str = "") -> str:
+                          team_url: str = "",
+                          boxes=None) -> str:
     """The main page while a run is active: a full-width run dashboard.
 
     The old narrow card left most of the viewport empty. This layout uses the
@@ -1145,7 +1207,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 </section>
 </div>
 <div class="home-col">
-{_home_vm_card(comp, player, claim_url, csrf)}
+{_boxes_panels(comp, player, csrf, boxes) if boxes else _home_vm_card(comp, player, claim_url, csrf)}
 {f'<section class="card home-card"><div class="card-head"><h2>Team</h2></div>{_team_inner(comp, player, csrf, team_members or [], team_url)}</section>' if player.team_token_plain else ''}
 <section class="card home-card">
 <div class="card-head"><h2>Competition</h2>
@@ -1386,7 +1448,7 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <div class="form-grid form-lead">
 <label>Name<input name="name" required placeholder="Friday Night Ranked" autofocus></label>
-<label>Scenario<select name="scenario" required aria-describedby="help-scenario">{"".join(opts) or '<option value="">No ranked scenarios found</option>'}</select><span class="help" id="help-scenario">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked here.</span></label>
+<label>Box lineup<select name="scenario" required multiple size="5" aria-describedby="help-scenario">{"".join(opts) or '<option value="">No ranked scenarios found</option>'}</select><span class="help" id="help-scenario">Ranked scenarios from the engine's committed box folder (boxes/). The run is scored against the exact version picked for each. Pick more than one for a multi-box competition: every team joins one box per selected scenario with the same code, on one shared clock.</span></label>
 </div>
 {unusable_block}
 <div class="form-grid form-cols">
@@ -1479,6 +1541,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         team_note = (f'<div class="muted small">{members} teammate'
                      f'{"s" if members != 1 else ""} listed</div>'
                      if members else "")
+        box_count = (board.get("competition") or {}).get("box_count", 1)
+        if box_count > 1:
+            got = len(row.get("boxes") or [])
+            team_note += (f'<div class="muted small">{got}/{box_count} '
+                          f'boxes joined</div>')
         rows.append(f"""<tr><td data-th="Player"><div class="pname"><strong>{esc(p.display_name)}</strong>{player_badge(p.status)}</div>{team_note}{claim_note}</td>
 <td class="r" data-th="Score">{score}</td>
 <td data-th="Services">{_service_dots(row.get('services'))}</td>

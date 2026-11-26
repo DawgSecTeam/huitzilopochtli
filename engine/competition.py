@@ -146,8 +146,15 @@ def effective_run_end(comp: Optional[CompetitionRecord],
 
 def _service_rows(store: Store, comp: CompetitionRecord,
                   box_id: Optional[str], rubric_sla_ids: Optional[set] = None) -> list:
-    services = scenario_mod.load_services(store, comp.scenario_name,
-                                          comp.scenario_version)
+    return _service_rows_for(store, comp, box_id,
+                             comp.scenario_name, comp.scenario_version)
+
+
+def _service_rows_for(store: Store, comp: CompetitionRecord,
+                      box_id: Optional[str], scenario_name: str,
+                      scenario_version: int) -> list:
+    services = scenario_mod.load_services(store, scenario_name,
+                                          scenario_version)
     if not services:
         return []
     states = {}
@@ -177,13 +184,102 @@ def _service_rows(store: Store, comp: CompetitionRecord,
 
 
 def service_rows(store: Store, comp: CompetitionRecord,
-                 box_id: Optional[str] = None) -> list:
+                 box_id: Optional[str] = None,
+                 player: Optional[PlayerRecord] = None) -> list:
     """Public service rows for a player, including before their box joins.
 
     An unbound slot still shows every scored service (state PENDING, empty
     history) so the dashboard's uptime strip has real names from the start.
+    With ``player`` (multi-box seat) the strip covers the whole lineup;
+    without it, behavior is the single-box path it always was.
     """
+    if player is not None:
+        boxes = _seat_boxes(store, comp, player)
+        if len(store.get_competition_scenarios(comp.id)) > 1:
+            return _seat_service_rows(store, comp, boxes, player)
+        box_id = player.box_id
     return _service_rows(store, comp, box_id)
+
+
+def seat_boxes_view(store: Store, comp: CompetitionRecord, p) -> list:
+    """Per-lineup-entry box state for the player pages:
+    {scenario_name, box_id, bound, claim_url, claim_uid, pending, error}.
+    Empty for a single-scenario competition -- those pages keep rendering
+    their exact pre-v1.2 VM card from the players row.
+    """
+    lineup = store.get_competition_scenarios(comp.id)
+    if len(lineup) <= 1:
+        return []
+    slots = {s.scenario_name: s for s in store.list_run_slots(p.player_id)}
+    out = []
+    for s_name, _ver in lineup:
+        s = slots.get(s_name)
+        out.append({
+            "scenario_name": s_name,
+            "box_id": s.box_id if s else None,
+            "bound": bool(s.box_id) if s else False,
+            "claim_url": (s.claim_url if s else None),
+            "claim_uid": (s.claim_uid if s else None),
+            "pending": bool(s.claim_ticket) if s else False,
+            "error": (s.claim_error if s else None),
+            "released_at": (s.box_released_at if s else None),
+        })
+    return out
+
+
+def _seat_boxes(store: Store, comp: CompetitionRecord,
+                p) -> list:
+    """The seat's bound boxes as (scenario_name, scenario_version, box_id),
+    in lineup order. A single-box seat has exactly its players.box_id mirror
+    (the migration guarantees one slot per player, and the mirror tracks the
+    position-0 slot), so every aggregation downstream collapses to precisely
+    the pre-multi-box numbers.
+    """
+    bound = [(s.scenario_name, s.scenario_version, s.box_id)
+             for s in store.list_run_slots(p.player_id) if s.box_id]
+    if not bound and p.box_id:
+        bound = [(comp.scenario_name, comp.scenario_version, p.box_id)]
+    return bound
+
+
+def _aggregate_scores(store: Store, boxes: list):
+    """Sum the seat's per-box score rows into the one-row shape the board
+    reads. None (never scored) is preserved for a seat with no scored box."""
+    scores = [s for s in (store.get_score(b_id) for _n, _v, b_id in boxes)
+              if s is not None]
+    if not scores:
+        return None, 0
+    agg = {
+        "total": sum(s["total"] for s in scores),
+        "hardening_points": sum(s["hardening_points"] for s in scores),
+        "service_points": sum(s["service_points"] for s in scores),
+        "forensics_points": sum(s.get("forensics_points", 0) for s in scores),
+        "ungraded_count": sum(s.get("ungraded_count", 0) for s in scores),
+        "updated_at": max(s["updated_at"] for s in scores),
+        "parts": scores,
+    }
+    return agg, agg["total"]
+
+
+def _seat_service_rows(store: Store, comp: CompetitionRecord, boxes: list,
+                       p) -> list:
+    """The seat's scored-service rows across the lineup. With one scenario
+    this is exactly _service_rows on the seat's box (the old path, including
+    its PENDING-before-join behavior); multi-box rows are concatenated in
+    lineup order and each carries a "scenario" label.
+    """
+    lineup = store.get_competition_scenarios(comp.id)
+    if len(lineup) <= 1:
+        return _service_rows(store, comp, p.box_id)
+    by_scenario = {b[0]: b[2] for b in boxes}
+    out = []
+    for s_name, s_ver in lineup:
+        box_id = by_scenario.get(s_name)
+        rows = _service_rows_for(store, comp, box_id, s_name, s_ver)
+        for r in rows:
+            r["scenario"] = s_name
+        out.extend(rows)
+    return out
 
 
 def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
@@ -195,13 +291,21 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
     1, 2, 2, 4); the ordering keys only decide display order. A player whose
     clock has run out is treated as finished even if no check-in has
     persisted that status yet.
+
+    ``score`` is the seat's aggregate across its bound boxes (a single score
+    row for single-box competitions, with the same keys).
     """
     # A player is on the board only once a box is bound: a slot that has not
     # connected yet must never look like a zero-point competitor.
-    players = [p for p in store.list_players(comp.id)
-               if p.status in ("running", "finished") and p.box_id]
+    players = []
+    for p in store.list_players(comp.id):
+        if p.status not in ("running", "finished"):
+            continue
+        boxes = _seat_boxes(store, comp, p)
+        if boxes:
+            players.append((p, boxes))
     scored = []
-    for p in players:
+    for p, boxes in players:
         status = p.status
         # The run's effective deadline includes a scheduled competition end:
         # once that wall time passes the run is over even before the sweeper
@@ -210,8 +314,7 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
         effective_end = effective_run_end(comp, p)
         if status == "running" and effective_end is not None and now >= effective_end:
             status = "finished"
-        score = store.get_score(p.box_id) if p.box_id else None
-        total = score["total"] if score else 0
+        score, total = _aggregate_scores(store, boxes)
         scored.append((p, status, score, total))
     scored.sort(key=lambda item: (
         -item[3], item[0].started_at or 0, item[0].player_id))
@@ -246,8 +349,14 @@ def rank_for_player(store: Store, comp: Optional[CompetitionRecord],
 
 def _row_for(store: Store, comp: CompetitionRecord, p, status, score, total,
              now: float) -> dict:
-    """One leaderboard row, shared by the public payload and player_board_row."""
-    return {
+    """One leaderboard row, shared by the public payload and player_board_row.
+
+    ``score`` is the seat's aggregate (see _aggregate_scores); its "parts"
+    carry the per-box rows, which only multi-box competitions surface (as a
+    "boxes" breakdown) so a single-box row keeps its exact v1.1 shape.
+    """
+    boxes = _seat_boxes(store, comp, p)
+    row = {
         "player_id": p.player_id,
         "name": p.display_name,
         "status": status,
@@ -266,9 +375,17 @@ def _row_for(store: Store, comp: CompetitionRecord, p, status, score, total,
         "remaining_s": (_remaining_from(effective_run_end(comp, p), now)
                         if status == "running" else 0),
         "last_checkin": score["updated_at"] if score else None,
-        "services": _service_rows(store, comp, p.box_id),
-        "box_bound": bool(p.box_id),
+        "services": _seat_service_rows(store, comp, boxes, p),
+        "box_bound": bool(boxes),
     }
+    if len(store.get_competition_scenarios(comp.id)) > 1:
+        # Stable shape for multi-lineup boards: every seat gets the per-box
+        # breakdown (a partially bound seat simply lists fewer boxes).
+        row["boxes"] = [
+            {"scenario_name": s_name, "box_id": b_id,
+             "total": (store.get_score(b_id) or {}).get("total", 0)}
+            for s_name, _v, b_id in boxes]
+    return row
 
 
 def player_board_row(store: Store, comp: CompetitionRecord, player,
@@ -341,6 +458,9 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
         "player_count": count,
         "waiting_count": waiting,
         "duration_s": comp.duration_s,
+        # v1.2: 1 for every competition that predates lineups; >1 for a
+        # multi-box competition (pages use it to pick their rendering).
+        "box_count": max(1, len(store.get_competition_scenarios(comp.id))),
         "started_at": comp.started_at,
         "ended_at": comp.ended_at,
         # Wall-clock automatic end for the whole competition (None = none).
@@ -611,7 +731,8 @@ def create_competition(store: Store, *, slug: str, name: str,
                        workshop_pool_code: Optional[str] = None,
                        theme_json: Optional[str] = None,
                        join_instructions: Optional[str] = None,
-                       auto_end: bool = False):
+                       auto_end: bool = False,
+                       scenarios: Optional[list] = None):
     err = validate_slug(slug)
     if err:
         raise ValueError(err)
@@ -623,35 +744,43 @@ def create_competition(store: Store, *, slug: str, name: str,
         raise ValueError("duration_s must be at least 60 seconds.")
     if store.get_competition_by_slug(slug) is not None:
         raise ValueError("That slug is already in use.")
-    # The box folder holds exactly one current version per scenario; running
-    # anything else is refused (competitions migrate forward, never back).
-    current = scenario_mod.current_box_scenario(scenario_name)
-    if current is not None and scenario_version != current[0]:
-        raise ValueError(
-            f"Scenario {scenario_name} v{scenario_version} is not current "
-            f"(engine has v{current[0]}); versions are not migrated in "
-            f"place -- discard this draft on its admin page and recreate it "
-            f"from the current scenario with 'New competition' on the admin "
-            f"console (/admin).")
-    if store.get_scenario(scenario_name, scenario_version) is None:
-        raise ValueError(
-            f"Scenario {scenario_name} v{scenario_version} is not on the "
-            f"engine; sync the box folder or upload the record.")
-    # The box is on the engine and its rubric is fine; only its pool block
-    # failed to expand. Say that -- "no such scenario" sends the operator
-    # hunting for a file that is sitting right there, and the real fix is an
-    # environment variable or a pools-file entry.
-    problem = scenario_mod.pool_problem(scenario_name)
-    if problem:
-        raise ValueError(
-            f"Scenario {scenario_name} cannot start a competition yet: its "
-            f"ranked pool block failed to expand ({problem})")
+    # The lineup is one entry (the legacy pair) or an explicit ordered list;
+    # the competition-level scenario_* fields mirror entry 0 in both cases.
+    lineup = [(scenario_name, int(scenario_version))] if scenarios is None \
+        else [(n, int(v)) for n, v in scenarios]
+    if len(set(n for n, _ in lineup)) != len(lineup):
+        raise ValueError("A lineup scenario may appear only once.")
+    for entry_name, entry_version in lineup:
+        # The box folder holds exactly one current version per scenario;
+        # running anything else is refused (competitions migrate forward,
+        # never back) -- enforced per lineup entry.
+        current = scenario_mod.current_box_scenario(entry_name)
+        if current is not None and entry_version != current[0]:
+            raise ValueError(
+                f"Scenario {entry_name} v{entry_version} is not current "
+                f"(engine has v{current[0]}); versions are not migrated in "
+                f"place -- discard this draft on its admin page and recreate it "
+                f"from the current scenario with 'New competition' on the admin "
+                f"console (/admin).")
+        if store.get_scenario(entry_name, entry_version) is None:
+            raise ValueError(
+                f"Scenario {entry_name} v{entry_version} is not on the "
+                f"engine; sync the box folder or upload the record.")
+        # The box is on the engine and its rubric is fine; only its pool
+        # block failed to expand. Say that -- "no such scenario" sends the
+        # operator hunting for a file that is sitting right there, and the
+        # real fix is an environment variable or a pools-file entry.
+        problem = scenario_mod.pool_problem(entry_name)
+        if problem:
+            raise ValueError(
+                f"Scenario {entry_name} cannot start a competition yet: its "
+                f"ranked pool block failed to expand ({problem})")
     return store.create_competition(
-        slug=slug, name=name.strip(), scenario_name=scenario_name,
-        scenario_version=scenario_version, max_players=max_players,
+        slug=slug, name=name.strip(), scenario_name=lineup[0][0],
+        scenario_version=lineup[0][1], max_players=max_players,
         duration_s=duration_s, workshop_pool_code=workshop_pool_code,
         theme_json=theme_json, join_instructions=join_instructions,
-        auto_end=auto_end,
+        auto_end=auto_end, scenarios=lineup,
     )
 
 
@@ -683,6 +812,14 @@ def create_player_with_code(store: Store, comp: CompetitionRecord,
             continue
         if player is None:
             return None, None, "That name is already taken in this competition."
+        # One claim/bind slot per lineup entry, created with the seat so the
+        # sweeper can work each box independently (a single-scenario
+        # competition -- every seat until v1.2 -- gets exactly one, mirroring
+        # the player row).
+        lineup = store.get_competition_scenarios(comp.id)
+        if not lineup:
+            lineup = [(comp.scenario_name, comp.scenario_version)]
+        store.create_run_slots(player.player_id, comp.id, lineup)
         # The seat also gets its shareable team link now, so a joining captain
         # can hand teammates access before the box even finishes binding.
         if rotate_team_token(store, player, server_secret) is None:
