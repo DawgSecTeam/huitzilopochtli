@@ -1,6 +1,6 @@
 """Version constants stamped on every payload. See architecture.md §14.3."""
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 
 # common.schema.SCHEMA_VERSION is the source of truth for wire schema
 # compatibility; re-exported here for convenience where only version.py
