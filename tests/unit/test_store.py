@@ -582,6 +582,82 @@ def test_pre_teams_players_table_is_migrated_in_place(tmp_path):
     ).player_id == "p1"
 
 
+def test_pre_multibox_rows_are_backfilled_in_place(tmp_path):
+    """A v1.1 DB (competition + one seated player + a pinned pool, no lineup
+    tables) must come up with exactly one row in each of the three new tables,
+    equal to the mirrors -- and the mirrors must not move."""
+    import sqlite3
+    path = str(tmp_path / "pre-multibox.db")
+    conn = sqlite3.connect(path)
+    # The full v1.1 shape the migration chain would leave before v1.2: SCHEMA
+    # minus the three new tables, players WITH the v1.1 columns but without
+    # the team pair. Building it raw (not via Store) keeps the new tables
+    # absent so _migrate_schema's backfill is the thing under test.
+    conn.executescript("""
+        CREATE TABLE competitions (
+            id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL, scenario_name TEXT NOT NULL,
+            scenario_version INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'draft',
+            join_open INTEGER NOT NULL DEFAULT 0,
+            max_players INTEGER NOT NULL, duration_s INTEGER NOT NULL,
+            workshop_pool_code TEXT, workshop_pool_name TEXT,
+            auto_end INTEGER NOT NULL DEFAULT 0, scheduled_end_at REAL,
+            theme_json TEXT, join_instructions TEXT,
+            leaderboard_hidden INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL, started_at REAL, ended_at REAL,
+            CHECK (status IN ('draft','live','ended'))
+        );
+        CREATE TABLE players (
+            player_id TEXT PRIMARY KEY, competition_id TEXT NOT NULL,
+            display_name TEXT NOT NULL, display_name_norm TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'invited',
+            join_code_hash TEXT, join_code_plain TEXT,
+            join_code_expires_at REAL, joined_at REAL NOT NULL,
+            started_at REAL, ends_at REAL, finished_at REAL,
+            box_id TEXT, claim_url TEXT, claim_uid TEXT, claim_ticket TEXT,
+            claim_expires_at REAL, claim_error TEXT,
+            claim_attempts INTEGER NOT NULL DEFAULT 0,
+            claim_last_attempt_at REAL, claim_last_poll_at REAL,
+            box_released_at REAL,
+            UNIQUE (competition_id, display_name_norm)
+        );
+        INSERT INTO competitions (id, slug, name, scenario_name,
+            scenario_version, status, join_open, max_players, duration_s,
+            workshop_pool_code, workshop_pool_name, created_at, started_at)
+            VALUES ('c1','solo','Solo','BoxA',7,'live',1,4,3600,
+                    'CODE1','huitz-ranked-solo',100.0,101.0);
+        INSERT INTO players (player_id, competition_id, display_name,
+            display_name_norm, status, joined_at, started_at, ends_at, box_id)
+            VALUES ('p1','c1','Ada','ada','running',101.0,102.0,3602.0,'bA1');
+    """)
+    conn.commit()
+    conn.close()
+
+    store = Store(path)
+    # Exactly one backfilled row in each new table, equal to the mirror.
+    assert store.get_competition_scenarios("c1") == [("BoxA", 7)]
+    slots = store.list_run_slots("p1")
+    assert len(slots) == 1
+    assert slots[0].box_id == "bA1"
+    assert slots[0].scenario_name == "BoxA"
+    assert slots[0].scenario_version == 7
+    assert slots[0].bound_at == 102.0
+    assert store.list_competition_pools("c1") == [("BoxA", "CODE1",
+                                                   "huitz-ranked-solo")]
+    # The mirrors did not move.
+    comp = store.get_competition("c1")
+    assert (comp.scenario_name, comp.scenario_version) == ("BoxA", 7)
+    assert (comp.workshop_pool_code, comp.workshop_pool_name) == (
+        "CODE1", "huitz-ranked-solo")
+    assert store.get_player("p1").box_id == "bA1"
+    # Idempotent: reopening the migrated DB adds nothing.
+    again = Store(path)
+    assert again.get_competition_scenarios("c1") == [("BoxA", 7)]
+    assert len(again.list_run_slots("p1")) == 1
+    assert len(again.list_competition_pools("c1")) == 1
+
+
 def test_get_or_set_t0_is_authoritative(store):
     store.create_box("b", "pk", "sc")
     assert store.get_or_set_t0("b", 100.0) == 100.0

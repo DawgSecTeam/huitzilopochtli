@@ -138,6 +138,30 @@ class PlayerRecord:
 
 
 @dataclass
+class RunSlotRecord:
+    """One (seat, lineup entry): a player's box for one scenario, with its
+    own claim bookkeeping. The run clock deliberately is NOT here -- it lives
+    on players (one team clock governs all of the seat's boxes)."""
+    slot_id: str
+    player_id: str
+    competition_id: str
+    scenario_name: str
+    scenario_version: int
+    box_id: Optional[str]
+    status: str
+    bound_at: Optional[float] = None
+    box_released_at: Optional[float] = None
+    claim_url: Optional[str] = None
+    claim_uid: Optional[str] = None
+    claim_ticket: Optional[str] = None
+    claim_expires_at: Optional[float] = None
+    claim_error: Optional[str] = None
+    claim_attempts: int = 0
+    claim_last_attempt_at: Optional[float] = None
+    claim_last_poll_at: Optional[float] = None
+
+
+@dataclass
 class AuditRecord:
     id: int
     ts: float
@@ -350,6 +374,44 @@ class Store:
                     self._conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
                     )
+
+        # --- multi-box competitions (v1.2) ----------------------------------
+        # Every existing competition/player/pool fact is ALSO a one-entry
+        # lineup, one slot, one pin. The mirror columns keep their exact old
+        # values; these rows just say "the lineup is that mirror". Written
+        # idempotently (NOT EXISTS) because this runs on every open.
+        self._conn.execute(
+            "INSERT INTO competition_scenarios "
+            "(competition_id, scenario_name, scenario_version, position) "
+            "SELECT c.id, c.scenario_name, c.scenario_version, 0 "
+            "FROM competitions c WHERE NOT EXISTS "
+            "(SELECT 1 FROM competition_scenarios cs "
+            " WHERE cs.competition_id = c.id)"
+        )
+        self._conn.execute(
+            "INSERT INTO run_slots (slot_id, player_id, competition_id, "
+            "scenario_name, scenario_version, box_id, status, bound_at, "
+            "box_released_at, claim_url, claim_uid, claim_ticket, "
+            "claim_expires_at, claim_error, claim_attempts, "
+            "claim_last_attempt_at, claim_last_poll_at) "
+            "SELECT lower(hex(randomblob(16))), p.player_id, p.competition_id, "
+            "c.scenario_name, c.scenario_version, p.box_id, p.status, "
+            "p.started_at, p.box_released_at, p.claim_url, p.claim_uid, "
+            "p.claim_ticket, p.claim_expires_at, p.claim_error, "
+            "p.claim_attempts, p.claim_last_attempt_at, p.claim_last_poll_at "
+            "FROM players p JOIN competitions c ON c.id = p.competition_id "
+            "WHERE NOT EXISTS (SELECT 1 FROM run_slots rs "
+            "                  WHERE rs.player_id = p.player_id)"
+        )
+        self._conn.execute(
+            "INSERT INTO competition_pools (competition_id, scenario_name, "
+            "pool_code, pool_name, pinned_at) "
+            "SELECT c.id, c.scenario_name, c.workshop_pool_code, "
+            "c.workshop_pool_name, c.created_at FROM competitions c "
+            "WHERE c.workshop_pool_code IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM competition_pools cp "
+            " WHERE cp.competition_id = c.id)"
+        )
 
         # Free removed players' display names for a future join. The table's
         # UNIQUE (competition_id, display_name_norm) includes removed rows, so
@@ -1014,15 +1076,39 @@ class Store:
             team_token_plain=row["team_token_plain"],
         )
 
+    @staticmethod
+    def _run_slot_from_row(row) -> RunSlotRecord:
+        return RunSlotRecord(
+            slot_id=row["slot_id"], player_id=row["player_id"],
+            competition_id=row["competition_id"],
+            scenario_name=row["scenario_name"],
+            scenario_version=row["scenario_version"],
+            box_id=row["box_id"], status=row["status"],
+            bound_at=row["bound_at"], box_released_at=row["box_released_at"],
+            claim_url=row["claim_url"], claim_uid=row["claim_uid"],
+            claim_ticket=row["claim_ticket"],
+            claim_expires_at=row["claim_expires_at"],
+            claim_error=row["claim_error"],
+            claim_attempts=row["claim_attempts"] or 0,
+            claim_last_attempt_at=row["claim_last_attempt_at"],
+            claim_last_poll_at=row["claim_last_poll_at"],
+        )
+
     def create_competition(self, slug: str, name: str, scenario_name: str,
                            scenario_version: int, max_players: int,
                            duration_s: int, workshop_pool_code: Optional[str] = None,
                            theme_json: Optional[str] = None,
                            join_instructions: Optional[str] = None,
                            status: str = "draft", join_open: bool = False,
-                           auto_end: bool = False) -> CompetitionRecord:
+                           auto_end: bool = False,
+                           scenarios: Optional[list] = None) -> CompetitionRecord:
         comp_id = uuid.uuid4().hex
         now = time.time()
+        # The lineup table is the v1.2 source of truth; scenario_name/_version
+        # stay its position-0 mirror (identical for every single-scenario
+        # competition, which is all any pre-v1.2 caller ever passes).
+        lineup = [(scenario_name, scenario_version)] if scenarios is None \
+            else [(n, int(v)) for n, v in scenarios]
         with self._lock:
             self._conn.execute(
                 "INSERT INTO competitions (id, slug, name, scenario_name, "
@@ -1030,13 +1116,151 @@ class Store:
                 "workshop_pool_code, auto_end, theme_json, join_instructions, "
                 "created_at, started_at, ended_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
-                (comp_id, slug, name, scenario_name, scenario_version, status,
+                (comp_id, slug, name, lineup[0][0], lineup[0][1], status,
                  1 if join_open else 0, max_players, duration_s,
                  workshop_pool_code, 1 if auto_end else 0,
                  theme_json, join_instructions, now),
             )
+            for pos, (sname, sver) in enumerate(lineup):
+                self._conn.execute(
+                    "INSERT INTO competition_scenarios "
+                    "(competition_id, scenario_name, scenario_version, position) "
+                    "VALUES (?, ?, ?, ?)", (comp_id, sname, sver, pos))
             self._commit()
         return self.get_competition(comp_id)
+
+    # --- multi-box lineup / slots / pools (v1.2) ---------------------------
+
+    def get_competition_scenarios(self, comp_id: str) -> list:
+        """[(scenario_name, scenario_version)] in lineup order. A competition
+        row predating the migration always has its mirror backfilled, so this
+        is never empty for a real competition."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT scenario_name, scenario_version FROM competition_scenarios "
+                "WHERE competition_id = ? ORDER BY position ASC", (comp_id,),
+            ).fetchall()
+        return [(r["scenario_name"], r["scenario_version"]) for r in rows]
+
+    def create_run_slots(self, player_id: str, comp_id: str, lineup: list,
+                         now: Optional[float] = None) -> list:
+        """One claim/bind slot per lineup entry for a freshly seated player.
+        Returns the slot ids in lineup order."""
+        now = time.time() if now is None else now
+        ids = []
+        with self._lock:
+            for sname, sver in lineup:
+                slot_id = uuid.uuid4().hex
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO run_slots (slot_id, player_id, "
+                    "competition_id, scenario_name, scenario_version, status) "
+                    "VALUES (?, ?, ?, ?, ?, 'invited')",
+                    (slot_id, player_id, comp_id, sname, sver))
+                ids.append(slot_id)
+            self._commit()
+        return ids
+
+    def get_run_slot(self, player_id: str,
+                     scenario_name: str) -> Optional[RunSlotRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM run_slots WHERE player_id = ? AND scenario_name = ?",
+                (player_id, scenario_name),
+            ).fetchone()
+        return None if row is None else self._run_slot_from_row(row)
+
+    def list_run_slots(self, player_id: str) -> list:
+        """The seat's boxes in lineup order (position, then scenario name for
+        rows written before the lineup table existed)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rs.*, cs.position AS position FROM run_slots rs "
+                "LEFT JOIN competition_scenarios cs "
+                "ON cs.competition_id = rs.competition_id "
+                "AND cs.scenario_name = rs.scenario_name "
+                "WHERE rs.player_id = ? "
+                "ORDER BY COALESCE(cs.position, 0) ASC, rs.scenario_name ASC",
+                (player_id,),
+            ).fetchall()
+        return [self._run_slot_from_row(r) for r in rows]
+
+    def get_player_slot_by_box(self, box_id: str):
+        """(RunSlotRecord, PlayerRecord) the box is bound to, via either the
+        players mirror or a slot row. None when the box binds to nobody."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM run_slots WHERE box_id = ?", (box_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        slot = self._run_slot_from_row(row)
+        player = self.get_player(slot.player_id)
+        return slot, player
+
+    def update_run_slot(self, slot_id: str, **fields) -> None:
+        allowed = {"box_id", "status", "bound_at", "box_released_at", "claim_url",
+                   "claim_uid", "claim_ticket", "claim_expires_at", "claim_error",
+                   "claim_attempts", "claim_last_attempt_at", "claim_last_poll_at"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            sets.append(f"{k} = ?")
+            vals.append(int(v) if isinstance(v, bool) else v)
+        if not sets:
+            return
+        vals.append(slot_id)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE run_slots SET {', '.join(sets)} WHERE slot_id = ?", vals)
+            self._commit()
+
+    def set_slot_claim(self, slot_id: str, url: Optional[str],
+                       uid: Optional[str] = None, ticket: Optional[str] = None,
+                       expires_at: Optional[float] = None) -> None:
+        self.update_run_slot(slot_id, claim_url=url, claim_uid=uid,
+                             claim_ticket=ticket, claim_expires_at=expires_at)
+
+    def list_competition_pools(self, comp_id: str) -> list:
+        """[(scenario_name, pool_code, pool_name)] in lineup order; rows with
+        no code yet (provisioning pending) are included with None."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT cp.scenario_name, cp.pool_code, cp.pool_name "
+                "FROM competition_pools cp "
+                "LEFT JOIN competition_scenarios cs "
+                "ON cs.competition_id = cp.competition_id "
+                "AND cs.scenario_name = cp.scenario_name "
+                "WHERE cp.competition_id = ? "
+                "ORDER BY COALESCE(cs.position, 0) ASC, cp.scenario_name ASC",
+                (comp_id,),
+            ).fetchall()
+        return [(r["scenario_name"], r["pool_code"], r["pool_name"]) for r in rows]
+
+    def pin_competition_pool(self, comp_id: str, scenario_name: str,
+                             pool_code: Optional[str], pool_name: Optional[str],
+                             now: Optional[float] = None) -> None:
+        """Pin (or clear, with pool_code None) one lineup entry's pool. The
+        competition-level workshop_pool_* mirror follows the position-0 pin
+        so legacy teardown/audit reads are unchanged for single-scenario."""
+        now = time.time() if now is None else now
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO competition_pools (competition_id, scenario_name, "
+                "pool_code, pool_name, pinned_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(competition_id, scenario_name) DO UPDATE SET "
+                "pool_code = excluded.pool_code, pool_name = excluded.pool_name, "
+                "pinned_at = excluded.pinned_at",
+                (comp_id, scenario_name, pool_code, pool_name, now))
+            pos = self._conn.execute(
+                "SELECT position FROM competition_scenarios WHERE competition_id = ? "
+                "AND scenario_name = ?", (comp_id, scenario_name)).fetchone()
+            if pos is not None and pos["position"] == 0:
+                self._conn.execute(
+                    "UPDATE competitions SET workshop_pool_code = ?, "
+                    "workshop_pool_name = ? WHERE id = ?",
+                    (pool_code, pool_name, comp_id))
+            self._commit()
 
     def get_competition(self, comp_id: str) -> Optional[CompetitionRecord]:
         with self._lock:
@@ -1237,10 +1461,19 @@ class Store:
         return None if row is None else self._player_from_row(row)
 
     def get_player_by_box(self, box_id: str) -> Optional[PlayerRecord]:
+        """The seat a box belongs to. The players mirror answers for a seat's
+        primary box (all boxes, pre-multi-box); a secondary box resolves
+        through its run_slot row instead."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM players WHERE box_id = ?", (box_id,)
             ).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT p.* FROM players p JOIN run_slots rs "
+                    "ON rs.player_id = p.player_id WHERE rs.box_id = ? "
+                    "LIMIT 1", (box_id,),
+                ).fetchone()
         return None if row is None else self._player_from_row(row)
 
     def get_player_by_join_hash(self, code_hash: str) -> Optional[PlayerRecord]:
