@@ -258,7 +258,10 @@ def _make_checkin_body(box_id: str, scenario_name: str, seq: int, matched_value:
         scenario_version=1,
         evidence=[
             Evidence(
-                check_id="check1",
+                # _build_engine_record compiles the ranked target, which
+                # replaces authored ids with positional chk-NNN; agents
+                # report against those compiled ids.
+                check_id="chk-001",
                 check_type="file_regex",
                 host_id="localhost",
                 status=CollectorStatus.OK,

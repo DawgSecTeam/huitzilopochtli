@@ -287,6 +287,9 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD": "portal-pw",
         "HUITZILOPOCHTLI_PUBLIC_URL": f"http://127.0.0.1:{port}",
         "HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes"),
+        # Auto-warm has its own tests; here it would consume an extra
+        # fake-portal claim id and shift the r/u<N> URLs this test pins.
+        "HUITZILOPOCHTLI_AUTOWARM": "0",
         "PYTHONUNBUFFERED": "1",
     })
     ws = ThreadingHTTPServer(("127.0.0.1", workshop_port), _Workshop)
@@ -503,7 +506,10 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         conn.close()
 
         ev = [
-            Evidence(check_id="banner", check_type="file_regex", host_id="localhost",
+            # chk-001: the engine compiles the ranked target of the box's
+            # scenario.yaml, which replaces authored ids with positional
+            # chk-NNN. Services keep their authored ids.
+            Evidence(check_id="chk-001", check_type="file_regex", host_id="localhost",
                      status=CollectorStatus.OK, raw={"matched": "ok", "present": True},
                      reason="ok", collected_monotonic=0.0, collected_wall_claim=0.0),
             Evidence(check_id="svc_web", check_type="tcp_port", host_id="localhost",
