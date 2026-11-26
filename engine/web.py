@@ -763,8 +763,10 @@ Finish (or leave) your current run before joining another.</p>
 <p class="muted small">Display names may contain spaces; they are trimmed and
 matched case-insensitively. Each name seats exactly one player and stays
 reserved for them until an admin frees the seat. By joining you agree to
-compete on a disposable ranked box. One box per player; no teams; one
-competition at a time. Provisioning your VM can take a minute.</p>
+compete on a disposable ranked box. A seat is a team: teammates join it
+through your team link, and multi-box competitions bind one box per
+scenario with the same join code on one shared clock. One competition at
+a time. Provisioning your VM can take a minute.</p>
 </section>{recovery}"""
     return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
                   current="home")
