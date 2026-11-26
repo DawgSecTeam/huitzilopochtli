@@ -526,6 +526,62 @@ def test_pre_box_released_players_table_is_migrated_in_place(tmp_path):
     assert store.get_player("p1").box_released_at == 123.0
 
 
+def test_pre_teams_players_table_is_migrated_in_place(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "v1_1-players.db")
+    conn = sqlite3.connect(path)
+    # The 1.1 players table exactly as it shipped (all v1.1 columns present,
+    # no team tokens): the v1.2 step must add the pair + index, keep the row
+    # readable, and let the seat lazily collect its team link.
+    conn.executescript("""
+        CREATE TABLE players (
+            player_id TEXT PRIMARY KEY,
+            competition_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            display_name_norm TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'invited',
+            join_code_hash TEXT,
+            join_code_plain TEXT,
+            join_code_expires_at REAL,
+            joined_at REAL NOT NULL,
+            started_at REAL,
+            ends_at REAL,
+            finished_at REAL,
+            box_id TEXT,
+            claim_url TEXT,
+            claim_uid TEXT,
+            claim_ticket TEXT,
+            claim_expires_at REAL,
+            claim_error TEXT,
+            claim_attempts INTEGER NOT NULL DEFAULT 0,
+            claim_last_attempt_at REAL,
+            claim_last_poll_at REAL,
+            box_released_at REAL,
+            UNIQUE (competition_id, display_name_norm)
+        );
+        INSERT INTO players (player_id, competition_id, display_name,
+                             display_name_norm, status, joined_at)
+        VALUES ('p1', 'c1', 'Ada', 'ada', 'finished', 100.0);
+    """)
+    conn.commit()
+    conn.close()
+
+    store = Store(path)
+    player = store.get_player("p1")
+    assert player.team_token_hash is None and player.team_token_plain is None
+    assert store.list_team_members("p1") == []
+    # team_members auto-creates; a seat keeps working end-to-end:
+    assert store.add_team_member("p1", "bob")
+    assert [h for h, _ in store.list_team_members("p1")] == ["bob"]
+    from engine import competition as comp_mod
+    secret = b"migrated-secret"
+    assert comp_mod.rotate_team_token(store, player, secret)
+    assert store.get_player_by_team_token(
+        comp_mod.hash_team_token(secret,
+                                 store.get_player("p1").team_token_plain)
+    ).player_id == "p1"
+
+
 def test_get_or_set_t0_is_authoritative(store):
     store.create_box("b", "pk", "sc")
     assert store.get_or_set_t0("b", 100.0) == 100.0

@@ -133,7 +133,18 @@ CREATE TABLE IF NOT EXISTS players (
     -- When this run's VM was released (post-run access window expired or an
     -- admin release). NULL while the box is still out.
     box_released_at REAL,
+    -- v1.2 teams: long-lived per-seat link token so any member's browser can
+    -- reach the run (the one-time join code binds the box, not the people).
+    team_token_hash TEXT,
+    team_token_plain TEXT,
     UNIQUE (competition_id, display_name_norm)
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    player_id TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    PRIMARY KEY (player_id, handle)
 );
 
 CREATE TABLE IF NOT EXISTS player_boxes (

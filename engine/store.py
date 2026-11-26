@@ -130,6 +130,11 @@ class PlayerRecord:
     # the box is gone: the sweeper will not release again and Extend must
     # not try to resume a headless run.
     box_released_at: Optional[float] = None
+    # v1.2 teams: the seat's long-lived access token (shown in plaintext so
+    # the dashboard can render the share link; hashed for the lookup index,
+    # exactly like join_code_plain/join_code_hash).
+    team_token_hash: Optional[str] = None
+    team_token_plain: Optional[str] = None
 
 
 @dataclass
@@ -327,6 +332,25 @@ class Store:
                         f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
                     )
 
+        # --- teams (v1.2) --------------------------------------------------
+        # The seat keeps one shareable access token; team_members is the
+        # informational roster. Seats, clocks, pools and scoring are
+        # untouched: a "team" is still exactly one player slot.
+        for table, columns in (
+            ("players", (
+                ("team_token_hash", "TEXT"),
+                ("team_token_plain", "TEXT"),
+            )),
+        ):
+            cols = self._table_columns(table)
+            if not cols:
+                continue
+            for column, decl in columns:
+                if column not in cols:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
+                    )
+
         # Free removed players' display names for a future join. The table's
         # UNIQUE (competition_id, display_name_norm) includes removed rows, so
         # a removed slot used to keep its name locked forever (Team B -> B2 in
@@ -364,6 +388,31 @@ class Store:
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_players_join_code "
             "ON players(join_code_hash) WHERE join_code_hash IS NOT NULL"
+        )
+
+        # Team tokens are 128-bit, but the token link must resolve to exactly
+        # one seat, so constrain it the same way (dedupe-then-index keeps the
+        # ALTER path safe on any prior data).
+        dupes = self._conn.execute(
+            "SELECT team_token_hash FROM players "
+            "WHERE team_token_hash IS NOT NULL "
+            "GROUP BY team_token_hash HAVING COUNT(*) > 1"
+        ).fetchall()
+        for row in dupes:
+            keep = self._conn.execute(
+                "SELECT player_id FROM players WHERE team_token_hash = ? "
+                "ORDER BY joined_at DESC, rowid DESC LIMIT 1",
+                (row["team_token_hash"],),
+            ).fetchone()
+            self._conn.execute(
+                "UPDATE players SET team_token_hash = NULL, "
+                "team_token_plain = NULL "
+                "WHERE team_token_hash = ? AND player_id <> ?",
+                (row["team_token_hash"], keep["player_id"]),
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_players_team_token "
+            "ON players(team_token_hash) WHERE team_token_hash IS NOT NULL"
         )
 
     def _commit(self) -> None:
@@ -961,6 +1010,8 @@ class Store:
             claim_last_attempt_at=row["claim_last_attempt_at"],
             claim_last_poll_at=row["claim_last_poll_at"],
             box_released_at=row["box_released_at"],
+            team_token_hash=row["team_token_hash"],
+            team_token_plain=row["team_token_plain"],
         )
 
     def create_competition(self, slug: str, name: str, scenario_name: str,
@@ -1227,6 +1278,58 @@ class Store:
             ).fetchall()
         return [self._player_from_row(r) for r in rows]
 
+    def get_player_by_team_token(self, token_hash: str
+                                 ) -> Optional[PlayerRecord]:
+        """The seat a shared team link resolves to (one seat per token)."""
+        if not token_hash:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM players WHERE team_token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        return None if row is None else self._player_from_row(row)
+
+    def add_team_member(self, player_id: str, handle: str,
+                        now: Optional[float] = None) -> bool:
+        """Add an informational member. False if already listed."""
+        now = time.time() if now is None else now
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO team_members (player_id, handle, added_at) "
+                "VALUES (?, ?, ?)", (player_id, handle, now))
+            self._commit()
+        return cur.rowcount > 0
+
+    def remove_team_member(self, player_id: str, handle: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM team_members WHERE player_id = ? AND handle = ?",
+                (player_id, handle))
+            self._commit()
+        return cur.rowcount > 0
+
+    def list_team_members(self, player_id: str) -> list:
+        """[(handle, added_at)] oldest first -- the seat's informational roster."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT handle, added_at FROM team_members "
+                "WHERE player_id = ? ORDER BY added_at ASC",
+                (player_id,),
+            ).fetchall()
+        return [(r["handle"], r["added_at"]) for r in rows]
+
+    def count_team_members(self, comp_id: str) -> dict:
+        """player_id -> member count for every seat in one competition."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tm.player_id, COUNT(*) AS n FROM team_members tm "
+                "JOIN players p ON p.player_id = tm.player_id "
+                "WHERE p.competition_id = ? GROUP BY tm.player_id",
+                (comp_id,),
+            ).fetchall()
+        return {r["player_id"]: r["n"] for r in rows}
+
     def update_player(self, player_id: str, **fields) -> None:
         allowed = {"status", "join_code_hash", "join_code_plain",
                    "join_code_expires_at", "started_at",
@@ -1234,7 +1337,8 @@ class Store:
                    "claim_ticket", "claim_expires_at", "claim_error",
                    "claim_attempts", "claim_last_attempt_at",
                    "claim_last_poll_at", "box_released_at",
-                   "display_name", "display_name_norm"}
+                   "display_name", "display_name_norm",
+                   "team_token_hash", "team_token_plain"}
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed:
@@ -1251,7 +1355,9 @@ class Store:
                 )
             except sqlite3.IntegrityError as exc:
                 self._conn.rollback()
-                if "join_code_hash" in str(exc):
+                if "join_code_hash" in str(exc) or "team_token_hash" in str(exc):
+                    # A collision on one of the seat's unique secrets; the
+                    # minter retries with a fresh value.
                     raise JoinCodeCollision() from exc
                 raise
             self._commit()

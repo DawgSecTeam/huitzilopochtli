@@ -620,7 +620,8 @@ class Handler(BaseHTTPRequestHandler):
                     current, player, row, data["leaderboard"], player.claim_url,
                     csrf=player_csrf, leave_csrf=player_csrf,
                     player_count=data["competition"]["player_count"],
-                    services=services, admin=self._admin_actor()[0]))
+                    services=services, admin=self._admin_actor()[0],
+                    **self._team_context(current, player)))
                 return
             admin_view = self._admin_actor()[0]
             comps = self.store.list_competitions()
@@ -816,7 +817,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(200, web.join_success_page(
                 comp, player, join_code=player.join_code_plain or "",
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
-                admin=is_admin))
+                admin=is_admin, **self._team_context(comp, player)))
             return
         if rest[1] == "join":
             player, current = self._current_player()
@@ -868,7 +869,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(200, web.player_page(
                 comp, player, row, player.claim_url,
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
-                admin=is_admin, join_code=player.join_code_plain or ""))
+                admin=is_admin, join_code=player.join_code_plain or "",
+                **self._team_context(comp, player)))
+            return
+        if rest[1] == "team" and len(rest) >= 3:
+            # Shared team link: /c/<slug>/team/<token>
+            self._handle_public_team(rest[0], rest[2])
             return
         self._send_html(404, web.error_page(404, "Not found",
                                             "The page you requested does not exist.",
@@ -1034,6 +1040,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_html(200, web.admin_competition_page(
             comp, board, players, session.csrf_token, msg, error,
             warm=claims.warm_status(comp.id),
+            team_counts=self.store.count_team_members(comp.id),
             pool=pool,
             # Reuse the snapshot the card already renders, so the warning and
             # the count never disagree and the page costs one portal GET.
@@ -1211,6 +1218,109 @@ class Handler(BaseHTTPRequestHandler):
         self._redirect("/", extra_headers={"Set-Cookie": (
             f"huitz_player={other.player_id}; Path=/; HttpOnly; "
             f"SameSite=Lax; Max-Age=86400")})
+
+    def _team_context(self, comp, player) -> dict:
+        """Team kwargs for the player run pages. A pre-teams seat is lazily
+        given its link token on first dashboard view so the card is never
+        blank-and-there-fore-confusing; brand-new joins already minted one."""
+        if not player.team_token_plain:
+            competition.rotate_team_token(self.store, player,
+                                          self.server_secret)
+            player = self.store.get_player(player.player_id)
+        url = (f"{self._public_base()}/c/{comp.slug}/team/"
+               f"{player.team_token_plain}") if player.team_token_plain else ""
+        return {"team_members": self.store.list_team_members(player.player_id),
+                "team_url": url}
+
+    def _resolve_team_token(self, slug: str, token: str):
+        """(comp, player) for a link. comp is None only when the competition
+        itself is unknown; a bad/stale token gives comp with player None."""
+        comp = self.store.get_competition_by_slug(slug)
+        if comp is None:
+            return None, None
+        if not token:
+            return comp, None
+        player = self.store.get_player_by_team_token(
+            competition.hash_team_token(self.server_secret, token))
+        if player is None or player.competition_id != comp.id:
+            return comp, None
+        return comp, player
+
+    def _handle_public_team(self, slug: str, token: Optional[str]) -> None:
+        """A teammate opens /c/<slug>/team/<token>: seat them, PRG to /."""
+        comp, player = self._resolve_team_token(slug, token or "")
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        if player is None:
+            self._send_html(403, web.error_page(
+                403, "Team link not valid",
+                "That team link was rotated or belongs to another "
+                "competition. Ask a teammate for the current link.",
+                f"/c/{comp.slug}"))
+            return
+        self.store.add_audit(
+            "player", "team_link_open", comp.id, player.player_id,
+            remote_addr=self.client_address[0] if self.client_address else None)
+        # Reuse the exact cookie the join path sets: one player slot per
+        # browser, so a teammate's link hands them the team's run.
+        self._redirect("/", extra_headers={"Set-Cookie": (
+            f"huitz_player={player.player_id}; Path=/; HttpOnly; "
+            f"SameSite=Lax; Max-Age=86400")})
+
+    def _handle_team_manage(self, slug: str) -> None:
+        """POST /c/<slug>/team: rotate link / add or remove a member.
+
+        CSRF-guarded, player-cookie-authenticated (the seat owner acts on its
+        own team; a teammate sharing the link inherits the same owner cookie
+        once they open the run, so any member can manage the roster)."""
+        comp = self.store.get_competition_by_slug(slug)
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        player, current = self._current_player()
+        if player is None or current is None or current.id != comp.id:
+            self._redirect("/")
+            return
+        try:
+            form = self._read_form()
+        except Exception:
+            form = {}
+        if not claims.check_csrf(self.server_secret, player.player_id,
+                                 form.get("csrf")):
+            self._send_html(403, web.error_page(
+                403, "Invalid CSRF token",
+                "Go back, reload the page, and try again.",
+                f"/c/{comp.slug}/me"))
+            return
+        action = form.get("action")
+        if action == "rotate":
+            if competition.rotate_team_token(self.store, player,
+                                             self.server_secret) is None:
+                self._send_html(500, web.error_page(
+                    500, "Could not rotate the link", "Try again.",
+                    f"/c/{comp.slug}/me"))
+                return
+            self.store.add_audit("player", "team_link_rotate", comp.id,
+                                 player.player_id)
+        elif action in ("add", "remove"):
+            handle = competition.validate_member_handle(
+                str(form.get("handle", "")))
+            if handle is None:
+                self._redirect(f"/c/{comp.slug}/me")
+                return
+            if action == "add":
+                self.store.add_team_member(player.player_id, handle)
+            else:
+                self.store.remove_team_member(player.player_id, handle)
+            self.store.add_audit("player", f"team_member_{action}", comp.id,
+                                 player.player_id,
+                                 details_json=json.dumps({"handle": handle}))
+        self._redirect(f"/c/{comp.slug}/me")
 
     def _handle_public_leave(self, slug: str) -> None:
         """Player withdraws: release the VM, drop the slot, clear the cookie.
@@ -2109,6 +2219,11 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/c/") and path.endswith("/leave"):
             slug = path[len("/c/"):].strip("/").split("/")[0]
             self._handle_public_leave(slug)
+            return
+        if (path.startswith("/c/") and path.endswith("/team")
+                and not path.endswith("/team/")):
+            slug = path[len("/c/"):].strip("/").split("/")[0]
+            self._handle_team_manage(slug)
             return
         self._send_json(404, {"error": "not found"})
 

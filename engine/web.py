@@ -788,9 +788,47 @@ def _post_run_phrase() -> str:
             f"down and deleted.")
 
 
+def _team_inner(comp: CompetitionRecord, player: PlayerRecord, csrf: str,
+                members: list, team_url: str) -> str:
+    """The shared-seat block: copyable team link, rotate, informational
+    roster. Empty for a seat that never got a token (a slot created before
+    teams existed and never visited a page that mints one lazily).
+
+    Returns content only; the run pages wrap it in a card and the join
+    success page in a step, so the block cannot drift between them.
+    """
+    if not player.team_token_plain:
+        return ""
+    url = team_url or f"/c/{esc(comp.slug)}/team/{esc(player.team_token_plain)}"
+    rows = "".join(
+        f'<li><span>{esc(handle)}</span>'
+        f'<form method="post" action="/c/{esc(comp.slug)}/team" class="inline">'
+        f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+        f'<input type="hidden" name="action" value="remove">'
+        f'<input type="hidden" name="handle" value="{esc(handle)}">'
+        f'<button class="btn ghost-sm" type="submit">Remove</button></form></li>'
+        for handle, _added in members)
+    return f"""<p class="small">Anyone who opens this link lands on this run —
+the same seat, the same box, the same clock. Rotating invalidates the old
+link at once.</p>
+<p><code>{esc(url)}</code> {_copy_btn(url, "Copy link")}</p>
+<form method="post" action="/c/{esc(comp.slug)}/team">
+<input type="hidden" name="csrf" value="{esc(csrf)}">
+<input type="hidden" name="action" value="rotate">
+<button class="btn" type="submit">Rotate team link</button></form>
+<h3>Members</h3>
+<ul>{rows or '<li class="muted small">No teammates listed yet.</li>'}</ul>
+<form method="post" action="/c/{esc(comp.slug)}/team">
+<input type="hidden" name="csrf" value="{esc(csrf)}">
+<input type="hidden" name="action" value="add">
+<input type="text" name="handle" maxlength="60" placeholder="teammate handle" required>
+<button class="btn" type="submit">Add</button></form>"""
+
+
 def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
                       join_code: str = "", csrf: str = "",
-                      admin: bool = False) -> str:
+                      admin: bool = False, team_members=None,
+                      team_url: str = "") -> str:
     code = join_code or player.join_code_plain or ""
     url = player.claim_url
     bound = bool(player.box_id)
@@ -854,6 +892,7 @@ enter the code when prompted):</p>
 <p class="small">The code is single-use and expires; this page updates itself
 when it does.</p></li>"""
 
+    team = _team_inner(comp, player, csrf, team_members or [], team_url)
     body = f"""<section class="page-head-row"><div>
 <div class="title-line"><h1>You're in, {esc(player.display_name)}</h1></div>
 <p class="meta">Competition: {esc(comp.name)} · your clock starts when you open the VM.{f' · Competition {competition_ends}' if competition_ends else ''}</p></div></section>
@@ -861,6 +900,7 @@ when it does.</p></li>"""
 <ol class="steps">
 <li><h2>Your VM</h2>{step1}</li>{vm_poll}
 {fallback if (code and not bound) else ''}
+{f'<li><h2>Invite your team</h2>{team}</li>' if team else ''}
 <li><h2>Watch the board</h2>
 <p><a href="/c/{esc(comp.slug)}">Leaderboard</a> · <a href="/c/{esc(comp.slug)}/me">My status</a></p></li>
 </ol>
@@ -921,7 +961,8 @@ def _run_score_block(row: dict, player: PlayerRecord, big_class: str) -> str:
 def player_page(comp: CompetitionRecord, player: PlayerRecord,
                 board_row: Optional[dict], claim_url: Optional[str],
                 csrf: str = "", admin: bool = False,
-                join_code: str = "") -> str:
+                join_code: str = "", team_members=None,
+                team_url: str = "") -> str:
     row = board_row or {}
     joined = bool(player.box_id)
     time_block, end_note, competition_ends, _remaining = _run_clock(comp, player)
@@ -964,6 +1005,7 @@ box joins.</p>'''
 {f'<p class="error">{esc(player.claim_error)}</p>' if player.claim_error and 'join code' not in player.claim_error.lower() else ''}
 <p><a href="/c/{esc(comp.slug)}">Leaderboard →</a></p>
 </section>
+{f'<section class="card narrow"><h2>Team</h2>{_team_inner(comp, player, csrf, team_members or [], team_url)}</section>' if player.team_token_plain else ''}
 </div>"""
     return layout(player.display_name, body, comp=comp, admin=admin,
                   current="home", refresh=15)
@@ -1043,7 +1085,9 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                           leave_csrf: str = "",
                           player_count: Optional[int] = None,
                           services: Optional[list] = None,
-                          admin: bool = False) -> str:
+                          admin: bool = False,
+                          team_members=None,
+                          team_url: str = "") -> str:
     """The main page while a run is active: a full-width run dashboard.
 
     The old narrow card left most of the viewport empty. This layout uses the
@@ -1102,6 +1146,7 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
 </div>
 <div class="home-col">
 {_home_vm_card(comp, player, claim_url, csrf)}
+{f'<section class="card home-card"><div class="card-head"><h2>Team</h2></div>{_team_inner(comp, player, csrf, team_members or [], team_url)}</section>' if player.team_token_plain else ''}
 <section class="card home-card">
 <div class="card-head"><h2>Competition</h2>
 <a class="small" href="/c/{esc(comp.slug)}/display">Big screen →</a></div>
@@ -1360,7 +1405,8 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            warm: Optional[dict] = None,
                            pool: Optional[dict] = None,
                            public_base: str = "",
-                           predeploy_warn: str = "") -> str:
+                           predeploy_warn: str = "",
+                           team_counts: Optional[dict] = None) -> str:
     now = time.time()
     warm = warm or {"status": "idle"}
     pool = pool or {"status": "unknown"}
@@ -1429,7 +1475,11 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                             f'<div class="menu" hidden>{actions}</div></div>')
         claim_note = (f'<div class="small error">{esc(p.claim_error)}</div>'
                       if getattr(p, "claim_error", None) else "")
-        rows.append(f"""<tr><td data-th="Player"><div class="pname"><strong>{esc(p.display_name)}</strong>{player_badge(p.status)}</div>{claim_note}</td>
+        members = (team_counts or {}).get(p.player_id) or 0
+        team_note = (f'<div class="muted small">{members} teammate'
+                     f'{"s" if members != 1 else ""} listed</div>'
+                     if members else "")
+        rows.append(f"""<tr><td data-th="Player"><div class="pname"><strong>{esc(p.display_name)}</strong>{player_badge(p.status)}</div>{team_note}{claim_note}</td>
 <td class="r" data-th="Score">{score}</td>
 <td data-th="Services">{_service_dots(row.get('services'))}</td>
 <td class="num r" data-th="Check-in">{checkin}</td>

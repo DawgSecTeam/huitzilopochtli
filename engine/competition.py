@@ -28,6 +28,7 @@ from engine.store import (CompetitionRecord, JoinCodeCollision, PlayerRecord,
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _CODE_LEN = 4
 _NAME_MAX = 40
+_MEMBER_MAX = 60
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _WS_RE = re.compile(r"\s+")
 
@@ -78,6 +79,46 @@ def generate_join_code() -> str:
 def hash_join_code(server_secret: bytes, code: str) -> str:
     return hmac.new(server_secret, code.strip().upper().encode("utf-8"),
                     hashlib.sha256).hexdigest()
+
+
+# --- teams (v1.2) ---------------------------------------------------------
+
+def validate_member_handle(raw) -> Optional[str]:
+    """A teammate handle: one line, capped, empty rejected. None = invalid."""
+    cleaned = _WS_RE.sub(" ", (raw or "").strip())
+    if not cleaned or len(cleaned) > _MEMBER_MAX:
+        return None
+    return cleaned
+
+
+def generate_team_token() -> str:
+    """URL-safe shared-link secret. Unlike the typed join code this is never
+    read off a screen: it lives only in a link, so it carries full entropy."""
+    return secrets.token_urlsafe(16)
+
+
+def hash_team_token(server_secret: bytes, token: str) -> str:
+    """Domain-separated so a join-code hash can never double as a token hash."""
+    return hmac.new(server_secret, b"huitz-team:" + token.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def rotate_team_token(store: Store, player: PlayerRecord,
+                      server_secret: bytes) -> Optional[str]:
+    """Mint a fresh team link; the old one stops resolving. Returns the plain
+    token to show once (the dashboard's Team card shows the live one)."""
+    for _ in range(5):
+        token = generate_team_token()
+        try:
+            store.update_player(
+                player.player_id,
+                team_token_hash=hash_team_token(server_secret, token),
+                team_token_plain=token,
+            )
+        except JoinCodeCollision:
+            continue
+        return token
+    return None
 
 
 def _remaining_from(end: Optional[float], now: float) -> int:
@@ -642,5 +683,10 @@ def create_player_with_code(store: Store, comp: CompetitionRecord,
             continue
         if player is None:
             return None, None, "That name is already taken in this competition."
-        return player, code, None
+        # The seat also gets its shareable team link now, so a joining captain
+        # can hand teammates access before the box even finishes binding.
+        if rotate_team_token(store, player, server_secret) is None:
+            store.remove_player(player.player_id)
+            return None, None, "Could not allocate a team link; try again."
+        return store.get_player(player.player_id), code, None
     return None, None, "Could not allocate a join code; try again."

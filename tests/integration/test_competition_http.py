@@ -605,6 +605,162 @@ def test_public_join_signed_join_and_leaderboard(tmp_path):
         ws.shutdown()
 
 
+def test_team_link_and_roster_http(tmp_path):
+    """v1.2 teams over real HTTP: the seat's shareable link, rotation, roster.
+
+    The seat itself (clock, claim, board row) is the same row the join flow
+    creates; this pins only the surfaces teams add. Auto-warm is off so the
+    fake portal sees no background traffic.
+    """
+    port = _free_port()
+    workshop_port = _free_port()
+    _Workshop.server_port = workshop_port
+    _Workshop.requests = []
+    _Workshop.counter = 0
+    _Workshop.fail_claims = 0
+    _Workshop.pools = []
+    _Workshop.vms = []
+    db = tmp_path / "engine.db"
+    boxes = tmp_path / "boxes" / "http-comp-box"
+    boxes.mkdir(parents=True)
+    (boxes / "scenario.yaml").write_text(_scenario_yaml())
+    env = dict(os.environ)
+    env.update({
+        "HUITZILOPOCHTLI_DB_PATH": str(db),
+        "HUITZILOPOCHTLI_PORT": str(port),
+        "HUITZILOPOCHTLI_ADMIN_TOKEN": ADMIN,
+        "HUITZILOPOCHTLI_BIND": "127.0.0.1",
+        "HUITZILOPOCHTLI_WORKSHOP_URL": f"http://127.0.0.1:{workshop_port}",
+        "HUITZILOPOCHTLI_WORKSHOP_SECRET": "ws-secret",
+        "HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD": "portal-pw",
+        "HUITZILOPOCHTLI_PUBLIC_URL": f"http://127.0.0.1:{port}",
+        "HUITZILOPOCHTLI_BOXES_DIR": str(tmp_path / "boxes"),
+        "HUITZILOPOCHTLI_AUTOWARM": "0",
+        "PYTHONUNBUFFERED": "1",
+    })
+    ws = ThreadingHTTPServer(("127.0.0.1", workshop_port), _Workshop)
+    threading.Thread(target=ws.serve_forever, daemon=True).start()
+    proc = subprocess.Popen([sys.executable, "-m", "engine.server"], cwd=REPO_ROOT,
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            try:
+                if _http("GET", base + "/health")[0] == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        auth = {"X-HUITZILOPOCHTLI-Admin-Token": ADMIN}
+        status, body = _http("POST", base + "/admin/api/competitions", {
+            "slug": "team-http", "name": "Team HTTP", "scenario_name": "HTTPComp",
+            "scenario_version": 1, "max_players": 4, "duration_s": 3600,
+        }, auth)
+        assert status == 200, body
+        comp_id = json.loads(body)["id"]
+        status, _body = _http("POST",
+                              base + f"/admin/api/competitions/{comp_id}/start",
+                              {}, auth)
+        assert status in (200, 303)
+
+        # Ada joins (PRG: cookie on the 303). The seat's team link is minted
+        # with the reservation itself.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("POST", "/c/team-http/join",
+                     body=urllib.parse.urlencode({"name": "Ada"}),
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 303
+        cookie = (resp.getheader("Set-Cookie") or "").split(";", 1)[0]
+        assert cookie.startswith("huitz_player=")
+        conn.close()
+        player = _wait_db(db, "SELECT * FROM players WHERE display_name='Ada'",
+                          (), "team_token_plain")
+
+        # A teammate's browser (no cookie) rides the link onto the same seat.
+        status, _b, hdrs = _http_req(
+            port, "GET", f"/c/team-http/team/{player['team_token_plain']}")
+        assert status == 303 and hdrs.get("Location") == "/"
+        mate_cookie = f"huitz_player={player['player_id']}"
+        status, page = _http("GET", base + "/", headers={"Cookie": mate_cookie})
+        assert status == 200 and "Ada" in page and "/c/team-http/team/" in page
+
+        # A forged/unknown token resolves to nobody's seat.
+        status, page = _http("GET", base + "/c/team-http/team/nope-nope-nope")
+        assert status == 403 and "Team link not valid" in page
+
+        # Roster management needs the seat's CSRF, same discipline as leave.
+        conn2 = sqlite3.connect(db); conn2.row_factory = sqlite3.Row
+        stored = conn2.execute(
+            "SELECT value FROM engine_meta WHERE key='server_secret'").fetchone()
+        conn2.close()
+        from engine.claims import player_csrf
+        csrf = player_csrf(base64.b64decode(stored["value"]), player["player_id"])
+        status, _body, _h = _http_req(
+            port, "POST", "/c/team-http/team",
+            body=urllib.parse.urlencode({"csrf": "forged", "action": "add",
+                                         "handle": "Grace"}),
+            headers={"Cookie": cookie,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 403
+
+        status, _body, _h = _http_req(
+            port, "POST", "/c/team-http/team",
+            body=urllib.parse.urlencode({"csrf": csrf, "action": "add",
+                                         "handle": "Grace H."}),
+            headers={"Cookie": cookie,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+        status, page = _http("GET", base + "/", headers={"Cookie": mate_cookie})
+        assert "Grace H." in page
+        # The link a teammate already used keeps working (it is the seat's,
+        # not the browser's): re-opening resolves the same player.
+        status, _b, hdrs = _http_req(
+            port, "GET", f"/c/team-http/team/{player['team_token_plain']}")
+        assert status == 303
+
+        # Rotating invalidates every previously shared link at once.
+        status, _b, _h = _http_req(
+            port, "POST", "/c/team-http/team",
+            body=urllib.parse.urlencode({"csrf": csrf, "action": "rotate"}),
+            headers={"Cookie": cookie,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+        status, page = _http("GET",
+                             base + f"/c/team-http/team/{player['team_token_plain']}")
+        assert status == 403, "the old team link must stop resolving"
+        fresh = _wait_db(db,
+                         "SELECT * FROM players WHERE player_id = ?",
+                         (player["player_id"],), "team_token_plain")
+        assert fresh["team_token_plain"] != player["team_token_plain"]
+        status, _b, _h = _http_req(
+            port, "GET", f"/c/team-http/team/{fresh['team_token_plain']}")
+        assert status == 303
+
+        # Members drop off the roster and the card.
+        status, _b, _h = _http_req(
+            port, "POST", "/c/team-http/team",
+            body=urllib.parse.urlencode({"csrf": csrf, "action": "remove",
+                                         "handle": "Grace H."}),
+            headers={"Cookie": cookie,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+        status, page = _http("GET", base + "/", headers={"Cookie": cookie})
+        assert "Grace H." not in page
+
+        # The run itself is untouched by all of the above: the seat is still
+        # the invited slot the join created (team ops never bind, finish, or
+        # re-claim anything).
+        now_row = _wait_db(db, "SELECT * FROM players WHERE player_id = ?",
+                           (player["player_id"],), "joined_at")
+        assert now_row["status"] == "invited"
+    finally:
+        proc.terminate()
+        ws.shutdown()
+
+
 def test_leaderboard_visibility_toggle(tmp_path):
     """The dashboard can conceal the public leaderboard (and reveal it back).
 
