@@ -7,8 +7,6 @@ normalized handle, capped by the competition's max_team_members) and a link
 token, and that the seat's identity (cookie, clock, box binding) is
 untouched by any of it.
 """
-import time
-
 import pytest
 
 from engine import competition
@@ -135,6 +133,25 @@ def test_member_cap_and_helper(store, tmp_path):
     # A seat without members is never full, whatever the cap arithmetic.
     other, _ = _seat(store, comp, "Bravo")
     assert competition.team_roster_full(store, comp, other) is False
+
+
+def test_store_enforces_the_cap_atomically_with_the_insert(store):
+    """The cap rides into add_team_member itself: the count and the insert
+    share the store lock, so two concurrent joins cannot overrun it even
+    when a precheck read a smaller roster."""
+    comp = competition.create_competition(
+        store, slug="atomic-cap", name="Atomic Cap", scenario_name="TestTeam",
+        scenario_version=1, max_players=4, duration_s=3600,
+        max_team_members=2)
+    store.start_competition(comp.id)
+    comp = store.get_competition(comp.id)
+    player, _ = _seat(store, comp)
+    assert store.add_team_member(player.player_id, "anne", max_members=2)
+    assert store.add_team_member(player.player_id, "bob", max_members=2)
+    assert store.add_team_member(player.player_id, "cara",
+                                 max_members=2) is False
+    assert [h for h, _ in store.list_team_members(player.player_id)] == [
+        "anne", "bob"]
 
 
 def test_competition_member_cap_defaults_and_validation(store):

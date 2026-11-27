@@ -1584,12 +1584,21 @@ class Store:
         return None if row is None else self._player_from_row(row)
 
     def add_team_member(self, player_id: str, handle: str,
-                        now: Optional[float] = None) -> bool:
+                        now: Optional[float] = None,
+                        max_members: Optional[int] = None) -> bool:
         """Add a named member (self-serve via the team link, or by hand).
         Dedup is case-insensitive on the normalized handle; False if this
-        handle is already listed (either spelling)."""
+        handle is already listed (either spelling) or, when ``max_members``
+        is given, the roster already holds that many -- checked atomically
+        with the insert, so concurrent joins cannot overrun the cap."""
         now = time.time() if now is None else now
         with self._lock:
+            if max_members is not None:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM team_members "
+                    "WHERE player_id = ?", (player_id,)).fetchone()
+                if row["n"] >= max(1, max_members):
+                    return False
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO team_members "
                 "(player_id, handle, handle_norm, added_at) VALUES (?, ?, ?, ?)",

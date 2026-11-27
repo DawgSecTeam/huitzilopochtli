@@ -1383,11 +1383,18 @@ class Handler(BaseHTTPRequestHandler):
                        "members). Ask a teammate to free a spot or the "
                        "organizer to raise the cap.")))
             return
-        self.store.add_team_member(player.player_id, handle)
-        self.store.add_audit(
-            "player", "team_member_join", comp.id, player.player_id,
-            details_json=json.dumps({"handle": handle}),
-            remote_addr=self.client_address[0] if self.client_address else None)
+        # The cap rides into the insert (checked atomically with it), so a
+        # race that slips past the precheck above still cannot overrun it.
+        # False here is a duplicate registration (a teammate's second
+        # device) or that rare race -- either way the browser is seated;
+        # only a real roster change is worth an audit row.
+        if self.store.add_team_member(player.player_id, handle,
+                                      max_members=comp.max_team_members):
+            self.store.add_audit(
+                "player", "team_member_join", comp.id, player.player_id,
+                details_json=json.dumps({"handle": handle}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
         # Reuse the exact cookie the join path sets: one player slot per
         # browser, so the teammate's link hands them the team's run.
         self._redirect("/", extra_headers={"Set-Cookie": (
@@ -1438,16 +1445,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect(f"/c/{comp.slug}/me")
                 return
             if action == "add":
-                # Same cap the self-serve link join enforces; a full roster
-                # redirects silently like the invalid handle above -- the
-                # card's n/cap count shows why nothing was added.
-                if not competition.team_roster_full(self.store, comp, player):
-                    self.store.add_team_member(player.player_id, handle)
+                # The store enforces the cap atomically with the insert, so
+                # a full roster or a duplicate handle lands here as a no-op
+                # (silent redirect like the invalid handle above -- the
+                # card's n/cap count shows why nothing was added).
+                added = self.store.add_team_member(
+                    player.player_id, handle,
+                    max_members=comp.max_team_members)
             else:
-                self.store.remove_team_member(player.player_id, handle)
-            self.store.add_audit("player", f"team_member_{action}", comp.id,
-                                 player.player_id,
-                                 details_json=json.dumps({"handle": handle}))
+                added = self.store.remove_team_member(player.player_id, handle)
+            # Audits record what actually happened: a no-op add/remove
+            # (duplicate, full roster, unknown handle) changed nothing and
+            # leaves no row.
+            if added:
+                self.store.add_audit(
+                    "player", f"team_member_{action}", comp.id,
+                    player.player_id,
+                    details_json=json.dumps({"handle": handle}))
         self._redirect(f"/c/{comp.slug}/me")
 
     def _handle_public_leave(self, slug: str) -> None:

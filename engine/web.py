@@ -786,7 +786,7 @@ def team_join_page(comp: CompetitionRecord, player: PlayerRecord, csrf: str,
 <p class="fullnote">{esc(blocked_msg)}</p>
 <p class="actions"><a class="btn primary" href="/">Go to my run</a></p>
 </section>"""
-        return layout(f"Join {comp.name}", body, comp=comp)
+        return layout(f"Join {comp.name}", body, comp=comp, current="home")
     url = f"/c/{esc(comp.slug)}/team/{esc(player.team_token_plain or '')}"
     body = f"""<section class="hero"><h1>Join {esc(player.display_name)}</h1>
 <p class="lede">A team in {esc(comp.name)} invited you. You share their boxes,
@@ -802,7 +802,7 @@ their score and their clock — your name joins the team roster.</p></section>
 takes a competition seat, a VM or a join code. Everyone on the team shares
 one run: same boxes, same score, same clock.</p>
 </section>"""
-    return layout(f"Join {comp.name}", body, comp=comp)
+    return layout(f"Join {comp.name}", body, comp=comp, current="home")
 
 
 def _claim_retry_form(player: PlayerRecord, csrf: str,
