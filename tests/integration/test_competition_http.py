@@ -868,6 +868,7 @@ def test_team_link_and_roster_http(tmp_path):
         status, body = _http("POST", base + "/admin/api/competitions", {
             "slug": "team-http", "name": "Team HTTP", "scenario_name": "HTTPComp",
             "scenario_version": 1, "max_players": 4, "duration_s": 3600,
+            "max_team_members": 2,
         }, auth)
         assert status == 200, body
         comp_id = json.loads(body)["id"]
@@ -891,47 +892,89 @@ def test_team_link_and_roster_http(tmp_path):
         player = _wait_db(db, "SELECT * FROM players WHERE display_name='Ada'",
                           (), "team_token_plain")
 
-        # A teammate's browser (no cookie) rides the link onto the same seat.
+        # A teammate's browser (no cookie) opens the link and lands on the
+        # name form -- it is not silently seated anymore.
+        status, page = _http(
+            "GET", base + f"/c/team-http/team/{player['team_token_plain']}")
+        assert status == 200 and "Join the team" in page and 'name="name"' in page
+
+        # The POST of that form registers the name on the roster and seats
+        # the browser with the same cookie the join path sets.
+        conn2 = sqlite3.connect(db); conn2.row_factory = sqlite3.Row
+        stored = conn2.execute(
+            "SELECT value FROM engine_meta WHERE key='server_secret'").fetchone()
+        conn2.close()
+        from engine.claims import player_csrf
+        secret = base64.b64decode(stored["value"])
+        csrf = player_csrf(secret, player["player_id"])
         status, _b, hdrs = _http_req(
-            port, "GET", f"/c/team-http/team/{player['team_token_plain']}")
-        assert status == 303 and hdrs.get("Location") == "/"
-        mate_cookie = f"huitz_player={player['player_id']}"
+            port, "POST", f"/c/team-http/team/{player['team_token_plain']}",
+            body=urllib.parse.urlencode({"csrf": csrf, "name": "Grace H."}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+        mate_cookie = (hdrs.get("Set-Cookie") or "").split(";", 1)[0]
+        assert mate_cookie.startswith("huitz_player=")
         status, page = _http("GET", base + "/", headers={"Cookie": mate_cookie})
-        assert status == 200 and "Ada" in page and "/c/team-http/team/" in page
+        assert status == 200 and "Ada" in page and "Grace H." in page
+        assert "/c/team-http/team/" in page
+
+        # A returning teammate skips the prompt (already this seat)...
+        status, _b, hdrs = _http_req(
+            port, "GET", f"/c/team-http/team/{player['team_token_plain']}",
+            headers={"Cookie": mate_cookie})
+        assert status == 303 and hdrs.get("Location") == "/"
+        # ...while a fresh browser gets the form again; re-registering the
+        # same name from a second device seats it without duplicating the
+        # roster (dedup is case-insensitive on the handle).
+        status, page = _http(
+            "GET", base + f"/c/team-http/team/{player['team_token_plain']}")
+        assert status == 200 and "Join the team" in page
+        status, _b, hdrs = _http_req(
+            port, "POST", f"/c/team-http/team/{player['team_token_plain']}",
+            body=urllib.parse.urlencode({"csrf": csrf, "name": "grace h."}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
 
         # A forged/unknown token resolves to nobody's seat.
         status, page = _http("GET", base + "/c/team-http/team/nope-nope-nope")
         assert status == 403 and "Team link not valid" in page
 
         # Roster management needs the seat's CSRF, same discipline as leave.
-        conn2 = sqlite3.connect(db); conn2.row_factory = sqlite3.Row
-        stored = conn2.execute(
-            "SELECT value FROM engine_meta WHERE key='server_secret'").fetchone()
-        conn2.close()
-        from engine.claims import player_csrf
-        csrf = player_csrf(base64.b64decode(stored["value"]), player["player_id"])
+        # The competition was created with max_team_members=2: the captain
+        # fills the last spot by hand...
         status, _body, _h = _http_req(
             port, "POST", "/c/team-http/team",
             body=urllib.parse.urlencode({"csrf": "forged", "action": "add",
-                                         "handle": "Grace"}),
+                                         "handle": "Bob"}),
             headers={"Cookie": cookie,
                      "Content-Type": "application/x-www-form-urlencoded"})
         assert status == 403
-
         status, _body, _h = _http_req(
             port, "POST", "/c/team-http/team",
             body=urllib.parse.urlencode({"csrf": csrf, "action": "add",
-                                         "handle": "Grace H."}),
+                                         "handle": "Bob"}),
+            headers={"Cookie": cookie,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+
+        # ...and a third teammate is refused registration without a seat.
+        status, page, hdrs = _http_req(
+            port, "POST", f"/c/team-http/team/{player['team_token_plain']}",
+            body=urllib.parse.urlencode({"csrf": csrf, "name": "Carol"}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 200 and "roster is full" in page
+        assert hdrs.get("Set-Cookie") is None
+
+        # Removal is by normalized handle: any casing finds the member.
+        status, _body, _h = _http_req(
+            port, "POST", "/c/team-http/team",
+            body=urllib.parse.urlencode({"csrf": csrf, "action": "remove",
+                                         "handle": "grace h."}),
             headers={"Cookie": cookie,
                      "Content-Type": "application/x-www-form-urlencoded"})
         assert status == 303
         status, page = _http("GET", base + "/", headers={"Cookie": mate_cookie})
-        assert "Grace H." in page
-        # The link a teammate already used keeps working (it is the seat's,
-        # not the browser's): re-opening resolves the same player.
-        status, _b, hdrs = _http_req(
-            port, "GET", f"/c/team-http/team/{player['team_token_plain']}")
-        assert status == 303
+        assert "Grace H." not in page and "Bob" in page
 
         # Rotating invalidates every previously shared link at once.
         status, _b, _h = _http_req(
@@ -947,9 +990,10 @@ def test_team_link_and_roster_http(tmp_path):
                          "SELECT * FROM players WHERE player_id = ?",
                          (player["player_id"],), "team_token_plain")
         assert fresh["team_token_plain"] != player["team_token_plain"]
-        status, _b, _h = _http_req(
-            port, "GET", f"/c/team-http/team/{fresh['team_token_plain']}")
-        assert status == 303
+        # The fresh link lands on the name form for a cookie-less browser.
+        status, page = _http(
+            "GET", base + f"/c/team-http/team/{fresh['team_token_plain']}")
+        assert status == 200 and "Join the team" in page
 
         # Members drop off the roster and the card.
         status, _b, _h = _http_req(

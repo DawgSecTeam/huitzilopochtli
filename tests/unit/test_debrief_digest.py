@@ -39,3 +39,13 @@ def test_feedback_pool_present(tmp_path):
     d = digest_mod.build_digest(make_db(tmp_path))
     for team in d:
         assert isinstance(team["feedback_pool"], list)
+
+
+def test_members_in_team_facts(tmp_path):
+    """The named roster rides the team facts: the handles a seat registered
+    through its team link, oldest first; [] for a seat that never did."""
+    d = digest_mod.build_digest(make_db(tmp_path))
+    by_name = {t["team"]["display_name"]: t["team"]["members"] for t in d}
+    assert by_name["rosemoor-1"] == ["Grace H.", "anne d"]
+    assert by_name["rosemoor-2"] == []
+    assert by_name["harborline-1"] == []

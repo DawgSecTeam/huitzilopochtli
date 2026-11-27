@@ -772,6 +772,39 @@ a time. Provisioning your VM can take a minute.</p>
                   current="home")
 
 
+def team_join_page(comp: CompetitionRecord, player: PlayerRecord, csrf: str,
+                   error: str = "", blocked_msg: str = "") -> str:
+    """The team-link landing page: a teammate names themselves, and the POST
+    of this form registers them on the seat's roster and seats their browser.
+
+    ``blocked_msg`` renders the one-competition-at-a-time refusal instead of
+    the form (mirrors join_form_page's blocked card: a POST here could only
+    be refused, so none is offered)."""
+    if blocked_msg:
+        body = f"""<section class="hero"><h1>Join {esc(player.display_name)}</h1></section>
+<section class="card narrow">
+<p class="fullnote">{esc(blocked_msg)}</p>
+<p class="actions"><a class="btn primary" href="/">Go to my run</a></p>
+</section>"""
+        return layout(f"Join {comp.name}", body, comp=comp)
+    url = f"/c/{esc(comp.slug)}/team/{esc(player.team_token_plain or '')}"
+    body = f"""<section class="hero"><h1>Join {esc(player.display_name)}</h1>
+<p class="lede">A team in {esc(comp.name)} invited you. You share their boxes,
+their score and their clock — your name joins the team roster.</p></section>
+<section class="card narrow">
+{f'<p class="error">{esc(error)}</p>' if error else ''}
+<form method="post" action="{url}" class="stack">
+<input type="hidden" name="csrf" value="{esc(csrf)}">
+<label>Your name<input name="name" maxlength="60" required autofocus placeholder="e.g. Grace H."></label>
+<button class="btn primary" type="submit">Join the team</button>
+</form>
+<p class="muted small">This name is listed on the team roster only — it never
+takes a competition seat, a VM or a join code. Everyone on the team shares
+one run: same boxes, same score, same clock.</p>
+</section>"""
+    return layout(f"Join {comp.name}", body, comp=comp)
+
+
 def _claim_retry_form(player: PlayerRecord, csrf: str,
                       scenario: Optional[str] = None) -> str:
     scen = (f'<input type="hidden" name="scenario" '
@@ -795,9 +828,9 @@ def _post_run_phrase() -> str:
 
 def _team_inner(comp: CompetitionRecord, player: PlayerRecord, csrf: str,
                 members: list, team_url: str) -> str:
-    """The shared-seat block: copyable team link, rotate, informational
-    roster. Empty for a seat that never got a token (a slot created before
-    teams existed and never visited a page that mints one lazily).
+    """The shared-seat block: copyable team link, rotate, the named roster.
+    Empty for a seat that never got a token (a slot created before teams
+    existed and never visited a page that mints one lazily).
 
     Returns content only; the run pages wrap it in a card and the join
     success page in a step, so the block cannot drift between them.
@@ -813,16 +846,20 @@ def _team_inner(comp: CompetitionRecord, player: PlayerRecord, csrf: str,
         f'<input type="hidden" name="handle" value="{esc(handle)}">'
         f'<button class="btn ghost-sm" type="submit">Remove</button></form></li>'
         for handle, _added in members)
-    return f"""<p class="small">Anyone who opens this link lands on this run —
-the same seat, the same box, the same clock. Rotating invalidates the old
-link at once.</p>
+    cap = max(1, comp.max_team_members)
+    count = len(members)
+    return f"""<p class="small">Teammates who open this link pick a name and
+join this roster — same seat, same boxes, same clock. Rotating invalidates
+the old link at once.</p>
 <p><code>{esc(url)}</code> {_copy_btn(url, "Copy link")}</p>
 <form method="post" action="/c/{esc(comp.slug)}/team">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <input type="hidden" name="action" value="rotate">
 <button class="btn" type="submit">Rotate team link</button></form>
-<h3>Members</h3>
+<h3>Members <span class="muted small">{count}/{cap}</span></h3>
 <ul>{rows or '<li class="muted small">No teammates listed yet.</li>'}</ul>
+<p class="muted small">Add by hand (teammates can also add themselves with
+the link):</p>
 <form method="post" action="/c/{esc(comp.slug)}/team">
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <input type="hidden" name="action" value="add">
@@ -1454,7 +1491,8 @@ def admin_new_competition_page(scenarios: list, csrf: str, error: str = "") -> s
 </div>
 {unusable_block}
 <div class="form-grid form-cols">
-<label>Max players<input name="max_players" type="number" min="1" value="32"></label>
+<label>Max teams<input name="max_players" type="number" min="1" value="32" aria-describedby="help-max-players"><span class="help" id="help-max-players">Each seat is one team; teammates share it through its team link without consuming seats.</span></label>
+<label>Max members per team<input name="max_team_members" type="number" min="1" value="10" aria-describedby="help-max-members"><span class="help" id="help-max-members">Named people allowed on one team's roster.</span></label>
 <label>Run duration (minutes)<input name="duration_min" type="number" min="1" value="120"></label>
 <label>Accent color<input name="accent" type="color" value="#5f4a38"></label>
 </div>
@@ -1470,7 +1508,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            pool: Optional[dict] = None,
                            public_base: str = "",
                            predeploy_warn: str = "",
-                           team_counts: Optional[dict] = None) -> str:
+                           team_members: Optional[dict] = None) -> str:
     now = time.time()
     warm = warm or {"status": "idle"}
     pool = pool or {"status": "unknown"}
@@ -1539,10 +1577,15 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                             f'<div class="menu" hidden>{actions}</div></div>')
         claim_note = (f'<div class="small error">{esc(p.claim_error)}</div>'
                       if getattr(p, "claim_error", None) else "")
-        members = (team_counts or {}).get(p.player_id) or 0
-        team_note = (f'<div class="muted small">{members} teammate'
-                     f'{"s" if members != 1 else ""} listed</div>'
-                     if members else "")
+        # The seat's named roster: handles, not just a count, so an admin
+        # adjudicating a dispute can see who was on the team.
+        handles = [handle for handle, _added
+                   in ((team_members or {}).get(p.player_id) or [])]
+        team_note = ""
+        if handles:
+            team_note = (f'<div class="muted small">{len(handles)}/'
+                         f'{max(1, comp.max_team_members)} members: '
+                         f'{esc(", ".join(handles))}</div>')
         box_count = (board.get("competition") or {}).get("box_count", 1)
         if box_count > 1:
             got = len(row.get("boxes") or [])

@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS competitions (
     status TEXT NOT NULL DEFAULT 'draft',
     join_open INTEGER NOT NULL DEFAULT 0,
     max_players INTEGER NOT NULL,
+    -- Hard cap on the named roster per seat (a seat IS a team; teammates
+    -- self-register through its link or are added by hand). max_players
+    -- caps seats, this caps people per seat.
+    max_team_members INTEGER NOT NULL DEFAULT 10,
     duration_s INTEGER NOT NULL,
     workshop_pool_code TEXT,
     -- The portal pool name this competition provisioned ("huitz-ranked-<slug>").
@@ -143,8 +147,12 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE TABLE IF NOT EXISTS team_members (
     player_id TEXT NOT NULL,
     handle TEXT NOT NULL,
+    -- Case-folded, whitespace-collapsed handle: self-serve joins dedup on
+    -- it, so "Anne D" and "anne d" are one member (the display form kept
+    -- in handle is whichever spelling joined first).
+    handle_norm TEXT NOT NULL,
     added_at REAL NOT NULL,
-    PRIMARY KEY (player_id, handle)
+    PRIMARY KEY (player_id, handle_norm)
 );
 
 CREATE TABLE IF NOT EXISTS player_boxes (

@@ -353,6 +353,42 @@ def test_stale_form_submission_names_discard_and_recreate(tmp_path):
             proc.kill()
 
 
+def test_new_competition_form_persists_the_member_cap(tmp_path):
+    """The form's max-members-per-team field lands on the competition row:
+    it is the cap the self-serve team join reads back on every registration."""
+    proc, port = _launch(tmp_path)
+    try:
+        cookie = _admin_login(port)
+        status, page, _ = _req(port, "GET", "/admin/competitions/new",
+                               headers={"Cookie": cookie})
+        assert status == 200
+        assert 'name="max_team_members"' in page
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        status, page, _ = _req(
+            port, "POST", "/admin/competitions/new",
+            urllib.parse.urlencode({"csrf": csrf, "name": "Capped Draft",
+                                    "scenario": "OpReg|1", "max_players": "2",
+                                    "max_team_members": "4",
+                                    "duration_min": "60"}),
+            {"Cookie": cookie,
+             "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303, page[:300]
+        conn = sqlite3.connect(tmp_path / "engine.db")
+        try:
+            row = conn.execute(
+                "SELECT max_players, max_team_members FROM competitions "
+                "WHERE name = 'Capped Draft'").fetchone()
+        finally:
+            conn.close()
+        assert row == (2, 4), row
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def test_create_competition_message_names_the_real_exit(tmp_path, monkeypatch):
     """engine.competition.create_competition (the shared guard) refuses a
     non-current version with the discard/recreate exit, not a fake verb."""

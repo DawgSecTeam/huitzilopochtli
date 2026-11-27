@@ -78,6 +78,7 @@ def _fact_card(digest: dict) -> dict:
         },
         "team": {
             "display_name": team.get("display_name"),
+            "members": team.get("members") or [],
             "rank": team.get("rank"),
             "rank_total": team.get("rank_total"),
             "score_total": (team.get("score") or {}).get("total"),

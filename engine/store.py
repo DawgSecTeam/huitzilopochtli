@@ -2,6 +2,7 @@
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -11,6 +12,15 @@ from typing import Optional
 
 from common.schema import SLA_HISTORY_MAX
 from engine.store_schema import SCHEMA as _SCHEMA
+
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def normalize_name(name: str) -> str:
+    """The canonical ``*_norm`` form (display_name_norm, handle_norm):
+    whitespace collapsed, case-folded. Defined here because the store owns
+    every normalized column; engine.competition re-exports it."""
+    return _WS_RUN_RE.sub(" ", name.strip()).lower()
 
 
 def _load_sla_history(raw) -> list:
@@ -100,6 +110,9 @@ class CompetitionRecord:
     #: itself (runs still in progress stop, pool torn down); None = none set.
     scheduled_end_at: Optional[float] = None
     leaderboard_hidden: bool = False
+    #: Hard cap on the named roster per seat (teammates self-register via
+    #: the team link or are added by hand); max_players caps seats.
+    max_team_members: int = 10
 
 
 @dataclass
@@ -358,12 +371,17 @@ class Store:
 
         # --- teams (v1.2) --------------------------------------------------
         # The seat keeps one shareable access token; team_members is the
-        # informational roster. Seats, clocks, pools and scoring are
+        # seat's named roster. Seats, clocks, pools and scoring are
         # untouched: a "team" is still exactly one player slot.
         for table, columns in (
             ("players", (
                 ("team_token_hash", "TEXT"),
                 ("team_token_plain", "TEXT"),
+            )),
+            ("competitions", (
+                # Roster cap per seat; max_players caps seats, this caps
+                # people per seat.
+                ("max_team_members", "INTEGER NOT NULL DEFAULT 10"),
             )),
         ):
             cols = self._table_columns(table)
@@ -374,6 +392,34 @@ class Store:
                     self._conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
                     )
+
+        # Self-serve joins dedup on a normalized handle, so "Anne D" and
+        # "anne d" are one member. team_members is young (born on this same
+        # unreleased line, so no released database carries it): rebuild the
+        # exact-string shape in place, norms computed here, display forms
+        # kept verbatim. Fresh databases already have the new shape because
+        # _SCHEMA ran first, so this fires only on a dev database from an
+        # earlier commit of this branch.
+        tm_cols = self._table_columns("team_members")
+        if tm_cols and "handle_norm" not in tm_cols:
+            rows = self._conn.execute(
+                "SELECT player_id, handle, added_at FROM team_members"
+            ).fetchall()
+            self._conn.execute("DROP TABLE team_members")
+            self._conn.execute(
+                "CREATE TABLE team_members ("
+                "player_id TEXT NOT NULL, handle TEXT NOT NULL, "
+                "handle_norm TEXT NOT NULL, added_at REAL NOT NULL, "
+                "PRIMARY KEY (player_id, handle_norm))"
+            )
+            for row in rows:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO team_members "
+                    "(player_id, handle, handle_norm, added_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (row["player_id"], row["handle"],
+                     normalize_name(row["handle"]), row["added_at"]),
+                )
 
         # --- multi-box competitions (v1.2) ----------------------------------
         # Every existing competition/player/pool fact is ALSO a one-entry
@@ -1042,6 +1088,7 @@ class Store:
             scenario_version=row["scenario_version"],
             status=row["status"], join_open=bool(row["join_open"]),
             max_players=row["max_players"], duration_s=row["duration_s"],
+            max_team_members=row["max_team_members"],
             workshop_pool_code=row["workshop_pool_code"],
             workshop_pool_name=row["workshop_pool_name"],
             auto_end=bool(row["auto_end"]),
@@ -1101,6 +1148,7 @@ class Store:
                            join_instructions: Optional[str] = None,
                            status: str = "draft", join_open: bool = False,
                            auto_end: bool = False,
+                           max_team_members: int = 10,
                            scenarios: Optional[list] = None) -> CompetitionRecord:
         comp_id = uuid.uuid4().hex
         now = time.time()
@@ -1114,12 +1162,12 @@ class Store:
                 "INSERT INTO competitions (id, slug, name, scenario_name, "
                 "scenario_version, status, join_open, max_players, duration_s, "
                 "workshop_pool_code, auto_end, theme_json, join_instructions, "
-                "created_at, started_at, ended_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+                "max_team_members, created_at, started_at, ended_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
                 (comp_id, slug, name, lineup[0][0], lineup[0][1], status,
                  1 if join_open else 0, max_players, duration_s,
                  workshop_pool_code, 1 if auto_end else 0,
-                 theme_json, join_instructions, now),
+                 theme_json, join_instructions, max_team_members, now),
             )
             for pos, (sname, sver) in enumerate(lineup):
                 self._conn.execute(
@@ -1297,9 +1345,9 @@ class Store:
 
     def update_competition(self, comp_id: str, **fields) -> None:
         allowed = {"slug", "name", "scenario_name", "scenario_version", "status",
-                   "join_open", "max_players", "duration_s", "workshop_pool_code",
-                   "workshop_pool_name", "auto_end", "leaderboard_hidden",
-                   "scheduled_end_at",
+                   "join_open", "max_players", "max_team_members", "duration_s",
+                   "workshop_pool_code", "workshop_pool_name", "auto_end",
+                   "leaderboard_hidden", "scheduled_end_at",
                    "theme_json", "join_instructions", "started_at", "ended_at"}
         sets, vals = [], []
         for k, v in fields.items():
@@ -1537,25 +1585,29 @@ class Store:
 
     def add_team_member(self, player_id: str, handle: str,
                         now: Optional[float] = None) -> bool:
-        """Add an informational member. False if already listed."""
+        """Add a named member (self-serve via the team link, or by hand).
+        Dedup is case-insensitive on the normalized handle; False if this
+        handle is already listed (either spelling)."""
         now = time.time() if now is None else now
         with self._lock:
             cur = self._conn.execute(
-                "INSERT OR IGNORE INTO team_members (player_id, handle, added_at) "
-                "VALUES (?, ?, ?)", (player_id, handle, now))
+                "INSERT OR IGNORE INTO team_members "
+                "(player_id, handle, handle_norm, added_at) VALUES (?, ?, ?, ?)",
+                (player_id, handle, normalize_name(handle), now))
             self._commit()
         return cur.rowcount > 0
 
     def remove_team_member(self, player_id: str, handle: str) -> bool:
+        """Remove by normalized handle: any casing of the name finds it."""
         with self._lock:
             cur = self._conn.execute(
-                "DELETE FROM team_members WHERE player_id = ? AND handle = ?",
-                (player_id, handle))
+                "DELETE FROM team_members WHERE player_id = ? AND handle_norm = ?",
+                (player_id, normalize_name(handle)))
             self._commit()
         return cur.rowcount > 0
 
     def list_team_members(self, player_id: str) -> list:
-        """[(handle, added_at)] oldest first -- the seat's informational roster."""
+        """[(handle, added_at)] oldest first -- the seat's named roster."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT handle, added_at FROM team_members "
@@ -1574,6 +1626,22 @@ class Store:
                 (comp_id,),
             ).fetchall()
         return {r["player_id"]: r["n"] for r in rows}
+
+    def team_members_by_competition(self, comp_id: str) -> dict:
+        """player_id -> [(handle, added_at)] for every seat in one
+        competition, oldest first -- the admin roster's member lines."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tm.player_id, tm.handle, tm.added_at "
+                "FROM team_members tm "
+                "JOIN players p ON p.player_id = tm.player_id "
+                "WHERE p.competition_id = ? ORDER BY tm.added_at ASC",
+                (comp_id,),
+            ).fetchall()
+        out: dict = {}
+        for r in rows:
+            out.setdefault(r["player_id"], []).append((r["handle"], r["added_at"]))
+        return out
 
     def update_player(self, player_id: str, **fields) -> None:
         allowed = {"status", "join_code_hash", "join_code_plain",

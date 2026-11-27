@@ -1,9 +1,11 @@
-"""v1.2 teams: a player seat is a team with a shareable link + roster.
+"""v1.2 teams: a player seat is a team with a shareable link + named roster.
 
 The engine never learned a "team" entity on purpose -- a seat is one clock,
-one box, one slot. These tests pin that a *team* is exactly the seat plus an
-informational roster and a link token, and that the seat's identity (cookie,
-clock, box binding) is untouched by any of it.
+one box, one slot. These tests pin that a *team* is exactly the seat plus a
+named roster (members self-register through the link, deduped on the
+normalized handle, capped by the competition's max_team_members) and a link
+token, and that the seat's identity (cookie, clock, box binding) is
+untouched by any of it.
 """
 import time
 
@@ -92,15 +94,23 @@ def test_two_teams_have_distinct_links(store, comp):
 def test_roster_membership_adds_removes_and_counts(store, comp):
     player, _ = _seat(store, comp)
     assert store.add_team_member(player.player_id, "anne") is True
-    # handle is unique per seat -- re-adding the same one is a no-op.
+    # handle is unique per seat, case-insensitively (self-serve joins must
+    # not turn one person into two members via casing) -- re-adding the
+    # same one in any spelling is a no-op.
     assert store.add_team_member(player.player_id, "anne") is False
+    assert store.add_team_member(player.player_id, "ANNE") is False
     store.add_team_member(player.player_id, "bob")
     handles = [h for h, _ in store.list_team_members(player.player_id)]
     assert handles == ["anne", "bob"]
     assert store.count_team_members(comp.id) == {player.player_id: 2}
+    assert {pid: [h for h, _ in members] for pid, members in
+            store.team_members_by_competition(comp.id).items()} == {
+        player.player_id: ["anne", "bob"]}
     assert store.remove_team_member(player.player_id, "anne") is True
+    # Removal is by normalized handle: any casing finds the member.
+    assert store.remove_team_member(player.player_id, "BOB") is True
     assert store.remove_team_member(player.player_id, "nobody") is False
-    assert [h for h, _ in store.list_team_members(player.player_id)] == ["bob"]
+    assert [h for h, _ in store.list_team_members(player.player_id)] == []
 
 
 def test_member_handle_validation():
@@ -108,6 +118,36 @@ def test_member_handle_validation():
     assert competition.validate_member_handle("   ") is None
     assert competition.validate_member_handle("") is None
     assert competition.validate_member_handle("x" * 61) is None
+
+
+def test_member_cap_and_helper(store, tmp_path):
+    comp = competition.create_competition(
+        store, slug="capped", name="Capped", scenario_name="TestTeam",
+        scenario_version=1, max_players=4, duration_s=3600,
+        max_team_members=2)
+    store.start_competition(comp.id)
+    comp = store.get_competition(comp.id)
+    player, _ = _seat(store, comp)
+    assert competition.team_roster_full(store, comp, player) is False
+    store.add_team_member(player.player_id, "anne")
+    store.add_team_member(player.player_id, "bob")
+    assert competition.team_roster_full(store, comp, player) is True
+    # A seat without members is never full, whatever the cap arithmetic.
+    other, _ = _seat(store, comp, "Bravo")
+    assert competition.team_roster_full(store, comp, other) is False
+
+
+def test_competition_member_cap_defaults_and_validation(store):
+    # The default cap needs no argument and lands on the record.
+    comp = competition.create_competition(
+        store, slug="default-cap", name="D", scenario_name="TestTeam",
+        scenario_version=1, max_players=2, duration_s=3600)
+    assert comp.max_team_members == 10
+    with pytest.raises(ValueError):
+        competition.create_competition(
+            store, slug="bad-cap", name="B", scenario_name="TestTeam",
+            scenario_version=1, max_players=2, duration_s=3600,
+            max_team_members=0)
 
 
 def test_team_does_not_touch_the_seat_lifecycle(store, comp):

@@ -22,7 +22,7 @@ from common.schema import SCHEMA_VERSION
 from engine import scenario as scenario_mod
 from engine import verify_gate
 from engine.store import (CompetitionRecord, JoinCodeCollision, PlayerRecord,
-                          Store)
+                          Store, normalize_name)
 
 # Unambiguous alphabet (no 0/O/1/I/L) for codes that get typed off a screen.
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -47,10 +47,6 @@ def is_active_player(player: Optional[PlayerRecord],
     return (player is not None and comp is not None
             and comp.status == "live"
             and player.status in ACTIVE_PLAYER_STATUSES)
-
-
-def normalize_name(name: str) -> str:
-    return _WS_RE.sub(" ", name.strip()).lower()
 
 
 def validate_display_name(name) -> Optional[str]:
@@ -89,6 +85,14 @@ def validate_member_handle(raw) -> Optional[str]:
     if not cleaned or len(cleaned) > _MEMBER_MAX:
         return None
     return cleaned
+
+
+def team_roster_full(store: Store, comp: CompetitionRecord,
+                     player: PlayerRecord) -> bool:
+    """True when the seat's named roster has hit the competition's
+    max_team_members cap (self-serve joins and hand adds share it)."""
+    cap = max(1, comp.max_team_members)
+    return len(store.list_team_members(player.player_id)) >= cap
 
 
 def generate_team_token() -> str:
@@ -732,6 +736,7 @@ def create_competition(store: Store, *, slug: str, name: str,
                        theme_json: Optional[str] = None,
                        join_instructions: Optional[str] = None,
                        auto_end: bool = False,
+                       max_team_members: int = 10,
                        scenarios: Optional[list] = None):
     err = validate_slug(slug)
     if err:
@@ -740,6 +745,9 @@ def create_competition(store: Store, *, slug: str, name: str,
         raise ValueError("Competition name is required.")
     if not isinstance(max_players, int) or isinstance(max_players, bool) or max_players < 1:
         raise ValueError("max_players must be a positive integer.")
+    if (not isinstance(max_team_members, int) or isinstance(max_team_members, bool)
+            or max_team_members < 1):
+        raise ValueError("max_team_members must be a positive integer.")
     if not isinstance(duration_s, int) or isinstance(duration_s, bool) or duration_s < 60:
         raise ValueError("duration_s must be at least 60 seconds.")
     if store.get_competition_by_slug(slug) is not None:
@@ -780,7 +788,7 @@ def create_competition(store: Store, *, slug: str, name: str,
         scenario_version=lineup[0][1], max_players=max_players,
         duration_s=duration_s, workshop_pool_code=workshop_pool_code,
         theme_json=theme_json, join_instructions=join_instructions,
-        auto_end=auto_end, scenarios=lineup,
+        auto_end=auto_end, max_team_members=max_team_members, scenarios=lineup,
     )
 
 
