@@ -105,10 +105,11 @@ stale version of any entry is refused.
 
 Fields: **name** (slug derived; the API also takes an explicit one — that is
 `/c/<slug>`), **scenario** (or a **scenarios** lineup), **max players** (hard
-cap), **run duration** (each seat's clock starts at its first box bind; no
-pause), **accent**. There is **no pool field**: the first claim provisions a
-private dispenser pool from the scenario's `pool:` block (§3.1) — one pool
-**per lineup entry** in a multi-box competition.
+cap; each seat is one team, so this caps teams), **max members per team**
+(the named roster cap per seat), **run duration** (each seat's clock starts
+at its first box bind; no pause), **accent**. There is **no pool field**: the
+first claim provisions a private dispenser pool from the scenario's `pool:`
+block (§3.1) — one pool **per lineup entry** in a multi-box competition.
 
 **Start** moves `draft → live` and opens joins; **Close joins** stops new
 players without ending runs; **End** freezes every run and the board. A draft
@@ -484,11 +485,18 @@ per-competition link.
 The link stays valid for the life of the claim: reopening it always mints a
 new session; if the VM is gone, the portal says so and links back.
 
-**A seat is a team.** The run page carries a team link (and a named-member
-roster the seat owner manages: add, remove, rotate the link). A teammate who
-opens the link is seated in that slot — same box, same score, same clock —
-without consuming a display name or a join code. Rotating mints a fresh
-token; the old link stops seating.
+**A seat is a team.** The run page carries a team link, and the seat's named
+roster the members manage themselves: add, remove, rotate the link. A
+teammate who opens the link is asked for the name they compete under —
+submitting it lists them on the roster and seats their browser in that slot
+(same box, same score, same clock) without consuming a display name or a
+join code. Handles dedup case-insensitively, re-registering from a second
+device is a no-op, and the roster caps at the competition's **max members
+per team**. Everyone seated shares the seat's abilities, including rotating
+the link and leaving; rotating mints a fresh token, and the old link stops
+seating at once. A browser already seated on a different team (here or in
+another competition) is refused, exactly as the join page refuses it — a
+team link never silently swaps which seat a browser holds.
 
 **Multi-box competitions.** Steps 1–2 happen once per seat; the claim-and-
 bind flow of steps 3–5 then happens **per lineup entry**, tracked by entry
