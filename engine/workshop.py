@@ -118,7 +118,8 @@ def find_pool_by_name(pools: list, name: str) -> Optional[dict]:
 
 
 def provision_pool(base_url: str, admin_password: str, slug: str, spec: dict,
-                   timeout: float = 20.0) -> dict:
+                   timeout: float = 20.0,
+                   pool_name: Optional[str] = None) -> dict:
     """POST /api/admin/provision: a dedicated pool for one competition.
 
     ``spec`` is the scenario's validated ``pool`` block; field names pass
@@ -127,8 +128,13 @@ def provision_pool(base_url: str, admin_password: str, slug: str, spec: dict,
     reply carries only the job id — the code is captured by re-listing pools
     by name right after. Claims work immediately either way: the pool is a
     dispenser and clones on demand.
+
+    ``pool_name`` overrides the derived ``huitz-ranked-<slug>`` name; only a
+    multi-scenario competition's per-lineup-entry pools do (each entry needs a
+    distinct portal object), and every caller predating that keeps the exact
+    legacy name.
     """
-    name = competition_pool_name(slug)
+    name = pool_name or competition_pool_name(slug)
     missing = [key for key in ("template_vm_id", "template_vm_access_method",
                                "template_vm_username", "template_vm_password")
                if spec.get(key) in (None, "")]

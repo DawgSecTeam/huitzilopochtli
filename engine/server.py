@@ -391,6 +391,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed = parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
         return {k: v[0] for k, v in parsed.items()}
 
+    def _read_form_lists(self) -> dict:
+        """Like _read_form but keeps repeated keys as lists -- the multi-
+        select scenario picker needs the whole lineup, not just entry 0."""
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length < 0 or length > self._MAX_BODY_BYTES:
+            raise ValueError("bad Content-Length")
+        raw = self.rfile.read(length) if length else b""
+        from urllib.parse import parse_qs
+        return parse_qs(raw.decode("utf-8", "replace"),
+                        keep_blank_values=True)
+
     def _admin_actor(self):
         """Return (ok, actor, session, via_header)."""
         token = self.headers.get("X-HUITZILOPOCHTLI-Admin-Token")
@@ -520,6 +531,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- routing -------------------------------------------------------
 
+    def do_DELETE(self):
+        # No route speaks DELETE; answer JSON like every other API error
+        # instead of http.server's default HTML 501 (operator clients that
+        # script against the admin API should not have to parse two error
+        # dialects).
+        self._send_json(405, {"error": "method not allowed; use POST"})
+
     def do_GET(self):
         parts = urlsplit(self.path)
         path = parts.path
@@ -613,14 +631,18 @@ class Handler(BaseHTTPRequestHandler):
                     row = next((r for r in data["leaderboard"]
                                 if r["player_id"] == player.player_id), None)
                 services = (row.get("services") if row else None) or \
-                    competition.service_rows(self.store, current, player.box_id)
+                    competition.service_rows(self.store, current,
+                                             player.box_id, player=player)
                 player_csrf = claims.player_csrf(self.server_secret,
                                                  player.player_id)
                 self._send_html(200, web.home_competition_page(
                     current, player, row, data["leaderboard"], player.claim_url,
                     csrf=player_csrf, leave_csrf=player_csrf,
                     player_count=data["competition"]["player_count"],
-                    services=services, admin=self._admin_actor()[0]))
+                    services=services, admin=self._admin_actor()[0],
+                    boxes=competition.seat_boxes_view(self.store, current,
+                                                     player),
+                    **self._team_context(current, player)))
                 return
             admin_view = self._admin_actor()[0]
             comps = self.store.list_competitions()
@@ -688,15 +710,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "competition not found"})
                 return
             board = competition.leaderboard_payload(self.store, comp)
+            # Named members per seat (the team rosters); appended as the last
+            # column so existing column positions are stable for consumers.
+            members_by_seat = self.store.team_members_by_competition(comp.id)
+            # One row per ACTIVE seat, not per board row: the board lists a
+            # seat only once a box is bound, and an operator exporting a
+            # roster mid-join would otherwise file away an empty sheet while
+            # seats wait for their VMs. Boxless seats carry blank rank/score
+            # columns and their own status.
+            board_rows = {r["player_id"]: r for r in board["leaderboard"]}
             rows = [["rank", "player", "status", "total", "hardening",
                      "forensics", "services",
-                     "started_at", "ends_at", "last_checkin"]]
-            for r in board["leaderboard"]:
-                rows.append([r["rank"], _csv_cell(r["name"]), r["status"],
-                             r["total"], r["hardening_points"],
-                             r["forensics_points"],
-                             r["service_points"], _csv_time(r["started_at"]),
-                             _csv_time(r["ends_at"]), _csv_time(r["last_checkin"])])
+                     "started_at", "ends_at", "last_checkin", "members"]]
+            for p in self.store.list_players(comp.id):
+                if p.status == "removed":
+                    continue
+                r = board_rows.get(p.player_id)
+                members = "; ".join(handle for handle, _added in
+                                    members_by_seat.get(p.player_id, []))
+                rows.append([
+                    r["rank"] if r else "",
+                    _csv_cell(r["name"] if r else p.display_name),
+                    r["status"] if r else p.status,
+                    r["total"] if r else 0,
+                    r["hardening_points"] if r else 0,
+                    r["forensics_points"] if r else 0,
+                    r["service_points"] if r else 0,
+                    _csv_time(r["started_at"] if r else p.started_at),
+                    _csv_time(r["ends_at"] if r else p.ends_at),
+                    _csv_time(r["last_checkin"] if r else None),
+                    _csv_cell(members)])
             self._send_csv(f"{comp.slug}-results.csv", rows)
             return
         if path.startswith("/admin/api/competitions/"):
@@ -816,7 +859,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(200, web.join_success_page(
                 comp, player, join_code=player.join_code_plain or "",
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
-                admin=is_admin))
+                admin=is_admin,
+                boxes=competition.seat_boxes_view(self.store, comp, player),
+                **self._team_context(comp, player)))
             return
         if rest[1] == "join":
             player, current = self._current_player()
@@ -868,7 +913,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(200, web.player_page(
                 comp, player, row, player.claim_url,
                 csrf=claims.player_csrf(self.server_secret, player.player_id),
-                admin=is_admin, join_code=player.join_code_plain or ""))
+                admin=is_admin, join_code=player.join_code_plain or "",
+                boxes=competition.seat_boxes_view(self.store, comp, player),
+                **self._team_context(comp, player)))
+            return
+        if rest[1] == "team" and len(rest) >= 3:
+            # Shared team link: /c/<slug>/team/<token>
+            self._handle_public_team(rest[0], rest[2])
             return
         self._send_html(404, web.error_page(404, "Not found",
                                             "The page you requested does not exist.",
@@ -907,6 +958,11 @@ class Handler(BaseHTTPRequestHandler):
         comp = self.store.get_competition(player.competition_id)
         back = (f"{self._public_base()}/c/{comp.slug}/join/success" if comp else "")
         player = claims.poll(self.store, player)
+        # Multi-box seat: a page poll also advances every still-pending
+        # secondary ticket so the boxes panel updates without a sweep tick.
+        for s in self.store.list_run_slots(player_id):
+            if s.claim_ticket and not s.box_id and not s.claim_url:
+                claims.poll(self.store, player, slot=s)
         claims.rotate_code_if_needed(self.store, player, self.server_secret,
                                      back_url=back)
         player = self.store.get_player(player_id)
@@ -917,6 +973,10 @@ class Handler(BaseHTTPRequestHandler):
             "competition_slug": comp.slug if comp else None,
         }
         payload.update(claims.describe(player))
+        if comp is not None:
+            boxes = competition.seat_boxes_view(self.store, comp, player)
+            if boxes:
+                payload["boxes"] = boxes
         self._send_json(200, payload)
 
     def _handle_public_reclaim(self, player_id: str) -> None:
@@ -935,11 +995,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         comp = self.store.get_competition(player.competition_id)
         back = f"{self._public_base()}/c/{comp.slug}/join/success" if comp else ""
-        result = claims.reclaim(self.store, comp, player, back_url=back)
+        # A lineup page labels each box's "Get a new VM" with its scenario;
+        # no scenario means the legacy seat-wide reclaim (single box).
+        slot = None
+        wanted = str(form.get("scenario", "") or "")
+        if wanted and comp is not None:
+            slot = self.store.get_run_slot(player_id, wanted)
+            if slot is None:
+                self._send_json(400, {"error": "unknown lineup entry"})
+                return
+        result = claims.reclaim(self.store, comp, player, back_url=back,
+                                slot=slot)
         self.store.add_audit(
             "player", "claim_reclaim", comp.id if comp else None, player_id,
             details_json=json.dumps({"ok": bool(result.get("ok")),
-                                     "error": result.get("error")}),
+                                     "error": result.get("error"),
+                                     **({"scenario": wanted} if wanted else {})}),
             remote_addr=self.client_address[0] if self.client_address else None)
         if "application/json" in (self.headers.get("Accept") or ""):
             self._send_json(200 if result.get("ok") else 502, result)
@@ -1030,10 +1101,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         board = competition.leaderboard_payload(self.store, comp)
         players = self.store.list_players(comp.id)
-        pool = claims.live_pool_status(comp)
+        pool = claims.live_pool_status(comp, self.store)
         self._send_html(200, web.admin_competition_page(
             comp, board, players, session.csrf_token, msg, error,
             warm=claims.warm_status(comp.id),
+            team_members=self.store.team_members_by_competition(comp.id),
+            lineup=[name for name, _version in
+                    (self.store.get_competition_scenarios(comp.id) or
+                     [(comp.scenario_name, comp.scenario_version)])],
             pool=pool,
             # Reuse the snapshot the card already renders, so the warning and
             # the count never disagree and the page costs one portal GET.
@@ -1058,8 +1133,19 @@ class Handler(BaseHTTPRequestHandler):
         username = str(form.get("username", ""))
         password = str(form.get("password", ""))
         if not auth.check_credentials(username, password):
+            # A failed operator login is exactly what the audit log exists
+            # for; it never names the password.
+            self.store.add_audit(
+                "admin", "admin_login_failed", None, None,
+                details_json=json.dumps({"username": username[:60]}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
             self._render_login_page("Invalid username or password.")
             return
+        self.store.add_audit(
+            "admin", "admin_login", None, None,
+            remote_addr=self.client_address[0]
+            if self.client_address else None)
         token, _csrf = auth.new_session(self.store, username)
         secure = os.environ.get("HUITZILOPOCHTLI_PUBLIC_URL", "").startswith("https")
         # Single-use: the pre-session token dies with the successful login.
@@ -1152,7 +1238,7 @@ class Handler(BaseHTTPRequestHandler):
         # and polls for the VM link; the claim sweeper picks the claim up if
         # this process dies before the thread gets to it.
         threading.Thread(
-            target=claims.start,
+            target=claims.start_seat,
             args=(self.store, comp, player),
             kwargs={"back_url":
                     f"{self._public_base()}/c/{comp.slug}/join/success"},
@@ -1212,6 +1298,223 @@ class Handler(BaseHTTPRequestHandler):
             f"huitz_player={other.player_id}; Path=/; HttpOnly; "
             f"SameSite=Lax; Max-Age=86400")})
 
+    def _team_context(self, comp, player) -> dict:
+        """Team kwargs for the player run pages. A pre-teams seat is lazily
+        given its link token on first dashboard view so the card is never
+        blank-and-there-fore-confusing; brand-new joins already minted one."""
+        if not player.team_token_plain:
+            competition.rotate_team_token(self.store, player,
+                                          self.server_secret)
+            player = self.store.get_player(player.player_id)
+        url = (f"{self._public_base()}/c/{comp.slug}/team/"
+               f"{player.team_token_plain}") if player.team_token_plain else ""
+        return {"team_members": self.store.list_team_members(player.player_id),
+                "team_url": url}
+
+    def _resolve_team_token(self, slug: str, token: str):
+        """(comp, player) for a link. comp is None only when the competition
+        itself is unknown; a bad/stale token gives comp with player None."""
+        comp = self.store.get_competition_by_slug(slug)
+        if comp is None:
+            return None, None
+        if not token:
+            return comp, None
+        player = self.store.get_player_by_team_token(
+            competition.hash_team_token(self.server_secret, token))
+        if player is None or player.competition_id != comp.id:
+            return comp, None
+        return comp, player
+
+    def _handle_public_team(self, slug: str, token: Optional[str]) -> None:
+        """GET /c/<slug>/team/<token>: the team landing page.
+
+        A teammate names themselves and the form's POST registers them on
+        the seat's roster and seats their browser. A browser already seated
+        here skips the prompt (the captain reopening their own link, or a
+        teammate who joined before); a browser seated elsewhere is refused,
+        exactly as the join page refuses it -- the link never silently
+        swaps which seat a browser holds."""
+        comp, player = self._resolve_team_token(slug, token or "")
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        if player is None:
+            self._send_html(403, web.error_page(
+                403, "Team link not valid",
+                "That team link was rotated or belongs to another "
+                "competition. Ask a teammate for the current link.",
+                f"/c/{comp.slug}"))
+            return
+        self.store.add_audit(
+            "player", "team_link_open", comp.id, player.player_id,
+            remote_addr=self.client_address[0] if self.client_address else None)
+        seated, seated_comp = self._current_player()
+        if competition.is_active_player(seated, seated_comp):
+            if seated_comp.id == comp.id:
+                if seated.player_id == player.player_id:
+                    # Already this seat: straight to the run, no prompt.
+                    self._redirect("/")
+                    return
+                self._send_html(409, web.team_join_page(
+                    comp, player, "",
+                    blocked_msg=(f"You're already seated on another team in "
+                                 f"{comp.name}. Finish (or leave) that run "
+                                 "before joining this one.")))
+            else:
+                self._send_html(409, web.team_join_page(
+                    comp, player, "",
+                    blocked_msg=(f"You're already in {seated_comp.name}. A "
+                                 "player can compete in only one competition "
+                                 "at a time.")))
+            return
+        self._send_html(200, web.team_join_page(
+            comp, player,
+            claims.player_csrf(self.server_secret, player.player_id)))
+
+    def _handle_team_join(self, slug: str, token: Optional[str]) -> None:
+        """POST /c/<slug>/team/<token>: the landing page's name form.
+
+        The link is the credential (128-bit, HMAC-hashed server-side); the
+        CSRF token is derived from the seat it resolves to, so the page this
+        link serves is the only thing that can post here. Registering seats
+        the browser with the exact cookie the join path sets -- every member
+        shares the one seat (one clock, one score); the roster names them."""
+        comp, player = self._resolve_team_token(slug, token or "")
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        if player is None:
+            self._send_html(403, web.error_page(
+                403, "Team link not valid",
+                "That team link was rotated or belongs to another "
+                "competition. Ask a teammate for the current link.",
+                f"/c/{comp.slug}"))
+            return
+        try:
+            form = self._read_form()
+        except Exception:
+            form = {}
+        csrf = claims.player_csrf(self.server_secret, player.player_id)
+        if not claims.check_csrf(self.server_secret, player.player_id,
+                                 form.get("csrf")):
+            self._send_html(403, web.error_page(
+                403, "Invalid CSRF token",
+                "Go back, reload the page, and try again.", "/"))
+            return
+        handle = competition.validate_member_handle(str(form.get("name", "")))
+        if handle is None:
+            self._send_html(400, web.team_join_page(
+                comp, player, csrf,
+                error="Enter the name you compete under (up to 60 "
+                      "characters; spaces are fine)."))
+            return
+        if competition.team_roster_full(self.store, comp, player):
+            self._send_html(200, web.team_join_page(
+                comp, player, csrf,
+                error=(f"This team's roster is full ({comp.max_team_members} "
+                       "members). Ask a teammate to free a spot or the "
+                       "organizer to raise the cap.")))
+            return
+        # The cap rides into the insert (checked atomically with it), so a
+        # race that slips past the precheck above still cannot overrun it.
+        # False means either a duplicate registration (a teammate's second
+        # device -- still seat them) or the lost side of a last-slot race
+        # (the roster filled between the precheck and this insert). The
+        # race loser must get the full-roster page, not a seat: a browser
+        # seated without a roster row could never be listed (the dashboard
+        # add form no-ops at the cap), so "your name joins the roster"
+        # would be a broken promise.
+        if self.store.add_team_member(player.player_id, handle,
+                                      max_members=comp.max_team_members):
+            self.store.add_audit(
+                "player", "team_member_join", comp.id, player.player_id,
+                details_json=json.dumps({"handle": handle}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
+        elif competition.team_roster_full(self.store, comp, player):
+            self._send_html(200, web.team_join_page(
+                comp, player, csrf,
+                error=(f"This team's roster is full ({comp.max_team_members} "
+                       "members). Ask a teammate to free a spot or the "
+                       "organizer to raise the cap.")))
+            return
+        # Reuse the exact cookie the join path sets: one player slot per
+        # browser, so the teammate's link hands them the team's run.
+        self._redirect("/", extra_headers={"Set-Cookie": (
+            f"huitz_player={player.player_id}; Path=/; HttpOnly; "
+            f"SameSite=Lax; Max-Age=86400")})
+
+    def _handle_team_manage(self, slug: str) -> None:
+        """POST /c/<slug>/team: rotate link / add or remove a member.
+
+        CSRF-guarded, player-cookie-authenticated (the seat owner acts on its
+        own team; a teammate sharing the link inherits the same owner cookie
+        once they open the run, so any member can manage the roster)."""
+        comp = self.store.get_competition_by_slug(slug)
+        if comp is None:
+            self._send_html(404, web.error_page(
+                404, "Competition not found",
+                "No competition lives at this address.", "/"))
+            return
+        player, current = self._current_player()
+        if player is None or current is None or current.id != comp.id:
+            self._redirect("/")
+            return
+        try:
+            form = self._read_form()
+        except Exception:
+            form = {}
+        if not claims.check_csrf(self.server_secret, player.player_id,
+                                 form.get("csrf")):
+            self._send_html(403, web.error_page(
+                403, "Invalid CSRF token",
+                "Go back, reload the page, and try again.",
+                f"/c/{comp.slug}/me"))
+            return
+        action = form.get("action")
+        if action == "rotate":
+            if competition.rotate_team_token(self.store, player,
+                                             self.server_secret) is None:
+                self._send_html(500, web.error_page(
+                    500, "Could not rotate the link", "Try again.",
+                    f"/c/{comp.slug}/me"))
+                return
+            self.store.add_audit("player", "team_link_rotate", comp.id,
+                                 player.player_id,
+                                 remote_addr=self.client_address[0]
+                                 if self.client_address else None)
+        elif action in ("add", "remove"):
+            handle = competition.validate_member_handle(
+                str(form.get("handle", "")))
+            if handle is None:
+                self._redirect(f"/c/{comp.slug}/me")
+                return
+            if action == "add":
+                # The store enforces the cap atomically with the insert, so
+                # a full roster or a duplicate handle lands here as a no-op
+                # (silent redirect like the invalid handle above -- the
+                # card's n/cap count shows why nothing was added).
+                added = self.store.add_team_member(
+                    player.player_id, handle,
+                    max_members=comp.max_team_members)
+            else:
+                added = self.store.remove_team_member(player.player_id, handle)
+            # Audits record what actually happened: a no-op add/remove
+            # (duplicate, full roster, unknown handle) changed nothing and
+            # leaves no row.
+            if added:
+                self.store.add_audit(
+                    "player", f"team_member_{action}", comp.id,
+                    player.player_id,
+                    details_json=json.dumps({"handle": handle}),
+                    remote_addr=self.client_address[0]
+                    if self.client_address else None)
+        self._redirect(f"/c/{comp.slug}/me")
+
     def _handle_public_leave(self, slug: str) -> None:
         """Player withdraws: release the VM, drop the slot, clear the cookie.
 
@@ -1247,12 +1550,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         released = False
         base, _secret = claims.config()
-        if base and player.claim_uid:
-            try:
-                workshop.release_vm(base, player.claim_uid)
-                released = True
-            except workshop.WorkshopError:
-                pass  # the portal reaper will collect it; leaving still works
+        uids = {s.claim_uid for s in self.store.list_run_slots(
+            player.player_id) if s.claim_uid}
+        if player.claim_uid:
+            uids.add(player.claim_uid)
+        if base and uids:
+            for uid in sorted(uids):
+                try:
+                    workshop.release_vm(base, uid)
+                    released = True
+                except workshop.WorkshopError:
+                    pass  # the portal reaper will collect it; leaving works
         had_box = bool(player.box_id)
         self.store.remove_player(player.player_id)
         self.store.update_player(
@@ -1268,10 +1576,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_admin_new_competition(self, session) -> None:
         try:
-            form = self._read_form()
+            raw_form = self._read_form_lists()
         except Exception:
             self._render_admin_new_competition(session, "Malformed form.")
             return
+        form = {k: v[0] for k, v in raw_form.items()}
         if not self._check_csrf(session, form):
             self._send_html(403, web.error_page(
                 403, "Invalid CSRF token",
@@ -1280,52 +1589,75 @@ class Handler(BaseHTTPRequestHandler):
         name = str(form.get("name", "")).strip()
         try:
             max_players = int(form.get("max_players", "32"))
+            max_team_members = int(form.get("max_team_members", "10"))
             duration_min = int(form.get("duration_min", "120"))
         except ValueError:
-            self._render_admin_new_competition(session, "Players and duration must be numbers.")
+            self._render_admin_new_competition(
+                session, "Players, members and duration must be numbers.")
             return
-        scenario = str(form.get("scenario", ""))
-        scenario_name, _, version = scenario.rpartition("|")
-        try:
-            scenario_version = int(version)
-        except ValueError:
-            self._render_admin_new_competition(session, "Pick a scenario from the list.")
+        # The picker is a multi-select lineup (v1.2). One value -- the shape
+        # every pre-v1.2 form and script posts -- is a one-entry lineup, so
+        # nothing downstream can tell the difference for a single box.
+        scen_vals = [str(v) for v in raw_form.get("scenario", [])]
+        lineup, seen_names = [], set()
+        for val in scen_vals:
+            s_name, _, s_ver = val.rpartition("|")
+            try:
+                s_version = int(s_ver)
+            except ValueError:
+                self._render_admin_new_competition(
+                    session, "Pick a scenario from the list.")
+                return
+            if not s_name or s_name in seen_names:
+                self._render_admin_new_competition(
+                    session, "Pick at least one scenario (each only once).")
+                return
+            seen_names.add(s_name)
+            lineup.append((s_name, s_version))
+        if not lineup:
+            self._render_admin_new_competition(
+                session, "Pick a scenario from the list.")
             return
         # The picker only ever offers the box folder's current versions, so a
         # mismatch here is a stale form (or a hand-rolled POST): refuse it --
         # competitions are migrated to new versions, never run back-compatible.
+        # Enforced per lineup entry.
         sync_errors = scenario_mod.sync_box_scenarios(self.store)
         if sync_errors:
             self._render_admin_new_competition(
                 session, "Scenario folder: " + "; ".join(sync_errors[:3]))
             return
-        current = scenario_mod.current_box_scenario(scenario_name)
-        if current is not None and scenario_version != current[0]:
-            self._render_admin_new_competition(
-                session,
-                f"Scenario {scenario_name} v{scenario_version} is not current "
-                f"(engine has v{current[0]}); versions are not migrated in "
-                f"place -- discard this submission and recreate the "
-                f"competition from the current scenario with "
-                f"'New competition' on the admin console (/admin).")
-            return
-        if self.store.get_scenario(scenario_name, scenario_version) is None:
-            err = (f"Scenario {scenario_name} v{scenario_version} is not on the "
-                   f"engine; the engine's box folder has no such scenario.")
-            self._render_admin_new_competition(session, err)
-            return
+        for s_name, s_version in lineup:
+            current = scenario_mod.current_box_scenario(s_name)
+            if current is not None and s_version != current[0]:
+                self._render_admin_new_competition(
+                    session,
+                    f"Scenario {s_name} v{s_version} is not current "
+                    f"(engine has v{current[0]}); versions are not migrated in "
+                    f"place -- discard this submission and recreate the "
+                    f"competition from the current scenario with "
+                    f"'New competition' on the admin console (/admin).")
+                return
+            if self.store.get_scenario(s_name, s_version) is None:
+                self._render_admin_new_competition(
+                    session,
+                    f"Scenario {s_name} v{s_version} is not on the "
+                    "engine; the engine's box folder has no such scenario.")
+                return
         # Derive the slug from the name. No pool is chosen here: a dedicated
-        # pool is provisioned per competition at first claim (claims.ensure_pool).
+        # pool is provisioned per competition-scenario at first claim
+        # (claims.ensure_pool).
         slug = competition.derive_slug(
             name, {c.slug for c in self.store.list_competitions()})
         try:
             theme = json.dumps({"accent": web.sanitize_accent(form.get("accent") or "#5f4a38")})
             comp = competition.create_competition(
                 self.store, slug=slug, name=name,
-                scenario_name=scenario_name, scenario_version=scenario_version,
+                scenario_name=lineup[0][0], scenario_version=lineup[0][1],
                 max_players=max_players, duration_s=max(60, duration_min * 60),
                 theme_json=theme, join_instructions=None,
-                auto_end=form.get("auto_end") in ("1", "on", "true"))
+                auto_end=form.get("auto_end") in ("1", "on", "true"),
+                max_team_members=max_team_members, scenarios=lineup)
         except (ValueError, TypeError) as exc:
             self._render_admin_new_competition(session, str(exc))
             return
@@ -1519,11 +1851,17 @@ class Handler(BaseHTTPRequestHandler):
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
             taken = {c.slug for c in self.store.list_competitions()}
+            # The rerun inherits the WHOLE settings set: the full lineup
+            # (a multi-box competition reruns as multi-box, not collapsed
+            # to entry 0) and the per-team member cap. Each entry's version
+            # currency is re-validated by create_competition.
+            lineup = self.store.get_competition_scenarios(comp.id) or \
+                [(comp.scenario_name, comp.scenario_version)]
             try:
                 new = competition.create_competition(
                     self.store, slug=competition.derive_slug(comp.name, taken),
-                    name=comp.name, scenario_name=comp.scenario_name,
-                    scenario_version=comp.scenario_version,
+                    name=comp.name, scenario_name=lineup[0][0],
+                    scenario_version=lineup[0][1],
                     max_players=comp.max_players, duration_s=comp.duration_s,
                     # A rerun is a new competition: it provisions its own pool.
                     # Inheriting the old pin could hand out last event's clones
@@ -1534,7 +1872,9 @@ class Handler(BaseHTTPRequestHandler):
                     workshop_pool_code=None,
                     theme_json=comp.theme_json,
                     join_instructions=comp.join_instructions,
-                    auto_end=comp.auto_end)
+                    auto_end=comp.auto_end,
+                    max_team_members=comp.max_team_members,
+                    scenarios=lineup)
             except (ValueError, TypeError) as exc:
                 if session is None:
                     self._send_json(400, {"error": str(exc)})
@@ -1608,7 +1948,9 @@ class Handler(BaseHTTPRequestHandler):
             claimed = 0
             for p in self.store.list_players(comp.id):
                 if p.status == "invited" and not p.box_id and not p.claim_url:
-                    if claims.start(self.store, comp, p, back_url=back).get("ok"):
+                    if any(r.get("ok") for r in
+                           claims.start_seat(self.store, comp, p,
+                                             back_url=back)):
                         claimed += 1
             self.store.add_audit(actor, "competition_pool", comp.id,
                                  details_json=json.dumps(
@@ -1883,13 +2225,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         released = False
         if action == "disqualify":
+            # §7.1: DQ keeps the box and the clock -- there is nothing to
+            # keep on a seat that never bound one, and reinstating such a
+            # seat used to fabricate a "running" status with a NULL clock.
+            # The roster already hides the button for these; the server
+            # refuses them too, and Remove is the verb that frees a seat.
+            if not player.box_id:
+                self._send_json(409, {"error": "disqualify needs a run to "
+                                               "keep -- this seat has no box "
+                                               "yet; remove it instead"})
+                return
             self.store.set_player_status(player.player_id, "disqualified")
         elif action == "reinstate":
             if player.status != "disqualified":
                 self._send_json(409, {"error": "only a disqualified player "
                                                "can be reinstated"})
                 return
-            self.store.set_player_status(player.player_id, "running")
+            # Restore the status the seat actually had before the DQ -- a
+            # blind "running" once resurrected a never-ran seat as Running
+            # with a NULL clock (and Extend then honestly moved 0 runs).
+            if player.finished_at is not None:
+                prior = "finished"
+            elif player.box_id and player.started_at is not None:
+                prior = "running"
+            else:
+                prior = "invited"
+            self.store.set_player_status(player.player_id, prior)
         elif action == "remove":
             self.store.remove_player(player.player_id)
         elif action == "release_box":
@@ -2041,45 +2402,113 @@ class Handler(BaseHTTPRequestHandler):
                         {c.slug for c in self.store.list_competitions()})
                 scenario_name = str(body.get("scenario_name", ""))
                 scenario_mod.sync_box_scenarios(self.store)
-                raw_version = body.get("scenario_version")
-                current = scenario_mod.current_box_scenario(scenario_name)
-                if raw_version is None:
-                    # Omitted version means "the box folder's current one".
-                    if current is None:
+                # v1.2: an explicit ``scenarios`` array ([{name, version?}] or
+                # ["name|version"]) is the lineup; create_competition applies
+                # the folder-currentness rule per entry. Without it, the
+                # legacy single-scenario parsing below runs verbatim.
+                raw_scenarios = body.get("scenarios")
+                lineup = None
+                if isinstance(raw_scenarios, list) and raw_scenarios:
+                    lineup = []
+                    for entry in raw_scenarios:
+                        if isinstance(entry, dict):
+                            e_name = str(entry.get("name", ""))
+                            e_ver = entry.get("version")
+                        else:
+                            e_name, _, v = str(entry).rpartition("|")
+                            e_ver = int(v) if v.strip().isdigit() else None
+                        if not e_name:
+                            raise ValueError("scenario entries need a name")
+                        if e_ver is None:
+                            cur = scenario_mod.current_box_scenario(e_name)
+                            if cur is None:
+                                raise ValueError(
+                                    f"scenario {e_name!r} is not in the box "
+                                    "folder; pass its version explicitly")
+                            e_ver = cur[0]
+                        lineup.append((e_name, int(e_ver)))
+                    scenario_name = lineup[0][0]
+                    scenario_version = lineup[0][1]
+                    if any(self.store.get_scenario(n, v) is None
+                           for n, v in lineup):
                         raise ValueError(
-                            f"scenario {scenario_name!r} is not in the engine's "
-                            f"box folder; pass scenario_version explicitly")
-                    scenario_version = current[0]
+                            "a lineup scenario is not on the engine; sync the "
+                            "box folder or upload the record")
                 else:
-                    scenario_version = int(raw_version)
-                    if current is not None and scenario_version != current[0]:
+                    raw_version = body.get("scenario_version")
+                    current = scenario_mod.current_box_scenario(scenario_name)
+                    if raw_version is None:
+                        # Omitted version means "the box folder's current one".
+                        if current is None:
+                            raise ValueError(
+                                f"scenario {scenario_name!r} is not in the engine's "
+                                f"box folder; pass scenario_version explicitly")
+                        scenario_version = current[0]
+                    else:
+                        scenario_version = int(raw_version)
+                        if current is not None and scenario_version != current[0]:
+                            raise ValueError(
+                                f"Scenario {scenario_name} v{scenario_version} is not "
+                                f"current (engine has v{current[0]}). There is no migrate "
+                                f"step: discard this competition and create it again from the "
+                                f"current scenario (New competition on the admin console at /admin).")
+                    if self.store.get_scenario(scenario_name, scenario_version) is None:
                         raise ValueError(
-                            f"Scenario {scenario_name} v{scenario_version} is not "
-                            f"current (engine has v{current[0]}). There is no migrate "
-                            f"step: discard this competition and create it again from the "
-
-                            f"current scenario (New competition on the admin console at /admin).")
-                if self.store.get_scenario(scenario_name, scenario_version) is None:
-                    raise ValueError(
-                        f"Scenario {scenario_name} v{scenario_version} is not on "
-                        f"the engine; the engine's box folder has no such "
-                        f"scenario.")
+                            f"Scenario {scenario_name} v{scenario_version} is not on "
+                            f"the engine; the engine's box folder has no such "
+                            f"scenario.")
                 # Pools are provisioned per competition at claim time
                 # (claims.ensure_pool); no caller-chosen pool is accepted.
+                # An optional ``scenarios`` array ([{name, version}]) makes the
+                # competition multi-box; absent it is the single-scenario path
+                # exactly as before. create_competition re-checks every entry.
+                raw_scenarios = body.get("scenarios")
+                lineup = None
+                if isinstance(raw_scenarios, list) and raw_scenarios:
+                    lineup = []
+                    for entry in raw_scenarios:
+                        if isinstance(entry, dict):
+                            e_name = str(entry.get("name", ""))
+                            e_ver = entry.get("version")
+                        else:
+                            e_name = str(entry)
+                            e_ver = None
+                        if not e_name:
+                            raise ValueError("scenario entries need a name")
+                        if e_ver is None:
+                            cur = scenario_mod.current_box_scenario(e_name)
+                            if cur is None:
+                                raise ValueError(
+                                    f"scenario {e_name!r} is not in the box "
+                                    "folder; pass its version explicitly")
+                            e_ver = cur[0]
+                        lineup.append((e_name, int(e_ver)))
                 comp = competition.create_competition(
                     self.store, slug=slug,
                     name=body.get("name", ""),
-                    scenario_name=scenario_name,
-                    scenario_version=scenario_version,
+                    scenario_name=(lineup[0][0] if lineup else scenario_name),
+                    scenario_version=(lineup[0][1] if lineup
+                                      else scenario_version),
                     max_players=int(body.get("max_players", 32)),
                     duration_s=int(body.get("duration_s", 7200)),
                     theme_json=theme,
                     join_instructions=body.get("join_instructions"),
+                    max_team_members=int(body.get("max_team_members", 10)),
+                    scenarios=lineup,
                 )
             except (ValueError, TypeError, KeyError) as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
-            self.store.add_audit(actor, "competition_create", comp.id)
+            self.store.add_audit(
+                actor, "competition_create", comp.id,
+                details_json=json.dumps({
+                    "slug": comp.slug, "name": comp.name,
+                    "scenario_name": comp.scenario_name,
+                    "scenario_version": comp.scenario_version,
+                    "max_players": comp.max_players,
+                    "max_team_members": comp.max_team_members}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
             self._send_json(200, competition.public_competition_payload(
                 self.store, comp))
             return
@@ -2126,6 +2555,17 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/c/") and path.endswith("/leave"):
             slug = path[len("/c/"):].strip("/").split("/")[0]
             self._handle_public_leave(slug)
+            return
+        if path.startswith("/c/") and "/team/" in path:
+            # Self-serve team join: the link's own POST (the name form).
+            rest = path[len("/c/"):].strip("/").split("/")
+            if len(rest) == 3:
+                self._handle_team_join(rest[0], rest[2])
+                return
+        if (path.startswith("/c/") and path.endswith("/team")
+                and not path.endswith("/team/")):
+            slug = path[len("/c/"):].strip("/").split("/")[0]
+            self._handle_team_manage(slug)
             return
         self._send_json(404, {"error": "not found"})
 

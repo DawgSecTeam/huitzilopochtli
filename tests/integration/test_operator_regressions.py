@@ -139,6 +139,26 @@ def _api_players(port, auth, comp_id):
     return json.loads(body)
 
 
+def _bind_box(db_path, player_id):
+    """Stamp a bound box + live clock onto a seat (the state `huitz join`
+    writes): §7.1's disqualify/reinstate verbs speak to a seat that HAS a
+    run to keep, so the DQ tests must first put it in that state."""
+    conn = sqlite3.connect(db_path)
+    box_id = f"box-{player_id[:8]}"
+    conn.execute(
+        "INSERT INTO boxes (box_id, public_key, scenario_name, "
+        "scenario_version, enrolled_at, last_seq, competition_id, player_id) "
+        "VALUES (?, 'k', 'OpReg', 1, ?, 0, "
+        "(SELECT competition_id FROM players WHERE player_id = ?), ?)",
+        (box_id, time.time(), player_id, player_id))
+    conn.execute(
+        "UPDATE players SET box_id = ?, status = 'running', started_at = ?, "
+        "ends_at = ? WHERE player_id = ?",
+        (box_id, time.time(), time.time() + 3600, player_id))
+    conn.commit()
+    conn.close()
+
+
 # --- defect 1 (§7.1 directive): DQ keeps seat+box; Remove frees them ------
 
 
@@ -161,6 +181,11 @@ def test_disqualified_player_keeps_the_seat_until_removed(tmp_path):
         data = _api_players(port, auth, comp_id)
         assert data["competition"]["player_count"] == 2
         ada = next(p for p in data["players"] if p["name"] == "Ada")
+
+        # §7.1 governs a seat with a box and a clock: give Ada her run
+        # before the DQ (a boxless seat is refused -- the UI never offers
+        # the verb for one, and reinstating it used to fabricate a run).
+        _bind_box(tmp_path / "engine.db", ada["player_id"])
 
         status, body, _ = _req(port, "POST",
                                f"/admin/players/{ada['player_id']}/disqualify",
@@ -286,6 +311,8 @@ def test_remove_a_disqualified_player_from_the_roster(tmp_path):
         assert _join(port, "Ada")[0] == 303
         data = _api_players(port, auth, comp_id)
         ada = next(p for p in data["players"] if p["name"] == "Ada")
+        # DQ is a box-keeping verb: give Ada her run first.
+        _bind_box(tmp_path / "engine.db", ada["player_id"])
         assert _req(port, "POST",
                     f"/admin/players/{ada['player_id']}/disqualify",
                     {}, auth)[0] == 200
@@ -345,6 +372,42 @@ def test_stale_form_submission_names_discard_and_recreate(tmp_path):
             "recreate the competition" in page, (
             "the refusal must name the real exit: discard and recreate from "
             "the current scenario on the admin console")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def test_new_competition_form_persists_the_member_cap(tmp_path):
+    """The form's max-members-per-team field lands on the competition row:
+    it is the cap the self-serve team join reads back on every registration."""
+    proc, port = _launch(tmp_path)
+    try:
+        cookie = _admin_login(port)
+        status, page, _ = _req(port, "GET", "/admin/competitions/new",
+                               headers={"Cookie": cookie})
+        assert status == 200
+        assert 'name="max_team_members"' in page
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        status, page, _ = _req(
+            port, "POST", "/admin/competitions/new",
+            urllib.parse.urlencode({"csrf": csrf, "name": "Capped Draft",
+                                    "scenario": "OpReg|1", "max_players": "2",
+                                    "max_team_members": "4",
+                                    "duration_min": "60"}),
+            {"Cookie": cookie,
+             "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303, page[:300]
+        conn = sqlite3.connect(tmp_path / "engine.db")
+        try:
+            row = conn.execute(
+                "SELECT max_players, max_team_members FROM competitions "
+                "WHERE name = 'Capped Draft'").fetchone()
+        finally:
+            conn.close()
+        assert row == (2, 4), row
     finally:
         proc.terminate()
         try:

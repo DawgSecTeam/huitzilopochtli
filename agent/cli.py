@@ -452,7 +452,8 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
             # the fact players need most.
             lines.append("  " + sty.color(
                 f"run ends {_fmt_clock(run_ends_at)} UTC"
-                f"  ·  hard stop {_fmt_clock(run_ends_at - 300)} UTC",
+                f"  ·  agent stops collecting {_fmt_clock(run_ends_at - 300)}"
+                f" UTC",
                 "muted"))
     lines.append("")
 
@@ -1463,9 +1464,14 @@ def cmd_join(argv: list, outstream, instream) -> int:
     ends = result.get("run_ends_at")
     if ends:
         print(f"run ends at {_fmt_clock(ends)} UTC "
-              f"(hard stop {_fmt_clock(ends - 300)} UTC)", file=outstream)
-    print("the ranked agent is starting; use `huitz watch` to follow along.",
-          file=outstream)
+              f"(the agent stops collecting "
+              f"{_fmt_clock(ends - 300)} UTC)", file=outstream)
+    if "--no-start" in opts:
+        print("the agent was not started (--no-start); run it to begin "
+              "check-ins.", file=outstream)
+    else:
+        print("the ranked agent is starting; use `huitz watch` to follow "
+              "along.", file=outstream)
     return _EXIT_OK
 
 

@@ -51,8 +51,9 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
   (`packaging/huitz-join-win.pyw`, which imports the same `agent/join.py`;
   there is no `huitz` command and no PATH shim there). Do not add an
   honor→ranked shortcut.
-- **Each ranked competition provisions its own workshop pool.** The pool is
-  cloned from the ranked template named in the scenario record's `pool:` block
+- **Each ranked competition provisions its own workshop pool** — one pool per
+  scenario lineup entry in a multi-box competition. Each pool is cloned from
+  the ranked template named in that scenario record's `pool:` block
   (`RANKED_COMPETITION.md` §3.1); the engine never picks among the portal's
   pre-existing pools, so a ranked competition can never hand out an honor box.
   Teardown destroys **only this competition's clones** — exact pool code, or the
@@ -60,9 +61,11 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
   never a slug prefix (`demo` must never destroy `demo-2`). **Any number of
   competitions may be live at once**; per-competition state (pool, clock, board,
   locks) must never be globalized.
-- **Competition run clocks are per-player** (start at join, fixed duration, no
-  pause) and all scoring timestamps remain engine receipt time. Self-reported
-  service checks are explicitly not independent uptime verification. The only
+- **Competition run clocks are per-player** (one team clock per seat, started
+  at the seat's first box bind — at its join for a single-box competition —
+  fixed duration, no pause) and all scoring timestamps remain engine receipt
+  time. Self-reported service checks are explicitly not independent uptime
+  verification. The only
   clock mutation is an explicit admin overtime extension (RANKED_COMPETITION.md
   §2); it still moves the stored receipt-clock deadline, never a box clock.
 

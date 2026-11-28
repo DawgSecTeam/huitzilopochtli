@@ -148,6 +148,23 @@ def test_disqualify_keeps_the_box_and_remove_releases_it(tmp_path):
         assert player["claim_uid"]
         pid = player["player_id"]
 
+        # §7.1 speaks to a seat with a box and a clock: stamp the bind (the
+        # state `huitz join` writes) before exercising the admin verbs --
+        # disqualify is refused for a seat that never bound one, and
+        # reinstating such a seat used to fabricate a running status.
+        bconn = sqlite3.connect(db)
+        bconn.execute(
+            "INSERT INTO boxes (box_id, public_key, scenario_name, "
+            "scenario_version, enrolled_at, last_seq, competition_id, "
+            "player_id) VALUES (?, 'k', 'HTTPComp', 1, ?, 0, ?, ?)",
+            (f"box-{pid[:8]}", time.time(), comp_id, pid))
+        bconn.execute(
+            "UPDATE players SET box_id = ?, status = 'running', "
+            "started_at = ?, ends_at = ? WHERE player_id = ?",
+            (f"box-{pid[:8]}", time.time(), time.time() + 3600, pid))
+        bconn.commit()
+        bconn.close()
+
         releases_before = sum(1 for r in _Workshop.requests
                               if r[0] == "/api/release")
 

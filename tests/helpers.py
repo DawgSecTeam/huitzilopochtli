@@ -67,6 +67,14 @@ def make_db(tmp_path: Path) -> Path:
         " VALUES ('b0cfa10c-2', 'kill-web', 'kill_service', 1700000300,"
         " '{\"service\": \"huitz-demo-web\"}', 'svc_web', 1700000400)"
     )
+    # One team registered a named roster through its team link; the other
+    # two seats never did (their debriefs list no members).
+    conn.executemany(
+        "INSERT INTO team_members (player_id, handle, handle_norm, added_at)"
+        " VALUES ('1', ?, ?, ?)",
+        (("Grace H.", "grace h.", 1700000100.0),
+         ("anne d", "anne d", 1700000200.0)),
+    )
     conn.commit()
     conn.close()
     return db_path

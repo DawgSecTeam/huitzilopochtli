@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS competitions (
     status TEXT NOT NULL DEFAULT 'draft',
     join_open INTEGER NOT NULL DEFAULT 0,
     max_players INTEGER NOT NULL,
+    -- Hard cap on the named roster per seat (a seat IS a team; teammates
+    -- self-register through its link or are added by hand). max_players
+    -- caps seats, this caps people per seat.
+    max_team_members INTEGER NOT NULL DEFAULT 10,
     duration_s INTEGER NOT NULL,
     workshop_pool_code TEXT,
     -- The portal pool name this competition provisioned ("huitz-ranked-<slug>").
@@ -133,7 +137,22 @@ CREATE TABLE IF NOT EXISTS players (
     -- When this run's VM was released (post-run access window expired or an
     -- admin release). NULL while the box is still out.
     box_released_at REAL,
+    -- v1.2 teams: long-lived per-seat link token so any member's browser can
+    -- reach the run (the one-time join code binds the box, not the people).
+    team_token_hash TEXT,
+    team_token_plain TEXT,
     UNIQUE (competition_id, display_name_norm)
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    player_id TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    -- Case-folded, whitespace-collapsed handle: self-serve joins dedup on
+    -- it, so "Anne D" and "anne d" are one member (the display form kept
+    -- in handle is whichever spelling joined first).
+    handle_norm TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    PRIMARY KEY (player_id, handle_norm)
 );
 
 CREATE TABLE IF NOT EXISTS player_boxes (
@@ -143,6 +162,61 @@ CREATE TABLE IF NOT EXISTS player_boxes (
     unbound_at REAL,
     reason TEXT,
     PRIMARY KEY (player_id, box_id)
+);
+
+-- Multi-box competitions (v1.2). All three tables are additive: a
+-- single-scenario competition has exactly one row in each, equal to the
+-- mirror columns it also keeps (competitions.scenario_name/_version,
+-- players.box_id/claim_*, competitions.workshop_pool_*), so every pre-v1.2
+-- reader sees precisely what it saw before.
+--
+-- The lineup: which scenarios a competition hands out, position-ordered.
+-- Entry 0 is the "primary" scenario whose mirrors the legacy columns carry.
+CREATE TABLE IF NOT EXISTS competition_scenarios (
+    competition_id TEXT NOT NULL,
+    scenario_name TEXT NOT NULL,
+    scenario_version INTEGER NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (competition_id, scenario_name)
+);
+
+-- Per (seat, lineup entry) bind + claim state; the box's own rubric stays
+-- keyed by its enrolled scenario (the boxes table), so nothing here scores.
+-- status mirrors the players vocabulary; the clock stays on players (one
+-- team clock governs every box of the seat).
+CREATE TABLE IF NOT EXISTS run_slots (
+    slot_id TEXT PRIMARY KEY,
+    player_id TEXT NOT NULL,
+    competition_id TEXT NOT NULL,
+    scenario_name TEXT NOT NULL,
+    scenario_version INTEGER NOT NULL DEFAULT 1,
+    box_id TEXT,
+    status TEXT NOT NULL DEFAULT 'invited',
+    bound_at REAL,
+    box_released_at REAL,
+    claim_url TEXT,
+    claim_uid TEXT,
+    claim_ticket TEXT,
+    claim_expires_at REAL,
+    claim_error TEXT,
+    claim_attempts INTEGER NOT NULL DEFAULT 0,
+    claim_last_attempt_at REAL,
+    claim_last_poll_at REAL,
+    UNIQUE (player_id, scenario_name)
+);
+CREATE INDEX IF NOT EXISTS idx_run_slots_box ON run_slots(box_id);
+CREATE INDEX IF NOT EXISTS idx_run_slots_comp ON run_slots(competition_id);
+
+-- Per-scenario pool pins. The pool NAME keeps the exact full stored string
+-- as its teardown anchor (one pool per competition-scenario; the legacy
+-- huitz-ranked-<slug> name is unchanged whenever there is only one entry).
+CREATE TABLE IF NOT EXISTS competition_pools (
+    competition_id TEXT NOT NULL,
+    scenario_name TEXT NOT NULL,
+    pool_code TEXT,
+    pool_name TEXT,
+    pinned_at REAL,
+    PRIMARY KEY (competition_id, scenario_name)
 );
 
 CREATE TABLE IF NOT EXISTS admin_sessions (

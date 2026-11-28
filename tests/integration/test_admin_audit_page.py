@@ -139,7 +139,11 @@ def test_admin_audit_page_gates_filters_and_shows_logged_actions(tmp_path):
         assert status == 200 and 'href="/admin/audit"' in dash
         status, page, _ = _req(port, "GET", "/admin/audit",
                                headers={"Cookie": cookie})
-        assert status == 200 and len(_tbody_rows(page)) == 2
+        # The session's own login is audited now (a failed operator login
+        # is exactly what the audit log exists for): 2 creates + 1 login.
+        rows = _tbody_rows(page)
+        assert status == 200 and len(rows) == 3
+        assert "admin_login" in rows[0]
 
         # Competition filter (slug and id both address one competition).
         comps = json.loads(_req(port, "GET", "/admin/api/competitions",
@@ -161,11 +165,12 @@ def test_admin_audit_page_gates_filters_and_shows_logged_actions(tmp_path):
         assert "No matching audit entries." in page and "no-such" in page
         assert "Audit Alpha" not in page.split("<tbody>")[1]
 
-        # limit: the newest row only.
+        # limit: the newest row only -- the session's own login (audited
+        # above), not the competition creates.
         status, page, _ = _req(port, "GET", "/admin/audit?limit=1", headers=auth)
         assert status == 200
         rows = _tbody_rows(page)
-        assert len(rows) == 1 and "Audit Beta" in rows[0]
+        assert len(rows) == 1 and "admin_login" in rows[0]
     finally:
         if proc.poll() is None:
             proc.terminate()

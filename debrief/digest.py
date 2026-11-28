@@ -280,6 +280,21 @@ def build_digest(db_path: Path,
         conn.close()
 
 
+def _member_names(conn, player_id: Optional[str]) -> list[str]:
+    """The seat's named roster (team_members), oldest first. Empty when the
+    seat has none or the store predates the table -- the debrief reads
+    stores of any vintage, read-only."""
+    if not player_id:
+        return []
+    cols = {r["name"] for r in conn.execute(
+        "SELECT name FROM pragma_table_info('team_members')")}
+    if "handle" not in cols:
+        return []
+    return [r["handle"] for r in conn.execute(
+        "SELECT handle FROM team_members WHERE player_id = ?"
+        " ORDER BY added_at ASC", (player_id,))]
+
+
 def _team_facts(conn, player: dict, comp: dict,
                 maxes_cache: Optional[dict] = None) -> dict:
     """One team's debrief facts, from the store's own records."""
@@ -303,6 +318,7 @@ def _team_facts(conn, player: dict, comp: dict,
         "team": {
             "display_name": player.get("display_name"),
             "status": player.get("status"),
+            "members": _member_names(conn, player.get("player_id")),
             "run_minutes": run_span["minutes"],
             "checkin_count": run_span["checkins"],
             "ungraded_count": score.get("ungraded_count", 0),

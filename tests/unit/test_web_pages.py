@@ -304,6 +304,27 @@ def test_removed_player_is_not_on_the_admin_roster():
     assert "1 of 32 joined" in page
 
 
+def test_admin_roster_shows_the_named_members():
+    """The seat's roster renders as handles with the cap (not a bare count):
+    an admin adjudicating a dispute can see who was on the team."""
+    page = web.admin_competition_page(
+        _comp(), _payload(), [_player()], "csrf",
+        team_members={"p1": [("Grace H.", 1.0), ("anne d", 2.0)]})
+    assert "2/10 members: Grace H., anne d" in page
+    # A seat with nobody listed (or no map passed) carries no member line.
+    plain = web.admin_competition_page(_comp(), _payload(), [_player()], "csrf")
+    assert "members:" not in plain
+
+
+def test_new_competition_form_has_the_member_cap():
+    """The form grows the per-team member cap beside the seat cap, and the
+    seat cap says what it actually caps (teams, not people)."""
+    page = web.admin_new_competition_page([], "csrf")
+    assert 'name="max_players"' in page and "Max teams" in page
+    assert 'name="max_team_members"' in page and "Max members per team" in page
+    assert 'value="10"' in page
+
+
 def test_admin_pages_write_out_the_status_word():
     # Operator view: the dot AND the word (dashboard column + page title).
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
@@ -1196,7 +1217,11 @@ def test_destructive_forms_use_data_confirm_and_one_modal():
     assert "\\'" not in page
     home = web.home_competition_page(_comp(), _player(), None, [], None,
                                      csrf="c", leave_csrf="c")
-    assert 'data-confirm="Leave this competition? This cannot be undone."' in home
+    # The leave confirm names the team casualties: a seat is a team, so a
+    # member's leave forfeits everyone listed on the roster.
+    assert ('data-confirm="Leave this competition? The whole team (every '
+            'listed member) is removed with the seat. This cannot be '
+            'undone."') in home
     # One shared modal in the external JS drives every [data-confirm] form.
     assert "getAttribute('data-confirm')" in web.JS
     assert "modal-back" in web.JS and ".modal{" in web.CSS

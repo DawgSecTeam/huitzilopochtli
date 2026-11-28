@@ -557,6 +557,13 @@ def _seed_csv_players(eng: Engine, comp: dict):
                 (box_id, comp["scenario_name"], total, last_checkin,
                  last_checkin, total, 0, "{}"))
             expected[name] = (started_at, ends_at, last_checkin)
+        # One seat also has a named roster (the export's members column);
+        # the other seats stay anonymous so both shapes are pinned.
+        conn.executemany(
+            "INSERT INTO team_members (player_id, handle, handle_norm, "
+            "added_at) VALUES (?, ?, ?, ?)",
+            [(real_joins[0][1], "Grace H.", "grace h.", started_base),
+             (real_joins[0][1], "anne d", "anne d", started_base + 1)])
         conn.commit()
     finally:
         conn.close()
@@ -584,10 +591,12 @@ def test_csv_export_header_has_one_row_per_ranked_player_and_shared_ranks(
     rows = _csv_export(eng, comp)
 
     # The export reports forensics separately from hardening/services (the
-    # scores row carries its own forensics_points column).
+    # scores row carries its own forensics_points column), and the named
+    # team members ride as the final column (semicolon-joined handles;
+    # appended, so every pre-members column position is unchanged).
     assert rows[0] == [
         "rank", "player", "status", "total", "hardening", "forensics",
-        "services", "started_at", "ends_at", "last_checkin",
+        "services", "started_at", "ends_at", "last_checkin", "members",
     ], rows[0]
     assert len(rows) - 1 == len(CSV_NAMES), (
         f"expected one row per ranked player, got {len(rows) - 1}: {rows!r}")
@@ -604,6 +613,10 @@ def test_csv_export_header_has_one_row_per_ranked_player_and_shared_ranks(
     # columns each carry their own value (forensics defaults to 0).
     assert first[4] == second[4] == "10"
     assert first[5] == second[5] == "0"
+    # The named roster rides as the final column: semicolon-joined handles
+    # for the seat that registered them, empty for the seats that did not.
+    assert first[-1] == "Grace H.; anne d"
+    assert second[-1] == ""
 
 
 def test_csv_export_timestamps_are_iso_8601_local_not_epoch_floats(

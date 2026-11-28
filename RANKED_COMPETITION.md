@@ -97,11 +97,19 @@ curl -sS -X POST "$HUITZILOPOCHTLI_ENGINE_URL/admin/api/competitions" \
 `scenario_version` may be omitted — it defaults to the box folder's current
 version for that scenario; an explicit older version is refused.
 
+A **multi-box competition** takes a lineup instead: `"scenarios":
+[{"name": "…", "version": N}, …]` in the API, or the scenario multi-select
+in the form. The boxes-only rule applies **per entry**: every scenario must
+be current on the engine, and creating, starting, or rerunning against a
+stale version of any entry is refused.
+
 Fields: **name** (slug derived; the API also takes an explicit one — that is
-`/c/<slug>`), **scenario**, **max players** (hard cap), **run duration** (each
-clock starts at join; no pause), **accent**. There is **no pool field**:
-the first claim provisions a private dispenser pool from the scenario's
-`pool:` block (§3.1).
+`/c/<slug>`), **scenario** (or a **scenarios** lineup), **max players** (hard
+cap; each seat is one team, so this caps teams), **max members per team**
+(the named roster cap per seat), **run duration** (each seat's clock starts
+at its first box bind; no pause), **accent**. There is **no pool field**: the
+first claim provisions a private dispenser pool from the scenario's `pool:`
+block (§3.1) — one pool **per lineup entry** in a multi-box competition.
 
 **Start** moves `draft → live` and opens joins; **Close joins** stops new
 players without ending runs; **End** freezes every run and the board. A draft
@@ -281,8 +289,10 @@ python3 -m boxbuilder lint --all    # plant/check cross-check, every box
 
 Each competition provisions **its own private pool** at the first claim,
 cloned from the ranked template named in the scenario record's `pool:` block.
-The engine never selects among the portal's pre-existing pools, so a ranked
-competition can never be handed an honor-mode box. Fields mirror the portal's
+In a multi-box competition the block is read **per lineup entry** and every
+entry provisions (and on End, destroys) its own pool. The engine never
+selects among the portal's pre-existing pools, so a ranked competition can
+never be handed an honor-mode box. Fields mirror the portal's
 `POST /api/admin/provision` 1:1; deployment values are `${...}` placeholders
 expanded at ranked-build time:
 
@@ -343,15 +353,18 @@ A `pool:` block on an honor scenario is a validation error. What the engine
 does with it:
 
 - On the first claim (or a sweeper retry) it has the portal provision a private
-  dispenser pool named `huitz-ranked-<competition-slug>` from that template,
-  pins the code (audit `competition_pool`, `source: "provisioned"`), and
-  claims from it. Provisioning is asynchronous portal-side; claims work
-  immediately because the dispenser clones on demand.
+  dispenser pool named `huitz-ranked-<competition-slug>` from that template
+  (per lineup entry in a multi-box competition:
+  `huitz-ranked-<competition-slug>-<scenario-slug>`, so the competition's
+  pools are pairwise distinct and each teardown stays anchored on its own
+  full name), pins the code (audit `competition_pool`,
+  `source: "provisioned"`), and claims from it. Provisioning is asynchronous
+  portal-side; claims work immediately because the dispenser clones on demand.
 - A same-name pool from an earlier attempt or restart is reused, but only if it
   clones the same template; a mismatch is refused loudly.
 - **Ending a competition** (admin End or the next sweep) releases its VMs and
-  deletes its pool. Pools this engine did not provision are left alone; only
-  the pin is cleared.
+  deletes its pool(s). Pools this engine did not provision are left alone;
+  only the pin is cleared.
 - The only admin operation is read-only visibility plus **clearing** a pinned
   pool (`POST /admin/api/competitions/<id>/pool` with an empty `pool_code`) so
   the next claim provisions afresh. A competition can never be pointed at an
@@ -487,7 +500,31 @@ per-competition link.
 The link stays valid for the life of the claim: reopening it always mints a
 new session; if the VM is gone, the portal says so and links back.
 
-**Leaving is a forfeit.** **Leave competition** releases the VM, removes the
+**A seat is a team.** The run page carries a team link, and the seat's named
+roster the members manage themselves: add, remove, rotate the link. A
+teammate who opens the link is asked for the name they compete under —
+submitting it lists them on the roster and seats their browser in that slot
+(same box, same score, same clock) without consuming a display name or a
+join code. Handles dedup case-insensitively, re-registering from a second
+device is a no-op, and the roster caps at the competition's **max members
+per team**. Everyone seated shares the seat's abilities, including rotating
+the link and leaving; rotating mints a fresh token, and the old link stops
+seating at once. A browser already seated on a different team (here or in
+another competition) is refused, exactly as the join page refuses it — a
+team link never silently swaps which seat a browser holds.
+
+**Multi-box competitions.** Steps 1–2 happen once per seat; the claim-and-
+bind flow of steps 3–5 then happens **per lineup entry**, tracked by entry
+cards on the run page (*"N of M boxes joined"*). The **same join code**
+works on every box — each box self-identifies with its enrolled scenario
+and the engine routes the bind to that entry's slot; a box outside the
+lineup is refused with the existing 409. The seat's clock starts on the
+**first** bind (one team clock for the whole lineup, fixed duration, no
+pause) and the code burns only once the last entry is bound. The board sums
+the seat across its boxes; a multi row carries the per-box breakdown.
+
+**Leaving is a forfeit.** **Leave competition** releases the seat's VM(s) —
+every still-bound box of a lineup —, removes the
 slot and its score from the board, clears the player cookie, and frees the
 player to join another competition. It cannot be undone. ("The board" is the
 competition page. `GET /leaderboard?scenario=…` is the scenario's historical

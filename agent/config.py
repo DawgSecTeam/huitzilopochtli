@@ -1,5 +1,6 @@
 """Local on-box config loader. See architecture.md §9.7."""
 import json
+import sys
 from dataclasses import dataclass
 from typing import Optional
 
@@ -46,6 +47,22 @@ def load_config(config_path: str) -> AgentConfig:
                 f"config {config_path!r}: '{key}' must be a JSON boolean "
                 f"(got {type(data[key]).__name__}); refusing to guess"
             )
+
+    # Unknown keys are the classic silent-trap: an operator writes
+    # "engine_url": ... into the config, the agent never reads it (the
+    # SIGNED manifest's engine_url is authoritative by design), and joins
+    # dial the manifest address for a very confusing debugging cycle. Name
+    # anything the loader will ignore.
+    known = {"mode", "manifest_path", "rubric_path", "identity_path",
+             "report_path", "checkin_interval_s", "authoring_public_key_path",
+             "enrollment_token", "allow_unsigned_manifest", "notifications"}
+    ignored = sorted(set(data) - known)
+    if ignored:
+        print(f"WARNING: config {config_path!r} carries keys the agent "
+              f"ignores: {', '.join(ignored)}"
+              + (" (the signed manifest's engine_url is authoritative)"
+                 if "engine_url" in ignored else ""),
+              file=sys.stderr)
 
     config = AgentConfig(
         mode=Mode(data["mode"]),

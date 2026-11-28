@@ -272,8 +272,11 @@ def test_zipapp_ranked_smoke(tmp_path):
         target_file = tmp_path / "sshd_config"
         target_file.write_text("PermitRootLogin no\n", encoding="utf-8")
 
+        # The agent runs the COMPILED manifest, whose ranked build replaces
+        # authored ids with positional chk-NNN; the engine-side rubric has
+        # to key the same id the agent reports.
         engine.upload_scenario(lb._base_rubric(name, [
-            {"check_id": "backdoor-absent", "category": "vuln",
+            {"check_id": "chk-001", "category": "vuln",
              "matcher": {"tag": "equals", "field": "matched", "value": "no"},
              "points": 10},
         ]))
