@@ -109,7 +109,11 @@ can be **discarded** the same way (End on the draft page): it becomes ended and
 the normal end cleanup runs, so an abandoned draft cannot strand its
 pre-deployed pool. An ended competition can be **rerun** (fresh, same settings)
 or **removed** — removal releases its VMs, cleans its pool, and deletes the
-competition and its slots; boxes and scores remain as history.
+competition and its slots; boxes and scores remain as history. **Remove** sits
+on the ended row in the `/admin` list as well as on the competition page, so a
+past event can be cleared without opening it; either way it is behind a
+confirmation. Rows that are still draft or live offer no Remove, because the
+engine refuses to delete a competition out from under its players.
 
 **Extend** (live competitions only) grants overtime: every running clock slides
 forward by the given minutes, and a run the receipt clock has already frozen as
@@ -407,7 +411,16 @@ plain claim; with only the portal side set, nothing changes.
 - **Windows boxes have no `huitz` shim.** The portal runs
   `python C:\ProgramData\huitzilopochtli\agent.pyz join --code <code>` for
   `rdp` pools (`HUITZ_WIN_PYTHON` / `HUITZ_WIN_AGENT`); the join enables the
-  `HuitzilopochtliAgent` task, shipped registered but disabled.
+  `HuitzilopochtliAgent` task, shipped registered but disabled. That command
+  only works from an **elevated** shell — the install dir holding the box key
+  is sealed to SYSTEM + Administrators, and a UAC-filtered PowerShell is not
+  in it — so a Windows player does not join by typing: the ranked install
+  ships a **Join Competition Box** Desktop item
+  (`packaging/huitz-join-win.pyw`) that opens a code prompt and raises the one
+  UAC prompt the bind needs. It imports `agent.join` out of the installed
+  `agent.pyz`, so there is no second join implementation to keep honest.
+  `boxbuilder verify` fails the box's seal gate when either half is missing
+  (`join.launcher`).
 - **Prebind fires on *open*, never on claim.** The join command runs inside
   the guest only when the player opens their VM link. A claimed box nobody
   opens — headless `ssh`-method boxes whose Guacamole session has nothing to
@@ -465,7 +478,9 @@ per-competition link.
    competition's pool (provisioning it first if needed), and redirects to `/`.
 3. The dashboard shows **Open my VM**, a stable portal link; failed claims
    retry automatically and **Get a new VM** forces an attempt.
-4. Opening the link mints a fresh Guacamole session and runs `huitz join`.
+4. Opening the link mints a fresh Guacamole session and runs `huitz join`
+   (on a Windows box: the same bind, from the **Join Competition Box**
+   Desktop icon, if the prebind path is unavailable).
 5. The engine binds the box and starts that player's clock; signed check-ins
    begin, and the dashboard flips to "your box is joined".
 

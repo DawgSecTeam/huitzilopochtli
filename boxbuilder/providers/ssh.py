@@ -308,7 +308,8 @@ class SshHandle(BoxHandle):
     def install_init(self, kind: str, mode: str = "honor",
                      start_agent: bool = True) -> None:
         if kind == "windows":
-            return self._install_init_windows(start_agent=start_agent)
+            return self._install_init_windows(start_agent=start_agent,
+                                              ranked=(mode == "ranked"))
         # The `huitz` console (agent/cli.py): a world-readable copy of the
         # agent zipapp on PATH. The CLI verbs read the report.json mirror
         # (sync-report.sh keeps it in every user's Documents/huitzilopochtli
@@ -404,7 +405,8 @@ class SshHandle(BoxHandle):
             raise ValueError(
                 f"unknown init kind {kind!r}; want systemd|openrc|windows|none")
 
-    def _install_init_windows(self, start_agent: bool = True) -> None:
+    def _install_init_windows(self, start_agent: bool = True,
+                              ranked: bool = False) -> None:
         """Windows init: a SYSTEM scheduled task is the agent's timer.
 
         The installer .ps1 registers the task (at startup + every 5 minutes,
@@ -414,21 +416,32 @@ class SshHandle(BoxHandle):
         are SFTP'd into the install dir, which pipeline.install_box has just
         made writable for the SSH user; the installer tightens nothing (the
         icacls seal already happened there).
+
+        A ranked install adds the player's joiner: huitz-join-win.pyw, which
+        the installer copies to the Public mirror dir and wires to a Desktop
+        shortcut. There is no `huitz` command on a Windows box (no PATH shim)
+        and the box's own join step is the one thing a player cannot improvise
+        from a terminal, so it ships as a click. See packaging/README.md.
         """
         install_dir = artifacts_mod.install_dir_for("windows")
         installer_local = os.path.join(_PACKAGING, "huitzilopochtli-agent-win.ps1")
         task_local = os.path.join(_PACKAGING, "huitz-agent-task.ps1")
+        joiner_local = os.path.join(_PACKAGING, "huitz-join-win.pyw")
         installer_remote = f"{install_dir}\\huitzilopochtli-agent-win.ps1"
         task_remote = f"{install_dir}\\huitz-agent-task.ps1"
+        joiner_remote = f"{install_dir}\\huitz-join-win.pyw"
         self.put(installer_local, installer_remote)
         self.put(task_local, task_remote)
+        if ranked:
+            self.put(joiner_local, joiner_remote)
         # The installer is a script FILE, so it needs its own powershell with
         # -ExecutionPolicy Bypass (EncodedCommand text is exempt, invoked
         # files are not). Nesting inside run_ps keeps the -File argument
         # away from cmd.exe's quote stripping.
         res = self.run_ps(
             f"& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy "
-            f"Bypass -File '{installer_remote}'\n"
+            f"Bypass -File '{installer_remote}'"
+            f"{' -Ranked' if ranked else ''}\n"
             f"exit $LASTEXITCODE",
             timeout=600,
         )

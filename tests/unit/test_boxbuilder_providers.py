@@ -1,4 +1,5 @@
 """Unit tests for boxbuilder.providers base + registry."""
+import os
 import pytest
 
 from boxbuilder.providers import (
@@ -136,14 +137,20 @@ class _RecordingSshHandle:
         from boxbuilder.providers.base import RunResult
         self._ok = RunResult(0, "/tmp/huitzilopochtli-stage.abc\n", "")
         self.cmds = []
+        self.ps_cmds = []
+        self.puts = []
         self.addr = "192.0.2.1"
 
     def run(self, cmd, **_kw):
         self.cmds.append(cmd)
         return self._ok
 
+    def run_ps(self, script, **_kw):
+        self.ps_cmds.append(script)
+        return self._ok
+
     def put(self, local, remote, mode=None):
-        pass
+        self.puts.append((os.path.basename(local), remote))
 
 
 def _install_init_cmds(mode):
@@ -165,3 +172,29 @@ def test_ranked_install_removes_an_inherited_honor_timer():
     assert "enable --now huitzilopochtli-agent.timer" not in cmds
     assert "disable --now huitzilopochtli-agent.timer" in cmds
     assert "rm -f /etc/systemd/system/huitzilopochtli-agent.timer" in cmds
+
+def _windows_install(mode, start_agent):
+    """install_init("windows"): what gets placed and what gets run."""
+    from boxbuilder.providers.ssh import SshHandle
+    handle = _RecordingSshHandle()
+    SshHandle._install_init_windows(handle, start_agent=start_agent,
+                                    ranked=(mode == "ranked"))
+    return handle
+
+
+def test_ranked_windows_install_places_the_desktop_joiner():
+    # A Windows box has no `huitz` command, so the installer has to ship the
+    # click-instead: the launcher goes up and the installer is told it is a
+    # ranked box (that flag is what creates the Desktop shortcut).
+    handle = _windows_install("ranked", start_agent=False)
+    placed = [name for name, _ in handle.puts]
+    assert "huitz-join-win.pyw" in placed
+    assert any("-Ranked" in ps for ps in handle.ps_cmds)
+    # And the agent task must ship disabled -- the join is what starts it.
+    assert any("/DISABLE" in ps for ps in handle.ps_cmds)
+
+
+def test_honor_windows_install_ships_no_joiner():
+    handle = _windows_install("honor", start_agent=True)
+    assert "huitz-join-win.pyw" not in [name for name, _ in handle.puts]
+    assert not any("-Ranked" in ps for ps in handle.ps_cmds)

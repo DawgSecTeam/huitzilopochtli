@@ -845,12 +845,12 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
     codebox = (f'<div class="codebox"><code id="joincode">{esc(code)}</code>'
                f'{_copy_btn(code, "Copy code")}</div>' if code else
                '<p class="muted small">No fallback code is available.</p>')
-    fallback = f"""<li><h2>Join from the terminal</h2>
-<p class="small">Open a terminal in the VM and run
-<code>huitz join</code> followed by the code below (or run it alone and
-enter the code when prompted):</p>
+    fallback = f"""<li><h2>Join from inside the VM</h2>
+<p class="small">In a terminal in the VM, run this (or run
+<code>huitz join</code> alone and enter the code when it asks):</p>
 <pre><code>huitz join {esc(code)}</code></pre>
 {codebox}
+<p class="small">{_JOIN_WINDOWS_NOTE}</p>
 <p class="small">The code is single-use and expires; this page updates itself
 when it does.</p></li>"""
 
@@ -867,6 +867,29 @@ when it does.</p></li>"""
 </section>"""
     return layout("You're in", body, comp=comp, admin=admin, current="home",
                   refresh=None if bound else 5)
+
+
+#: The name boxbuilder's Windows install puts on the VM's desktop
+#: (packaging/huitz-join-win.pyw is what it launches).
+JOIN_ICON_NAME = "Join Competition Box"
+
+#: The Windows half of the join instructions, shared so no page can lose it.
+#: Not decoration: a Windows box has no `huitz` command at all (no PATH shim
+#: -- packaging/README.md) and joining there needs the elevated token only the
+#: desktop joiner raises, so a page that says only "run `huitz join`" strands
+#: every Windows player on "The term 'huitz' is not recognized" with their
+#: clock never having started.
+_JOIN_WINDOWS_NOTE = (
+    'On a Windows box there is no <code>huitz</code> command: double-click '
+    f'<strong>{JOIN_ICON_NAME}</strong> on the VM desktop and enter the code '
+    'there (it asks for administrator rights, because joining starts the '
+    'scoring service).')
+
+
+def _join_step_text() -> str:
+    """How to join, in one place so the player pages cannot drift apart."""
+    return ('Open a terminal in the VM, run <code>huitz join</code>, and enter '
+            'the code when it asks. ' + _JOIN_WINDOWS_NOTE)
 
 
 def _run_clock(comp: CompetitionRecord, player: PlayerRecord,
@@ -915,7 +938,7 @@ def _run_score_block(row: dict, player: PlayerRecord, big_class: str) -> str:
                 'first engine check-in.</div>')
     return (f'<div class="{big_class} muted">—</div>'
             '<div class="muted small">Not scoring: your box has not joined yet — '
-            'open your VM, then run <code>huitz join</code> with your code.</div>')
+            + _join_step_text() + '</div>')
 
 
 def player_page(comp: CompetitionRecord, player: PlayerRecord,
@@ -935,12 +958,10 @@ def player_page(comp: CompetitionRecord, player: PlayerRecord,
                       'prepared — refresh this page in a moment.</p>')
         join_panel = f'''<div class="warnmsg"><strong>You have not joined yet.</strong>
 Your box is not on the board, nothing is scoring, and your clock has not
-started. Open your VM, run <code>huitz join</code> in its terminal, and enter
-this code:</div>
+started. Open your VM and join with this code:</div>
 {code_block}
-<p class="small">1. Open your VM. 2. In its terminal run
-<code>huitz join</code>. 3. Enter the code above. This page updates when the
-box joins.</p>'''
+<p class="small">{_join_step_text()} This page updates when the box
+joins.</p>'''
     body = f"""<section class="page-head-row"><div>
 <div class="title-line"><h1>{esc(player.display_name)}</h1>{player_badge(player.status)}{'' if joined else '<span class="fullflag">not joined</span>'}</div>
 <p class="meta">{esc(comp.name)}</p></div></section>
@@ -1006,10 +1027,10 @@ def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
                       '<p class="muted" id="code-wait">Your one-time code is '
                       'being prepared — this page updates automatically.</p>')
         join_hint = f'''<div class="warnmsg"><strong>Not joined yet.</strong> Open
-your VM, run <code>huitz join</code> in its terminal, and enter this code:</div>
+your VM and join with this code:</div>
 {code_block}
-<p class="small">Nothing is scoring and your clock has not started until the
-box joins.</p>'''
+<p class="small">{_join_step_text()} Nothing is scoring and your clock has
+not started until the box joins.</p>'''
         # The success page still holds the same code + instructions.
         fallback = (f'<p class="small"><a href="/c/{esc(comp.slug)}/join/success">'
                     'Join instructions</a></p>')
@@ -1202,10 +1223,23 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
                              f'{esc(_fmt_short_ts(c.scheduled_end_at))}</div>')
         players_cell = (f'{esc(n)}/{esc(c.max_players)}'
                         if c.max_players and c.max_players > 0 else f'{esc(n)}')
+        # A past competition can be removed from the list itself; the verb
+        # used to live only on the competition page, so tidying up meant
+        # opening every row. Offered only where it can succeed -- the server
+        # refuses a draft or live competition -- and it keeps the two-step
+        # confirm the detail page uses, with the same wording.
+        remove_btn = ""
+        if c.status == "ended":
+            remove_btn = (f'<form method="post" action="/admin/api/competitions/'
+                          f'{esc(c.id)}/delete" class="inline" '
+                          f'data-confirm="Remove this competition and its player '
+                          f'records? This cannot be undone.">'
+                          f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
+                          f'<button class="btn danger">Remove</button></form>')
         cards.append(f"""<tr data-href="/admin/competitions/{esc(c.id)}"><td data-th="Name"><a href="/admin/competitions/{esc(c.id)}">{esc(c.name)}</a><div class="muted small">/c/{esc(c.slug)}</div>{warn_line}</td>
 <td data-th="Status">{comp_status_tag(c.status)}</td><td class="num r" data-th="Players">{players_cell}</td>
 <td class="num r" data-th="Pool ready">{pool_cell}</td>
-<td class="num r" data-th="Duration">{esc(_fmt_duration(c.duration_s))}{schedule_note}</td><td data-th=""><a class="btn" href="/c/{esc(c.slug)}">View</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form></td></tr>""")
+<td class="num r" data-th="Duration">{esc(_fmt_duration(c.duration_s))}{schedule_note}</td><td data-th="Actions"><a class="btn" href="/c/{esc(c.slug)}">Player view</a><form method="post" action="/admin/api/competitions/{esc(c.id)}/leaderboard-visibility" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><input type="hidden" name="hidden" value="{0 if c.leaderboard_hidden else 1}"><button class="btn" type="submit">{'Show leaderboard' if c.leaderboard_hidden else 'Hide leaderboard'}</button></form>{remove_btn}</td></tr>""")
     live_note = (f'<p class="meta">{live} competition{"s" if live != 1 else ""} '
                  f'live right now &middot; each holds its own VM pool.</p>'
                  if live else "")
@@ -2326,6 +2360,11 @@ function pollOk(){
 }
 function poll(){
   if(document.hidden){return;}
+  /* A confirm dialog holds a reference to the form it is about to submit, and
+     the swap below replaces whole rows wholesale. Redrawing the table while
+     the dialog is up would leave that form detached from the document, and
+     the second click would submit nothing at all. */
+  if(modal){return;}
   var ae=document.activeElement;
   if(ae&&ae.closest&&ae.closest('[data-poll]')){return;}
   if(Date.now()-lastTouch<8000){return;}

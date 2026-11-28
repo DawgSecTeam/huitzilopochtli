@@ -196,6 +196,27 @@ def test_admin_login_page_start_and_csrf(tmp_path):
         assert status == 200 and "UI Comp" not in idx
         status, idx_admin, _ = _req(port, "GET", "/", headers={"Cookie": cookie})
         assert "UI Comp" in idx_admin
+
+        # Removal is offered on the list itself now, so tidying up past runs
+        # does not mean opening each one. The ended row carries the button;
+        # the rerun draft beside it must not (the server would refuse it).
+        status, dash, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
+        assert status == 200 and ">Remove</button>" in dash
+        assert ">Player view<" in dash
+        csrf = re.search(r'name="csrf" value="([^"]+)"', dash).group(1)
+        status, _body, headers = _req(
+            port, "POST", f"/admin/api/competitions/{comp_id}/delete",
+            urllib.parse.urlencode({"csrf": csrf}),
+            {"Cookie": cookie, "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303 and headers.get("Location") == "/admin"
+        status, dash, _ = _req(port, "GET", "/admin", headers={"Cookie": cookie})
+        assert f'href="/admin/competitions/{comp_id}"' not in dash
+        # Only the draft is left, and nothing offers to delete it by mistake.
+        assert ">Remove</button>" not in dash
+        # Its history outlives it: the audit rows are kept and still readable.
+        status, audit, _ = _req(port, "GET", "/admin/audit",
+                                headers={"Cookie": cookie})
+        assert status == 200 and "competition_delete" in audit
     finally:
         proc.terminate()
         try:

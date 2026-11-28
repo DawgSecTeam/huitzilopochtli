@@ -1701,6 +1701,23 @@ class Handler(BaseHTTPRequestHandler):
                         409, "Cannot start", message,
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
+            # A competition that cannot hand out the scenario's box must not
+            # open: check the pool/template up front so the operator sees the
+            # mismatch on the start rather than only on the first claim.
+            blocker = claims.predeploy_blocker(self.store, comp)
+            if blocker:
+                self.store.add_audit(
+                    actor, "competition_start_blocked", comp.id,
+                    details_json=json.dumps({"reason": blocker[:300]}),
+                    remote_addr=self.client_address[0]
+                    if self.client_address else None)
+                if session is None:
+                    self._send_json(409, {"error": blocker})
+                else:
+                    self._send_html(409, web.error_page(
+                        409, "Cannot start", blocker,
+                        f"/admin/competitions/{comp.id}", admin=True))
+                return
             self.store.start_competition(comp.id)
             # A schedule set on the draft whose moment already passed would
             # end this fresh competition on the next sweep tick; drop it and

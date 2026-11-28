@@ -362,7 +362,7 @@ def _win_state_output(files=("agent.pyz", "manifest.signed.json",
                              ' "scenario_name": "Demo", "total": 0,'
                              ' "max_possible": 200}',
                       mirror_report=True, mirror_readme=True, desktop=2,
-                      config=None):
+                      join_launcher=True, join_icon=True, config=None):
     cfg = config if config is not None else {
         "mode": "honor",
         "rubric_path": "C:\\ProgramData\\huitzilopochtli\\.score.dat"}
@@ -375,6 +375,8 @@ def _win_state_output(files=("agent.pyz", "manifest.signed.json",
         "##theme", *theme,
         "##mirror", f"report={'True' if mirror_report else 'False'}",
         f"readme={'True' if mirror_readme else 'False'}",
+        "##join", f"launcher={'True' if join_launcher else 'False'}",
+        f"icon={'True' if join_icon else 'False'}",
         "##report", report,
         "##desktop", str(desktop),
     ])
@@ -424,6 +426,7 @@ def _win_facts(**overrides):
                                       "report_mirror": True,
                                       "readme_mirror": True}},
         "desktop_pixels": None,
+        "joiner": {"launcher": True, "icon": True},
     }
     facts.update(overrides)
     return facts

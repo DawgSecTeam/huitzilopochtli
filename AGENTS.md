@@ -47,7 +47,10 @@ shell running boxbuilder — it otherwise silently falls back to `http://127.0.0
 - **Ranked competition boxes are a separate lineage.** Honor boxes cannot be
   converted: a competition box is built from a ranked scenario with scored
   services and red-team exposure, carries no rubric/token, and is bound to a
-  player by `huitz join`. Do not add an honor→ranked shortcut.
+  player by `huitz join` — on a Windows box by its Desktop joiner
+  (`packaging/huitz-join-win.pyw`, which imports the same `agent/join.py`;
+  there is no `huitz` command and no PATH shim there). Do not add an
+  honor→ranked shortcut.
 - **Each ranked competition provisions its own workshop pool.** The pool is
   cloned from the ranked template named in the scenario record's `pool:` block
   (`RANKED_COMPETITION.md` §3.1); the engine never picks among the portal's

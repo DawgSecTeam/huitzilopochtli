@@ -53,7 +53,44 @@ sync-report.sh (below) mirrors `report.json` alongside `report.html`; if it
 is missing, the CLI reports "no grade found" with the paths it searched.
 Windows boxes have no shim — `py C:\ProgramData\huitzilopochtli\agent.pyz
 score` — and the scheduled-task wrapper mirrors `report.json` to
-`C:\Users\Public\Documents\huitzilopochtli` instead.
+`C:\Users\Public\Documents\huitzilopochtli` instead. `huitz join` is the one
+verb a player genuinely cannot improvise there, so it ships as a Desktop
+click instead; see **The Windows joiner** below.
+
+## The Windows joiner (ranked boxes)
+
+`huitz-join-win.pyw` is the graphical twin of `huitz join`. boxbuilder's
+Windows install step places it in the install dir, copies it to
+`C:\Users\Public\Documents\huitzilopochtli\`, and puts a
+**Join Competition Box** shortcut on the Public Desktop pointing at
+`pythonw.exe <that copy>`. Double-clicking it opens a code prompt; entering
+the one-time code binds the box and starts the agent.
+
+Why a click rather than a command: joining needs the *elevated* token — the
+install dir is sealed to SYSTEM + Administrators (that is where the box's
+private key is created), and the agent is a SYSTEM scheduled task. A
+UAC-filtered PowerShell is not in that group, so `python
+C:\ProgramData\huitzilopochtli\agent.pyz join` fails with access denied even
+though the command is correct, and `huitz join` itself fails because there is
+no shim. The launcher runs unelevated just long enough to raise one UAC
+prompt, then re-runs itself elevated — and the relaunch carries only a
+`--elevated` flag, never the code itself. It contains no scoring logic: the `.pyw` imports `agent.join` out of the
+installed `agent.pyz`, so the terminal path and the window cannot drift.
+`agent/join.py` stays the single source of truth.
+
+Two rules keep it honest:
+
+- The Public tree is user-writable, so the copy is sealed
+  `SYSTEM:F Administrators:F *S-1-5-32-545:RX` (players may read and run it,
+  never edit it) and the installer refuses to write through a reparse point,
+  exactly like the report mirror in `huitz-agent-task.ps1`.
+- The install dir itself is *not* loosened for Users: the launcher lives in
+  the Public mirror dir, and the elevated instance reaches the sealed files.
+
+If the box's Python has no tkinter (or consent is refused), the launcher
+falls back to a message box that prints the elevated terminal command instead
+of a form. `boxbuilder verify` checks the launcher + Desktop item exist on a
+ranked Windows box (`join.launcher`) — without them that box has no join path.
 
 boxbuilder also plants a **first-login banner** at
 `/etc/update-motd.d/90-huitzilopochtli` (POSIX only — Windows has no motd
@@ -234,6 +271,10 @@ phase.
      Also upload and run `packaging/huitz-hardening-win.ps1` once: it kills
      the Edge first-run wizard, the Shutdown Event Tracker + Server Manager
      logon modals, and the python advertised-shortcut MSI self-repair trap.
+     A ranked install (`--competition`, or any `--mode ranked`) runs that
+     installer with `-Ranked` and uploads `huitz-join-win.pyw` alongside it,
+     which is what gives the player a way to join at all -- see **The Windows
+     joiner** above.
      The task script also
      needs the agent run once by hand after placement or the first grade
      waits for the next 5-minute tick.

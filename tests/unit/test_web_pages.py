@@ -615,6 +615,38 @@ def test_admin_can_remove_only_ended_competitions():
     assert "/delete" in ended and "Remove competition" in ended
 
 
+def test_dashboard_carries_remove_for_past_competitions_only():
+    """Cleaning up the list must not mean opening every row one at a time.
+
+    The verb already existed on the competition page; here it is the same form
+    pointing at the same route, so it still refuses anything but an ended
+    competition server-side, and it keeps the two-step confirm.
+    """
+    ended = web.admin_dashboard_page([_comp(status="ended")], {"c1": 0}, "csrf")
+    assert 'action="/admin/api/competitions/c1/delete"' in ended
+    assert ">Remove</button>" in ended
+    assert 'data-confirm="Remove this competition and its player records?' \
+        in ended
+    for status in ("draft", "live"):
+        dash = web.admin_dashboard_page([_comp(status=status)], {"c1": 0}, "csrf")
+        assert "/delete" not in dash, f"{status} must not offer removal"
+
+
+def test_dashboard_row_controls_are_per_competition():
+    # One visibility toggle per row, reading that row's own flag -- never a
+    # single global hide.
+    dash = web.admin_dashboard_page(
+        [_comp(status="ended"),
+         _comp(id="c2", slug="other", status="ended", leaderboard_hidden=True)],
+        {"c1": 0, "c2": 0}, "csrf")
+    assert dash.count('leaderboard-visibility') == 2
+    assert ">Hide leaderboard<" in dash and ">Show leaderboard<" in dash
+    assert dash.count(">Remove</button>") == 2
+    # The player-facing link says which view it opens (it is not the admin
+    # page, which the row itself already is).
+    assert ">Player view<" in dash and ">View</a>" not in dash
+
+
 def test_index_cards_only_offer_join_when_live_and_open():
     out = web._comp_cards([_comp()])
     assert '>/demo/join"' not in out or "Join" in out
@@ -1369,3 +1401,25 @@ def test_help_texts_are_aria_describedby_wired():
     page = web.admin_competition_page(_comp(), {"leaderboard": []}, [], "csrf")
     assert 'aria-describedby="help-scheduled-end"' in page
     assert 'id="help-scheduled-end"' in page
+
+
+def test_every_not_joined_page_names_the_windows_joiner():
+    """A Windows box has no `huitz` command, so a page that only says
+    "run huitz join" strands its player (the join icon is
+    packaging/huitz-join-win.pyw, installed by boxbuilder's Windows step).
+    All three places a player can look for the instruction must carry it."""
+    player = _player(status="invited", box_id=None, claim_url="http://g/x")
+    pages = [
+        web.join_success_page(_comp(), player, join_code="ABCD"),
+        web.player_page(_comp(), player, None, "http://g/x", join_code="ABCD"),
+        web.home_competition_page(_comp(), player, None, [], "http://g/x",
+                                  csrf="c", leave_csrf="c", player_count=1,
+                                  services=[]),
+    ]
+    for page in pages:
+        assert "huitz join" in page          # the Linux path, still first
+        assert web.JOIN_ICON_NAME in page    # the Windows path
+    # Once the box is bound, neither the code nor the instructions appear.
+    bound = web.player_page(_comp(), _player(box_id="box-1"), _board_row(),
+                            "http://g/x", join_code="ABCD")
+    assert web.JOIN_ICON_NAME not in bound

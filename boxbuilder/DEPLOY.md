@@ -99,7 +99,17 @@ Ranked and competition templates: compile and install with the same
 state fingerprint, so a ranked `install` against an honor `compile` is refused.
 Prefer `$HUITZILOPOCHTLI_ADMIN_TOKEN` over `--admin-token` (the flag is visible
 in process lists and shell history); `--competition` skips the enrollment token
-and leaves the unit disabled until the player runs `huitz join`.
+and leaves the unit disabled until the player runs `huitz join` — on a Windows
+template that install step also places the **Join Competition Box** desktop
+joiner (`packaging/huitz-join-win.pyw`), because there is no `huitz` command
+there; verify checks it (`join.launcher`) and seal-prepare gates on it.
+
+To retrofit that joiner onto a Windows template built before it existed:
+upload `packaging/huitz-join-win.pyw` to `C:\ProgramData\huitzilopochtli\`,
+run `packaging\huitzilopochtli-agent-win.ps1 -Ranked` on the box from an
+elevated PowerShell, and — competition template only — re-disable the task the
+way the install does (`schtasks /Change /TN HuitzilopochtliAgent /DISABLE`),
+since a player's join is what starts it. Then re-seal.
 
 ```bash
 export HUITZILOPOCHTLI_ADMIN_TOKEN=<admin-token>

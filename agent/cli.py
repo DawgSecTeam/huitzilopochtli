@@ -85,6 +85,37 @@ DEFAULT_REPORT_JSON = {
 ENV_REPORT = "HUITZ_REPORT"      # pin a snapshot explicitly (docs/testing)
 ENV_CONFIG = "HUITZ_CONFIG"      # pin an agent config for `grade`
 
+#: The Desktop item a Windows player joins with (boxbuilder's Windows install
+#: creates it; packaging/huitz-join-win.pyw is what it launches).
+JOIN_ICON_NAME = "Join Competition Box"
+
+
+def _is_windows() -> bool:
+    """The one platform question the wording below asks. A seam for tests."""
+    return os.name == "nt"
+
+
+def _agent_pyz() -> str:
+    """This box's agent zipapp, next to the config it was installed with."""
+    return os.path.join(os.path.dirname(DEFAULT_CONFIGS["nt" if _is_windows()
+                                                       else "posix"]),
+                        "agent.pyz")
+
+
+def _join_command() -> str:
+    """Join this box, spelled the way this box can actually run it.
+
+    On a Windows box `huitz` is not a command at all — no PATH shim, and the
+    install dir is admin-only — so telling a player to type `huitz join` there
+    produces "The term 'huitz' is not recognized" at the one step that starts
+    their clock. The Desktop icon is the join path; the zipapp invocation is
+    the terminal fallback.
+    """
+    if _is_windows():
+        return f'double-click "{JOIN_ICON_NAME}" on the Desktop'
+    return "run `huitz join`"
+
+
 _EXIT_OK, EXIT_ERROR, _EXIT_USAGE = 0, 1, 2
 
 
@@ -284,8 +315,8 @@ def _load_snapshot(explicit: str | None) -> dict:
             raise CliError(
                 "this ranked box has not joined a competition yet — there is "
                 "no score to show" + detail + ".\n"
-                "Open your VM link from the competition page, then run "
-                "`huitz join` here and enter the one-time code it shows."
+                "Open your VM link from the competition page, then "
+                + _join_command() + " with the one-time code it shows."
             )
         raise CliError(
             "no grade found on this box yet — no report snapshot" + detail + ".\n"
@@ -1128,8 +1159,8 @@ def cmd_readme(argv: list, outstream) -> int:
     page = render_readme(text, sty, sym, width) + "\n"
     if explicit is None and _ranked_unjoined():
         page += ("\nThis box has not joined a competition yet — open your VM "
-                 "link from the competition page, then run `huitz join` here "
-                 "with its one-time code.\n")
+                 "link from the competition page, then " + _join_command() +
+                 " with its one-time code.\n")
     if not opts.get("--no-pager") and _page(page, outstream):
         return _EXIT_OK
     outstream.write(page)
@@ -1414,7 +1445,7 @@ def cmd_join(argv: list, outstream, instream) -> int:
         if len(positional) > 1:
             raise UsageError(
                 f"join: expected one join code, got {len(positional)} words\n"
-                '  quote the code if it contains spaces: huitz join "AB2C-XZ9Y"')
+                '  quote the code if it contains spaces: huitz join "AB23"')
         code = positional[0]
     if not code:
         if instream is not None and instream.isatty():
@@ -1440,6 +1471,16 @@ def cmd_join(argv: list, outstream, instream) -> int:
 
 def cmd_help(outstream) -> int:
     print(USAGE, file=outstream)
+    if _is_windows():
+        # The verbs above are spelled with a command this box does not have:
+        # Windows installs put no `huitz` on PATH (packaging/README.md), so
+        # help has to say what to type instead or every verb reads as broken.
+        print("On this Windows box there is no `huitz` command — run the same "
+              "verbs as\n"
+              f'  python "{_agent_pyz()}" <verb> [args]\n'
+              f'and join with "{JOIN_ICON_NAME}" on the Desktop (join needs '
+              "administrator\nrights: this box's agent files are admin-only).",
+              file=outstream)
     return _EXIT_OK
 
 

@@ -178,7 +178,13 @@ practice box.
   life and `--checkin-interval` (default 60 s) sets the check-in cadence.
 - **Ranked competition** (`install`/`build --competition`): no upload and no
   token. The box cannot check in until the player runs `huitz join` with the code
-  from the competition page, which binds the box and starts the agent.
+  from the competition page, which binds the box and starts the agent. On a
+  Windows box the install (`init kind windows`, ranked) also uploads
+  `packaging/huitz-join-win.pyw` and runs the agent installer with `-Ranked`,
+  which places the launcher in the Public mirror dir and puts a **Join
+  Competition Box** shortcut on the Desktop — there is no `huitz` command
+  there and the bind needs an elevated token, so a click is the only join path
+  a player has.
   Competition boxes are a separate lineage — an honor build cannot be turned
   into one by flipping a flag, and each competition provisions its own pool.
 

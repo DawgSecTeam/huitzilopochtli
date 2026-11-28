@@ -1564,3 +1564,53 @@ def test_unknown_long_option_is_a_usage_error():
     import agent.cli as cli
     with pytest.raises(cli.UsageError):
         cli._split_flags(["--definitely-not-a-flag"], set(), set())
+
+
+# --- the Windows join surface ------------------------------------------------
+# A Windows box ships no `huitz` on PATH and its install dir is admin-only, so
+# guidance that says "run huitz join" is a dead end there: the player needs the
+# Desktop joiner (packaging/huitz-join-win.pyw). These lock the wording to the
+# platform it is talking about.
+
+def test_join_hint_is_spelled_per_platform(monkeypatch):
+    import agent.cli as cli
+    monkeypatch.setattr(cli, "_is_windows", lambda: False)
+    assert cli._join_command() == "run `huitz join`"
+    monkeypatch.setattr(cli, "_is_windows", lambda: True)
+    hint = cli._join_command()
+    assert "huitz" not in hint and cli.JOIN_ICON_NAME in hint
+
+
+def test_windows_help_says_there_is_no_huitz_command(monkeypatch):
+    import io
+    import agent.cli as cli
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "_is_windows", lambda: True)
+    assert cli.cmd_help(out) == 0
+    text = out.getvalue()
+    assert "no `huitz` command" in text
+    assert "agent.pyz" in text and cli.JOIN_ICON_NAME in text
+    # The verbs themselves are still documented; the note is additive.
+    assert "huitz score" in text
+
+
+def test_posix_help_stays_plain(monkeypatch):
+    import io
+    import agent.cli as cli
+    out = io.StringIO()
+    monkeypatch.setattr(cli, "_is_windows", lambda: False)
+    assert cli.cmd_help(out) == 0
+    assert "Join Competition Box" not in out.getvalue()
+
+
+def test_unjoined_windows_readme_points_at_the_icon(monkeypatch, tmp_path):
+    import io
+    import agent.cli as cli
+    monkeypatch.setattr(cli, "_is_windows", lambda: True)
+    monkeypatch.setattr(cli, "_ranked_unjoined", lambda: True)
+    monkeypatch.setattr(cli, "_installed_handbook",
+                        lambda: ("# Objective\n\nHarden the box.\n", None))
+    monkeypatch.setattr(cli, "_page", lambda page, out: 0)
+    out = io.StringIO()
+    assert cli.cmd_readme(["--no-pager"], out) == 0
+    assert cli.JOIN_ICON_NAME in out.getvalue()

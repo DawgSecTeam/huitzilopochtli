@@ -304,7 +304,8 @@ def live_pool_status(comp: CompetitionRecord) -> dict:
         return {"status": "unpinned"}
     return {"status": "ok",
             "available": int(snap.get("available") or 0),
-            "total": int(snap.get("total") or 0)}
+            "total": int(snap.get("total") or 0),
+            "template_vm_id": (snap.get("config") or {}).get("template_vm_id")}
 
 
 #: Dashboard pool counts: one portal read for every row, cached briefly.
@@ -475,7 +476,31 @@ def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
         else:
             gone = not _pin_is_alive(base, password, comp.workshop_pool_code)
         if not gone:
-            # The pool is there; topping it up needs no scenario pool block.
+            # The pool is there; but it must clone the scenario's ranked
+            # template. A pool pointing at a different template would hand
+            # out the wrong box, so it blocks the competition up front
+            # (before it opens) instead of only failing the first claim.
+            spec = scenario_mod.load_pool_spec(
+                store, comp.scenario_name, comp.scenario_version)
+            template = None
+            if pool is not None:
+                template = pool.get("template_vm_id")
+            elif comp.workshop_pool_code:
+                try:
+                    snap = workshop.pool_snapshot(
+                        base, password, comp.workshop_pool_code)
+                except workshop.WorkshopError:
+                    # Portal unreachable is not a mismatch: the claim/warm
+                    # paths report the real transport error.
+                    snap = None
+                template = ((snap.get("config") or {}).get("template_vm_id")
+                            if snap else None)
+            if (spec and template is not None
+                    and template != spec.get("template_vm_id")):
+                return (f"workshop pool {comp.workshop_pool_code} clones "
+                        f"template {template}, not the scenario's "
+                        f"{spec.get('template_vm_id')}; remove that pool "
+                        "from the portal and retry")
             return None
         # The pin is dead, but the scenario can still clone a fresh pool:
         # warm_boxes recovers that itself, so it is not a blocker.

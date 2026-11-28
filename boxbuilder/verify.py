@@ -271,6 +271,11 @@ def _collect_windows(handle, install_dir: str) -> dict:
         "\"##mirror\"; $m = Join-Path $env:PUBLIC 'Documents\\huitzilopochtli'; "
         "'report=' + (Test-Path (Join-Path $m 'report.json')); "
         "'readme=' + (Test-Path (Join-Path $m 'README.html')); "
+        "\"##join\"; 'launcher=' + (Test-Path (Join-Path $m 'huitz-join-win.pyw')); "
+        "'icon=' + ((Test-Path (Join-Path $env:PUBLIC "
+        "'Desktop\\Join Competition Box.lnk')) -or "
+        "(Test-Path (Join-Path $env:PUBLIC "
+        "'Desktop\\Join Competition Box.pyw'))); "
         "\"##report\"; if (Test-Path (Join-Path $m 'report.json')) "
         "{ Get-Content -LiteralPath (Join-Path $m 'report.json') -Raw }; "
         "\"##desktop\"; (Get-ChildItem -LiteralPath (Join-Path $env:PUBLIC "
@@ -289,6 +294,11 @@ def _collect_windows(handle, install_dir: str) -> dict:
         key, sep, value = line.partition("=")
         if sep:
             mirror[key.strip()] = value.strip().lower() == "true"
+    joiner = {}
+    for line in (findings.get("join") or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            joiner[key.strip()] = value.strip().lower() == "true"
     report_text = (findings.get("report") or "").strip()
     report = None
     report_error = None
@@ -333,6 +343,8 @@ def _collect_windows(handle, install_dir: str) -> dict:
         "users": [],
         "user_artifacts": per_user,
         "desktop_pixels": None,
+        # The click-instead-of-`huitz join` path this box's players need.
+        "joiner": joiner,
     }
 
 
@@ -499,6 +511,21 @@ def evaluate(facts: dict, exp: Expectations) -> list:
         checks.append(_check("report.mirror", bool(with_mirror),
                              f"mirror in: {', '.join(with_mirror)}" if with_mirror
                              else "no user has Documents/huitzilopochtli/report.json"))
+
+    # 8b. on a Windows box the joiner is the player's ONLY join path: there is
+    # no `huitz` command there, and a box that cannot be joined cannot score.
+    if exp.mode == "ranked" and is_win:
+        joiner = facts.get("joiner") or {}
+        ok = bool(joiner.get("launcher")) and bool(joiner.get("icon"))
+        checks.append(_check(
+            "join.launcher", ok,
+            "Desktop joiner installed (click, type the code)" if ok else
+            f"launcher={joiner.get('launcher')!r} icon={joiner.get('icon')!r}; "
+            "a Windows box has no `huitz`, so install_init must place "
+            "huitz-join-win.pyw + the Desktop shortcut"))
+    elif exp.mode == "ranked":
+        checks.append(Check("join.launcher", SKIP,
+                            "POSIX players join with `huitz join`"))
 
     # 9. themed artifacts
     theme = exp.theme or {}
