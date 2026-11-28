@@ -1445,6 +1445,22 @@ class Store:
             self._conn.execute(
                 "DELETE FROM players WHERE competition_id = ?", (comp_id,)
             )
+            # The competition's own v1.2 rows go too: without these, a
+            # deleted competition left orphaned run slots, lineup entries,
+            # pool pins (teardown anchors pointing at nothing) and named
+            # rosters behind.
+            self._conn.execute(
+                "DELETE FROM run_slots WHERE competition_id = ?", (comp_id,))
+            self._conn.execute(
+                "DELETE FROM competition_scenarios WHERE competition_id = ?",
+                (comp_id,))
+            self._conn.execute(
+                "DELETE FROM competition_pools WHERE competition_id = ?",
+                (comp_id,))
+            self._conn.execute(
+                "DELETE FROM team_members WHERE player_id NOT IN "
+                "(SELECT player_id FROM players)",
+            )
             self._conn.execute(
                 "DELETE FROM competitions WHERE id = ?", (comp_id,)
             )
@@ -1573,12 +1589,17 @@ class Store:
 
     def get_player_by_team_token(self, token_hash: str
                                  ) -> Optional[PlayerRecord]:
-        """The seat a shared team link resolves to (one seat per token)."""
+        """The seat a shared team link resolves to (one seat per token).
+
+        A removed seat is a tombstone: its link must stop resolving, or a
+        forfeited team's link would keep seating browsers and taking ghost
+        registrations on a dead slot."""
         if not token_hash:
             return None
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM players WHERE team_token_hash = ?",
+                "SELECT * FROM players WHERE team_token_hash = ? "
+                "AND status != 'removed'",
                 (token_hash,),
             ).fetchone()
         return None if row is None else self._player_from_row(row)
@@ -1906,6 +1927,10 @@ class Store:
                     "WHERE player_id = ? AND box_id = ? AND unbound_at IS NULL",
                     (time.time(), player_id, player.box_id),
                 )
+            # The seat is gone; its named roster goes with it (no ghost
+            # members for a tombstone the UI can never manage again).
+            self._conn.execute(
+                "DELETE FROM team_members WHERE player_id = ?", (player_id,))
             self._conn.execute(
                 "UPDATE players SET status = 'removed', join_code_hash = NULL, "
                 "display_name_norm = CASE "

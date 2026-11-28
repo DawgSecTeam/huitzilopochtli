@@ -643,9 +643,9 @@ def _leader_row(r: dict) -> str:
 <td class="num r" data-th="Time">{_time_cell(r)}</td></tr>"""
 
 
-def _board_table(rows: list) -> str:
+def _board_table(rows: list, empty: str = "No players yet.") -> str:
     body_rows = "".join(_leader_row(r) for r in rows) \
-        or '<tr><td colspan="5" class="empty" data-th="">No players yet.</td></tr>'
+        or f'<tr><td colspan="5" class="empty" data-th="">{esc(empty)}</td></tr>'
     return (f'<div class="table-wrap"><table><thead><tr>'
             f'<th class="r" scope="col">#</th><th scope="col">Player</th><th class="r" scope="col">Score</th>'
             f'<th scope="col">Services up</th><th class="r" scope="col">Time</th></tr></thead>'
@@ -679,7 +679,7 @@ def competition_page(data: dict, *, refresh: int = 5,
 ('<button type="button" class="btn" data-shot title="Copy an image of the leaderboard to the clipboard"'
  ' aria-label="Copy an image of the leaderboard to the clipboard"><span>Screenshot</span></button>')}
 </div>
-{_board_table(rows) if not comp.get("leaderboard_hidden") else
+{_board_table(rows, empty=("No scored runs — reserved seats that never bound a box are not listed." if comp["status"] == "ended" else "No players yet.")) if not comp.get("leaderboard_hidden") else
 ('<p class="empty muted">Standings are hidden by the organizers.</p>')}
 </section>
 </div>"""
@@ -1171,8 +1171,10 @@ def _home_leave_card(comp: CompetitionRecord, player: PlayerRecord,
     return f"""<section class="card home-card leave-card">
 <h2>Leave competition</h2>
 <p class="muted small">{esc(consequence)} This cannot be undone.</p>
+<p class="muted small"><strong>This forfeits the whole team.</strong> The seat
+is shared — leaving removes every teammate on the roster with it.</p>
 <form method="post" action="/c/{esc(comp.slug)}/leave" class="inline"
-      data-confirm="Leave this competition? This cannot be undone.">
+      data-confirm="Leave this competition? The whole team (every listed member) is removed with the seat. This cannot be undone.">
 <input type="hidden" name="csrf" value="{esc(leave_csrf)}">
 <button class="btn danger" type="submit">Leave competition</button>
 </form>
@@ -1508,7 +1510,8 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                            pool: Optional[dict] = None,
                            public_base: str = "",
                            predeploy_warn: str = "",
-                           team_members: Optional[dict] = None) -> str:
+                           team_members: Optional[dict] = None,
+                           lineup: Optional[list] = None) -> str:
     now = time.time()
     warm = warm or {"status": "idle"}
     pool = pool or {"status": "unknown"}
@@ -1741,7 +1744,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
             f'<button class="btn">{verb}</button></form>')
     body = f"""<section class="page-head-row">
 <div><div class="title-line"><h1>{esc(comp.name)}</h1>{comp_status_tag(comp.status)}</div>
-<p class="meta">/c/{esc(comp.slug)} · {esc(comp.scenario_name)}</p></div>
+<p class="meta">/c/{esc(comp.slug)} · {esc(" + ".join(lineup or [comp.scenario_name]))}</p></div>
 <div class="actions">{''.join(controls)}</div></section>
 {f'<p class="okmsg">{esc(msg)}</p>' if msg else ''}{f'<p class="error">{esc(error)}</p>' if error else ''}
 <section class="card"><div class="card-head"><h2>Settings</h2></div>

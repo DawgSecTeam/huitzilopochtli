@@ -1012,6 +1012,29 @@ def test_team_link_and_roster_http(tmp_path):
         now_row = _wait_db(db, "SELECT * FROM players WHERE player_id = ?",
                            (player["player_id"],), "joined_at")
         assert now_row["status"] == "invited"
+
+        # Finally: a forfeit is a tombstone -- the seat's team link must
+        # stop resolving (no ghost registrations on a dead slot) and the
+        # named roster goes with the seat.
+        status, _b, _h = _http_req(
+            port, "POST", "/c/team-http/leave",
+            body=urllib.parse.urlencode({"csrf": csrf}),
+            headers={"Cookie": cookie,
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        assert status == 303
+        status, page = _http(
+            "GET", base + f"/c/team-http/team/{fresh['team_token_plain']}")
+        assert status == 403, "a removed seat's team link must stop resolving"
+        conn2 = sqlite3.connect(db); conn2.row_factory = sqlite3.Row
+        left = conn2.execute(
+            "SELECT status FROM players WHERE player_id = ?",
+            (player["player_id"],)).fetchone()
+        members = conn2.execute(
+            "SELECT COUNT(*) AS n FROM team_members WHERE player_id = ?",
+            (player["player_id"],)).fetchone()
+        conn2.close()
+        assert left["status"] == "removed"
+        assert members["n"] == 0
     finally:
         proc.terminate()
         ws.shutdown()

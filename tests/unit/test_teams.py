@@ -154,6 +154,22 @@ def test_store_enforces_the_cap_atomically_with_the_insert(store):
         "anne", "bob"]
 
 
+def test_removed_seat_link_stops_resolving_and_roster_is_cleared(store, comp):
+    """A forfeited/removed seat is a tombstone: its team link must stop
+    seating browsers (no ghost registrations on a dead slot) and the named
+    roster goes with the seat."""
+    player, _ = _seat(store, comp)
+    store.add_team_member(player.player_id, "Hank")
+    token = player.team_token_plain
+    assert store.get_player_by_team_token(
+        competition.hash_team_token(SECRET, token)) is not None
+    store.remove_player(player.player_id)
+    assert store.get_player_by_team_token(
+        competition.hash_team_token(SECRET, token)) is None
+    assert store.list_team_members(player.player_id) == []
+    assert store.count_team_members(comp.id) == {}
+
+
 def test_competition_member_cap_defaults_and_validation(store):
     # The default cap needs no argument and lands on the record.
     comp = competition.create_competition(

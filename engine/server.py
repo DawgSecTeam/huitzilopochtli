@@ -531,6 +531,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- routing -------------------------------------------------------
 
+    def do_DELETE(self):
+        # No route speaks DELETE; answer JSON like every other API error
+        # instead of http.server's default HTML 501 (operator clients that
+        # script against the admin API should not have to parse two error
+        # dialects).
+        self._send_json(405, {"error": "method not allowed; use POST"})
+
     def do_GET(self):
         parts = urlsplit(self.path)
         path = parts.path
@@ -706,18 +713,33 @@ class Handler(BaseHTTPRequestHandler):
             # Named members per seat (the team rosters); appended as the last
             # column so existing column positions are stable for consumers.
             members_by_seat = self.store.team_members_by_competition(comp.id)
+            # One row per ACTIVE seat, not per board row: the board lists a
+            # seat only once a box is bound, and an operator exporting a
+            # roster mid-join would otherwise file away an empty sheet while
+            # seats wait for their VMs. Boxless seats carry blank rank/score
+            # columns and their own status.
+            board_rows = {r["player_id"]: r for r in board["leaderboard"]}
             rows = [["rank", "player", "status", "total", "hardening",
                      "forensics", "services",
                      "started_at", "ends_at", "last_checkin", "members"]]
-            for r in board["leaderboard"]:
+            for p in self.store.list_players(comp.id):
+                if p.status == "removed":
+                    continue
+                r = board_rows.get(p.player_id)
                 members = "; ".join(handle for handle, _added in
-                                    members_by_seat.get(r["player_id"], []))
-                rows.append([r["rank"], _csv_cell(r["name"]), r["status"],
-                             r["total"], r["hardening_points"],
-                             r["forensics_points"],
-                             r["service_points"], _csv_time(r["started_at"]),
-                             _csv_time(r["ends_at"]), _csv_time(r["last_checkin"]),
-                             _csv_cell(members)])
+                                    members_by_seat.get(p.player_id, []))
+                rows.append([
+                    r["rank"] if r else "",
+                    _csv_cell(r["name"] if r else p.display_name),
+                    r["status"] if r else p.status,
+                    r["total"] if r else 0,
+                    r["hardening_points"] if r else 0,
+                    r["forensics_points"] if r else 0,
+                    r["service_points"] if r else 0,
+                    _csv_time(r["started_at"] if r else p.started_at),
+                    _csv_time(r["ends_at"] if r else p.ends_at),
+                    _csv_time(r["last_checkin"] if r else None),
+                    _csv_cell(members)])
             self._send_csv(f"{comp.slug}-results.csv", rows)
             return
         if path.startswith("/admin/api/competitions/"):
@@ -1084,6 +1106,9 @@ class Handler(BaseHTTPRequestHandler):
             comp, board, players, session.csrf_token, msg, error,
             warm=claims.warm_status(comp.id),
             team_members=self.store.team_members_by_competition(comp.id),
+            lineup=[name for name, _version in
+                    (self.store.get_competition_scenarios(comp.id) or
+                     [(comp.scenario_name, comp.scenario_version)])],
             pool=pool,
             # Reuse the snapshot the card already renders, so the warning and
             # the count never disagree and the page costs one portal GET.
@@ -1108,8 +1133,19 @@ class Handler(BaseHTTPRequestHandler):
         username = str(form.get("username", ""))
         password = str(form.get("password", ""))
         if not auth.check_credentials(username, password):
+            # A failed operator login is exactly what the audit log exists
+            # for; it never names the password.
+            self.store.add_audit(
+                "admin", "admin_login_failed", None, None,
+                details_json=json.dumps({"username": username[:60]}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
             self._render_login_page("Invalid username or password.")
             return
+        self.store.add_audit(
+            "admin", "admin_login", None, None,
+            remote_addr=self.client_address[0]
+            if self.client_address else None)
         token, _csrf = auth.new_session(self.store, username)
         secure = os.environ.get("HUITZILOPOCHTLI_PUBLIC_URL", "").startswith("https")
         # Single-use: the pre-session token dies with the successful login.
@@ -1385,9 +1421,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         # The cap rides into the insert (checked atomically with it), so a
         # race that slips past the precheck above still cannot overrun it.
-        # False here is a duplicate registration (a teammate's second
-        # device) or that rare race -- either way the browser is seated;
-        # only a real roster change is worth an audit row.
+        # False means either a duplicate registration (a teammate's second
+        # device -- still seat them) or the lost side of a last-slot race
+        # (the roster filled between the precheck and this insert). The
+        # race loser must get the full-roster page, not a seat: a browser
+        # seated without a roster row could never be listed (the dashboard
+        # add form no-ops at the cap), so "your name joins the roster"
+        # would be a broken promise.
         if self.store.add_team_member(player.player_id, handle,
                                       max_members=comp.max_team_members):
             self.store.add_audit(
@@ -1395,6 +1435,13 @@ class Handler(BaseHTTPRequestHandler):
                 details_json=json.dumps({"handle": handle}),
                 remote_addr=self.client_address[0]
                 if self.client_address else None)
+        elif competition.team_roster_full(self.store, comp, player):
+            self._send_html(200, web.team_join_page(
+                comp, player, csrf,
+                error=(f"This team's roster is full ({comp.max_team_members} "
+                       "members). Ask a teammate to free a spot or the "
+                       "organizer to raise the cap.")))
+            return
         # Reuse the exact cookie the join path sets: one player slot per
         # browser, so the teammate's link hands them the team's run.
         self._redirect("/", extra_headers={"Set-Cookie": (
@@ -1437,7 +1484,9 @@ class Handler(BaseHTTPRequestHandler):
                     f"/c/{comp.slug}/me"))
                 return
             self.store.add_audit("player", "team_link_rotate", comp.id,
-                                 player.player_id)
+                                 player.player_id,
+                                 remote_addr=self.client_address[0]
+                                 if self.client_address else None)
         elif action in ("add", "remove"):
             handle = competition.validate_member_handle(
                 str(form.get("handle", "")))
@@ -1461,7 +1510,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.add_audit(
                     "player", f"team_member_{action}", comp.id,
                     player.player_id,
-                    details_json=json.dumps({"handle": handle}))
+                    details_json=json.dumps({"handle": handle}),
+                    remote_addr=self.client_address[0]
+                    if self.client_address else None)
         self._redirect(f"/c/{comp.slug}/me")
 
     def _handle_public_leave(self, slug: str) -> None:
@@ -1800,11 +1851,17 @@ class Handler(BaseHTTPRequestHandler):
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
             taken = {c.slug for c in self.store.list_competitions()}
+            # The rerun inherits the WHOLE settings set: the full lineup
+            # (a multi-box competition reruns as multi-box, not collapsed
+            # to entry 0) and the per-team member cap. Each entry's version
+            # currency is re-validated by create_competition.
+            lineup = self.store.get_competition_scenarios(comp.id) or \
+                [(comp.scenario_name, comp.scenario_version)]
             try:
                 new = competition.create_competition(
                     self.store, slug=competition.derive_slug(comp.name, taken),
-                    name=comp.name, scenario_name=comp.scenario_name,
-                    scenario_version=comp.scenario_version,
+                    name=comp.name, scenario_name=lineup[0][0],
+                    scenario_version=lineup[0][1],
                     max_players=comp.max_players, duration_s=comp.duration_s,
                     # A rerun is a new competition: it provisions its own pool.
                     # Inheriting the old pin could hand out last event's clones
@@ -1815,7 +1872,9 @@ class Handler(BaseHTTPRequestHandler):
                     workshop_pool_code=None,
                     theme_json=comp.theme_json,
                     join_instructions=comp.join_instructions,
-                    auto_end=comp.auto_end)
+                    auto_end=comp.auto_end,
+                    max_team_members=comp.max_team_members,
+                    scenarios=lineup)
             except (ValueError, TypeError) as exc:
                 if session is None:
                     self._send_json(400, {"error": str(exc)})
@@ -2149,13 +2208,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         released = False
         if action == "disqualify":
+            # §7.1: DQ keeps the box and the clock -- there is nothing to
+            # keep on a seat that never bound one, and reinstating such a
+            # seat used to fabricate a "running" status with a NULL clock.
+            # The roster already hides the button for these; the server
+            # refuses them too, and Remove is the verb that frees a seat.
+            if not player.box_id:
+                self._send_json(409, {"error": "disqualify needs a run to "
+                                               "keep -- this seat has no box "
+                                               "yet; remove it instead"})
+                return
             self.store.set_player_status(player.player_id, "disqualified")
         elif action == "reinstate":
             if player.status != "disqualified":
                 self._send_json(409, {"error": "only a disqualified player "
                                                "can be reinstated"})
                 return
-            self.store.set_player_status(player.player_id, "running")
+            # Restore the status the seat actually had before the DQ -- a
+            # blind "running" once resurrected a never-ran seat as Running
+            # with a NULL clock (and Extend then honestly moved 0 runs).
+            if player.finished_at is not None:
+                prior = "finished"
+            elif player.box_id and player.started_at is not None:
+                prior = "running"
+            else:
+                prior = "invited"
+            self.store.set_player_status(player.player_id, prior)
         elif action == "remove":
             self.store.remove_player(player.player_id)
         elif action == "release_box":
@@ -2404,7 +2482,16 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, KeyError) as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
-            self.store.add_audit(actor, "competition_create", comp.id)
+            self.store.add_audit(
+                actor, "competition_create", comp.id,
+                details_json=json.dumps({
+                    "slug": comp.slug, "name": comp.name,
+                    "scenario_name": comp.scenario_name,
+                    "scenario_version": comp.scenario_version,
+                    "max_players": comp.max_players,
+                    "max_team_members": comp.max_team_members}),
+                remote_addr=self.client_address[0]
+                if self.client_address else None)
             self._send_json(200, competition.public_competition_payload(
                 self.store, comp))
             return

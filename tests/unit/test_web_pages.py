@@ -1185,7 +1185,11 @@ def test_destructive_forms_use_data_confirm_and_one_modal():
     assert "\\'" not in page
     home = web.home_competition_page(_comp(), _player(), None, [], None,
                                      csrf="c", leave_csrf="c")
-    assert 'data-confirm="Leave this competition? This cannot be undone."' in home
+    # The leave confirm names the team casualties: a seat is a team, so a
+    # member's leave forfeits everyone listed on the roster.
+    assert ('data-confirm="Leave this competition? The whole team (every '
+            'listed member) is removed with the seat. This cannot be '
+            'undone."') in home
     # One shared modal in the external JS drives every [data-confirm] form.
     assert "getAttribute('data-confirm')" in web.JS
     assert "modal-back" in web.JS and ".modal{" in web.CSS
