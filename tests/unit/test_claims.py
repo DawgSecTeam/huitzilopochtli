@@ -975,6 +975,43 @@ def test_predeploy_blocker_passes_a_dead_pin_the_scenario_can_replace(
     assert claims.predeploy_blocker(store, c, pool={"status": "unpinned"}) is None
 
 
+def test_start_gate_passes_a_portal_less_engine(store, comp, monkeypatch):
+    """The start gate never demands a portal: dev engines and the test tier
+    start portal-less exactly as they did before the gate existed. (The gate
+    briefly reused the pre-deploy card's blockers, which refused every start
+    with the portal error; that is the card's contract, not the start's.)"""
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_URL", raising=False)
+    monkeypatch.delenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD",
+                       raising=False)
+    assert claims.start_template_blocker(store, comp) is None
+    # The pre-deploy card keeps its stricter contract: it needs the portal.
+    assert claims.predeploy_blocker(store, comp) == claims.PORTAL_MISSING
+
+
+def test_start_gate_refuses_a_pinned_pool_on_the_wrong_template(
+        store, monkeypatch):
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    c = competition.create_competition(
+        store, slug="gate-me", name="Gate Me", scenario_name="ClaimCompPool",
+        scenario_version=1, max_players=8, duration_s=3600,
+        workshop_pool_code="WRONG1")
+    snapshot = {"status": "ok", "available": 2, "total": 2,
+                "templates": {"WRONG1": 999}}
+    monkeypatch.setattr(claims, "live_pool_status", lambda comp, store=None:
+                        dict(snapshot))
+    reason = claims.start_template_blocker(store, c)
+    assert reason and "WRONG1 clones template 999" in reason
+    assert "ClaimCompPool's 174" in reason
+
+    # The same snapshot with the right template starts fine, and a pin the
+    # portal lost is the provision path's recovery, not the gate's refusal.
+    snapshot["templates"] = {"WRONG1": 174}
+    assert claims.start_template_blocker(store, c) is None
+    monkeypatch.setattr(claims, "live_pool_status",
+                        lambda comp, store=None: {"status": "unpinned"})
+    assert claims.start_template_blocker(store, c) is None
+
+
 def test_start_warm_refuses_a_click_that_cannot_work(store, comp, monkeypatch):
     monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
     store.update_competition(comp.id, workshop_pool_code=None)

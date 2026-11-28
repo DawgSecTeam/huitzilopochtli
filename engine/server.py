@@ -2043,10 +2043,11 @@ class Handler(BaseHTTPRequestHandler):
                         409, "Cannot start", message,
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
-            # A competition that cannot hand out the scenario's box must not
-            # open: check the pool/template up front so the operator sees the
-            # mismatch on the start rather than only on the first claim.
-            blocker = claims.predeploy_blocker(self.store, comp)
+            # A competition whose pinned pool clones the wrong ranked
+            # template must not open: the operator sees the mismatch on the
+            # start rather than only on the first claim. Portal absence is
+            # deliberately not a start blocker (see start_template_blocker).
+            blocker = claims.start_template_blocker(self.store, comp)
             if blocker:
                 self.store.add_audit(
                     actor, "competition_start_blocked", comp.id,

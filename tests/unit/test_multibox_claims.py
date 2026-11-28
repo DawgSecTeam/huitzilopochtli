@@ -152,6 +152,24 @@ def test_ensure_pool_provisions_per_entry_names(monkeypatch, store):
     assert provided[1] == ("huitz-ranked-prov-mb-a", 201)
 
 
+def test_start_gate_checks_each_entry_against_its_own_template(
+        store, multi, monkeypatch):
+    """The start gate holds every lineup pool to its OWN entry's template:
+    CODEB cloning 999 blocks the start naming MB-B, while a snapshot where
+    each pool matches its entry starts clean."""
+    comp, _player, _code = multi
+    monkeypatch.setenv("HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD", "pw")
+    snapshot = {"status": "ok", "available": 4, "total": 4, "pools": 2,
+                "templates": {"CODEA": 201, "CODEB": 999}}
+    monkeypatch.setattr(claims, "live_pool_status",
+                        lambda c, s=None: dict(snapshot))
+    reason = claims.start_template_blocker(store, comp)
+    assert reason and "CODEB clones template 999" in reason
+    assert "MB-B's 202" in reason
+    snapshot["templates"] = {"CODEA": 201, "CODEB": 202}
+    assert claims.start_template_blocker(store, comp) is None
+
+
 # --- bind routing ---------------------------------------------------------------
 
 def test_multi_box_binds_start_one_clock_and_keep_the_code(store, multi):

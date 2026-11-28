@@ -543,6 +543,43 @@ def no_pool_message(scenario_name: str) -> str:
             "scenario, then reload this page.")
 
 
+def _pool_template_mismatch(store: Store, comp: CompetitionRecord,
+                            pool: dict) -> Optional[str]:
+    """The first pinned pool cloning the wrong ranked template, or ``None``.
+
+    A pool pointing at a template other than its lineup entry's would hand
+    out the wrong box, so callers block the competition up front (before it
+    opens) instead of only failing the first claim. ``pool`` is a
+    ``live_pool_status`` snapshot: its ``templates`` map holds every pinned
+    pool code's template, and a pin the portal said nothing about (or a
+    scenario without a pool block) is skipped here -- the provision path
+    enforces the same rule with the real spec at claim time.
+    """
+    templates = pool.get("templates") or {}
+    if store is not None and is_multi(store, comp):
+        pin_pairs = [(name, code) for name, code, _nm
+                     in store.list_competition_pools(comp.id) if code]
+        versions = dict(store.get_competition_scenarios(comp.id))
+    else:
+        pin_pairs = [(comp.scenario_name, comp.workshop_pool_code)]
+        versions = {comp.scenario_name: comp.scenario_version}
+    for name, code in pin_pairs:
+        if not code:
+            continue
+        spec = scenario_mod.load_pool_spec(
+            store, name, versions.get(name, comp.scenario_version))
+        if not spec:
+            continue
+        template = templates.get(code)
+        if (template is not None
+                and template != spec.get("template_vm_id")):
+            return (f"workshop pool {code} clones template "
+                    f"{template}, not {name}'s "
+                    f"{spec.get('template_vm_id')}; remove that pool "
+                    "from the portal and retry")
+    return None
+
+
 def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
                       pool: Optional[dict] = None,
                       check_pin: bool = True) -> Optional[str]:
@@ -585,46 +622,14 @@ def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
             gone = not _pin_is_alive(base, password, pinned)
         if not gone:
             # The pools are there; each must clone its lineup entry's ranked
-            # template. A pool pointing at a different template would hand
-            # out the wrong box, so it blocks the competition up front
-            # (before it opens) instead of only failing the first claim.
-            # With a handed-in snapshot (the competition page) the templates
-            # are already known; a cold caller pays one portal read for the
-            # mirror pin, and a portal blip is not a mismatch -- the claim
-            # and warm paths report the real transport error.
-            multi = store is not None and is_multi(store, comp)
-            templates = pool.get("templates") if pool is not None else None
-            if multi:
-                pin_pairs = [(name, code) for name, code, _nm
-                             in store.list_competition_pools(comp.id) if code]
-                versions = dict(store.get_competition_scenarios(comp.id))
-            else:
-                pin_pairs = [(comp.scenario_name, comp.workshop_pool_code)]
-                versions = {comp.scenario_name: comp.scenario_version}
-            for name, code in pin_pairs:
-                if not code:
-                    continue
-                spec = scenario_mod.load_pool_spec(
-                    store, name, versions.get(name, comp.scenario_version))
-                if not spec:
-                    continue  # no pool block: the no_pool_message below
-                if templates is not None:
-                    template = templates.get(code)
-                elif multi:
-                    template = None  # enforced per entry at provision time
-                else:
-                    try:
-                        snap = workshop.pool_snapshot(base, password, code)
-                    except workshop.WorkshopError:
-                        snap = None
-                    template = ((snap.get("config") or {}).get("template_vm_id")
-                                if snap else None)
-                if (template is not None
-                        and template != spec.get("template_vm_id")):
-                    return (f"workshop pool {code} clones template "
-                            f"{template}, not {name}'s "
-                            f"{spec.get('template_vm_id')}; remove that pool "
-                            "from the portal and retry")
+            # template (see _pool_template_mismatch). With a handed-in
+            # snapshot the templates are already known; a cold caller takes
+            # one now, and a portal blip is not a mismatch -- the claim and
+            # warm paths report the real transport error.
+            snap_pool = pool if pool is not None else live_pool_status(
+                comp, store)
+            if isinstance(snap_pool, dict) and snap_pool.get("status") == "ok":
+                return _pool_template_mismatch(store, comp, snap_pool)
             return None
         # The pin is dead, but the scenario can still clone a fresh pool:
         # warm_boxes recovers that itself, so it is not a blocker.
@@ -632,6 +637,32 @@ def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
                                        comp.scenario_version):
         return no_pool_message(comp.scenario_name)
     return None
+
+
+def start_template_blocker(store: Store, comp: CompetitionRecord) -> Optional[str]:
+    """The start gate: why the competition must not open, or ``None``.
+
+    Unlike :func:`predeploy_blocker` this never demands a portal: a
+    portal-less engine (development, the test tier) starts exactly as it did
+    before the gate existed, and a missing or unreachable portal surfaces as
+    the claim path's own error at the first join. What it does refuse is a
+    verified misconfiguration -- a pinned pool that is alive and clones a
+    template other than its scenario's, which would hand out the wrong box
+    to every player.
+    """
+    if not config()[0] or not _admin_password():
+        return None
+    if not (comp.workshop_pool_code
+            or (is_multi(store, comp)
+                and any(c for _n, c, _nm
+                        in store.list_competition_pools(comp.id) if c))):
+        return None
+    pool = live_pool_status(comp, store)
+    if pool.get("status") != "ok":
+        # No pool (nothing to pre-deploy from) or portal trouble: the claim
+        # path reports those; neither is a proven wrong-template setup.
+        return None
+    return _pool_template_mismatch(store, comp, pool)
 
 
 def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
