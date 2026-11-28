@@ -1,17 +1,7 @@
-"""BoxSpec: the input that ties a nakon-planted box to a huitzilopochtli rubric.
-
-A box spec points at the two *agent-authored* files -- a huitz scenario YAML
-(the checks) and a nakon config JSON (the vulns to plant) -- plus a provider
-config (how to reach / package the box).
-
-One scenario file authors both build targets: its base content is the honor
-box, and its optional ``ranked:`` block (engine URL, ranked-only checks,
-services, adversary, pool) is the ranked box. The build target is chosen with
-``--mode`` (default: the file's ``scenario.mode``), never stored in the spec.
-
-boxbuilder never knows the vuln->check mapping; the agent authors both halves.
-See boxbuilder/README.md.
-"""
+"""BoxSpec: a huitz scenario YAML + a nakon config JSON + a provider.
+One scenario file authors both targets: base content is the honor box,
+its optional ``ranked:`` block the ranked box; ``--mode`` picks, never
+the spec. boxbuilder never pairs vulns with checks — see README.md."""
 import json
 import os
 from dataclasses import dataclass, field
@@ -25,23 +15,16 @@ from boxbuilder.os_family import KNOWN_OS, known_os
 
 @dataclass
 class BoxSpec:
-    """Resolved box-building request.
-
-    `scenario_path` and `nakon_config_path` are absolute paths resolved
-    relative to the spec file's directory (or CWD if given directly).
-    `provider` is a dict shaped per the named provider (see providers/).
-    `authoring_key_path` is optional -- if absent, keys.py generates and
-    persists one into the artifacts dir.
-    """
+    """Resolved box-building request. Paths are absolute, resolved against
+    the spec file's dir; a missing `authoring_key_path` means keys.py
+    generates one into the artifacts dir."""
 
     scenario_path: str
     nakon_config_path: str
     provider: dict = field(default_factory=dict)
     authoring_key_path: Optional[str] = None
-    # Source file dir, for resolving relative paths inside the spec.
     base_dir: str = "."
 
-    # --- build-target overrides (None = whatever the scenario authors) ---
     mode_override: Optional[str] = None
     engine_url_override: Optional[str] = None
 
@@ -80,12 +63,8 @@ class BoxSpec:
 
 def validate_inputs(scenario: dict, nakon_config: dict, mode: Optional[str] = None,
                     engine_url: Optional[str] = None) -> None:
-    """Structural validation of the two agent-authored inputs.
-
-    Shared by load_spec() (spec-file path) and cli._spec_from_args() (direct
-    flags), so both routes fail early on malformed inputs rather than
-    surfacing a cryptic error mid-pipeline.
-    """
+    """Structural validation of the two agent-authored inputs. Shared by
+    load_spec() and cli._spec_from_args() so both routes fail early."""
     if not isinstance(scenario, dict) or "scenario" not in scenario:
         raise ValueError("not a valid huitz scenario (missing 'scenario')")
     declared = scenario["scenario"].get("mode")
@@ -97,16 +76,14 @@ def validate_inputs(scenario: dict, nakon_config: dict, mode: Optional[str] = No
     if target not in MODES:
         raise ValueError(f"mode must be 'honor' or 'ranked', got {target!r}")
 
-    # Resolve the actual build target now: this is where a ranked build of a
-    # scenario with no ranked block, or with no engine URL, fails early.
     merge_effective(scenario, target, engine_url=engine_url)
 
     if not isinstance(nakon_config, dict) or not isinstance(nakon_config.get("machines"), list):
         raise ValueError("nakon config must have a 'machines' list")
     machines = nakon_config["machines"]
+    # One machine per box: multi-machine configs deploy only the first
+    # machine, so they are refused here.
     if len(machines) != 1:
-        # v1 targets one box. A multi-machine config would silently deploy only
-        # the first machine, which reads as success while leaving boxes bare.
         raise ValueError(
             f"nakon config must describe exactly one machine, got {len(machines)}")
     for idx, machine in enumerate(machines):
@@ -134,13 +111,9 @@ def _resolve(path: str, base_dir: str) -> str:
 
 def load_spec(spec_path: str, mode: Optional[str] = None,
               engine_url: Optional[str] = None) -> BoxSpec:
-    """Load + validate a box spec YAML.
-
-    The spec is a thin wrapper; structural validation of the *contents*
-    (scenario shape, rubric correctness) is delegated to the existing
-    authoring validator at compile time. Here we only check the spec itself
-    resolves and has the required keys.
-    """
+    """Load + validate a box spec YAML. The spec is a thin wrapper; content
+    validation (scenario shape, rubric) is delegated to the authoring
+    validator at compile time."""
     with open(spec_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
@@ -160,8 +133,6 @@ def load_spec(spec_path: str, mode: Optional[str] = None,
         if not os.path.isfile(path):
             raise ValueError(f"{spec_path}: {label} path does not exist: {path}")
 
-    # Load both now so .mode / .nakon_machines() work and we fail early on
-    # malformed inputs rather than mid-pipeline.
     with open(scenario_path, "r", encoding="utf-8") as f:
         scenario = yaml.safe_load(f)
     with open(nakon_config_path, "r", encoding="utf-8") as f:

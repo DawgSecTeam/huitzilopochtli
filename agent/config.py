@@ -22,22 +22,15 @@ class AgentConfig:
 
 
 def load_config(config_path: str) -> AgentConfig:
-    """Read the on-box JSON config (§9.7) and return an AgentConfig.
+    """Read and validate the on-box JSON config, returning an AgentConfig.
 
     Shape: {"mode": "honor"|"ranked", "manifest_path": str,
-            "rubric_path": str|null, "identity_path": str|null,
-            "report_path": str, "checkin_interval_s": int|null,
-            "authoring_public_key_path": str|null,
-            "enrollment_token": str|null,
-            "notifications": bool (optional, default true)}
-
-    authoring_public_key_path is optional only together with
-    allow_unsigned_manifest: without a verification key the agent refuses to
-    run unless allow_unsigned_manifest is true (development only; see
-    _load_manifest). enrollment_token is consumed only on first ranked boot.
-    notifications is optional (defaults on) -- set false to silence the
-    score-change sound/toast on a box where it is unwanted.
-    """
+            "rubric_path"?: str|null, "identity_path"?: str|null,
+            "report_path": str, "checkin_interval_s"?: int|null,
+            "authoring_public_key_path"?: str|null, "enrollment_token"?: str,
+            "allow_unsigned_manifest"?: bool, "notifications"?: bool}
+    No verification key + no allow_unsigned_manifest => the agent refuses to
+    run (fail closed)."""
     with open(config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 

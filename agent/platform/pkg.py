@@ -3,13 +3,11 @@
 import shutil
 import subprocess
 
-
 def _run(cmd: list):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except (subprocess.TimeoutExpired, OSError):
         return None
-
 
 def _dpkg_check(name: str) -> tuple:
     proc = _run(["dpkg", "-s", name])
@@ -22,7 +20,6 @@ def _dpkg_check(name: str) -> tuple:
             break
     return (True, version)
 
-
 def _rpm_check(name: str) -> tuple:
     proc = _run(["rpm", "-q", name])
     if proc is None or proc.returncode != 0:
@@ -30,11 +27,9 @@ def _rpm_check(name: str) -> tuple:
     output = proc.stdout.strip()
     if not output:
         return (True, None)
-    # best-effort: strip leading "<name>-" if present, else return raw output
     prefix = name + "-"
     version = output[len(prefix):] if output.startswith(prefix) else output
     return (True, version or None)
-
 
 def _apk_check(name: str) -> tuple:
     proc = _run(["apk", "info", "-e", name])
@@ -50,7 +45,6 @@ def _apk_check(name: str) -> tuple:
                 version = line
                 break
     return (True, version)
-
 
 def package_installed(name: str) -> tuple:
     """Returns (installed: bool, version: str | None)."""

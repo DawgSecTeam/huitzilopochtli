@@ -33,7 +33,6 @@ import functools
 import hashlib
 import os
 
-# --- begin transliteration of ed25519.cr.yp.to/python/ed25519.py ---
 
 b = 256
 q = 2 ** 255 - 19
@@ -45,12 +44,6 @@ def H(m):
 
 
 def expmod(base, e, m):
-    # Semantically identical to the reference implementation's square-and-
-    # multiply loop, but the C-level three-argument pow() is dramatically
-    # faster on the multi-hundred-bit exponents this module uses. Verification
-    # runs this many times per check-in on the engine; the reference recursive
-    # version made a single verify take seconds. The arithmetic result is the
-    # same integer; RFC 8032 vectors pin that (tests/unit/test_crypto.py).
     return pow(base, e, m)
 
 
@@ -162,9 +155,9 @@ def decodepoint(s):
     P = [x, y]
     if not isoncurve(P):
         raise ValueError("decoding point that is not on curve")
-    # Reject non-canonical encodings (including a sign bit that does not match
-    # the recovered x). Without this, two byte strings can decode to the same
-    # point, which makes signatures malleable.
+    # Reject non-canonical encodings (incl. a sign bit that does not match the
+    # recovered x): without this, two byte strings decode to one point and
+    # signatures become malleable.
     if encodepoint(P) != s:
         raise ValueError("non-canonical point encoding")
     return P
@@ -203,7 +196,6 @@ def checkvalid(s, m, pk):
         raise ValueError("signature does not pass verification")
 
 
-# --- end transliteration ---
 
 
 def keypair() -> tuple:

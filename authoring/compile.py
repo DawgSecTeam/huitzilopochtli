@@ -11,7 +11,7 @@ from authoring.readme_lint import lint_readme
 from authoring.sign_scenario import sign_manifest
 from authoring.validate import validate_scenario_yaml
 from common.crypto.signing import public_key_from_private
-from common.scenario_record import build_scenario_parts, base_mode
+from common.scenario_record import build_scenario_parts
 from common.schema import (
     Manifest,
     Mode,
@@ -20,22 +20,15 @@ from common.schema import (
     validate_rubric,
 )
 
-_MAX_LOGO_BYTES = 150 * 1024  # Keep signed manifest small (logo is data: URI).
-_MAX_README_BYTES = 64 * 1024  # Handbook text for `huitz readme` (plain UTF-8).
+_MAX_LOGO_BYTES = 150 * 1024  # cap keeps the signed manifest small (logo is a data: URI).
+_MAX_README_BYTES = 64 * 1024
 
 
 def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> tuple:
-    """Build the small cosmetic theme subset that ships in the Manifest.
+    """Build the cosmetic theme subset that ships in the Manifest.
 
-    `readme` (the player-facing handbook) is embedded as TEXT: it is what
-    lets `huitz readme` render the handbook from the report snapshot as any
-    user, in both modes, without a desktop or a theme attachment. The
-    desktop-asset side of the theme (wallpaper, shortcuts, the rendered
-    README.html) still flows through the vulndb theme attachments at plant
-    time and is untouched by this.
-
-    Returns (manifest_theme, readme_text); readme_text is what the spoiler
-    lint (authoring/readme_lint.py) runs against.
+    Returns (manifest_theme, readme_text); the handbook rides as text so
+    `huitz readme` works for any user, and readme_text feeds the spoiler lint.
     """
     if not theme_raw:
         return None, None
@@ -62,7 +55,7 @@ def _build_manifest_theme(theme_raw: Optional[dict], yaml_path: str) -> tuple:
         manifest_theme["logo_b64"] = base64.b64encode(data).decode("ascii")
 
     readme = theme_raw.get("readme")
-    text = None  # a theme may brand without a handbook; None just skips the lint
+    text = None  # a theme may brand without a handbook; None skips the lint
     if readme:
         readme_path = readme if os.path.isabs(readme) else os.path.join(os.path.dirname(yaml_path), readme)
         if not os.path.isfile(readme_path):
@@ -83,10 +76,8 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
                      mode: Optional[str] = None, engine_url: Optional[str] = None) -> dict:
     """Compile scenario YAML into signed manifest, rubric, and engine record.
 
-    ``mode`` selects the build target (default: the file's ``scenario.mode``).
-    ``ranked`` merges the file's ``ranked:`` block over the base content;
-    ``honor`` never reads it. ``engine_url`` overrides the authored address.
-    """
+    ``mode`` picks the target (default: ``scenario.mode``); ``ranked`` merges
+    the file's ``ranked:`` block over base content, ``honor`` never reads it."""
     with open(yaml_path, "r") as f:
         parsed = yaml.safe_load(f.read())
 
@@ -101,12 +92,8 @@ def compile_scenario(yaml_path: str, out_dir: str, authoring_private_key: bytes,
 
     manifest_theme, readme_text = _build_manifest_theme(effective["theme"], yaml_path)
 
-    # Spoiler lint (HANDBOOK_GUIDE.md): a forensics answer in the handbook
-    # blocks the compile; lesser leaks surface as warnings on the outputs.
-    # Ranked builds additionally block on the tier-5 leaks (planted names,
-    # end-state paraphrases, count reveals, prose fix instructions) — the
-    # handbook ships on a root-capable ranked box, so it must not read as
-    # the attacker's setup playbook (see authoring/readme_lint.py).
+    # Spoiler lint: a forensics answer in the handbook blocks the compile;
+    # lesser leaks surface as readme_warnings.
     readme_errors, readme_warnings = [], []
     if readme_text:
         readme_errors, readme_warnings = lint_readme(

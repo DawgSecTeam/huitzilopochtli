@@ -15,26 +15,6 @@ from typing import Optional
 from common.evaluator import evaluate
 from common.schema import Evidence
 
-DIGEST_SCHEMA_VERSION = 1
-
-_PLAYERS_COLUMNS = (
-    "player_id, competition_id, display_name, display_name_norm, status,"
-    " joined_at, started_at, ends_at, finished_at, box_id"
-)
-_SCORES_COLUMNS = (
-    "box_id, total, updated_at, first_scored_at, hardening_points,"
-    " service_points, ungraded_count, score_json"
-)
-_SLA_COLUMNS = (
-    "box_id, check_id, state, consec_ok, consec_fail, last_credited_at,"
-    " accrued_points, history_json"
-)
-_ADVERSARY_COLUMNS = (
-    "box_id, event_id, action, issued_at, params_json, affects_check,"
-    " restored_at"
-)
-
-
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     uri = f"file:{db_path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
@@ -44,15 +24,10 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
 
 def _competitions(conn: sqlite3.Connection,
                   slug: Optional[str] = None) -> list[dict]:
-    # Shape-adaptive on purpose: engines deployed before the v1.1 migration
-    # lack later columns (workshop_pool_name, auto_end, ...), and every
-    # consumer downstream reads competition fields through .get().
     rows = [_row_dict(r) for r in conn.execute("SELECT * FROM competitions")]
     if not rows:
-        # A removed competition deletes its row but leaves its boxes,
-        # scores and check-ins as history (architecture.md §21: "boxes and
-        # scores remain as history"). Rebuild the competition context from
-        # what survived so those runs stay reportable.
+        # A removed competition deletes its row but keeps boxes/scores as
+        # history (§21): rebuild the context from what survived.
         rows = _archived_competitions(conn)
     if slug is not None:
         rows = [c for c in rows if c.get("slug") == slug]
@@ -175,14 +150,10 @@ def _archived_players(conn: sqlite3.Connection,
 
 
 def _score_for(conn: sqlite3.Connection, box_id: str) -> Optional[dict]:
-    # ungraded_count post-dates the reference install (store.py's migration
-    # adds it); read it only when the column exists, default 0 otherwise.
     columns = {r["name"] for r in conn.execute(
         "SELECT name FROM pragma_table_info('scores')")}
     selected = ("box_id, total, updated_at, first_scored_at,"
                 " hardening_points, service_points, score_json")
-    # Untracked: forensics_points rides the score payload when the engine's
-    # schema is new enough to have separated it from hardening_points.
     if "forensics_points" in columns:
         selected = selected.replace(
             "hardening_points,",
@@ -246,17 +217,13 @@ def _json(raw: Optional[str]) -> dict:
         return {}
 
 
-# --- the debrief facts ------------------------------------------------------------
 
 
 def build_digest(db_path: Path,
                  competition_slug: Optional[str] = None) -> list[dict]:
-    """Recompute debrief facts from the engine's store.
+    """Recompute debrief facts from the engine's store, one pass per team.
 
-    Read-only: connects, reads (competition, players, scores, check-ins,
-    SLA ledger, adversary log), and returns one fact dict per team. Every
-    number here comes from the db; nothing is invented or averaged in.
-    """
+    Read-only; every number comes from the db — nothing invented or averaged."""
     conn = _connect_readonly(db_path)
     try:
         competitions = _competitions(conn)
@@ -378,11 +345,8 @@ def _run_span(checkins: list[dict]) -> dict:
 
 
 def _check_facts(results: list[dict], maxes: dict) -> list[dict]:
-    """Per-check facts: one row per check, with the engine's own verdict.
-
-    An absent row means the check never scored for this team; a row with
-    ``solved`` is the good case. ``max_points`` is present only when the
-    run's rubric is still in the store."""
+    """Per-check rows carrying the engine's own verdict (absent = never
+    scored); ``max_points`` only while the run's rubric is still stored."""
     rows = []
     for entry in results:
         cid = entry.get("check_id")
@@ -400,12 +364,9 @@ def _check_facts(results: list[dict], maxes: dict) -> list[dict]:
 def _service_facts(sla_rows: list[dict]) -> list[dict]:
     """Per-service facts, straight from the SLA ledger (authoritative).
 
-    Up/down is a judgement the engine made with the rubric in hand; a
-    debrief reports the ledger's own record — final state, accrued points,
-    and the retained tick history — and never re-derives health from raw
-    evidence, which without the run's rubric it cannot do honestly. A full
-    run-long uptime percentage is therefore not claimed: the engine keeps
-    only the last SLA_HISTORY_MAX ticks per service."""
+    Health is the engine's rubric-in-hand judgement — report its record,
+    never re-derive from raw evidence. No run-long uptime %: only the last
+    SLA_HISTORY_MAX ticks are retained."""
     rows = []
     for rec in sla_rows:
         rows.append({
@@ -441,12 +402,10 @@ def _incident_facts(adversary: list[dict]) -> list[dict]:
 
 def _feedback_pool(results: list[dict], adversary: list[dict],
                    maxes: dict) -> list[dict]:
-    """What an LLM narrates from: first the misses, then other notes.
+    """What an LLM narrates from: misses first, ordered by importance.
 
-    Ordering is importance-shaped (a red-team miss beats a solved check;
-    the rest sorts by points). The narrate module picks among these; it
-    never invites a check the digest did not list. points_lost carries the
-    check's max only when the run's rubric is still in the store."""
+    narrate() only ever picks among these ids — never an unlisted check;
+    points_lost carries the max only while the rubric is still stored."""
     pool = []
     for entry in results:
         if entry.get("passed"):

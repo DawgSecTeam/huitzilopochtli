@@ -15,10 +15,8 @@ def _normalize_strings(obj):
     if isinstance(obj, str):
         return unicodedata.normalize("NFC", obj)
     if isinstance(obj, dict):
-        # Normalize keys and values so decomposed vs composed forms match.
-        # Refuse two keys that normalize to the same string: silently keeping
-        # one would make canonical bytes verify for a body whose parsed keys
-        # differ (signature semantics ambiguity).
+        # Refuse two keys that normalize to the same string: keeping one
+        # silently would verify bytes for a body whose parsed keys differ.
         normalized = {}
         for key, value in obj.items():
             norm_key = _normalize_strings(key)

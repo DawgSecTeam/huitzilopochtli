@@ -1,20 +1,12 @@
-"""Engine build identity.
-
-The deployment root is the directory that contains ``engine/``: a bundle
-directory (as laid down by packaging/build_engine_bundle.py) or the engine VM's
-install root. The bundle build writes ``build_info.json`` there at build time;
-a git-based deploy writes the same file from the pulled checkout. The engine
-reads it once at startup and reports it on the admin dashboard.
-
-An absent or unreadable file is reported honestly as an unknown build — the
-dev checkout is the normal case; the admin page still renders.
-"""
+"""Engine build identity: ``build_info.json`` at the deployment root (the
+directory containing ``engine/``), read once at startup and reported on the
+admin dashboard. An absent or unreadable file reports an unknown build."""
 import json
 import os
 import time
 
-# Captured at import ~= process start; the dashboard shows it so an operator
-# can tell "old code still running" from "restart happened".
+# Captured at import ~= process start; lets the dashboard distinguish "old
+# code still running" from "restart happened".
 STARTED_AT = time.time()
 
 _CACHE = None

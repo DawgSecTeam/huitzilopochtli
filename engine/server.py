@@ -66,8 +66,8 @@ def _require_str(d: dict, key: str) -> str:
     return v
 
 
-#: SQLite INTEGER is signed 64-bit: a larger seq OverflowError'd at bind
-#: time (a 500) instead of being rejected as malformed.
+#: SQLite INTEGER is signed 64-bit: a larger seq must be rejected as
+#: malformed, not OverflowError at bind (a 500).
 _MAX_WIRE_INT = 2 ** 63 - 1
 
 
@@ -110,9 +110,8 @@ def _nesting_exceeds(value, limit: int) -> bool:
 
 
 def _bundle_from_dict(d: dict) -> Bundle:
-    # Wire-layer type validation: a wrong JSON type must map to a clean
-    # 400 "malformed bundle", not fall out of the handler as a 500 -- or
-    # worse, be accepted (a float seq used to advance last_seq to 2.5).
+    # Wire-layer type validation: a wrong JSON type maps to a clean 400
+    # "malformed bundle" — never a 500, and never a coerced accept.
     _require_str(d, "box_id")
     _require_int(d, "seq")
     _require_str(d, "boot_id")
@@ -264,7 +263,6 @@ class _Flash:
 
 
 class Handler(BaseHTTPRequestHandler):
-    # Populated by main() before the server starts serving.
     store: Store = None
     server_secret: bytes = b""
     admin_token: str = ""
@@ -277,7 +275,6 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # quiet down default stderr access log
         pass
 
-    # --- response helpers ------------------------------------------------
 
     def _send_html(self, status: int, body: str, extra_headers=None) -> None:
         # ?frag=<id> (sent by the in-page poller) answers with just that poll
@@ -468,8 +465,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def _reject_constant(value):
             # Python's json accepts NaN/Infinity by default; neither is JSON,
-            # and canonicalization (used for signatures and audit storage)
-            # must be strict. Reject them at the wire boundary.
+            # and canonicalization (signatures, audit storage) must be strict.
             raise ValueError(f"non-finite JSON constant {value}")
 
         return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
@@ -529,7 +525,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    # --- routing -------------------------------------------------------
 
     def do_DELETE(self):
         # No route speaks DELETE; answer JSON like every other API error
@@ -542,7 +537,6 @@ class Handler(BaseHTTPRequestHandler):
         parts = urlsplit(self.path)
         path = parts.path
         if path.startswith("/static/"):
-            # Public, cacheable assets -- no auth, no cookies.
             asset = web.static_asset(path)
             if asset is None:
                 self._send_html(404, web.error_page(
@@ -559,8 +553,6 @@ class Handler(BaseHTTPRequestHandler):
                 # Kept as an integer for engine/deploy/guard.py (a deploy is
                 # refused while any competition is live).
                 "live": len(live),
-                # Detail for monitoring and for the guard's operator message:
-                # which competitions, not just how many.
                 "live_competitions": [
                     {"id": c.id, "slug": c.slug, "name": c.name,
                      "scenario_name": c.scenario_name,
@@ -608,14 +600,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, leaderboard.get_leaderboard(self.store, scenario))
             return
         if path == "/":
-            # A player who is in a live competition sees their run here, not
-            # a list of competitions they cannot currently join. Everyone else
-            # gets the public list (admins also see non-live competitions).
+            # A player in a live competition sees their run here, not a list
+            # of competitions they cannot currently join.
             player, current = self._current_player()
             if competition.is_active_player(player, current):
                 if not player.box_id:
-                    # Keep the manual join code fresh even on a portal without
-                    # /api/prebind; the page below shows it.
+                    # Keep the manual join code fresh even on a portal
+                    # without /api/prebind; the page below shows it.
                     claims.rotate_code_if_needed(
                         self.store, player, self.server_secret,
                         back_url=(f"{self._public_base()}/c/{current.slug}"
@@ -664,7 +655,6 @@ class Handler(BaseHTTPRequestHandler):
             self._render_admin_dashboard(session)
             return
         if path == "/admin/styleguide":
-            # Component reference for design rounds; not linked from the nav.
             session = self._admin_page_session()
             if session is None:
                 self._render_login_page("Sign in to continue.")
@@ -672,10 +662,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(200, web.styleguide_page())
             return
         if path == "/admin/audit":
-            # Documented in RANKED_COMPETITION.md section 5: the console view
-            # over store.list_audit(). Gated and rendered exactly like the
-            # other admin pages (session cookie, or the admin-token header,
-            # which mints a page session on the way through).
             session = self._admin_page_session()
             if session is None:
                 self._render_login_page("Sign in to continue.")
@@ -816,13 +802,11 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_public_me()
             return
         if "text/html" in (self.headers.get("Accept") or ""):
-            # A browser typing a bad URL gets a styled page; API clients keep JSON.
             self._send_html(404, web.error_page(404, "Not found",
                                                 "The page you requested does not exist.", "/"))
         else:
             self._send_json(404, {"error": "not found"})
 
-    # --- public pages ---------------------------------------------------
 
     def _handle_public_competition(self, path: str, parts) -> None:
         rest = path[len("/c/"):].strip("/").split("/")
@@ -853,7 +837,6 @@ class Handler(BaseHTTPRequestHandler):
                     "Join again to get a new slot.", f"/c/{comp.slug}/join"))
                 return
             if player.box_id:
-                # The run is live; the main page is the run now.
                 self._redirect("/")
                 return
             self._send_html(200, web.join_success_page(
@@ -867,7 +850,6 @@ class Handler(BaseHTTPRequestHandler):
             player, current = self._current_player()
             if competition.is_active_player(player, current):
                 if current.id == comp.id:
-                    # Already holds a slot here -- the main page is the run.
                     self._redirect("/")
                     return
                 self._send_html(409, web.join_form_page(
@@ -1020,29 +1002,28 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._redirect(back)
 
-    # --- admin renderers ------------------------------------------------
 
     def _render_admin_dashboard(self, session) -> None:
         comps = self.store.list_competitions()
         counts = {c.id: self.store.count_players(c.id) for c in comps}
-        # Structural only (no portal read on the 30 s poll): a competition
-        # with no pool to clone from is flagged on its row before the operator
-        # opens it and presses Pre-deploy.
         pool_warn = {}
         for comp in comps:
             if comp.status == "ended":
                 continue
+            # Structural only (no portal read on this poll): a competition
+            # with no pool to clone from is flagged on its row before the
+            # operator opens it and presses Pre-deploy.
             if claims.predeploy_blocker(self.store, comp, check_pin=False):
                 pool_warn[comp.id] = claims.POOL_SOURCE_MISSING_SHORT
         self._send_html(200, web.admin_dashboard_page(
             comps, counts, session.csrf_token, pool_warn=pool_warn,
             pool_counts=claims.portal_pool_counts()))
 
-    # audit_log is append-only and store.list_audit() reads a bounded window
-    # of it, so a filtered view searches a window too: wider than the page,
-    # fixed in size, and stated on the page.
     _AUDIT_LIMIT_DEFAULT = 200
     _AUDIT_LIMIT_MAX = 1000
+    # The audit log is append-only and list_audit() reads a bounded window of
+    # it, so a filtered view searches a window too: wider than the page,
+    # fixed in size, and stated on the page.
     _AUDIT_FILTER_SCAN = 2000
 
     def _render_admin_audit(self, query: dict) -> None:
@@ -1063,8 +1044,6 @@ class Handler(BaseHTTPRequestHandler):
         scan = self._AUDIT_FILTER_SCAN if wanted else None
         rows = self.store.list_audit(limit=scan or limit)
         if wanted:
-            # Rows outlive their competition: a deleted one still owns its
-            # history, and an unmatched filter just shows nothing.
             keep = comp.id if comp is not None else wanted
             rows = [r for r in rows if r.competition_id == keep][:limit]
         player_names = {}
@@ -1084,9 +1063,9 @@ class Handler(BaseHTTPRequestHandler):
         sync_errors = scenario_mod.sync_box_scenarios(self.store)
         if sync_errors:
             error = error or "; ".join(sync_errors[:3])
-        # A pool block that cannot expand is a per-box problem, never a
-        # scan failure: the picker renders and marks that scenario unusable
-        # with the stated reason (scenario.admin_picker_rows).
+        # A pool block that cannot expand is a per-box problem, never a scan
+        # failure: the picker renders and marks that scenario unusable with
+        # the stated reason (scenario.admin_picker_rows).
         self._send_html(200 if not error else 400, web.admin_new_competition_page(
             scenario_mod.admin_picker_rows(), session.csrf_token,
             error))
@@ -1116,7 +1095,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.store, comp, pool=pool) or "",
             public_base=self._public_base()))
 
-    # --- POST handlers --------------------------------------------------
 
     def _handle_admin_login(self) -> None:
         try:
@@ -1148,7 +1126,6 @@ class Handler(BaseHTTPRequestHandler):
             if self.client_address else None)
         token, _csrf = auth.new_session(self.store, username)
         secure = os.environ.get("HUITZILOPOCHTLI_PUBLIC_URL", "").startswith("https")
-        # Single-use: the pre-session token dies with the successful login.
         self._pending_cookie = (f"{self.LOGIN_CSRF_COOKIE}=; Path=/admin/login; "
                                 "HttpOnly; SameSite=Lax; Max-Age=0")
         self._send_html(303, "", extra_headers={
@@ -1186,21 +1163,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         name = str(form.get("name", ""))
         # The cookie is the primary identity, but a cleared cookie must not
-        # turn one person into two competitors. Names are the only other handle
-        # the engine has; while a name is live it cannot be reused elsewhere.
+        # turn one person into two competitors: while a name is live in an
+        # active run it cannot be reused elsewhere.
         name_error = competition.validate_display_name(name)
         if not name_error:
             other = self.store.find_active_player_by_name(
                 competition.normalize_name(name))
             if other is not None and other.competition_id == comp.id:
-                # An active seat in this very run already holds that name, so
-                # create_player would die on the unique constraint. A bare
-                # "taken" leaves the seat's own owner (reaching the form from
-                # a cleared-cookie browser) hunting for a phantom, while a
-                # second joiner simply needs another handle — name both
-                # possibilities in one message, and when the seat never got a
-                # box, offer the seat recovery that re-links the owner's
-                # browser (a live seat stays organizer-only on purpose).
+                # An active seat in this run holds that name (create_player
+                # would die on the unique constraint). Name both possibilities
+                # in the message; when the seat never got a box, offer the
+                # recovery that re-links the owner's browser — a live seat
+                # stays organizer-only on purpose.
                 recoverable = other.status == "invited" and not other.box_id
                 self._send_html(409, web.join_form_page(
                     comp,
@@ -1228,15 +1202,12 @@ class Handler(BaseHTTPRequestHandler):
         self.store.add_audit("player", "join_reserved", comp.id, player.player_id,
                              details_json=json.dumps({"name": player.display_name}),
                              remote_addr=self.client_address[0] if self.client_address else None)
-        # The claim runs OUTSIDE the request: seat the cookie first. A portal
-        # with nothing pre-warmed spends its first claim provisioning the pool
-        # and a cold VM -- minutes, not milliseconds -- and doing that inline
-        # outlasted the browser's patience: the join completed server-side
-        # (name reserved) but the response carrying the identity cookie never
-        # landed, leaving the seat unreachable by its own owner. The run
-        # dashboard this redirect leads to already renders every claim state
-        # and polls for the VM link; the claim sweeper picks the claim up if
-        # this process dies before the thread gets to it.
+        # The claim runs OUTSIDE the request: a cold portal's first claim
+        # takes minutes, and inline it outlasted browser patience — the join
+        # completed server-side but the identity-cookie response never landed,
+        # leaving the seat unreachable by its own owner. The run dashboard
+        # polls every claim state; the sweeper resumes a claim if the process
+        # dies before the thread does.
         threading.Thread(
             target=claims.start_seat,
             args=(self.store, comp, player),
@@ -1291,9 +1262,6 @@ class Handler(BaseHTTPRequestHandler):
                                  {"name": other.display_name}),
                              remote_addr=self.client_address[0]
                              if self.client_address else None)
-        # The seat keeps whatever claim state it has (a pending provisioning
-        # ticket, a ready link, a recorded error): the dashboard reflects it
-        # and the sweeper keeps working it. Only the identity is restored.
         self._redirect("/", extra_headers={"Set-Cookie": (
             f"huitz_player={other.player_id}; Path=/; HttpOnly; "
             f"SameSite=Lax; Max-Age=86400")})
@@ -1543,8 +1511,6 @@ class Handler(BaseHTTPRequestHandler):
                 "Go back, reload the page, and try again.", "/"))
             return
         if not competition.is_active_player(player, comp):
-            # Already finished/removed: there is nothing to forfeit, just drop
-            # the browser's stale player session.
             self._redirect("/", extra_headers={
                 "Set-Cookie": self._clear_player_cookie()})
             return
@@ -1692,9 +1658,6 @@ class Handler(BaseHTTPRequestHandler):
                                  details_json=json.dumps({"hidden": hidden}),
                                  remote_addr=self.client_address[0]
                                  if self.client_address else None)
-            # Back to wherever the toggle was pressed from (the dashboard row
-            # or the competition page); "back" is validated below against
-            # same-origin shaped paths only.
             back = str(form.get("back", ""))
             self._redirect(back if back.startswith("/") and
                            not back.startswith("//") else "/admin")
@@ -1724,11 +1687,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 bump = claims.extend_pool_expiry(self.store, comp, seconds)
             except workshop.WorkshopError as exc:
-                # The runs keep their overtime; flag the portal miss.
                 bump = {"bumped": False, "reason": str(exc)[:200]}
             # A scheduled end moves with the overtime: leaving it fixed would
-            # cut the extended runs off at the old wall time and turn the
-            # extension into a silent no-op.
+            # cut the extended runs at the old wall time — a silent no-op.
             scheduled_moved_to = None
             if comp.scheduled_end_at is not None:
                 scheduled_moved_to = comp.scheduled_end_at + seconds
@@ -1762,10 +1723,6 @@ class Handler(BaseHTTPRequestHandler):
                            + note.replace(" ", "+"))
             return
         if action == "schedule-end":
-            # Schedule (or cancel) a wall-clock end for the whole comp. Like
-            # Extend this is metadata until the moment fires; the sweeper
-            # then runs the exact admin-End path (runs still in progress
-            # stop, scores freeze, pool torn down) with no operator present.
             if comp.status not in ("draft", "live"):
                 message = (f"A scheduled end can only be set on a draft or "
                            f"live competition; this one is {comp.status}.")
@@ -1777,7 +1734,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             raw = str(form.get("ends_at", "")).strip()
             if not raw:
-                # Empty value cancels the schedule: back to manual ending.
                 was = comp.scheduled_end_at
                 self.store.update_competition(comp.id, scheduled_end_at=None)
                 self.store.add_audit(
@@ -1863,12 +1819,6 @@ class Handler(BaseHTTPRequestHandler):
                     name=comp.name, scenario_name=lineup[0][0],
                     scenario_version=lineup[0][1],
                     max_players=comp.max_players, duration_s=comp.duration_s,
-                    # A rerun is a new competition: it provisions its own pool.
-                    # Inheriting the old pin could hand out last event's clones
-                    # (and the old pool is normally deleted at End anyway).
-                    # The scheduled end is deliberately not inherited either:
-                    # a rerun started after the old wall time would be ended
-                    # by the sweeper on its first tick.
                     workshop_pool_code=None,
                     theme_json=comp.theme_json,
                     join_instructions=comp.join_instructions,
@@ -1912,9 +1862,6 @@ class Handler(BaseHTTPRequestHandler):
                 if session is None:
                     self._send_json(400, {"error": message})
                 else:
-                    # A refused click re-renders with the card's standing
-                    # warning already carrying this reason; repeating it in
-                    # the page-level error box would say it twice.
                     self._render_admin_competition(
                         session, comp.id,
                         error="" if result.get("blocked") else message)
@@ -1974,8 +1921,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._render_admin_competition(session, comp.id, error=message)
                 return
             # Release every VM this competition handed out. cleanup_pool does
-            # this too for pools the engine provisioned, but legacy pins were
-            # only unpinned there -- a delete must not leak their VMs.
+            # this for engine-provisioned pools, but legacy pins were only
+            # unpinned there -- a delete must not leak their VMs.
             base, _secret = claims.config()
             released = 0
             if base:
@@ -2009,8 +1956,6 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/admin")
             return
         if action == "start":
-            # Going live pins the rubric for every player: refuse a draft
-            # whose scenario version is no longer the box folder's current.
             current = scenario_mod.current_box_scenario(comp.scenario_name)
             if current is not None and comp.scenario_version != current[0]:
                 message = (f"Scenario {comp.scenario_name} v{comp.scenario_version} "
@@ -2027,7 +1972,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # A start that changes nothing must not answer ok: an ended (or
             # already live) competition stays exactly where it was, and the
-            # operator has to be told, not shown a green audit row.
+            # operator must be told, not shown a green audit row.
             if comp.status != "draft":
                 message = (f"Only a draft competition can be started; this one "
                            f"is {comp.status}.")
@@ -2062,9 +2007,6 @@ class Handler(BaseHTTPRequestHandler):
                         f"/admin/competitions/{comp.id}", admin=True))
                 return
             self.store.start_competition(comp.id)
-            # A schedule set on the draft whose moment already passed would
-            # end this fresh competition on the next sweep tick; drop it and
-            # say so instead of an instant, baffling end.
             if (comp.scheduled_end_at is not None
                     and comp.scheduled_end_at <= time.time()):
                 self.store.update_competition(comp.id, scheduled_end_at=None)
@@ -2088,11 +2030,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
         elif action == "end":
             self.store.end_competition(comp.id)
-            # Best effort: hand the pool's VMs back and drop the pool config.
             claims.cleanup_pool(self.store, self.store.get_competition(comp.id))
         elif action == "toggle-auto-end":
-            # Auto-end only means something before or during a run; an ended
-            # competition is already frozen and its pool already released.
             if comp.status not in ("draft", "live"):
                 message = (f"Auto-end can only be changed for a draft or live "
                            f"competition; this one is {comp.status}.")
@@ -2110,10 +2049,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.store.update_competition(comp.id, auto_end=not comp.auto_end)
         elif action in ("close-join", "open-join"):
-            # Joins can only be toggled while the run is live: open-join is
-            # the counterpart of close-join (a competition closed too early
-            # used to be unjoinable for good), and neither verb means
-            # anything on a draft or an ended competition.
             if comp.status != "live":
                 message = (f"Joins can only be changed while the competition is "
                            f"live; this one is {comp.status}.")
@@ -2131,10 +2066,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.store.set_join_open(comp.id, action == "open-join")
         else:
-            # Every real branch above answers and returns; falling through
-            # here means the verb does not exist. Silence-with-ok:true let
-            # typos (and probe junk) write audit rows that looked like they
-            # did something.
             self._send_json(400, {"error": f"unknown competition action: {action}"})
             return
         self.store.add_audit(actor, f"competition_{action}", comp.id,
@@ -2170,9 +2101,6 @@ class Handler(BaseHTTPRequestHandler):
             if player.status != "invited" or player.box_id:
                 self._send_json(409, {"error": "reissue is only for players without a bound box"})
                 return
-            # The claim_error stays: a reissue hands the player a new code,
-            # it does not fix whatever made the claim fail. Clearing it here
-            # hid the reason from the roster while the failure was still live.
             self.store.update_player(
                 player.player_id, status="invited", box_id=None)
             try:
@@ -2200,8 +2128,6 @@ class Handler(BaseHTTPRequestHandler):
                                       "join_code": code})
                 return
             if self.flash_store is not None and comp:
-                # The roster no longer displays codes; the fresh one is shown
-                # once via the one-time flash after this redirect.
                 self.flash_store.put(session.session_hash, comp.id,
                                      f"Reissued code for "
                                      f"{player.display_name}: {code}")
@@ -2255,11 +2181,6 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "remove":
             self.store.remove_player(player.player_id)
         elif action == "release_box":
-            # Give one run's box back early: destroys the VM and frees the
-            # seat without touching the player's status, score or entry in
-            # the competition record. Used to cut a post-run access window
-            # short; like Remove, the portal OWNS the retry — here the admin
-            # is told to retry instead.
             if not (player.box_id and player.claim_uid):
                 self._send_json(409, {"error": "no bound box to release"})
                 return
@@ -2278,15 +2199,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(400, {"error": f"unknown player action: {action}"})
             return
-        # §7.1 (boss directive): disqualification is a board exclusion, not
-        # an eviction. The disqualified player keeps the VM, keeps their
-        # clock and keeps checking in (excluded from the board, told on the
-        # box report and their pages), so nothing is released here. Remove
-        # and release_box are the verbs that give the box back:
-        # player-initiated leave has always released the VM; an admin remove
-        # must not leave it running until the portal's lease happens to
-        # expire. Best effort, exactly like leave: the portal reaper
-        # collects a miss.
+        # §7.1: disqualification is a board exclusion, not an eviction — the
+        # DQ'd player keeps VM, clock and check-ins; nothing is released here.
+        # Remove is the verb that gives the box back: an admin remove must not
+        # leave the VM running until the portal's lease happens to expire.
         if action == "remove":
             base, _secret = claims.config()
             if base and player.claim_uid:
@@ -2590,8 +2506,6 @@ class Handler(BaseHTTPRequestHandler):
                 {"box_id": body.get("box_id"), "player_id": payload.get("player_id")}),
                 remote_addr=self.client_address[0] if self.client_address else None)
         else:
-            # Failed joins previously left no trace outside the HTTP response;
-            # a line in the journal is how a misconfigured box gets diagnosed.
             print(f"join rejected ({status}): box={body.get('box_id')!r} "
                   f"scenario={body.get('scenario_name')!r} "
                   f"error={payload.get('error')!r}", flush=True)
@@ -2648,8 +2562,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         except Exception as e:  # noqa: BLE001 — fail closed with a mapped 500
             # rather than dropping the connection (the agent would treat that
-            # as a transient failure and retry forever). The exception text
-            # stays engine-side: it can carry rubric content (§2.4).
+            # as transient and retry forever). The 500 body stays generic: the
+            # exception text can carry rubric content (§2.4).
             print(f"ERROR: check-in for box {bundle.box_id!r} failed: {e!r}",
                   file=sys.stderr)
             self._send_json(
@@ -2697,9 +2611,6 @@ class _EngineHTTPServer(ThreadingHTTPServer):
     Handler.timeout, and connections beyond max_conns are closed at once.
     """
 
-    # socketserver's default listen backlog is 5. A class checking in at the
-    # same second would overflow it and get connections reset before the
-    # engine ever saw them; the connection cap below is the real limiter.
     request_queue_size = 128
 
     def __init__(self, addr, handler, ssl_ctx=None, max_conns=64):
@@ -2774,8 +2685,6 @@ def main() -> None:
                                           record.get("services", []))
         print(f"loaded scenario record from {engine_record_path}")
 
-    # Mirror the box folder into the store at startup; the sweep loop keeps
-    # it current, so a scenario bump purges stale versions without a restart.
     for sync_error in scenario_mod.sync_box_scenarios(store):
         print(f"scenario sync: {sync_error}", file=sys.stderr)
 
@@ -2796,9 +2705,6 @@ def main() -> None:
     bind_host = os.environ.get("HUITZILOPOCHTLI_BIND", "127.0.0.1")
     max_conns = int(os.environ.get("HUITZILOPOCHTLI_MAX_CONNS", "64"))
 
-    # Engine-authoritative check-in cadence (the agent sleeps this long
-    # between cycles). Deliberately independent of rubric SLA intervals --
-    # see the note in checkin.handle_checkin.
     try:
         Handler.next_checkin_s = max(1, int(
             os.environ.get("HUITZILOPOCHTLI_CHECKIN_INTERVAL_S", "60")))
@@ -2830,19 +2736,12 @@ def main() -> None:
         while True:
             time.sleep(sweep_interval)
             try:
-                # A failed scan (unreadable pools file, broken box) fails
-                # safe: the mirror keeps serving the last good pass. Without
-                # this the failure is invisible after startup, so report it
-                # -- once per distinct error, not every tick.
                 message, previous_sync = _sync_report(
                     scenario_mod.sync_box_scenarios(store), previous_sync)
                 if message:
                     print(f"scenario sync: {message}", file=sys.stderr)
             except Exception as exc:  # one bad sweep must not kill the loop
                 print(f"scenario sync error: {exc}", file=sys.stderr)
-            # Scheduled competition ends fire here, deliberately before and
-            # independent of the claim sweep's portal gate: a scheduled end
-            # must be kept even where no workshop portal is configured.
             try:
                 for note in competition.sweep_scheduled_ends(
                         store, cleanup=claims.cleanup_pool):

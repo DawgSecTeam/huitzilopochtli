@@ -1,18 +1,8 @@
-"""boxbuilder's client for the vulndb catalog — a thin wrapper around the vulndb-cli subprocess.
-
-boxbuilder used to talk to vulndb-ui's HTTP API directly with a hand-rolled stdlib http.client
-client. It now shells out to `python3 -m vulndb_cli` instead — vulndb-cli is the sanctioned,
-versioned client for that API (a submodule at vendor/vulndb-cli), so the raw HTTP contract lives
-in exactly one place. No code here opens a socket to vulndb-ui anymore.
-
-The public surface theme.py relies on is unchanged (resolve_vulndb_url, load_seed_definition,
-list_configurations, create_configuration, ensure_configuration, ensure_attachment, VulndbError),
-and so are the semantics: ensure_configuration is idempotent create-if-missing (never overwrites
-by default; sync=True additionally converges a drifted row onto the bundled seed via
-vulndb-cli update — repo-owned theme seeds pass it, so seed edits actually ship), and
-ensure_attachment is content-addressed (`<sha256[:16]>-<basename>`) so identical bytes reuse
-one attachment and different bytes always upload a new one.
-"""
+"""boxbuilder's vulndb catalog client — a thin wrapper around the
+vulndb-cli subprocess (the sanctioned client; the HTTP contract lives
+there). Semantics: ensure_configuration is create-if-missing (sync=True
+converges drifted rows onto the bundled seed); ensure_attachment is
+content-addressed: identical bytes reuse one attachment."""
 import hashlib
 import json
 import os
@@ -52,8 +42,8 @@ def resolve_vulndb_cli_dir(explicit: str = None) -> str:
     else:
         here = os.path.dirname(__file__)
         candidates = [
-            os.path.normpath(os.path.join(here, "..", "vendor", "vulndb-cli")),  # submodule
-            os.path.normpath(os.path.join(here, "..", "..", "vulndb-cli")),       # sibling checkout
+            os.path.normpath(os.path.join(here, "..", "vendor", "vulndb-cli")),
+            os.path.normpath(os.path.join(here, "..", "..", "vulndb-cli")),
         ]
     for path in candidates:
         if os.path.isfile(os.path.join(path, "vulndb_cli", "cli.py")):
@@ -65,12 +55,9 @@ def resolve_vulndb_cli_dir(explicit: str = None) -> str:
 
 
 def load_seed_definition(name: str, seed_dir: str = None) -> dict:
-    """Read a bundled static catalog seed by name.
-
-    Theme seeds remain in ``vulndb_theme_configs``; box-specific planting seeds live in
-    ``vulndb_vuln_configs``.  When no directory is supplied, the theme directory is kept as
-    the backwards-compatible default for callers such as ``theme.py``.
-    """
+    """Read a bundled catalog seed by name: theme seeds in
+    ``vulndb_theme_configs``, planting seeds in ``vulndb_vuln_configs``
+    (no dir argument = the theme dir, for theme.py's callers)."""
     search_dirs = [seed_dir] if seed_dir else [_THEME_SEED_DIR, _VULN_SEED_DIR]
     for directory in search_dirs:
         path = os.path.join(directory, f"{name}.json")
@@ -103,12 +90,8 @@ def has_theme_seed(name: str) -> bool:
 
 
 def ensure_vuln_seeds(base_url: str, configurations: list, timeout: int = 60) -> list:
-    """Ensure bundled planting seeds selected by a nakon configuration exist in vulndb.
-
-    Only names with a local ``vulndb_vuln_configs/<name>.json`` seed are touched; catalog
-    entries authored elsewhere are left to the catalog as-is.  The operation is
-    create-if-missing and never overwrites an existing row.
-    """
+    """Create-if-missing the selected vulns that have a local
+    vulndb_vuln_configs seed; catalog-authored names are left alone."""
     ensured = []
     seen = set()
     for item in configurations:
@@ -126,12 +109,9 @@ def ensure_vuln_seeds(base_url: str, configurations: list, timeout: int = 60) ->
 
 def _run_vulndb_cli(args: list, base_url: str, stdin_str: str = None,
                     timeout: int = 60, cli_dir: str = None):
-    """Run `python3 -m vulndb_cli <args> --url <base> --yes` (cwd=cli_dir so a checkout resolves),
-    and return the parsed JSON of the last stdout line, or None for empty output.
-
-    --yes is always passed: boxbuilder runs non-interactively (no TTY), and every write vulndb-cli
-    does here is one boxbuilder already decided to make.
-    """
+    """`python3 -m vulndb_cli <args> --url <base> --yes` (cwd=cli_dir),
+    parsing the last stdout JSON line; None on empty output. --yes always:
+    no TTY here, and every write was already boxbuilder's decision."""
     cli_dir = cli_dir or resolve_vulndb_cli_dir()
     cmd = [sys.executable, "-m", "vulndb_cli", *args, "--url", base_url, "--yes"]
     try:
@@ -158,9 +138,6 @@ def _run_vulndb_cli(args: list, base_url: str, stdin_str: str = None,
     if not stdout:
         return None
     try:
-        # Older/compact vulndb-cli versions emit one JSON object per line; newer versions
-        # pretty-print arrays/objects.  Keep the fast last-line path, then fall back to the
-        # complete stdout document just as the nakon wrapper does.
         return json.loads(stdout.splitlines()[-1])
     except json.JSONDecodeError as last_line_error:
         try:
@@ -195,11 +172,9 @@ def _find_by_name(configurations: list, name: str):
 
 
 def update_configuration(base_url: str, definition: dict, timeout: int = 60) -> dict:
-    """`vulndb-cli update <name> --file -` (full definition on stdin). vulndb-cli PUTs a
-    full replace layered on the current row, so feeding it the whole seed doc converges
-    the catalog row onto the repo seed. Returns the updated row; when nothing differs,
-    vulndb-cli emits no JSON and the seed definition itself is returned (callers only
-    need a name/attachments, which it carries)."""
+    """`vulndb-cli update <name> --file -`: a full-replace PUT of the seed
+    doc converges the row. No JSON on no-op, so the seed definition is
+    returned then (callers only need name/attachments)."""
     ref = definition.get("name")
     if not ref:
         raise VulndbError("update_configuration needs a definition with a 'name'")
@@ -211,9 +186,9 @@ def update_configuration(base_url: str, definition: dict, timeout: int = 60) -> 
     return dict(definition, attachments=definition.get("attachments") or [])
 
 
-# The fields a bundled seed carries and a catalog row mirrors; drift on any of these
-# is what ensure_configuration(sync=True) converges. Attachments are never compared:
-# they're content-addressed uploads managed by ensure_attachment, not seed content.
+# Seed fields the catalog row mirrors; drift here is what
+# ensure_configuration(sync=True) converges. Attachments never participate:
+# they're content-addressed uploads, not seed content.
 _SEED_FIELDS = ("name", "description", "platform", "category", "type", "run_as",
                 "script", "depends_on")
 
@@ -226,24 +201,15 @@ def _seed_drift(existing: dict, definition: dict) -> bool:
 
 def ensure_configuration(base_url: str, definition: dict, timeout: int = 60,
                          sync: bool = False) -> dict:
-    """Idempotent: find `definition["name"]` in the live catalog; create it if absent.
-    Never updates an existing row by default — an author who wants to change a seeded
-    script edits it themselves via vulndb-ui/vulndb-cli; boxbuilder only ever ensures
-    presence, never overwrites.
-
-    sync=True opts repo-owned seeds into convergence: a row whose content drifted from
-    the bundled seed (e.g. a theme seed this repo has since edited — the pre-sync rows
-    keep running their old script forever, which is how a seed edit silently never
-    ships) is PUT back into sync via vulndb-cli update. Drift is compared on the seed
-    fields only, never on attachments."""
+    """Idempotent create-if-missing by name; never overwrites by default.
+    sync=True additionally converges a row whose seed fields (never
+    attachments) drifted from the bundled seed — how seed edits ship."""
     existing = _find_by_name(list_configurations(base_url, timeout=timeout), definition["name"])
     if existing is not None:
         if sync and _seed_drift(existing, definition):
             return update_configuration(base_url, definition, timeout=timeout)
         return existing
     row = create_configuration(base_url, definition, timeout=timeout)
-    # A freshly created row has no attachments yet; normalize so ensure_attachment's check is
-    # uniform whether the row came from list (has attachments) or create (none).
     row.setdefault("attachments", [])
     return row
 
@@ -258,19 +224,13 @@ def _sha256_file(path: str, chunk_size: int = 1 << 20) -> str:
 
 def upload_attachment(base_url: str, configuration: dict, local_path: str, filename: str,
                       timeout: int = 120) -> dict:
-    """Attach local_path's bytes to `configuration`, stored under `filename` (the content-
-    addressed name), via `vulndb-cli upload`.
-
-    vulndb-cli stores the attachment under the uploaded file's basename, so we stage a temp file
-    named `filename` to preserve the content-addressed name (identical bytes always reuse one
-    attachment). `configuration` is the dict from ensure_configuration (needs a name or id).
-    """
+    """Upload local_path's bytes as `filename` via `vulndb-cli upload`.
+    vulndb-cli keys the attachment by the uploaded file's basename, so the
+    temp file is staged under the content-addressed name."""
     d = tempfile.mkdtemp(prefix="vulndb-upload-")
     try:
         staged = os.path.join(d, filename)
         with open(local_path, "rb") as src, open(staged, "wb") as dst:
-            # Stream in chunks: wallpapers are exactly the kind of file that
-            # gets large; slurping them into memory is pointless.
             shutil.copyfileobj(src, dst)
         ref = configuration.get("name") or str(configuration["id"])
         return _run_vulndb_cli(["upload", ref, staged], base_url, timeout=timeout)
@@ -280,12 +240,9 @@ def upload_attachment(base_url: str, configuration: dict, local_path: str, filen
 
 def ensure_attachment(base_url: str, configuration: dict, local_path: str,
                       timeout: int = 120) -> str:
-    """Idempotent: filename is content-addressed (`<sha256[:16]>-<basename>`), so identical bytes
-    always reuse the same attachment and different bytes always upload a new one. `configuration`
-    is the dict returned by ensure_configuration() (must have an "id"; "attachments" is optional/
-    absent on a freshly created row, treated as empty). Returns the filename either way, for use
-    as a `vars` value (e.g. WALLPAPER_FILENAME).
-    """
+    """Idempotent upload keyed by `<sha256[:16]>-<basename>`: identical bytes
+    reuse, different bytes create. Returns the filename for use as a `vars`
+    value (e.g. WALLPAPER_FILENAME)."""
     digest = _sha256_file(local_path)
     filename = f"{digest[:16]}-{os.path.basename(local_path)}"
     for a in configuration.get("attachments") or []:

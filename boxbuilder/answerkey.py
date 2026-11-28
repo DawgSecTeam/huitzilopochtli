@@ -1,18 +1,7 @@
-"""Post-event answer-key handout generator.
-
-Renders a scenario.yaml into a walkthrough handout that gives away every
-point: per check, the player-facing goal plus the authored ``solution``
-markdown (spot it -> trace it -> fix it -> confirm it); forensics questions
-with their accepted answers. Output is Markdown, plus an optional themed
-HTML page sharing the box README's visual language (boxbuilder/mdhtml.py +
-agent/report_page.py).
-
-Authoring-side artifact ONLY: nothing here feeds the manifest, the rubric,
-or the on-box install set -- the box never sees any of it. The default
-output path lives under artifacts/ (gitignored) per the repo's secrets
-discipline. Checks whose ``solution`` was never authored still render, with
-a visible placeholder, and are reported back to the caller as gaps so
-backfill progress is obvious.
+"""Post-event answer-key handout: renders scenario.yaml + the authored
+``solution:`` walkthroughs and forensics answers to Markdown (optionally
+themed HTML via mdhtml). Authoring-side ONLY — nothing here feeds the
+manifest, rubric, or on-box install; output lives under artifacts/.
 """
 import os
 import re
@@ -59,16 +48,10 @@ def _backtick(value) -> str:
 
 
 def goal_line(check: dict) -> str:
-    """Plain-English restatement of the scored (hardened) state.
-
-    Best-effort per check type / matcher shape; the authored walkthrough is
-    the detailed story, this is the one-line 'what was scored'. Unknown
-    shapes fall back to a generic-but-honest phrasing rather than guessing.
-    """
+    """One-line 'what was scored' restatement, best-effort per check type;
+    unknown shapes fall back to generic-but-honest phrasing."""
     ctype = check.get("type")
     collect = check.get("collect") or {}
-    # expect carries matcher keys plus scoring keys (points/sla); shape-match
-    # on the matcher keys only.
     expect = {k: v for k, v in (check.get("expect") or {}).items()
               if k not in ("points", "sla")}
     path = collect.get("path")
@@ -343,7 +326,6 @@ def generate(scenario_path: str, out_path: Optional[str] = None,
         result["html"] = html_path
 
     if gaps:
-        # Progress surface, not a failure: the handout is still written.
         result["note"] = (
             f"{len(gaps)} item(s) have no authored walkthrough yet: "
             + "; ".join(gaps)

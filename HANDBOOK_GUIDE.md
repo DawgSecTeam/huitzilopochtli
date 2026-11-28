@@ -76,7 +76,7 @@ When a box deserves a "Where to start" section, `boxes/pinecrest-hospital` is
 the maximum: name **categories and standard tools**, never instances or
 target values.
 
-| Over the line (real, since fixed) | At the ceiling |
+| Over the line | At the ceiling |
 |---|---|
 | "`Set-SmbServerConfiguration -EnableSMB1Protocol $false`" | "Windows Firewall profiles, SMB1 (`Get-SmbServerConfiguration`), UAC (`EnableLUA`)…" |
 | "`Get-NetFirewallProfile` (all three must be on)" | "Windows Firewall profiles" |

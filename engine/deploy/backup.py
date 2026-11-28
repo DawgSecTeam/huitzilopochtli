@@ -21,7 +21,6 @@ def main() -> None:
         dst.close()
         src.close()
     os.chmod(dest, 0o600)
-    # Verify the copy opens and has the expected core tables.
     check = sqlite3.connect(dest)
     try:
         names = {r[0] for r in check.execute(

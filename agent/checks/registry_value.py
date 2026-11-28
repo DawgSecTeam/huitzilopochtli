@@ -5,11 +5,9 @@ collect_params: {"hive": str ("HKLM"|"HKCU"|"HKCR"|"HKU"|"HKCC"),
                  "value": str (value name, "" for the default value)}.
 Evidence.raw shape: {"present": bool, "value": str|int|None, "type": str|None}.
 
-Reads via winreg (stdlib) with the 64-bit view preferred and the 32-bit view
-as fallback, so checks are stable regardless of the agent's own bitness. A
-missing key/value is OK-status evidence with present=false -- never an ERROR
--- so "this insecure value must not exist" checks can match on present/value
-directly and fail closed correctly.
+64-bit view preferred, 32-bit fallback (stable regardless of agent bitness).
+A missing key/value is OK evidence with present=false, never ERROR —
+"must not exist" checks then match on present/value and fail closed correctly.
 """
 import time
 

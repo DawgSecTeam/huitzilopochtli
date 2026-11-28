@@ -1,29 +1,9 @@
 """Server-rendered HTML for the public competition site and admin console.
 
-Pure stdlib: every value interpolated into HTML is escaped here. JavaScript is
-progressive enhancement only -- every page works with scripts off (live pages
-fall back to <noscript> meta refresh; countdowns render server-side).
-
-Design: cream editorial "paper" -- warm ivory ground, panels framed by hard
-1px espresso borders, sharp corners, serif headings against small uppercase
-sans labels/buttons, flat surfaces (no shadows, no blur). Status is never a
-labelled pill: it is a small colored dot beside the text it describes, and the
-word lives in the dot's hover/focus tooltip (color is never the only signal).
-Every button shares one 32px height -- importance is carried by the fill
-color, not size -- and rests on a quiet tint that empties to an outline on
-hover. Spacing runs on a 4px token scale (--s1..--s7, --pad-card, --pad-cell)
-so padding and rhythm line up across pages; numeric table columns are
-right-aligned with tabular figures. Theme colors come from one Python table
-(_THEMES) that generates the CSS custom properties, the favicon, and the
-accent-contrast anchors; two themes: ``:root`` is the dark-roast palette,
-``html[data-theme=light]`` the cream one; a tiny inline script applies the
-stored/system theme before first paint. Semantic ok/warn/danger keep their
-meaning in both themes (see CLI.md "Terminal styling conventions" for the
-shared rules). The per-competition accent ships as server-precomputed text
-variants (``--accent-dk`` / ``--accent-lt``), each blended until it clears
-4.5:1 on its theme's worst surface -- an espresso accent must never be link
-text on dark roast -- plus whisper-fill variants (``--accent-fill-dk`` /
-``--accent-fill-lt``) for the primary button's resting state.
+Contract: every value interpolated into HTML is escaped here, and JavaScript
+is progressive enhancement only -- every page works with scripts off. Theme
+colors have one source (_THEMES) that generates the CSS properties, favicon
+and accent-contrast anchors; text accents must clear 4.5:1 on their surface.
 """
 import datetime
 import hashlib
@@ -48,11 +28,10 @@ def _rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-# Single source for every theme color: the CSS custom properties in CSS, the
-# favicon, and the accent-contrast anchors all read this table, so a palette
-# edit cannot desync between CSS and Python. The ok/warn/danger -bg tints are
-# hand-tuned (they are not alpha blends of their -fg entries) and stored
-# verbatim in _SEMANTIC_BG.
+# Single source for every theme color: the CSS custom properties, the favicon
+# and the accent-contrast anchors all read this table, so a palette edit
+# cannot desync between CSS and Python. The ok/warn/danger -bg tints are
+# hand-tuned (not alpha blends) and stored verbatim in _SEMANTIC_BG.
 _THEMES = {
     "dark": {
         "bg": "#181410", "surface": "#211c16", "surface-2": "#2b251d",
@@ -62,7 +41,6 @@ _THEMES = {
         "line": "#37301f", "line-2": "#5c5140",
         "accent": "#c99a62", "on-accent": "#211c16",
         "ok": "#7fae7a", "warn": "#c9973f", "danger": "#d96f66",
-        # The projector board keeps its near-black ground in both themes.
         "display-bg": "#0f0c09",
     },
     "light": {
@@ -91,9 +69,6 @@ def _theme_css() -> str:
         d += [f"--{name}-bg:{value}" for name, value in _SEMANTIC_BG[theme].items()]
         return ";".join(d)
     dark, light = decls("dark"), decls("light")
-    # Dark roast is the :root base; with JS off, a light-OS preference arrives
-    # through the media query. An explicit data-theme attribute (set by the
-    # init script, or server-side for the projector board) outranks both.
     return "\n".join([
         f":root{{{dark}}}",
         f"@media (prefers-color-scheme: light){{:root{{{light}}}}}",
@@ -102,8 +77,6 @@ def _theme_css() -> str:
     ])
 
 
-# Inline SVG favicon: a warm "H" monogram. A data URI avoids a server route and
-# the 404 every browser otherwise logs for /favicon.ico.
 _FAVICON = ("data:image/svg+xml,"
             "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
             f"%3Crect width='32' height='32' fill='{_THEMES['dark']['bg'].replace('#', '%23')}'/%3E"
@@ -157,8 +130,6 @@ def _on_accent(accent_hex: str) -> str:
     return "#1f2328" if _rel_lum(accent_hex) > 0.45 else "#ffffff"
 
 
-# The worst surface each theme paints text on (table rows hover to --surface-2),
-# and this palette's ink of the matching polarity as the blend anchor.
 _CANVAS = {t: _THEMES[t]["surface-2"] for t in _THEMES}
 _INK_ANCHOR = {t: _THEMES[t]["ink"] for t in _THEMES}
 
@@ -180,7 +151,6 @@ def _readable_text(accent: str, theme: str, target: float = 4.5) -> str:
     return anchor
 
 
-# --- time formatting ---------------------------------------------------------
 
 
 def _fmt_ts(ts) -> str:
@@ -294,7 +264,6 @@ def _rel_ts(ts, now: Optional[float] = None) -> str:
     return f"{int(age // 86400)}d ago"
 
 
-# --- small shared fragments ---------------------------------------------------
 
 _COMP_STATUS = {"live": ("Live", "ok"), "draft": ("Draft", "warn"), "ended": ("Ended", "muted")}
 _PLAYER_STATUS = {"invited": ("Invited", "muted"), "running": ("Running", "ok"),
@@ -331,8 +300,6 @@ def comp_status_tag(status: str) -> str:
 
 
 def player_badge(status: str) -> str:
-    # A finished run is the quiet default (everyone on an ended board is
-    # finished); only the states that need action or attention get a dot.
     if status == "finished":
         return ""
     return _status_dot(status, _PLAYER_STATUS, "Player")
@@ -353,7 +320,6 @@ def _service_dots(services: list) -> str:
             f'<span class="lbl">{up}/{len(svc)} up</span></span>')
 
 
-#: The engine keeps this many per-service observations (common.schema.SLA_HISTORY_MAX).
 _SERVICE_TICKS = SLA_HISTORY_MAX
 
 
@@ -432,13 +398,7 @@ def _copy_btn(value: str, label: str) -> str:
             f'<span>{esc(label)}</span></button>')
 
 
-# --- layout -------------------------------------------------------------------
 
-# Applied before first paint from an external (cacheable) script in <head>.
-# A data-theme attribute already on <html> (server-pinned on the projector
-# board) always wins; otherwise the stored choice, else the OS preference --
-# which the CSS mirrors for the no-JS case via prefers-color-scheme. Also
-# keeps the theme-color meta in step so mobile browser chrome follows.
 THEME_INIT = (
     "(function(){try{var d=document.documentElement;"
     "var cur=d.getAttribute('data-theme');"
@@ -486,9 +446,9 @@ def layout(title: str, body: str, *, comp: Optional[CompetitionRecord] = None,
     theme_attr = "" if chrome else ' data-theme="dark"'
     noscript = (f'<noscript><meta http-equiv="refresh" content="{int(refresh)}"></noscript>'
                 if refresh else "")
-    # One nav on every page: the Admin entry is always the same element in the
-    # same slot, so it never jumps between pages. Log out only exists for a
-    # live admin session (the route is POST-only, hence the form).
+    # One nav on every page: the Admin entry is always the same element in
+    # the same slot, so it never jumps between pages. Log out only exists
+    # for a live admin session (the route is POST-only, hence the form).
     logout = ('<form method="post" action="/admin/logout">'
               '<button type="submit">Log out</button></form>') if admin else ""
     cur_home = ' aria-current="page"' if current == "home" else ""
@@ -504,9 +464,6 @@ def layout(title: str, body: str, *, comp: Optional[CompetitionRecord] = None,
             f'{logout}{_THEME_TOGGLE}</nav>'
             '</div></header>'
         )
-    # CSS/JS/theme-init ship as hashed static assets (cacheable, and they keep
-    # the page payload -- and the CSP -- free of inline script/style blocks);
-    # only the per-competition accent vars stay as a body style attribute.
     return f"""<!doctype html>
 <html lang="en"{theme_attr}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -534,7 +491,6 @@ def error_page(status: int, title: str, detail: str = "",
     return layout(title, body, admin=admin, current="admin" if admin else "home")
 
 
-# --- public pages ---------------------------------------------------------------
 
 
 def _page_head(title: str, back_href: str = "/admin") -> str:
@@ -581,8 +537,6 @@ def _comp_cards(comps: list, players_by_comp: Optional[dict] = None,
                 meta += ' · <span class="fullflag">full</span>'
         else:
             meta = f"{_fmt_duration(c.duration_s)} runs · {_players_capacity(c.max_players)}"
-        # The section header already says "Live", so live-section cards skip
-        # the status dot; mixed-status sections keep it as the differentiator.
         badge = comp_badge(c.status) if show_status else ""
         rows.append(f"""<article class="card comp-row"><div class="comp-main">
 <div class="comp-title-line"><h2><a href="/c/{esc(c.slug)}">{esc(c.name)}</a></h2>{badge}</div>
@@ -622,19 +576,14 @@ def _join_box(comp: dict, viewer_comp: Optional[CompetitionRecord] = None) -> st
         return f'<a class="btn primary" href="/c/{esc(comp["slug"])}/join">Join this competition</a>'
     if comp["status"] == "live" and comp["join_open"] and comp["max_players"] \
             and comp["player_count"] >= comp["max_players"]:
-        # The one join-blocking state worth shouting about.
         return '<p class="fullnote">Competition is full</p>'
     if comp["status"] == "ended":
-        # The title-area badge already says the competition ended; the join
-        # slot adds nothing and stays empty.
         return ""
     reason = {"draft": "Competition hasn't started."}.get(comp["status"], "Joins are closed.")
     return f'<span class="muted small">{esc(reason)}</span>'
 
 
 def _leader_row(r: dict) -> str:
-    # data-th feeds the mobile card layout's per-cell labels (see the 720px
-    # media query); the thead stays in the a11y tree via scope="col".
     return f"""<tr>
 <td class="rank" data-th="#">{esc(r['rank'])}</td>
 <td data-th="Player"><div class="pname"><strong>{esc(r['name'])}</strong>{player_badge(r['status'])}</div></td>
@@ -715,8 +664,6 @@ def join_form_page(comp: CompetitionRecord, error: str = "",
                    admin: bool = False,
                    recoverable_name: Optional[str] = None) -> str:
     if blocked_comp is not None:
-        # One competition at a time: point them at the run they already own
-        # instead of rendering a form whose POST can only be refused.
         body = f"""<section class="hero"><h1>Join {esc(comp.name)}</h1></section>
 <section class="card narrow">
 <p class="fullnote">You're already in {esc(blocked_comp.name)}</p>
@@ -735,12 +682,10 @@ Finish (or leave) your current run before joining another.</p>
 </section>"""
         return layout(f"Join {comp.name}", body, comp=comp, admin=admin,
                       current="home")
-    # Seat recovery: a reserved-but-never-bound seat whose owner's browser
-    # lost the huitz_player cookie (slow cold provisioning, closed tab) is
-    # otherwise unreachable -- the dashboard needs the cookie and every
-    # re-join under that name is refused. The form below the join form
-    # re-links this browser to that seat by name; the server only honors it
-    # while the seat has no box (a live run is never recoverable by name).
+    # Seat recovery: a reserved-but-never-bound seat whose owner lost the
+    # huitz_player cookie is otherwise unreachable (the dashboard needs the
+    # cookie; re-joins under that name are refused). The form re-links the
+    # browser to that seat by name, honored only while the seat has no box.
     recovery = ""
     if recoverable_name:
         recovery = f"""<section class="card narrow">
@@ -913,9 +858,6 @@ def join_success_page(comp: CompetitionRecord, player: PlayerRecord,
         parts.append(_claim_retry_form(player, csrf))
     step1 = "".join(parts)
 
-    # Claim-status polling is data-driven: web.js watches #vm-poll and reloads
-    # the page when the box binds or the claim url/error/code-expiry changes,
-    # so no inline script is needed on this page.
     vm_poll = ""
     if not bound:
         vm_poll = (f'<div id="vm-poll" hidden data-pid="{esc(player.player_id)}"'
@@ -1105,8 +1047,6 @@ def _home_vm_card(comp: CompetitionRecord, player: PlayerRecord,
     fallback = ""
     join_hint = ""
     if not player.box_id:
-        # The code has to be visible where the player lands, not only on the
-        # success page: without it the VM looks joined but nothing is scoring.
         code = (player.join_code_plain or "").strip()
         code_block = (f'<div class="codebox"><code>{esc(code)}</code></div>'
                       if code else
@@ -1214,10 +1154,9 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                           boxes=None) -> str:
     """The main page while a run is active: a full-width run dashboard.
 
-    The old narrow card left most of the viewport empty. This layout uses the
-    available width for the score, clock, a live top-five board, and the VM /
-    leave actions -- and it is the only place another competition is not
-    offered, because one is already in progress.
+    Score, clock, live top-five board and the VM / leave actions -- the only
+    page that does not offer another competition, because one is already in
+    progress.
     """
     row = board_row or {}
     rows = board_rows or []
@@ -1227,16 +1166,11 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
     time_block, end_note, competition_ends, _remaining = _run_clock(comp, player)
     score_block = _run_score_block(row, player, "stat-big")
     if row:
-        # With a hidden board the server still sends the player's own row
-        # (carrying board_total); the public rows list stays empty.
         board_total = row.get("board_total") or len(rows)
         rank_line = (f'Rank {esc(row.get("rank"))} of {esc(board_total)} on the board'
                      if row.get("rank") and board_total else "On the board")
     else:
         rank_line = "Not on the board yet"
-    # The organizers can pause the public standings for the run; while they
-    # are hidden the player's board shows a quiet note instead of scores
-    # (check-ins, the clock and the run itself keep working).
     board = (_board_table(rows[:8]) if rows and not comp.leaderboard_hidden
              else ('<p class="empty muted">Standings are hidden by the '
                    'organizers.</p>' if comp.leaderboard_hidden else
@@ -1295,7 +1229,6 @@ def home_competition_page(comp: CompetitionRecord, player: PlayerRecord,
                   current="home", refresh=15)
 
 
-# --- admin pages -----------------------------------------------------------------
 
 
 def login_page(error: str = "", csrf: str = "") -> str:
@@ -1329,8 +1262,6 @@ def _build_line() -> str:
     built = ""
     if info["built_at"]:
         try:
-            # Epoch seconds (a bundle stamp could carry them) render through
-            # the shared formatter; ISO stamps render as-is, trimmed.
             built = f" · built {esc(_fmt_ts(float(info['built_at'])))}"
         except (TypeError, ValueError):
             built = " · built " + esc(str(info["built_at"])[:16].replace("T", " "))
@@ -1349,22 +1280,12 @@ def admin_dashboard_page(comps: list, players_by_comp: dict,
     cards = []
     for c in comps:
         n = players_by_comp.get(c.id, 0)
-        # A competition that could not pre-deploy anything says so on its row,
-        # so the operator learns it before opening the page and pressing the
-        # button (the page itself carries the full reason and the fix).
         warn = pool_warn.get(c.id)
         warn_line = (f'<div class="fullflag">{esc(warn)}</div>' if warn else "")
-        # Two competitions can hold pools at once; the row says how much of
-        # this one's pool is warm (one portal read feeds every row).
         counts = pool_counts.get(c.workshop_pool_code) \
             if c.workshop_pool_code else None
         pool_cell = (f'{esc(counts["available"])}/{esc(counts["total"])}'
                      if counts else '<span class="muted">&mdash;</span>')
-        # The whole row is one click target (the name link stays for
-        # keyboard/middle-click use); the JS delegates so polling can swap
-        # rows freely.
-        # A scheduled end rides under the duration so the operator sees, at
-        # a glance, which competitions end themselves and when.
         schedule_note = ""
         if c.status in ("draft", "live") and c.scheduled_end_at:
             schedule_note = (f'<div class="muted small">ends '
@@ -1437,13 +1358,10 @@ def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
                      player_names: Optional[dict] = None) -> str:
     """The admin audit trail: who did what to which competition, newest first.
 
-    One card, one table -- the same shell the console and the roster use. The
-    filter is a GET form so a filtered view is a URL an operator can paste
-    into a ticket; ``/admin/audit?competition=&limit=``. Times render through
-    ``_fmt_ts`` like every other page in the console (engine-local, with the
-    zone spelled out) and the column header says so. Rows are
-    ``store.AuditRecord``s; nothing here invents a column the store does not
-    keep.
+    The filter is a GET form so a filtered view is a URL an operator can
+    paste into a ticket; ``/admin/audit?competition=&limit=``. Times render
+    through ``_fmt_ts`` (engine-local, zone spelled out); nothing here
+    invents a column the store does not keep.
     """
     player_names = player_names or {}
     by_id = {c.id: c for c in comps}
@@ -1459,8 +1377,6 @@ def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
                       f'{esc(comp.name)}</a>'
                       f'<div class="muted small">/c/{esc(comp.slug)}</div>')
         elif r.competition_id:
-            # A competition that has since been removed still owns its rows;
-            # the id is all the record has, so the id is what shows.
             target = f'<span class="small">{esc(r.competition_id)}</span>'
         else:
             target = '<span class="muted">&mdash;</span>'
@@ -1477,8 +1393,6 @@ def admin_audit_page(rows: list, comps: list, *, competition_id: str = "",
              else "Nothing logged yet.")
     meta = "Newest first &middot; times are engine-local"
     if scan is not None:
-        # The store keeps one append-only table, so a filtered view searches a
-        # bounded window of it; say which window rather than implying "all".
         meta += f" &middot; filter searched the newest {esc(scan)} entries"
     filters = f"""<form method="get" action="/admin/audit" class="filter-form">
 <label class="small">Competition<select name="competition">{"".join(opts)}</select></label>
@@ -1549,9 +1463,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
     now = time.time()
     warm = warm or {"status": "idle"}
     pool = pool or {"status": "unknown"}
-    # A removed player is a tombstone: it keeps the row (and its freed name)
-    # but is gone from the roster, the count and the action buttons. The
-    # tombstone is what lets the same name join again.
     players = [p for p in players if p.status != "removed"]
     rows = []
     for p in players:
@@ -1594,18 +1505,12 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
                           f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                           f'<button class="btn danger">Remove</button></form>')
         if p.box_id and p.claim_uid:
-            # The post-run lifecycle: ends this run's access window now by
-            # destroying the VM (the seat frees for the next claim). Player
-            # status, score and history stay.
             neutral.append(f'<form method="post" action="/admin/players/{esc(p.player_id)}/release_box" class="inline"'
                            f' data-confirm="Release (destroy) this player\'s box now? Their run is over even if their clock says otherwise. Continue?">'
                            f'<input type="hidden" name="csrf" value="{esc(csrf)}">'
                            f'<button class="btn">Release box</button></form>')
         sep = '<span class="act-sep" aria-hidden="true"></span>' if neutral and danger else ""
         actions = "".join(neutral) + sep + "".join(danger)
-        # Up to four verbs per row was a button wall; they now live behind one
-        # "Actions" menu per row (delegated open/close in web.js, so polling
-        # can swap rows freely). The forms keep their own buttons + confirms.
         actions_cell = '<span class="muted">—</span>'
         if actions:
             actions_cell = (f'<div class="menu-wrap"><button type="button" class="btn" '
@@ -1641,8 +1546,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         if comp.join_open:
             controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/close-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Close joins</button></form>')
         else:
-            # Joins closed by mistake used to be permanent: close-join had no
-            # counterpart verb, so the only way back was a new competition.
             controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/open-join" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn">Reopen joins</button></form>')
         # Overtime: nudging the run deadline is metadata on the engine side
         # (the boxes and the scoring do not change), so it is offered as a
@@ -1653,10 +1556,7 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/rerun" class="inline"><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn primary">Rerun competition</button></form>')
         controls.append(f'<form method="post" action="/admin/api/competitions/{esc(comp.id)}/delete" class="inline" data-confirm="Remove this competition and its player records? This cannot be undone."><input type="hidden" name="csrf" value="{esc(csrf)}"><button class="btn danger">Remove competition</button></form>')
     join_path = f"/c/{comp.slug}/join"
-    # Copy hands the player the whole URL their browser needs, not just the
-    # path tail; without a public base the path is all we know.
     join_url = f"{public_base.rstrip('/')}{join_path}" if public_base else join_path
-    # A roster export only makes sense once there is a run to export.
     csv_btn = (f'<a class="btn" href="/admin/api/competitions/{esc(comp.id)}'
                f'/export.csv">Export CSV</a>'
                if comp.status in ("live", "ended") else "")
@@ -1673,8 +1573,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
             note = ('<p class="meta">Queued: another competition is filling its '
                     'pool first (the portal provisions one pool at a time).</p>')
         elif state == "ready":
-            # A completed pre-deploy is news for a few seconds; the standing
-            # count line above carries the state after that, across reloads.
             done = warm.get("finished_at")
             note = ('' if done is not None and now - float(done) > 10
                     else '<p class="okmsg">Box pre-deployment completed.</p>')
@@ -1687,23 +1585,18 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         default_count = min(max(1, int(comp.max_players or 8)), 64)
         # A competition with nothing to clone from must not offer a button
         # whose only outcome is a failed job: the reason sits in the card and
-        # the click is refused before the thread starts. The form lives inside
-        # the polled node so the button re-enables by itself once the scenario
-        # (or the engine's pools file) gains the missing pool block.
+        # the click is refused before the thread starts.
         blocked = bool(predeploy_warn)
         stale_pin = (pool.get("status") == "unpinned"
                      and bool(comp.workshop_pool_code))
         if blocked:
             pool_line = f'<p class="warnmsg">{esc(predeploy_warn)}</p>'
-        # Standing live count from the portal snapshot (survives engine
-        # restarts, unlike the in-memory job note below it); both lines live
-        # in the polled node so they update without a reload.
         elif pool.get("status") == "ok":
             pool_line = (f"<p class=\"meta\">{int(pool.get('available') or 0)} of "
                          f"{int(pool.get('total') or 0)} boxes ready to claim</p>")
         elif stale_pin:
-            # A pin outlives its pool only until the next warm/claim; this is a
-            # notice, not an error, and it must not read as "nothing set up".
+            # A pin outlives its pool only until the next warm/claim; this is
+            # a notice, not an error, and it must not read as "nothing set up".
             pool_line = ('<p class="warnmsg">The pool this competition used is '
                          'gone from the portal; the next pre-deploy or join '
                          'clones a fresh one from the scenario template.</p>')
@@ -1716,9 +1609,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
         if state == "idle" and (blocked or stale_pin
                                 or pool.get("status") not in ("unpinned",
                                                                "unknown")):
-            # The "nothing pre-deployed yet" explainer only fits an empty pool
-            # with nothing else to say; a count, a stale-pin notice or a
-            # blocker would contradict it.
             note = ""
         button = (f'<button class="btn" type="submit" disabled title="{esc(predeploy_warn)}">Pre-deploy</button>'
                   if blocked else '<button class="btn" type="submit">Pre-deploy</button>')
@@ -1728,13 +1618,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
 <input type="hidden" name="csrf" value="{esc(csrf)}">
 <label class="small">Boxes <input class="input-md" name="count" type="number" min="1" max="64" value="{default_count}"></label>
 {button}</form></div></section>"""
-    # The pool code is portal plumbing (audit log / journal carry it for
-    # debugging); the UI stays quiet about pools unless a claim actually fails,
-    # in which case the error text lands on the player row.
-    # Scheduled end: a wall-clock auto-End for the whole competition. The
-    # sweeper fires it (runs still in progress stop, pool torn down, exactly
-    # like pressing End); players see a countdown. Setting/cancelling is a
-    # plain form like the other controls.
     schedule_value = "—"
     schedule_controls = ""
     if comp.status in ("draft", "live"):
@@ -1766,7 +1649,6 @@ def admin_competition_page(comp: CompetitionRecord, board: dict, players: list,
             f'<button class="btn">{"Update" if scheduled else "Schedule end"}</button>'
             f'</form>')
     elif comp.scheduled_end_at:
-        # Kept for the record on an ended competition.
         schedule_value = esc(_fmt_ts(comp.scheduled_end_at))
     auto_end_btn = ""
     if comp.status in ("draft", "live"):
@@ -1922,7 +1804,6 @@ readable accent; <span class="muted">muted text</span> and
 
 
 
-# --- design system ---------------------------------------------------------------
 
 CSS = _theme_css() + """
 :root{--font-sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -2580,12 +2461,6 @@ if(vmp){
 """
 
 
-# --- static assets --------------------------------------------------------------
-# The theme-init script, the stylesheet and the page script ship from /static/
-# under a content-hash URL: cacheable across pages and poll fetches, and they
-# keep the page free of inline script blocks so the CSP needs no
-# 'unsafe-inline' for script-src. Only the per-competition accent variables
-# stay as a body style attribute (style-src keeps 'unsafe-inline').
 
 _STATIC_BODIES = {"theme-init.js": THEME_INIT, "web.css": CSS, "web.js": JS}
 
@@ -2609,7 +2484,6 @@ def static_asset(path: str):
     return None
 
 
-# --- poll fragments ---------------------------------------------------------------
 
 _FRAG_DIV = re.compile(r"<(/?)div\b[^>]*>", re.IGNORECASE)
 

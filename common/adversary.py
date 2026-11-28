@@ -7,17 +7,15 @@ will refuse, and the engine upload path cannot drift from the compiler.
 import math
 import re
 
-#: The closed action vocabulary (architecture §12.2). Adding an action means
-#: adding an executor implementation and a validation branch here, together.
-#: ``wall_message`` is deliberately absent: it is engine-issued only (the
-#: run-over post-run access notice) and a scenario may not author it.
+#: The closed action vocabulary (architecture §12.2). Adding an action also
+#: means adding the executor implementation and the validation branch.
 ADVERSARY_ACTIONS = frozenset({
     "flush_firewall",
     "kill_service",
     "drop_inert_artifact",
 })
 
-#: Service names the adversary may stop. Mirrors the agent executor's guard:
+#: Service names the adversary may stop — mirrors the agent executor's guard:
 #: the first character cannot be '-' so it is never parsed as an option.
 SERVICE_NAME_RE = re.compile(r"[A-Za-z0-9_.@+][A-Za-z0-9_.@+-]*\Z")
 

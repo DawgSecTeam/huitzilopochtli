@@ -1,31 +1,14 @@
-"""boxbuilder CLI.
-
-Agent-facing: every subcommand supports `--json`, which prints the result as a
-single JSON line on stdout (parseable like nakon's --json). Progress/logs go to
-stderr so `boxbuilder <cmd> --json | jq` works.
-
-Usage:
-    python3 -m boxbuilder compile --spec box.yaml [--out artifacts/] [--json]
-    python3 -m boxbuilder plant   --spec box.yaml --provider-host HOST [--json]
-    python3 -m boxbuilder install --spec box.yaml --mode ranked --provider-host HOST [--json]
-    python3 -m boxbuilder lint    [--spec box.yaml] [--json]
-    python3 -m boxbuilder package --spec box.yaml [--out artifacts/] --image-out box.ova [--json]
-    python3 -m boxbuilder build   --spec box.yaml [--image-out box.ova] [--from-step compile|plant|install|package] [--json]
-    python3 -m boxbuilder answer-key --scenario scenario.yaml [--out PATH] [--html] [--json]
-
-The build target (honor|ranked) comes from --mode, defaulting to the
-scenario's ``scenario.mode``. Provider connection details come from
---provider-* flags or $HUITZILOPOCHTLI_PROVIDER_{HOST,USER,PASSWORD,PORT} and
-override whatever the spec file carries, so no deployment address has to be
-committed. The spec file may be replaced by direct flags (--scenario,
---nakon-config, --provider-*). See boxbuilder/README.md.
+"""boxbuilder CLI: compile / plant / install / lint / package / build /
+answer-key (usage + flags: boxbuilder/README.md). --json prints one result
+line on stdout, logs on stderr. Provider details from --provider-* /
+$HUITZILOPOCHTLI_PROVIDER_* override the spec, so no deployment address or
+password is ever committed.
 """
 import argparse
 import glob
 import json
 import os
 import sys
-from typing import Optional
 
 from boxbuilder.lint import lint_box
 from boxbuilder.pipeline import (
@@ -37,11 +20,9 @@ from boxbuilder.spec import BoxSpec, load_spec, validate_inputs
 _STEPS = ("compile", "plant", "install", "package")
 
 
-# --- output discipline ----------------------------------------------------
 def _emit(result: dict, as_json: bool) -> None:
     """Result -> stdout. --json prints a single line; otherwise a human summary."""
     if as_json:
-        # Single line, like nakon, so orchestrators can take stdout.splitlines()[-1].
         sys.stdout.write(json.dumps(result, default=str) + "\n")
         sys.stdout.flush()
         return
@@ -63,7 +44,6 @@ def _eprint(*args) -> None:
     print(*args, file=sys.stderr)
 
 
-# --- spec loading ---------------------------------------------------------
 def _target_overrides(args) -> tuple:
     """(mode, engine_url) overrides from flags/env; either may be None."""
     mode = getattr(args, "mode", None)
@@ -78,21 +58,17 @@ def _spec_from_args(args) -> BoxSpec:
 
     if args.spec:
         spec = load_spec(args.spec, mode=mode, engine_url=engine_url)
-        # --authoring-key applies to both input paths. The spec-file path used
-        # to ignore it, silently generating artifacts/<out>/authoring.key even
-        # when the operator asked for a specific key.
+        # Without this, a --spec + --authoring-key run would silently ignore
+        # the flag and generate a fresh artifacts/<out>/authoring.key instead.
         authoring_key = getattr(args, "authoring_key", None)
         if authoring_key:
             spec.authoring_key_path = os.path.abspath(authoring_key)
         return _apply_provider_overrides(spec, args)
 
-    # Direct-flag assembly path (no box.yaml).
     if not (args.scenario and args.nakon_config):
         raise SystemExit(
             "provide --spec FILE, or both --scenario and --nakon-config"
         )
-    # Build a minimal spec object without a spec file. We still load+validate
-    # the scenario/nakon config the same way load_spec does.
     import yaml
     with open(args.scenario, "r", encoding="utf-8") as f:
         scenario = yaml.safe_load(f)
@@ -104,9 +80,6 @@ def _spec_from_args(args) -> BoxSpec:
         nakon_config_path=os.path.abspath(args.nakon_config),
         provider={"name": getattr(args, "provider", None) or "ssh"},
         authoring_key_path=os.path.abspath(args.authoring_key) if args.authoring_key else None,
-        # Theme assets resolve relative to the scenario's directory, exactly
-        # like the spec-file path does (theme.py uses spec.base_dir) — using
-        # CWD here would make the same inputs behave differently per invocation.
         base_dir=os.path.dirname(os.path.abspath(args.scenario)),
         mode_override=mode,
         engine_url_override=engine_url,
@@ -117,12 +90,9 @@ def _spec_from_args(args) -> BoxSpec:
 
 
 def _apply_provider_overrides(spec: BoxSpec, args) -> BoxSpec:
-    """Fold --provider-* flags and $HUITZILOPOCHTLI_PROVIDER_* over the spec.
-
-    Connection details are deployment facts, not box authoring: the committed
-    spec carries at most a user and a port, and every deploy supplies the
-    address (a DHCP clone's IP changes on every rebuild).
-    """
+    """Fold --provider-* flags / $HUITZILOPOCHTLI_PROVIDER_* over the spec:
+    connection details are deployment facts, not box authoring (a DHCP
+    clone's IP changes on every rebuild)."""
     provider = dict(spec.provider or {})
     name = getattr(args, "provider", None)
     if name:
@@ -175,7 +145,6 @@ def _add_spec_inputs(p: argparse.ArgumentParser) -> None:
     p.add_argument("--nakon-dir", help="nakon repo dir (default: $NAKON_DIR, then vendor/nakon, then ../nakon)")
     p.add_argument("--vulndb-url", help="vulndb-ui base URL, for themed scenarios only "
                                         "(default: $VULNDB_UI_URL then http://127.0.0.1:3000)")
-    # Provider flags (consumed by plant/install/package; ignored by compile).
     p.add_argument("--provider", choices=("ssh",), help="box provider (v1: ssh)")
     p.add_argument("--provider-host", help="box address (default: $HUITZILOPOCHTLI_PROVIDER_HOST)")
     p.add_argument("--provider-port", type=int)
@@ -184,7 +153,6 @@ def _add_spec_inputs(p: argparse.ArgumentParser) -> None:
     p.add_argument("--json", action="store_true", help="print result as one JSON line on stdout")
 
 
-# --- subcommands ----------------------------------------------------------
 def cmd_compile(args) -> int:
     spec = _spec_from_args(args)
     out = args.out or os.path.join(os.getcwd(), "artifacts")
@@ -568,7 +536,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    # Direct-flag path requires --nakon-config when --spec is absent.
     # answer-key is authoring-side only -- it never touches nakon.
     needs_spec = args.command not in ("answer-key", "lint")
     if needs_spec and not args.spec and not args.nakon_config:

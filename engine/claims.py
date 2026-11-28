@@ -1,19 +1,9 @@
-"""VM claim lifecycle for ranked joins.
-
-A player slot owns at most one VM. The engine asks the workshop portal for it
-(``POST /api/claim``) and stores the portal's *open* link, which is stable:
-the portal mints a fresh Guacamole session every time it is opened. With the
-prebind secret configured, the engine also hands the portal the player's
-one-time join code, so the portal can run ``huitz join`` inside the guest on
-the first open -- the player never types anything.
-
-Each competition provisions its own portal pool (``ensure_pool``), cloned from
-the ranked template named in the scenario record's ``pool`` block; the engine
-never selects among the portal's pre-existing pools.
-
-This module owns the retry/backoff and code-rotation policy. It never raises:
-every failure is recorded on the player row (``claim_error``) so the join page
-can show what happened and offer a retry.
+"""VM claim lifecycle for ranked joins: one VM per player slot, claimed from
+the workshop portal. With the prebind secret the portal runs ``huitz join``
+in-guest on first open, so the player types nothing. Each competition
+provisions its own pool (``ensure_pool``) from the scenario's ``pool`` block —
+the engine never picks among the portal's pre-existing pools. This module
+never raises: every failure lands on the player row (``claim_error``).
 """
 import hashlib
 import hmac
@@ -35,32 +25,19 @@ MAX_RETRY_BACKOFF = 300.0
 CODE_TTL_S = 1800
 CODE_REFRESH_MARGIN = 600.0
 
-#: Admin pre-deploy: how many boxes one click may ask the portal to warm and
-#: how long the background job waits for them to register. A cold Windows
-#: clone takes ~60-180 s to answer RDP, and the portal provisions ten at a
-#: time, so 30 boxes can legitimately take several minutes.
 WARM_MAX = 200
 WARM_WAIT_S = 2400.0
 
-#: comp id -> background warm job state. Process-local on purpose: it is a
-#: progress indicator for the admin page, not durable competition state (the
-#: pin and the portal's own pool are the source of truth).
+#: comp id -> warm job state; process-local progress indicator, not durable
+#: competition state (the pin and the portal's own pool are the source of truth).
 _WARM_JOBS = {}
 _WARM_LOCK = threading.Lock()
 
-#: One provisioning attempt per **competition** at a time. Concurrent first
-#: claims on a fresh competition used to race the portal's single provision
-#: job; the losers could pin a pool whose config another call had just
-#: deleted (live load test: 15 simultaneous joins produced a permanently
-#: stale pool pin and "Unknown code." for every later claim). The lock is per
-#: competition, not process-wide: a slow pre-deploy in one event must not
-#: block the first join in another.
+#: One provisioning attempt per COMPETITION at a time, not process-wide: a
+#: slow pre-deploy in one event must not block the first join in another.
 _POOL_LOCKS = {}
 _POOL_LOCKS_LOCK = threading.Lock()
 
-#: How many pre-deploy jobs may talk to the portal at once. The portal accepts
-#: one provision job at a time, so letting every competition warm in parallel
-#: only produces 409s; the rest queue as ``status: "queued"``.
 MAX_WARM_JOBS_DEFAULT = 2
 _WARM_GATE = None
 _WARM_GATE_LOCK = threading.Lock()
@@ -108,9 +85,6 @@ def enabled() -> bool:
     return bool(config()[0])
 
 
-#: How long a run's box stays accessible after the run clock ends, so the
-#: player can investigate the hardened state, before the sweeper releases
-#: (destroys + frees the seat) it (env: HUITZILOPOCHTLI_POST_RUN_GRACE_S).
 POST_RUN_GRACE_DEFAULT = 1800.0
 
 
@@ -278,11 +252,10 @@ def _ensure_pool_locked(store: Store, comp: CompetitionRecord,
         result = workshop.provision_pool(base, password, comp.slug, spec,
                                          pool_name=name)
     except workshop.WorkshopError as exc:
+        # The portal runs one provision job at a time: "already running" is a
+        # transient queue — wait, then reuse the pool that appeared.
         if "already running" not in str(exc).lower():
             return None, str(exc)
-        # Another competition's provisioning job is still holding the
-        # portal's single job slot. Wait for it, then reuse our pool if it
-        # appeared; a 409 is a transient queue, not a terminal error.
         for _ in range(10):
             time.sleep(1.0)
             try:
@@ -400,7 +373,6 @@ def live_pool_status(comp: CompetitionRecord, store=None) -> dict:
             **({"pools": len(pins)} if len(pins) > 1 else {})}
 
 
-#: Dashboard pool counts: one portal read for every row, cached briefly.
 _POOL_COUNTS_CACHE = {"at": 0.0, "data": {}}
 
 
@@ -433,15 +405,6 @@ def portal_pool_counts(max_age: float = 10.0) -> dict:
     return dict(data)
 
 
-#: Auto-warm: keep a small buffer of unclaimed, available (cloned, booted,
-#: past their access-port wait) boxes in each live competition's pool, so the
-#: next claim dispenses a preheated box instead of waiting on a cold clone.
-#: The portal clones on demand either way; auto-warm only hides that latency.
-#: Target is env-tunable (HUITZILOPOCHTLI_AUTOWARM_TARGET, 0 disables);
-#: HUITZILOPOCHTLI_AUTOWARM=0 turns the feature off entirely. Topping up is
-#: asynchronous on the portal, so its ``available`` count stays low for
-#: minutes after a request — a cooldown per competition keeps the sweeper
-#: from stacking redundant redeploy jobs against a slow provisioning run.
 AUTOWARM_TARGET_DEFAULT = 2
 AUTOWARM_COOLDOWN_S = 120.0
 
@@ -517,11 +480,6 @@ def autowarm_tick(store: Store, comp: CompetitionRecord, *,
     return total_deficit
 
 
-#: Standing reasons a competition has nothing to pre-deploy from, phrased for#: the admin page. Each names the knob to touch and carries no secret. The
-#: dashboard shows them before the click (and the click is refused) so a
-#: scenario nobody gave a pool to does not look like a broken button: the
-#: failure used to arrive seconds later as a background job note, after the
-#: operator had already pressed it.
 PORTAL_MISSING = ("The workshop portal is not configured "
                   "(HUITZILOPOCHTLI_WORKSHOP_URL), so there is nowhere to "
                   "pre-deploy boxes to.")
@@ -530,7 +488,6 @@ PORTAL_PASSWORD_MISSING = (
     "(HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD) is not set, so the engine "
     "cannot ask the portal to clone boxes.")
 
-#: The short form for the admin console's competition rows.
 POOL_SOURCE_MISSING_SHORT = "No pool to pre-deploy from"
 
 
@@ -612,9 +569,8 @@ def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
                        in store.list_competition_pools(comp.id) if c), None)
     if pinned:
         if not check_pin:
-            # Structural only: a pin may be topping up a pool that is still
-            # alive, and telling needs a portal read the row must not make.
-            # The competition page (which has the snapshot) decides.
+            # Structural answer only: whether the pin is alive needs a portal
+            # read the competition rows' poll must not make.
             return None
         if pool is not None:
             gone = pool.get("status") == "unpinned"
@@ -631,8 +587,6 @@ def predeploy_blocker(store: Store, comp: CompetitionRecord, *,
             if isinstance(snap_pool, dict) and snap_pool.get("status") == "ok":
                 return _pool_template_mismatch(store, comp, snap_pool)
             return None
-        # The pin is dead, but the scenario can still clone a fresh pool:
-        # warm_boxes recovers that itself, so it is not a blocker.
     if not scenario_mod.load_pool_spec(store, comp.scenario_name,
                                        comp.scenario_version):
         return no_pool_message(comp.scenario_name)
@@ -688,9 +642,8 @@ def start_warm(store: Store, comp: CompetitionRecord, count) -> dict:
         if existing is not None and existing.get("status") in ("running",
                                                                "queued"):
             return dict(existing)
-    # Outside the lock: the blocker may read the portal, and the worker takes
-    # the same lock for its progress updates. The registration below re-checks
-    # for a running job, so two simultaneous clicks still start only one batch.
+    # Checked twice: the blocker may read the portal outside the lock; the
+    # re-check below registers under it, so simultaneous clicks start one batch.
     blocker = predeploy_blocker(store, comp)
     if blocker:
         store.add_audit("system", "competition_warm_blocked", comp.id,
@@ -777,10 +730,6 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
     pool_code = comp.workshop_pool_code
     created = False
     if pool_code and not _pin_is_alive(base, password, pool_code):
-        # The pin outlived its pool (an operator delete, a portal reset).
-        # Topping up a pool that is gone can only fail, and the scenario can
-        # still clone a fresh one from its own template, so recover the same
-        # way a first claim does instead of reporting a dead end.
         store.update_competition(comp.id, workshop_pool_code=None,
                                  workshop_pool_name=None)
         store.add_audit("system", "competition_pool_stale", comp.id,
@@ -792,7 +741,7 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
     if not pool_code:
         with _pool_lock(comp.id):
             # Re-read under the lock: a claim or another warm call may have
-            # provisioned the pool while this one was waiting.
+            # provisioned the pool while this one waited.
             fresh = store.get_competition(comp.id)
             comp = fresh or comp
             pool_code = comp.workshop_pool_code
@@ -816,10 +765,6 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
                                 or attempt == 30:
                             return {"status": "error", "requested": count,
                                     "error": str(exc)}
-                        # The portal allows one provision job at a time (the
-                        # other competition may be filling its pool). Wait for
-                        # it, then retry -- warming must be reliable, not
-                        # another source of 409s.
                         time.sleep(10)
                         try:
                             existing = workshop.find_pool_by_name(
@@ -860,10 +805,8 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
         total = int(snap.get("total") or 0)
         in_use = int(snap.get("in_use") or 0)
         if target is None:
-            # The requested count ADDS to whatever the pool already has ready
-            # (a fresh pool starts at zero), so pre-deploying 2 into a pool
-            # holding 12 grows it to 14 instead of being satisfied instantly
-            # by the boxes already in it.
+            # The requested count is ADDITIVE to boxes already ready (a fresh
+            # pool starts at zero): warming 2 into a pool of 12 aims for 14.
             target = count if created else available + count
         _warm_job_update(comp.id, pool_code=pool_code, available=available,
                          total=total, in_use=in_use, target=target)
@@ -880,10 +823,6 @@ def warm_boxes(store: Store, comp: CompetitionRecord, count: int, *,
                     "waited_s": round(now - started, 1),
                     "error": (f"only {available} of {target} boxes were ready "
                               f"after {int(now - started)} s")}
-        # A brand-new pool is already provisioning `count` boxes. An existing
-        # pool is topped up once toward the additive target; a 409 means an
-        # earlier portal job is still running, so retry after it has had time
-        # to finish.
         if not topup_sent and now >= next_topup_at:
             try:
                 workshop.provision_more(base, password, pool_code,
@@ -904,16 +843,13 @@ def _pool_vmids(base: str, password: str, pool_name: str, pool_code: str,
                 expected: int, attempts: Optional[int] = None) -> list:
     """VMIDs the portal lists for exactly this competition's pool.
 
-    Pre-provisioned clones register asynchronously, so an operator who ends a
-    competition immediately after its first claim can race the portal. When
-    the pool reports a non-zero size, poll briefly before concluding there is
-    nothing to destroy. ``attempts`` overrides that decision for the
-    pool-config-already-gone case, where the expected count is unknown.
+    Clones register asynchronously, so when the pool reports a non-zero size,
+    poll briefly before concluding there is nothing to destroy; ``attempts``
+    overrides that for the pool-config-already-gone case.
 
-    The match is the pool code, or the portal's ``<pool name>-<n>`` student id
-    **anchored on the full pool name**. A bare ``startswith`` used to make
-    competition ``demo`` destroy ``demo-2``'s clones at End -- exactly what
-    End followed by Rerun creates.
+    Match is the pool code or a ``<pool name>-<n>`` student id ANCHORED on
+    the full pool name — never a bare slug prefix (``demo`` must not destroy
+    ``demo-2``'s clones).
     """
     student_re = re.compile(re.escape(pool_name) + r"-\d+\Z") if pool_name else None
     tries = attempts if attempts is not None else (5 if expected else 1)
@@ -938,14 +874,11 @@ def extend_pool_expiry(store: Store, comp: CompetitionRecord,
                        extension_s: int, *, margin_s: float = 300.0) -> dict:
     """Bump the portal's reclaim clock when overtime would outlive it.
 
-    The portal reclaims claimed VMs on its own ``expires_at`` (the engine
-    keeps a copy as the player's ``claim_expires_at``); an extension that
-    pushes a run's ``ends_at`` within ``margin_s`` of that instant means the
-    box could be torn down mid-overtime. The portal's admin listing identifies
-    clones by VMID but not by engine player, so the bump is coarse: every
-    clone in this competition's pool gets the same bump. Portal TTLs already
-    exceed typical academy run lengths, so for common short extensions this
-    is a no-op -- it only wakes up for long runs or long extensions.
+    The portal reclaims VMs on its own ``expires_at`` (mirrored as the
+    player's ``claim_expires_at``); an ``ends_at`` extension landing within
+    ``margin_s`` of that instant could see the box torn down mid-overtime.
+    The portal listing keys on VMID, not engine player, so every clone in
+    this competition's pool gets the same bump.
     """
     base, _secret = config()
     password = _admin_password()
@@ -1216,10 +1149,9 @@ def _apply_ready(store: Store, player: PlayerRecord, result: dict, *,
         claim_error=None,
         claim_attempts=attempts,
         claim_last_attempt_at=time.time())
-    # Auto-warm: a box just left the unclaimed buffer, so ask (in the
-    # background, best effort) for a replacement rather than waiting for the
-    # next sweep tick. The per-competition cooldown keeps a rapid run of
-    # claims from stacking redeploy jobs; the sweep fills any remainder.
+    # A box just left the unclaimed buffer: top it up in the background
+    # (best effort; the per-competition cooldown stops rapid claims from
+    # stacking jobs, and the sweep fills any remainder).
     threading.Thread(target=autowarm_thread_entry, name="autowarm-fire",
                      args=(store, player.competition_id),
                      daemon=True).start()
@@ -1322,11 +1254,8 @@ def start(store: Store, comp: CompetitionRecord, player: PlayerRecord,
             except workshop.WorkshopError as exc2:
                 _record_error(store, player, exc2, slot=slot)
                 return {"ok": False, "error": str(exc2)}
-        # The portal may not have the prebind secret yet. A plain claim still
-        # gets the player a VM, so fall back to the manual join rather than
-        # leaving them with nothing. This used to be silent, which meant an
-        # operator who configured HUITZILOPOCHTLI_WORKSHOP_SECRET never
-        # learned the advertised no-typing join was off (round 6 finding 6).
+        # A portal without prebind support still hands out a VM: fall back to
+        # the manual join rather than leaving the player with nothing.
         elif secret and "prebind" in str(exc).lower():
             store.add_audit("system", "prebind_unavailable", comp.id,
                             player.player_id,
@@ -1460,8 +1389,6 @@ def rotate_code_if_needed(store: Store, player: PlayerRecord,
     try:
         code = mint_join_code(store, player, server_secret, now + CODE_TTL_S)
     except RuntimeError as exc:
-        # Five collisions in a row is practically impossible; if it happens,
-        # the page must still render and the sweeper retries later.
         _record_error(store, player, str(exc))
         return False
     pushed_any = False
@@ -1495,8 +1422,8 @@ def rotate_code_if_needed(store: Store, player: PlayerRecord,
                 player.player_id, join_code_hash=old[0],
                 join_code_plain=old[1], join_code_expires_at=old[2])
         except JoinCodeCollision:
-            # Another slot took the old code while this one held the new one;
-            # the fresh code is still the better answer for this player.
+            # Another slot took the old code meanwhile; the fresh code is the
+            # better answer for this player.
             pass
         return False
     return True
@@ -1516,16 +1443,15 @@ def _refresh_expired_code(store: Store, server_secret: bytes,
     mint_join_code(store, player, server_secret, now + CODE_TTL_S)
 
 
-#: comp id -> (retry_after, consecutive_failures) for the sweeper. A portal
-#: error in one competition must not starve the others, so the failing one is
-#: backed off instead of being retried on every tick (and instead of the whole
-#: loop being skipped).
+#: comp id -> (retry_after, consecutive_failures): a portal-backed sweep error
+#: backs off that competition only — never retried every tick, and it never
+#: starves the other competitions.
 _SWEEP_BACKOFF = {}
 _SWEEP_BACKOFF_LOCK = threading.Lock()
 SWEEP_MAX_BACKOFF_S = 600.0
 SWEEP_BASE_BACKOFF_S = 30.0
-#: Players processed per competition per tick, rotated across ticks so a huge
-#: roster cannot monopolize one sweep.
+#: players per competition per tick, rotated so a huge roster cannot
+#: monopolize one sweep.
 SWEEP_PLAYERS_PER_TICK = 200
 _SWEEP_CURSOR = {}
 
@@ -1633,15 +1559,11 @@ def _sweep_one(store: Store, comp: CompetitionRecord, server_secret: bytes,
     # autowarm_tick). After the player work so a claim this tick just won
     # counts against the snapshot.
     autowarm_tick(store, comp, now=now, stats=stats)
-    # Post-run access windows: once a run's clock ends (score frozen — the
-    # governing receipt time is ``finished_at`` when a check-in confirmed it,
-    # else ``ends_at``), the box stays up ``post_run_grace_s`` so the player
-    # can investigate, then the sweeper releases it: destroy via the portal,
-    # seat freed for the next claim. The wall the player sees comes from the
-    # finishing check-in's directive (engine.checkin); a never-confirmed
-    # expiry releases on the same schedule — the clock is the truth. If the
-    # competition is ended before a window closes, the End path's pool teardown
-    # releases everything at once instead.
+    # Post-run access window: after the run clock ends the box stays up
+    # post_run_grace_s for investigation, then is released (destroy via the
+    # portal, seat freed). The governing end is ``finished_at`` when a
+    # check-in confirmed it, else ``ends_at`` — the clock is the truth. If the
+    # competition ends first, the End path's pool teardown releases everything.
     base, _secret = config()
     release_grace = post_run_grace_s()
     if base:

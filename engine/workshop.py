@@ -14,10 +14,9 @@ class WorkshopError(Exception):
     pass
 
 
-#: The production portal sits behind Cloudflare, whose browser-integrity check
-#: answers urllib's default "Python-urllib/x" User-Agent with HTTP 403 (error
-#: 1010). Identify the engine by name on every call so claims, pool warm-up and
-#: pre-deploy reach the portal instead of a WAF block.
+#: The production portal sits behind Cloudflare, whose browser-integrity
+#: check answers urllib's default "Python-urllib/x" User-Agent with HTTP 403
+#: (error 1010). Identify the engine by name on every call.
 USER_AGENT = "huitzilopochtli-engine/1.0"
 
 
@@ -161,11 +160,11 @@ def provision_pool(base_url: str, admin_password: str, slug: str, spec: dict,
               if isinstance(p, dict)}
     result = _call(base_url, "POST", "/api/admin/provision", body, timeout,
                    headers=_admin_headers(admin_password))
+    # Another engine call may create a same-named pool concurrently, and the
+    # portal deletes a config whose provision job was refused. Prefer a code
+    # this call did not see before the POST, so a losing call never returns a
+    # pool its own 409 cleanup is about to delete.
     after = list_pools(base_url, admin_password, timeout)
-    # Another engine call may create a same-named pool concurrently (and the
-    # portal also deletes a config whose provision job was refused). Prefer a
-    # code this call did not see before the POST, so a losing call can never
-    # hand back a pool that its own 409 cleanup is about to delete.
     found = next((p for p in after if isinstance(p, dict)
                   and p.get("name") == name and p.get("code") not in before),
                  None) or find_pool_by_name(after, name)
@@ -267,11 +266,10 @@ def destroy_vms(base_url: str, admin_password: str, vmids,
     ids = [int(v) for v in vmids if v is not None]
     if not ids:
         return {"status": "done", "vmids": [], "job_id": None}
-    # The portal allows one destroy job at a time. Two competitions ended
-    # back-to-back (a live load test did exactly that) race here; the second
-    # got 409 and the caller dropped the pin, leaking its pool. Wait for the
-    # running job to finish instead of failing the cleanup.
     result = None
+    # The portal allows one destroy job at a time: wait out a 409 "already
+    # running" instead of failing cleanup (the caller would drop the pin and
+    # leak the pool).
     for attempt in range(61):
         try:
             result = _call(base_url, "POST", "/api/admin/destroy",

@@ -14,9 +14,6 @@ from common.matchers import validate_matcher
 
 SCHEMA_VERSION = 1
 
-#: How many per-service SLA observations the engine retains and ships to the
-#: box (the ranked report's "last N ticks" strip). Bounded so the check-in
-#: response cannot grow without limit.
 SLA_HISTORY_MAX = 10
 
 
@@ -35,11 +32,8 @@ class CollectorStatus(str, Enum):
     OK = "ok"
     ERROR = "error"
     TIMEOUT = "timeout"
-    # A check's `requires` entry was missing on this host: the check was
-    # never collected, so it is neither solved nor failed. It scores 0 and
-    # is excluded from the solved count. Backward compatible in both
-    # directions that matter: an older agent never sends this value, and a
-    # check without `requires` can never produce it.
+    # Never collected: scores 0, neither solved nor failed. Compatible both
+    # ways — old agents never send it, requires-less checks never produce it.
     UNAVAILABLE = "unavailable"
 
 
@@ -56,10 +50,8 @@ class CheckSpec:
     display_max_points: int
     timeout_s: float = 5.0
     is_sla: bool = False
-    # Optional prerequisites: bare binary names (looked up on PATH) and/or
-    # absolute paths. The collector checks these BEFORE running the check;
-    # anything missing yields status=UNAVAILABLE evidence instead of a
-    # collect (and instead of a scripted "assume hardened" escape hatch).
+    # Collector checks these (PATH names / abs paths) BEFORE running; missing
+    # yields UNAVAILABLE evidence — never a scripted "assume hardened" pass.
     requires: list = field(default_factory=list)
 
 
@@ -95,11 +87,7 @@ class RubricEntry:
     matcher: dict
     points: int  # SIGNED; negative for penalty/prohibited
     sla: Optional[SlaParams] = None
-    # Human title for leaderboards/admin views and for the engine to send
-    # back to a ranked box for PASSED checks only. The ranked manifest ships
-    # generic display titles (see common/scenario_record.py), so this is the
-    # only place the real wording exists — and it never touches the box
-    # except as a per-passed-check hint. Honor boxes carry the rubric anyway.
+    # Engine-side real wording; the ranked manifest ships generic titles.
     display_title: str = ""
 
 
@@ -139,12 +127,9 @@ class Manifest:
     engine_url: Optional[str]
     hosts: list
     checks: list  # list[CheckSpec]
-    # No rubric, adversary schedule, or seed. Theme is a small optional subset
-    # (title/organization/accent/logo_b64) — purely additive, not required.
     theme: Optional[dict] = None
     # Scored forensics questions (question text only — no answer keys).
     forensics: Optional[list] = None  # list[ForensicsQuestion]
-    # Public scored-service labels (no expected values).
     services: Optional[list] = None  # list[ServiceSpec]
 
 
@@ -169,10 +154,8 @@ class CheckResult:
     awarded_points: int
     passed: bool
     reason: str
-    # Engine -> box only, set for results the box is allowed to see (passed /
-    # incurred penalties): the rubric-side display title, so a ranked box
-    # whose manifest ships generic titles can still name what was fixed.
-    # Empty when the engine does not send one; legacy engines omit it.
+    # Engine fills the real wording only for results the box may see
+    # (passed / incurred penalties); "" otherwise.
     title: str = ""
 
 
@@ -181,11 +164,6 @@ class SlaStatus:
     check_id: str
     state: str  # "UP" | "DOWN"
     accrued_points: int
-    # Ranked only, oldest -> newest: the service's post-hysteresis state on
-    # each recent engine-scored check-in. The engine retains ~10 ticks and
-    # includes this ring in every response so the on-box report can draw a
-    # real uptime history instead of guessing from one observation. Legacy
-    # engines omit it; the agent renders a single current tick then.
     history: list = field(default_factory=list)  # list[str]
 
 
@@ -197,12 +175,8 @@ class ScoreBreakdown:
     results: list  # list[CheckResult]; on the box wire, passed/incurred only
     sla_status: list  # list[SlaStatus] — empty in honor mode
     computed_at: float
-    # Ranked only: the engine's aggregate forensics (answer_equals) award for
-    # this check-in, so the box can split total into
-    # hardening + forensics + service uptime without per-question results
-    # (§11.4, §21.3 — those stay engine-side while a run is live). None from
-    # engines predating the split: the box then keeps the two-way reading in
-    # which forensics points ride inside the hardening figure.
+    # Ranked-only aggregate forensics award so the box can split the total
+    # without per-question results (§11.4); None from pre-split engines.
     forensics_points: Optional[int] = None
 
 
@@ -238,27 +212,17 @@ class CheckinResponse:
     directives: list  # list[Directive]
     next_checkin_s: int
     last_seq: int
-    # Every directive ever issued to this box (§12.1), re-sent on each
-    # check-in so a lost response can't lose one; the agent skips event_ids
-    # it already ran. `directives` stays "newly issued" so agents that
-    # predate this field keep their at-most-once behavior.
+    # Every directive ever issued (§12.1), re-sent each check-in
+    # (at-least-once); the agent dedups by event_id.
     issued_directives: list = field(default_factory=list)  # list[Directive]
-    # Ranked competition run state (additive; legacy agents ignore it).
     run_status: str = "running"  # running|finished|disqualified|ended
     run_ends_at: Optional[float] = None
     player_name: Optional[str] = None
     competition_name: Optional[str] = None
-    # Live scoreboard position at the moment this check-in was scored. The
-    # box renders it in the ranked report's top bar; None for legacy engines
-    # or a box that is not tied to a competition.
     rank: Optional[int] = None
     rank_total: Optional[int] = None
-    # §7.1: a disqualified run keeps playing its full clock. This flag tells
-    # the box (report banner + stderr notice) that the disqualification
-    # stands while ``run_status`` stays ``running``; only a removal or the
-    # clock ending the run changes that. Absent from engines that predate
-    # the flag, so old agents simply keep playing and see the exclusion on
-    # the web pages.
+    # §7.1: a disqualified run keeps playing its full clock — this flag only
+    # tells the box; scores stay excluded from the leaderboard.
     disqualified: bool = False
 
 
@@ -288,10 +252,8 @@ _ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 def validate_manifest(obj: dict) -> list:
     """Return a list of human-readable error strings; empty list = valid.
 
-    Structural validation of a compiled/parsed manifest dict (not YAML source).
-    Called by the authoring toolchain (fail the build) and by the agent on load
-    (refuse to run on invalid/unsigned input). No silent coercion.
-    """
+    Authoring toolchain (fail the build) and agent (refuse to run) both call
+    this on the parsed dict. No silent coercion."""
     errors = []
     if not isinstance(obj, dict):
         return ["manifest must be a JSON object"]
@@ -398,10 +360,6 @@ def validate_manifest(obj: dict) -> list:
             is_sla = check.get("is_sla")
             if is_sla is not None and not isinstance(is_sla, bool):
                 errors.append(f"{ref}.is_sla must be a boolean")
-            # Optional prerequisites (see CheckSpec.requires). Compiled
-            # manifests always carry the key -- an empty list means "nothing
-            # required", exactly today's behavior -- so absence is fine and
-            # [] is fine; anything else must be well-formed.
             requires = check.get("requires")
             if requires is not None:
                 if not isinstance(requires, list):
@@ -474,9 +432,9 @@ def validate_manifest(obj: dict) -> list:
             errors.append("manifest.forensics must be a list")
         else:
             seen_fq_ids = set()
-            # Collision is against author-written checks only — each forensics
-            # question compiles into its own forensics_answer CheckSpec with
-            # the same id, which is by design.
+            # Each forensics question compiles into its own forensics_answer
+            # CheckSpec with the same id — collision against author-written
+            # checks only, by design.
             check_ids = {
                 c.get("id") for c in (checks or [])
                 if isinstance(c, dict) and c.get("id") is not None
@@ -538,11 +496,8 @@ def validate_manifest(obj: dict) -> list:
 def _matcher_errors(matcher, ref: str) -> list:
     """Validate a rubric entry's matcher would resolve at evaluation time.
 
-    Delegates to common.matchers.validate_matcher, which checks the argument
-    shapes each predicate reads (field/pattern/value/allowed/...). Keeping one
-    validator means the upload-time check and the runtime predicate cannot
-    drift.
-    """
+    Delegates to common.matchers.validate_matcher — one validator, so the
+    upload-time check and the runtime predicate cannot drift."""
     if not isinstance(matcher, dict):
         return []  # shape error already reported by the caller
     return [f"{ref}: {err}" for err in validate_matcher(matcher)]
@@ -607,7 +562,6 @@ def validate_rubric(obj: dict) -> list:
             if isinstance(points, bool) or not isinstance(points, int):
                 errors.append(f"{ref}.points must be an integer")
             elif category := entry.get("category"):
-                # Sign consistency: hardening earns points, penalties cost them.
                 if category == Category.VULN.value and points < 0:
                     errors.append(f"{ref}: category 'vuln' must have points >= 0")
                 if category in (Category.PENALTY.value, Category.PROHIBITED.value) and points > 0:
@@ -643,8 +597,6 @@ def validate_rubric(obj: dict) -> list:
                     errors.append(
                         f"{ref}.sla.points_per_interval must be a positive integer"
                     )
-                # Optional counters: 0 would make hysteresis trip on every
-                # observation (an UP box pinned DOWN, accrual frozen).
                 for key in ("hysteresis_fail_n", "hysteresis_ok_n",
                             "max_intervals_per_checkin"):
                     if key in sla:
@@ -654,16 +606,13 @@ def validate_rubric(obj: dict) -> list:
                             errors.append(
                                 f"{ref}.sla.{key} must be a positive integer"
                             )
-                # The engine rebuilds SlaParams(**sla) on every check-in: an
-                # unknown key would 500 every box in the scenario.
                 unknown = sorted(set(sla) - set(SlaParams.__dataclass_fields__))
                 if unknown:
                     errors.append(f"{ref}.sla has unknown key(s): {', '.join(unknown)}")
 
-            # A zero-point non-SLA entry can never change the score and (for
-            # a VULN) makes the board count a "fixed" issue that awards
-            # nothing. SLA entries legitimately carry points=0 because their
-            # points come from points_per_interval.
+            # A zero-point non-SLA entry can never change the score and would
+            # make the board count a "fixed" vuln awarding nothing. SLA
+            # entries carry points=0 legitimately (points_per_interval pays).
             if (not isinstance(points, bool) and isinstance(points, int)
                     and not isinstance(sla, dict) and points == 0):
                 errors.append(

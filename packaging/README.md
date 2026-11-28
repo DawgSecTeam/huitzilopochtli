@@ -1,9 +1,9 @@
 # Packaging
 
-Phase 3 of Huitzilopochtli: turns the already-built `agent/` + `common/`
-packages into a deployable artifact for a scored box, plus the
-init-system glue and reset tooling. See architecture.md §17 for the
-authoritative spec this implements.
+Turns the already-built `agent/` + `common/` packages into a
+deployable artifact for a scored box, plus the init-system glue and
+reset tooling. See architecture.md §17 for the authoritative spec this
+implements.
 
 Nothing under `agent/`, `common/`, `engine/`, or `authoring/` is
 modified by anything in this directory.
@@ -167,9 +167,9 @@ From the repo root, on a dev/build machine (not the box):
 python3 packaging/build_zipapp.py
 ```
 
-This writes `dist/agent.pyz` (root `.gitignore` already ignores
-`*.pyz`, and now also `dist/`). Pass an explicit output path as the
-only CLI argument to override:
+This writes `dist/agent.pyz` (the root `.gitignore` ignores `*.pyz`
+and `dist/`). Pass an explicit output path as the only CLI argument to
+override:
 
 ```
 python3 packaging/build_zipapp.py /tmp/agent.pyz
@@ -189,9 +189,8 @@ produce `manifest.signed.json` (+ `rubric.json` for honor mode, or
 committed `boxes/` sources itself) from a scenario YAML. That output is
 what gets copied into `/opt/.huitzilopochtli/` alongside the `.pyz`
 below (the rubric first passing through `common/rubric_codec.py` --
-`boxbuilder` does this for you) --
-see that module's docstring for details; it is unaffected by this
-phase.
+`boxbuilder` does this for you) -- see that module's docstring for
+details.
 
 ## Install (on the box)
 
@@ -220,7 +219,7 @@ phase.
 
    (For ranked mode: `"mode": "ranked"`, `"rubric_path": null`,
    `"identity_path": "/opt/.huitzilopochtli/identity.json"`, and a real
-   `checkin_interval_s"`.)
+   `checkin_interval_s`.)
 
    `authoring_public_key_path` is **required**: if omitted, the agent
    refuses to run (fails closed). Development fixtures may opt out with

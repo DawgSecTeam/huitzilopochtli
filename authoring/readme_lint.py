@@ -1,55 +1,30 @@
 """Readme spoiler lint: keeps the player-facing handbook off the answer key.
 
-The handbook (`theme.readme`) is the assignment, not the answer key — see
-HANDBOOK_GUIDE.md for the writing rules. This module is the mechanical net
-under those rules. It runs at compile time
-(authoring/compile.py::compile_scenario) and reports two severities:
-
-- **errors** — a forensics answer verbatim in the readme. That is never
-  legitimate, so it blocks the compile like any other validation error.
-- **warnings** — walkthrough copy-paste, mutation commands, and planted
-  paths in the readme. Warnings are surfaced by boxbuilder (like the answer
-  key's missing-walkthroughs note) and asserted clean by the all-boxes
-  regression test, so new leaks need an explicit decision to ship.
-
-It is a net, not a judge: a prose spec-sheet of scored end-states with no
-commands and no planted names passes cleanly. The one-question test in
-HANDBOOK_GUIDE.md ("could a player earn this check by copying the
-handbook?") is the human half of the review.
+Runs at compile time (authoring/compile.py) and returns (errors, warnings):
+forensics answers always error, tier-5 findings error only in ranked builds,
+lesser leaks warn. Writing rules: HANDBOOK_GUIDE.md. A net, not a judge.
 """
 import html as _html
 import re
 import string
 
-# Tier 1 (error): forensics answers. Short or generic values are skipped, as
-# are answers the question text itself already prints (freebies by design)
-# and answers listed in theme.readme_lint_allow (lenient aliases that collide
-# with the box's story vocabulary — see HANDBOOK_GUIDE.md).
 _GENERIC_ANSWERS = {
     "true", "false", "yes", "no", "none", "unknown", "n/a", "na", "nil",
     "null", "password", "username",
 }
 _MIN_ANSWER_CHARS = 4
 
-# Tier 2 (warning): whole-line overlap with authored `solution:` walkthroughs.
 _MIN_SOLUTION_LINE_CHARS = 20
 _MIN_SOLUTION_LINE_WORDS = 3
 
-# Tier 4 (warning): absolute paths planted in `solution:` text that also show
-# up in the readme. Paths that a check openly collects (crown-jewel briefing:
-# the permission checks collect exactly the confidential paths the readme
-# names) are exact-matched against collect params and skipped.
 _MIN_PATH_CHARS = 6
 
 
 def _visible_text(text: str) -> str:
     """Approximate the text a player actually sees in the rendered page.
 
-    The lint used to compare raw Markdown/HTML, so an answer split by markup
-    (``cocoa-<span>hidden</span>-sync`` or ``cocoa-**hidden**-sync``) was
-    invisible to it while obvious on screen. Strip tags/entities, link
-    syntax, and emphasis/code markers before normalizing. This is a net, not
-    a renderer, but it closes the easy bypass.
+    Strips tags/entities, links, and emphasis/code markers so markup splits
+    (``cocoa-**hidden**-sync``) can't hide a leak. A net, not a renderer.
     """
     visible = str(text)
     visible = re.sub(r"<[^>]*>", "", visible)
@@ -80,7 +55,6 @@ def _contains(haystack_norm: str, needle_norm: str) -> bool:
     ) is not None
 
 
-# --- tier 1: forensics answers (error) --------------------------------------
 
 def _readme_lint_allow(parsed: dict) -> set:
     theme = parsed.get("theme") or {}
@@ -104,7 +78,7 @@ def _forensics_answer_leaks(parsed: dict, readme_norm: str) -> list:
             if needle in allowed:
                 continue
             if _contains(question_norm, needle):
-                continue  # the question text already gives it away by design
+                continue
             if _contains(readme_norm, needle):
                 errors.append(
                     f"readme leak: forensics answer {raw!r} ({question.get('id', '?')}) "
@@ -114,7 +88,6 @@ def _forensics_answer_leaks(parsed: dict, readme_norm: str) -> list:
     return errors
 
 
-# --- tier 2: solution: copy-paste (warning) ---------------------------------
 
 def _iter_solutions(parsed: dict, *, include_forensics: bool = True):
     for check in parsed.get("checks") or []:
@@ -144,15 +117,12 @@ def _solution_copy_paste(parsed: dict, readme_norm: str) -> list:
     return warnings
 
 
-# --- tier 3: mutation commands in code spans and fences (warning) -----------
 
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 _INLINE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 
-# Optional PowerShell prompt / sudo ahead of an anchored command.
 _PROMPT = r"(?:ps\s+[a-z]:\\[^\n>]*>?\s*)?(?:sudo\s+)?"
 
-# PowerShell mutating cmdlets (anywhere in the fragment; Get-* stays legal).
 _PS_MUTATING_RE = re.compile(
     r"\b(Set|Stop|Suspend|Remove|Disable|Enable|Clear|Uninstall|Revoke|Block|"
     r"Rename|Reset|New|Add|Import|Invoke|Restart)-[A-Z]\w+"
@@ -234,17 +204,11 @@ def _mutation_commands(readme_text: str) -> list:
     return warnings
 
 
-# --- tier 4: planted paths from solutions (warning) --------------------------
 
-# Depth floors: >= 3 POSIX segments (kills /etc/passwd-style coaching files)
-# and >= 2 segments after the drive (kills generic parents like C:\ProgramData
-# while keeping C:\ProgramData\Subsystems-class planted directories).
 _WIN_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s'\"`|<>*:]+(?:\\[^\s'\"`|<>*:]+)+")
 _POSIX_PATH_RE = re.compile(r"/[\w.@+-]+(?:/[\w.@+-]+){2,}")
 
-# Canonical OS locations a pinecrest-ceiling handbook may legitimately name —
-# where standard features live (the SYSVOL path is the Run-key-path class),
-# as opposed to attacker-planted names.
+# Canonical OS locations a handbook may legitimately name.
 _GENERIC_PATHS = {
     "c:\\windows\\sysvol",
     "c:\\windows\\sysvol\\domain\\policies",
@@ -294,7 +258,7 @@ def _planted_paths(parsed: dict, readme_norm: str) -> list:
                     continue
                 seen.add(needle)
                 if needle in _GENERIC_PATHS or needle in collected:
-                    continue  # OS-canonical or openly collected => fair game
+                    continue
                 if _path_present(readme_norm, needle):
                     warnings.append(
                         f"readme leak: planted path {token!r} (from the solution: of "
@@ -304,39 +268,19 @@ def _planted_paths(parsed: dict, readme_norm: str) -> list:
     return warnings
 
 
-# --- tier 5: ranked answer-reconstruction leaks -------------------------------
-#
-# The tiers above are content leaks that matter most in honor mode (the
-# handbook is the whole assignment there). Tier 5 catches the leaks that
-# matter specifically in ranked mode, where the handbook ships on a box a
-# root-capable agent can read alongside the signed manifest: a handbook that
-# reads as the attacker's setup playbook hands over the answer key passively.
-# In ranked builds these are compile-blocking errors; in honor they stay
-# warnings (honor players are trusted — architecture.md §3).
-
-# Difficulty prefixes on check display titles ("EASY: ..."); not content.
 _DIFFICULTY_PREFIX_RE = re.compile(
     r"^(?:easy|moderate|hard|trivial|advanced|critical|penalty)\s+", re.I
 )
 
-# systemd unit names as they appear in solution: walkthroughs.
 _UNIT_NAME_RE = re.compile(r"\b[a-z0-9_.@-]+\.(?:service|timer|socket|path|mount|target)\b", re.I)
 
-# Values too generic to identify a planted artifact.
 _GENERIC_NAMES = {
     "root", "admin", "administrator", "sudo", "shadow", "www-data", "nobody",
     "daemon", "service", "cron", "atd", "ssh", "sshd", "ssh.service",
 }
 
-# n-gram length for paraphrase detection against display titles. 6 words:
-# shorter grams ("is in the sudo group") collide with legitimate roster
-# briefing like "check who is in the sudo group".
 _END_STATE_NGRAM = 6
 
-# Imperative fix-instruction prose: a mutation verb aimed at a *specific*
-# artifact (possessive or "its" + a system noun). Generic mission/category
-# coaching ("remove unauthorized users and malicious services") is the
-# assignment itself and does not match; "disable its launcher" does.
 _PROSE_MUTATION_RE = re.compile(
     r"(?:disable|enable|mask|stop|kill|remove|delete|uninstall|purge|turn\s+off|turn\s+on)\b"
     r"[^\n]*?(?:\w+'s|\bits\b)[^\n]*?"
@@ -348,8 +292,6 @@ _PROSE_MUTATION_RE = re.compile(
 # "How many ..." forensics questions whose numeric answer must not appear.
 _COUNT_QUESTION_RE = re.compile(r"\b(?:how many|number of|count of|total of)\b", re.I)
 
-# Required mechanics, not a fix instruction: the do-not-delete-the-scoring-
-# engine warning (HANDBOOK_GUIDE.md "Mechanics" belongs in the handbook).
 _PROSE_MUTATION_EXCLUSION_RE = re.compile(r"scoring engine|\bhuitz\b|the agent\b", re.I)
 
 
@@ -365,13 +307,9 @@ def _walk_strings(node):
 
 
 def _allowed_names(parsed: dict) -> set:
-    """Names the handbook may legitimately carry: the must-stay-up set.
-
-    That is the penalty checks' collected service/unit/port names plus
-    every string in the scored `services:` (SLA) block — the handbook's
-    "critical services" section is required briefing and names exactly
-    these.
-    """
+    """Names the handbook must carry: the must-stay-up services (penalty
+    checks' collected names plus the scored `services:` block) — required
+    briefing."""
     allowed = set()
     for check in parsed.get("checks") or []:
         if check.get("category") == "penalty":
@@ -394,7 +332,7 @@ def _planted_identifiers(parsed: dict, readme_norm: str) -> list:
         if len(needle) < 3 or needle in seen or needle in _GENERIC_NAMES:
             return
         if any(needle in a or a in needle for a in allowed if len(a) >= 3):
-            return  # a must-stay-up service / SLA string: required briefing
+            return
         seen.add(needle)
         if _contains(readme_norm, needle):
             findings.append(
@@ -419,8 +357,6 @@ def _planted_identifiers(parsed: dict, readme_norm: str) -> list:
         for item in items:
             for token in _UNIT_NAME_RE.findall(str(item)):
                 flag(token, f"solution: of {cid}")
-                # The bare stem too: the handbook may name the unit without
-                # its suffix ("nightcast-rebroadcast" for the .timer).
                 stem = re.split(r"[.(]", token)[0]
                 if len(stem) >= 5:
                     flag(stem, f"solution: of {cid}")
@@ -468,8 +404,6 @@ def _count_reveals(parsed: dict, readme_text: str) -> list:
             needle = _strip_punct(_norm(raw))
             if not needle.isdigit():
                 continue
-            # Scan line by line so a bare number that is only a list ordinal
-            # ("4. Read the record.") is not mistaken for the answer.
             for line in readme_text.splitlines():
                 body = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line)
                 if re.search(r"(?<!\d)" + re.escape(needle) + r"(?!\d)", body):
@@ -502,21 +436,12 @@ def _prose_mutations(readme_text: str) -> list:
     return findings
 
 
-# --- entry point --------------------------------------------------------------
 
 def lint_readme(parsed: dict, readme_text: str, mode: str = "honor") -> tuple:
-    """Lint the handbook (theme.readme text) against a parsed scenario.
+    """Lint handbook text against the effective (merged) scenario dict.
 
-    ``parsed`` is the effective (per-target merged) scenario dict.
-    ``mode`` is the build target ("honor" | "ranked"): tier-5 findings
-    (planted names, end-state paraphrases, count reveals, prose fix
-    instructions) are compile-blocking errors in ranked builds and
-    warnings otherwise.
-
-    Returns (errors, warnings): errors block the compile; warnings are
-    surfaced by boxbuilder and must stay empty for the boxes in-repo (the
-    all-boxes regression test enforces that).
-    """
+    Returns (errors, warnings); errors block the compile. ``mode`` is the
+    build target: tier-5 findings error in ranked, warn in honor."""
     readme_norm = _norm(readme_text)
     errors = _forensics_answer_leaks(parsed, readme_norm)
     tier5 = (

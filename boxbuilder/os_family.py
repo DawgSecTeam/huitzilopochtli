@@ -1,28 +1,15 @@
-"""One decision, one place: is this target Windows or POSIX?
+"""One decision, one place: Windows or POSIX.
 
-Two different strings describe a box's platform and they are not the same
-vocabulary:
-
-- the *declared* OS from a nakon machine (``debian-13-cli``, ``ubuntu-xfce``,
-  ``windows-server``), authored in ``boxes/<box>/nakon.json``;
-- the *observed* OS a provider handle reports after connecting
-  (``boxbuilder.providers.ssh.SshHandle.os_name``), normalized to
-  ``"windows"`` or ``"posix"``.
-
-Everything that branches on platform (install layout, config separator, theme
-seed family, verify/seal behaviour) calls :func:`family` so the two
-vocabularies can never drift apart. Adding a new declared OS means adding it
-to ``KNOWN_OS``; the normalization rule elsewhere is a case-insensitive
-substring match on ``win``, which keeps unknown-but-obviously-Windows values
-behaving correctly.
-"""
+Two vocabularies exist — the *declared* OS from a nakon machine and the
+*observed* ``os_name`` a handle reports. Everything that branches on
+platform calls family(), so the two never drift apart."""
 import re
 
 WINDOWS = "windows"
 POSIX = "posix"
 
-# Declared OS values the bundled seeds and install layout have been exercised
-# against. Validation rejects anything else so a typo cannot silently choose
+# Declared OS values the bundled seeds + install layout are exercised
+# against; validation rejects anything else, so a typo cannot silently pick
 # the POSIX layout on a Windows guest.
 KNOWN_OS = {
     "debian-13-cli": POSIX,
@@ -47,10 +34,6 @@ def family(os_name) -> str:
 
 def is_windows(os_name) -> bool:
     return family(os_name) == WINDOWS
-
-
-def is_posix(os_name) -> bool:
-    return family(os_name) == POSIX
 
 
 def known_os(os_name) -> bool:

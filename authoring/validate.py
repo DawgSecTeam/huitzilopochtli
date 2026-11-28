@@ -1,9 +1,7 @@
 """Author-facing validation. See architecture.md §6.7, §8.
 
-This is the first line of defense for a release: a typo in a check type,
-matcher argument, timeout, points value, engine URL, or adversary event should
-fail `compile` with an actionable message instead of surfacing as a silent
-zero or a runtime traceback on a box.
+First line of defense: a typo fails `compile` with an actionable message
+instead of surfacing as a silent zero or a traceback on a box.
 """
 import math
 import re
@@ -21,7 +19,6 @@ _TOP_LEVEL_KEYS = frozenset({"scenario", "checks", "services", "theme", "forensi
 _SCENARIO_KEYS = frozenset({"name", "version", "mode", "hosts", "engine_url"})
 _RANKED_KEYS = frozenset({"engine_url", "checks", "services", "adversary", "pool"})
 
-# workshop-vm-distribution provision API contract (provision.GROUPS there).
 _POOL_GROUPS = ("Workshop", "Challenge", "Generic")
 _POOL_ACCESS_METHODS = ("ssh", "vnc", "rdp")
 _POOL_KEYS = frozenset({
@@ -35,8 +32,6 @@ _REQUIRED_CHECK_KEYS = ("id", "type", "category", "display", "max_points", "coll
 _CHECK_KEYS = frozenset(set(_REQUIRED_CHECK_KEYS) |
                         {"host_id", "timeout_s", "is_sla", "requires", "solution"})
 
-# Minimal collect_params each check implementation reads. Extra keys are
-# allowed (future/specialized options), missing required keys are not.
 _REQUIRED_COLLECT = {
     "file_regex": ("path", "extract"),
     "permission": ("path",),
@@ -119,7 +114,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             f"{source_path}: unknown scenario key(s): {', '.join(unknown_scenario)}"
         )
 
-    # --- scenario-level required keys and types ------------------------
     for key in ("name", "version", "mode", "hosts"):
         if key not in scenario:
             errors.append(f"{source_path}: scenario missing required key '{key}'")
@@ -173,8 +167,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
                     f"with a host, got {value!r}"
                 )
 
-    # An engine address may live in the ranked block; a ranked build without
-    # one is a deployment that would silently target nothing.
     if (mode == "ranked" or ranked) and not (
             scenario.get("engine_url") or ranked.get("engine_url")):
         errors.append(
@@ -182,8 +174,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             f"(put it in the top-level 'ranked' block)"
         )
 
-    # Ranked-only content belongs under `ranked:`. On a ranked-only file the
-    # legacy top-level placement is still accepted.
     for key in ("services", "adversary", "pool"):
         if key in parsed_yaml and "ranked" not in parsed_yaml and mode == "honor":
             errors.append(
@@ -210,7 +200,7 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
         errors.append(f"{source_path}: ranked.checks must be a list")
         ranked_checks = []
     elif ranked_checks:
-        # Ranked-only checks share the base id namespace: a collision would
+        # ranked.checks share the base id namespace: a collision would
         # silently drop one entry from the rubric.
         _validate_checks(ranked_checks, source_path, "ranked.checks", errors,
                          check_by_id)
@@ -226,7 +216,6 @@ def validate_scenario_yaml(parsed_yaml: dict, source_path: str) -> list:
             f"{source_path}: scenario has no checks, services, or forensics questions"
         )
 
-    # --- adversary ------------------------------------------------------
     if "adversary" in ranked or "adversary" in parsed_yaml:
         adversary = ranked.get("adversary") or parsed_yaml.get("adversary")
         adv_errors = validate_adversary_pool(adversary)
@@ -391,12 +380,8 @@ def _is_env_placeholder(value) -> bool:
 
 
 def _validate_pool(pool, source_path: str) -> list:
-    """Validate the ``pool`` block that lives under ``ranked:``.
-
-    The engine provisions one workshop pool per competition from this block;
-    field names mirror the workshop portal's POST /api/admin/provision 1:1 so
-    the engine can pass them through untouched.
-    """
+    """Validate the ``ranked:`` ``pool`` block. Fields mirror the workshop
+    portal's provision API 1:1 so the engine passes them through untouched."""
     errors = []
     if pool is None or not isinstance(pool, dict) or not pool:
         return [f"{source_path}: 'pool' must be a non-empty mapping"]
@@ -582,12 +567,11 @@ def _validate_expect(check, expect, ref, source_path, check_type, category,
                     f"expect.points ({points}) for category {category!r}"
                 )
 
-    # Matcher argument validation (shared with the engine).
     for err in validate_matcher(expect):
         errors.append(f"{source_path}: {ref}.expect {err}")
 
     if check_type == "file_regex":
-        # YAML 1.1: unquoted no/yes/true/false become booleans, and
+        # YAML 1.1 parses unquoted no/yes/true/false as booleans, and
         # `equals: false` never matches string evidence like "no"
         # (PermitRootLogin no) — silently scoring 0 forever.
         for exp_key, exp_val in expect.items():

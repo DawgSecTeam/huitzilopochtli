@@ -1,10 +1,9 @@
 """Bounded-concurrency signature verification for the engine.
 
-The vendored pure-Python Ed25519 (common/crypto/ed25519.py) spends seconds
-of GIL-held CPU per verify, and /enroll and /checkin must verify before they
-can authenticate the caller. Without a cap, a flood of well-formed but bogus
-requests pins every worker thread. Callers map a saturated gate (None) to 503,
-which the agent treats as transient and retries (agent/transport.py).
+Vendored pure-Python Ed25519 spends seconds of GIL-held CPU per verify, so an
+uncapped flood of well-formed but bogus requests pins every worker. A
+saturated gate returns None: callers map it to 503, which agents treat as
+transient and retry (agent/transport.py).
 """
 import os
 import threading

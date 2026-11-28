@@ -45,7 +45,6 @@ class NarrationError(Exception):
     """The local model's answer did not satisfy the narration contract."""
 
 
-# --- prompt ------------------------------------------------------------------
 
 
 def _fact_card(digest: dict) -> dict:
@@ -156,7 +155,6 @@ def build_messages(digest: dict) -> list[dict]:
     )
 
 
-# --- the model call ----------------------------------------------------------
 
 
 def narrate(digest: dict, *, model: Optional[str] = None,
@@ -189,7 +187,7 @@ def _strip_reasoning(text: str) -> str:
     model's scratch space, not its answer) and any wrapper prose around
     the JSON object."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)  # unclosed
+    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)  # unclosed block
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
         return text[start:end + 1]
@@ -223,10 +221,8 @@ def _default_transport(messages: list[dict], options: dict,
 def _stream_once(messages: list[dict], options: dict, url: str) -> str:
     """One streaming chat completion against an OpenAI-compatible endpoint.
 
-    Streamed on purpose: reasoning models can spend minutes before the
-    answer starts, and edges in front of the proxy kill idle connections
-    (the 524s) — streamed chunks keep the connection demonstrably alive
-    and let the read timeout apply per chunk, not per generation."""
+    Streamed so idle-edge 524s can't kill a minutes-long reasoning call:
+    chunks keep the connection alive and the timeout applies per chunk."""
     body = {
         "model": options.get("model", ""),
         "messages": messages,
@@ -237,8 +233,6 @@ def _stream_once(messages: list[dict], options: dict, url: str) -> str:
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        # the default urllib user-agent is blocked at some edges (403 at a
-        # proxy that answers curl fine); name the client instead
         "User-Agent": "huitzilopochtli-debrief/1.0",
     }
     api_key = options.get("api_key")
@@ -286,15 +280,14 @@ def _stream_once(messages: list[dict], options: dict, url: str) -> str:
 
     content = "".join(content_parts)
     if not content.strip():
-        # some reasoning deployments only surface the answer inside the
-        # reasoning trace when the visible channel stays empty
+        # Some reasoning deployments surface the answer only inside the
+        # reasoning trace when the visible channel stays empty.
         content = "".join(reasoning_parts)
     if not content.strip():
         raise NarrationError("LLM response content is empty")
     return content
 
 
-# --- validation --------------------------------------------------------------
 
 
 def _validate(obj: Any, digest: dict) -> dict:
@@ -374,7 +367,6 @@ def _prose(text: Any, max_len: int) -> str:
     return " ".join(cleaned.split())[:max_len]
 
 
-# --- the model-less path ---------------------------------------------------------
 
 
 def _fallback(digest: dict, reason: str = "") -> dict:
@@ -428,12 +420,10 @@ def _fallback(digest: dict, reason: str = "") -> dict:
 def _group_facts(solved: list, missed: list) -> tuple:
     """Deterministic strengths and focus items from check lists.
 
-    Grouping rule: forensics (fq-) and service (svc_) ids are their own
-    groups; a check id of the form <section>_<n> groups by its section
-    prefix (scenarios bake their structure into ids); anything else groups
-    by category. A group is a strength when every check in it was solved;
-    it is a focus item when checks remain unsolved — with points on the
-    table only when the run's rubric is still in the store."""
+    Grouping: fq-/svc_ ids stand alone; <section>_<n> ids group by section
+    prefix; the rest by category. An all-solved group is a strength, a group
+    with unsolved checks a focus (points on the table only if the run's
+    rubric is still in the store)."""
     groups: dict[str, dict] = {}
     for check in solved + missed:
         cid = check.get("id") or ""

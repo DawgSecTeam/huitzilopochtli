@@ -12,7 +12,6 @@ import time
 from agent.checks.base import Check, register
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-
 def _parse_passwd(path="/etc/passwd"):
     users = []
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -25,7 +24,6 @@ def _parse_passwd(path="/etc/passwd"):
                 continue
             users.append(fields[0])
     return users
-
 
 def _parse_group(path="/etc/group"):
     group_members = {}
@@ -44,11 +42,8 @@ def _parse_group(path="/etc/group"):
             group_members[name] = members
     return group_members
 
-
-# PowerShell emits one JSON document {"users": [...], "group_members": {...}}.
-# Member names come back DOMAIN-qualified (or as orphan SIDs); the trailing
-# segment after the last backslash is the usable account name, matching how
-# the POSIX parser reports plain usernames. Unresolvable members are skipped.
+# Members come back DOMAIN-qualified (or as SIDs); the script keeps the last
+# \-segment so names match the plain usernames the POSIX parser reports.
 _WINDOWS_COLLECT_SCRIPT = r"""
 $users = @(Get-LocalUser | ForEach-Object { $_.Name })
 $members = @{}
@@ -65,7 +60,6 @@ $members = @{}
 [pscustomobject]@{ users = $users; group_members = $members } |
     ConvertTo-Json -Depth 4 -Compress
 """
-
 
 def _collect_windows():
     """(users, group_members) via PowerShell, or raises on any failure."""
@@ -84,7 +78,6 @@ def _collect_windows():
     if not isinstance(users, list) or not isinstance(group_members, dict):
         raise RuntimeError("unexpected collector payload shape")
     return users, group_members
-
 
 @register("user_group")
 class UserGroupCheck(Check):

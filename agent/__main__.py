@@ -47,13 +47,11 @@ from common.version import AGENT_VERSION
 _DEFAULT_CONFIG_PATH = "agent_config.json"
 _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 
-
 class _WallClock:
     """Clock for honor mode (box wall time; untimed, diagnostic only)."""
 
     def now(self) -> float:
         return time.time()
-
 
 def _check_spec_from_dict(d: dict) -> CheckSpec:
     return CheckSpec(
@@ -68,7 +66,6 @@ def _check_spec_from_dict(d: dict) -> CheckSpec:
         is_sla=d.get("is_sla", False),
         requires=d.get("requires") or [],
     )
-
 
 def _manifest_from_dict(d: dict) -> Manifest:
     return Manifest(
@@ -88,7 +85,6 @@ def _manifest_from_dict(d: dict) -> Manifest:
         ] or None,
     )
 
-
 def _sla_params_from_dict(d):
     if d is None:
         return None
@@ -100,7 +96,6 @@ def _sla_params_from_dict(d):
         max_intervals_per_checkin=d.get("max_intervals_per_checkin", 3),
     )
 
-
 def _rubric_entry_from_dict(d: dict) -> RubricEntry:
     return RubricEntry(
         check_id=d["check_id"],
@@ -110,7 +105,6 @@ def _rubric_entry_from_dict(d: dict) -> RubricEntry:
         sla=_sla_params_from_dict(d.get("sla")),
     )
 
-
 def _rubric_from_dict(d: dict) -> Rubric:
     return Rubric(
         schema_version=d["schema_version"],
@@ -118,7 +112,6 @@ def _rubric_from_dict(d: dict) -> Rubric:
         scenario_version=d["scenario_version"],
         entries=[_rubric_entry_from_dict(e) for e in d.get("entries", [])],
     )
-
 
 def _load_manifest(manifest_path: str, authoring_public_key_path: str | None,
                    allow_unsigned: bool = False) -> Manifest:
@@ -136,9 +129,7 @@ def _load_manifest(manifest_path: str, authoring_public_key_path: str | None,
     unsigned_dict = {k: v for k, v in manifest_dict.items() if k != "_signature"}
 
     if authoring_public_key_path is None:
-        # §6.7/§16: fail closed on unverifiable input. Running an unverified
-        # manifest lets anything that can replace manifest.signed.json execute
-        # arbitrary checks on the box, so it requires an explicit opt-out.
+        # §6.7/§16: fail closed on unverifiable input.
         if not allow_unsigned:
             raise ValueError(
                 "no authoring_public_key_path configured; refusing to run with "
@@ -172,7 +163,6 @@ def _load_manifest(manifest_path: str, authoring_public_key_path: str | None,
 
     return _manifest_from_dict(unsigned_dict)
 
-
 def _read_boot_id() -> str:
     try:
         with open(_BOOT_ID_PATH, "r", encoding="utf-8") as f:
@@ -180,16 +170,10 @@ def _read_boot_id() -> str:
     except OSError:
         return str(uuid.uuid4())
 
-
 def _primary_desktop_dir() -> str | None:
-    """Best-effort Desktop dir of the first real interactive account.
-
-    Mirrors the uid/shell heuristic the boxbuilder theme scripts use
-    (uid >= 1000, real login shell). On Windows there is no passwd; the
-    Public Desktop is the editable surface every account shares (same place
-    the report is mirrored), so it is the answers-file home. Returns None
-    when nothing matches (callers fall back to the agent config dir).
-    """
+    """Best-effort Desktop dir of the first real interactive account
+    (uid >= 1000, real login shell; Windows: the Public Desktop).
+    None means callers fall back to the agent config dir."""
     if os.name == "nt":
         pub = os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Desktop")
         return pub if os.path.isdir(pub) else None
@@ -206,17 +190,11 @@ def _primary_desktop_dir() -> str | None:
         return os.path.join(entry.pw_dir, "Desktop")
     return None
 
-
 def _grant_windows_write_acl(path: str) -> None:
     """Grant BUILTIN\\Users modify on the answers file (Windows only).
 
-    os.chmod cannot express NTFS ACLs (at best it toggles the read-only
-    attribute), and the agent runs as SYSTEM while the answers are typed by
-    a desktop user whose UAC-filtered token carries no Administrators ACE --
-    without this grant the file lands read-only for exactly the people who
-    must edit it (their only rights would be the inherited
-    INTERACTIVE:ReadAndExecute). Best-effort (§9.1): a failed grant never
-    stalls a run; packaging/huitz-agent-task.ps1 re-grants every cycle.
+    os.chmod can't express NTFS ACLs: without this the SYSTEM-written file
+    lands read-only for the desktop users who must edit it. Best-effort (§9.1).
     """
     try:
         subprocess.run(
@@ -226,7 +204,6 @@ def _grant_windows_write_acl(path: str) -> None:
         )
     except (OSError, subprocess.SubprocessError):
         pass
-
 
 def _non_root_dir_owner(path: str):
     """(uid, gid) of path's directory when we run as root on POSIX and that
@@ -245,16 +222,10 @@ def _non_root_dir_owner(path: str):
     except (ImportError, KeyError):
         return st.st_uid, st.st_gid
 
-
 def _write_forensics_template(path: str, questions: list) -> None:
-    """Write the answers template for `questions` [(ordinal, text)] at `path`.
-
-    Callers handle write-if-missing; here we write via tmp + rename and make
-    the file group/other-writable (written as the desktop user when it lives
-    in their directory, see _non_root_dir_owner) because the agent typically runs as root while the answers are
-    typed in by a desktop user. The template format lives in agent/answers.py
-    (shared with the collector and the huitz CLI).
-    """
+    """Write the answers template for `questions` [(ordinal, text)] at `path`
+    via tmp + rename, group/other-writable (the agent runs as root; teams type
+    the answers; see _non_root_dir_owner). Format lives in agent/answers.py."""
     lines = agent.answers.render_template(questions)
 
     # Root writing into a user-owned dir (the Desktop) must not follow any
@@ -276,31 +247,20 @@ def _write_forensics_template(path: str, questions: list) -> None:
         _grant_windows_write_acl(tmp)
     os.replace(tmp, path)
 
-
 def _honor_interval_s() -> int | None:
     """Report-countdown anchor for honor mode, per platform.
 
-    POSIX: None -- the reporter's 70s default matches the systemd timer.
-    Windows: the HuitzilopochtliAgent scheduled task re-grades every 5
-    minutes (Task Scheduler repetition granularity bottoms out at 1 minute,
-    so the 70s POSIX cadence isn't expressible); anchoring the countdown to
-    the default there would read "00:00 -- checking..." for 4 of every 5
-    minutes even though nothing is wrong.
+    POSIX: None (reporter default 70s = the systemd timer). Windows: 300s,
+    the scheduled task's cadence — 70s isn't expressible there.
     """
     return 300 if os.name == "nt" else None
-
 
 def _prepare_forensics(manifest, config_dir: str) -> None:
     """Resolve answers-file paths and write missing templates (both modes).
 
-    The compiled manifest defaults forensics collect_params to
-    "Forensics-Questions.txt" with no directory; that sentinel resolves to the
-    primary desktop user's Desktop (where teams can actually edit it), falling
-    back to the agent config dir. An explicit scenario `path` is honored as-is
-    (relative paths resolve against the config dir). Templates are written
-    ONLY when the answers file does not exist yet — the file belongs to the
-    team after that, and rewriting it would clobber their answers.
-    """
+    The sentinel "Forensics-Questions.txt" resolves to the primary desktop
+    (fallback: config dir); explicit paths are honored as-is. Templates are
+    written ONLY when the file is missing — after that it belongs to the team."""
     if not manifest.forensics:
         return
 
@@ -330,10 +290,6 @@ def _prepare_forensics(manifest, config_dir: str) -> None:
             (s.collect_params.get("ordinal", 0), s.display_title) for s in specs
         ]
         if os.path.exists(path):
-            # The file belongs to the team once they type in it — keep it.
-            # Exception: an untouched template that shipped with a sealed
-            # image from ANOTHER scenario (stale questions score nothing and
-            # mislead players); replace only that.
             try:
                 with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
                     current = f.read(agent.answers.CONTENT_LIMIT + 1)
@@ -344,9 +300,6 @@ def _prepare_forensics(manifest, config_dir: str) -> None:
                 continue
         parent = os.path.dirname(path)
         if parent:
-            # Explicit scenario paths live in scenario-authored homes that a
-            # base image may not carry at all (rehearsal: /home/librarian/…
-            # was missing, silently killing every forensics file).
             try:
                 os.makedirs(parent, exist_ok=True)
             except OSError:
@@ -354,34 +307,23 @@ def _prepare_forensics(manifest, config_dir: str) -> None:
         try:
             _write_forensics_template(path, questions)
         except OSError as e:
-            # Never stall the run over the template; the collector will report
-            # the missing file as an error and score it unsatisfied (§9.1).
+            # Never stall the run over the template (§9.1).
             print(
                 f"WARNING: could not write forensics answers template "
                 f"{path!r}: {e}",
                 file=sys.stderr,
             )
 
-
 def _theme_title(manifest) -> str:
     """Human-facing scenario title for notifications (theme override wins)."""
     theme = manifest.theme or {}
     return theme.get("title") or manifest.scenario_name
 
-
 def _sync_desktop_copies(config) -> None:
-    """Mirror report.html + report.json to each user's Documents/huitzilopochtli
-    dir (and drop the legacy Desktop copies), now.
+    """Mirror report files to the user-readable Desktop/Documents copies.
 
-    packaging/sync-report.sh's job too — but the unit's ExecStartPost fires
-    when the Type=simple agent process is FORKED, not when it exits, so it
-    races the grade and lands exactly one grade stale in the mirror (the
-    countdown the huitz CLI renders from that copy is therefore pinned at
-    zero). Syncing here is ordered after the write, so both the timer's
-    grades and `huitz grade` publish their own result. Best-effort: a
-    hand-rolled install without the script just skips this; the timer's
-    next ExecStartPost copy is the fallback.
-    """
+    Needed because sync-report.sh's ExecStartPost fires at fork, racing the
+    grade; syncing here is ordered after the write. Best-effort (§9.1)."""
     script = os.path.join(
         os.path.dirname(os.path.abspath(config.report_path)), "sync-report.sh")
     if not os.path.isfile(script):
@@ -392,17 +334,10 @@ def _sync_desktop_copies(config) -> None:
     except (OSError, subprocess.SubprocessError):
         pass  # never stall a grade on the mirror; ExecStartPost still copies
 
-
 def _load_rubric(config):
-    """Read + decode the on-box honor-mode rubric (obfuscated or plain JSON).
-
-    The rubric lands obfuscated as a 0600 dotfile (common/rubric_codec.py,
-    written by boxbuilder at install time). Plain JSON is still accepted so
-    boxes installed by an older boxbuilder keep scoring. A box that cannot
-    load its rubric cannot score at all, so any failure raises ValueError
-    with an actionable message -- the timer retries next interval; a raw
-    TypeError/traceback helps nobody at the console.
-    """
+    """Read + decode the on-box honor rubric (0600 obfuscated dotfile per
+    common/rubric_codec.py; plain JSON still accepted for old installs).
+    Any failure raises — the box cannot score without the rubric."""
     try:
         with open(config.rubric_path, "rb") as f:
             rubric_raw = f.read()
@@ -423,7 +358,6 @@ def _load_rubric(config):
             f"unreadable, or corrupt ({e}) -- the box cannot score without "
             f"it; restore the file or reinstall the agent"
         ) from e
-
 
 def _write_text_atomic(path: str, text: str, mode: int = 0o644) -> None:
     """Write a file via a same-directory temp + rename (never a partial read)."""
@@ -446,16 +380,10 @@ def _write_text_atomic(path: str, text: str, mode: int = 0o644) -> None:
             pass
         raise
 
-
 def honor_grade(config, manifest, ctx) -> tuple:
-    """One full honor-mode grade: collect -> evaluate -> report + snapshot.
-
-    This is the whole scoring pipeline the systemd timer (and `huitz
-    grade`) runs. Returns (score, delta, snapshot-dict) so the CLI can
-    render the fresh board without re-reading the file it just wrote.
-    Scoring stays a pure function of (evidence, rubric, clock) — everything
-    here is presentation or bookkeeping around that (§2.1).
-    """
+    """One honor grade: collect -> evaluate -> report + snapshot.
+    Returns (score, delta, snapshot-dict). Scoring stays a pure function of
+    (evidence, rubric, clock); everything here is bookkeeping around it (§2.1)."""
     lock = None
     report_path = getattr(config, "report_path", None)
     if report_path:
@@ -470,8 +398,6 @@ def honor_grade(config, manifest, ctx) -> tuple:
         evidence = agent.collector.run_all(manifest.checks, ctx)
 
         score = common.evaluator.evaluate(evidence, rubric, _WallClock())
-        # Diff against the previous total (None on first run / rebuilt
-        # scenario). The baseline is recorded only after publication.
         state_path = agent.notify.state_path_for(config.report_path)
         delta = agent.notify.peek_delta(
             state_path, score.total, manifest.scenario_version)
@@ -505,18 +431,15 @@ def honor_grade(config, manifest, ctx) -> tuple:
         if lock is not None:
             lock.release()
 
-
 def _run_honor(config, manifest, ctx) -> None:
     try:
         honor_grade(config, manifest, ctx)
     except agent.runlock.AlreadyRunning as e:
         print(f"WARNING: {e}; skipping this timed grade", file=sys.stderr)
 
-
 def _enrolled_marker_path(identity_path: str) -> str:
     """Return the path of the .enrolled marker file adjacent to the identity."""
     return identity_path + ".enrolled"
-
 
 def _mark_enrolled(identity_path: str) -> None:
     """Write the .enrolled marker atomically."""
@@ -528,12 +451,10 @@ def _mark_enrolled(identity_path: str) -> None:
         f.write("ok")
     os.replace(tmp, marker)
 
-
 def _executed_directives_path(identity_path: str) -> str:
     """Event ids this box has already run, adjacent to the identity (same
     lifetime as box_id: a new identity is a new box with a new schedule)."""
     return identity_path + ".directives"
-
 
 def _load_executed_directives(identity_path: str) -> set:
     try:
@@ -543,21 +464,16 @@ def _load_executed_directives(identity_path: str) -> set:
     except FileNotFoundError:
         return set()
     except (OSError, ValueError) as e:
-        # Unreadable: fail toward NOT re-running. Re-executing an old
-        # flush_firewall would undo a fix the team already made.
+        # Fail closed: an empty guess would replay destructive directives.
         raise RuntimeError(
             f"cannot read executed-directives file: {e}; refusing to run "
             f"directives until it is repaired or removed") from e
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-        # A valid JSON document of the wrong shape used to be treated as an
-        # empty set, which re-ran every historical directive (flush_firewall /
-        # kill_service). Fail closed instead.
         raise RuntimeError(
             "executed-directives file is not a JSON list of event-id strings; "
             "refusing to run directives until it is repaired or removed"
         )
     return set(ids)
-
 
 def _save_executed_directives(identity_path: str, ids: set) -> None:
     path = _executed_directives_path(identity_path)
@@ -566,15 +482,11 @@ def _save_executed_directives(identity_path: str, ids: set) -> None:
         json.dump(sorted(ids), f)
     os.replace(tmp, path)
 
-
 def _run_directives(response, identity_path: str, ctx) -> None:
-    """Execute each directive in the response at most once per event_id.
+    """Execute each directive at most once per event_id.
 
-    The engine re-sends every directive it has issued (issued_directives)
-    so a lost response can't lose one (at-least-once delivery); this is the
-    matching dedup. Each id is recorded right after its attempt -- failed
-    attempts too, or an unknown action would warn on every check-in forever.
-    """
+    The engine re-sends issued_directives (at-least-once delivery); this is
+    the dedup. Ids are recorded after every attempt, failed ones included."""
     try:
         done = _load_executed_directives(identity_path)
     except RuntimeError as e:
@@ -587,8 +499,7 @@ def _run_directives(response, identity_path: str, ctx) -> None:
             continue
         try:
             agent.adversary.executor.execute(directive, ctx)
-        except Exception as e:  # noqa: BLE001 — one bad directive
-            # must never stall the run (§9.1)
+        except Exception as e:  # noqa: BLE001 — one bad directive can't stall the run (§9.1)
             print(
                 f"WARNING: directive {directive.event_id!r} "
                 f"({directive.action!r}) failed: {e}",
@@ -598,22 +509,16 @@ def _run_directives(response, identity_path: str, ctx) -> None:
         try:
             _save_executed_directives(identity_path, done)
         except OSError as e:
-            # Can't record it, so it would re-run next check-in; stop here
-            # rather than run more directives we also couldn't record.
             print(f"WARNING: could not record executed directive "
                   f"{directive.event_id!r}: {e}", file=sys.stderr)
+            # Can't record it -> it would re-run anyway; stop, run no more.
             return
 
-
 def _ensure_enrolled(config, manifest, identity) -> bool:
-    """Ensure enrollment; retry every boot until ``.enrolled`` marker exists.
+    """Ensure enrollment; retry every boot until ``.enrolled`` exists.
 
-    Returns True when the engine confirmed a FRESH enrollment of this exact
-    identity. A 409 (token consumed) is ambiguous — it can mean an idempotent
-    re-enroll of the same box, or a token consumed by a different/new box —
-    so in that case the marker is NOT written here; it is written only after
-    the engine accepts a signed check-in from this keypair (see _run_ranked).
-    """
+    True only on a FRESH enrollment. A 409 (token consumed) is ambiguous, so
+    its marker waits for the first accepted signed check-in (_run_ranked)."""
     marker = _enrolled_marker_path(config.identity_path)
     if os.path.exists(marker):
         return False
@@ -638,12 +543,9 @@ def _ensure_enrolled(config, manifest, identity) -> bool:
         return False
     return True
 
-
 def _warn_if_plain_http(manifest) -> None:
-    """A non-loopback plain-HTTP engine_url carries bundles (and the
-    directives the box will execute) in the clear. Labs do this on purpose;
-    production ranked deployments should not. Loud, but not fatal -- there
-    is no self-signed-CA story yet to make HTTPS universally usable."""
+    """Non-loopback plain HTTP ships bundles and executable directives in the
+    clear. Labs do this on purpose: warn loudly, don't fatal."""
     from urllib.parse import urlsplit
     url = urlsplit(getattr(manifest, "engine_url", None) or "")
     if url.scheme != "http":
@@ -658,14 +560,11 @@ def _warn_if_plain_http(manifest) -> None:
         file=sys.stderr,
     )
 
-
 def _cached_ranked_response(config, manifest):
     """Rebuild the last authoritative response from report.json, if any.
 
-    The ranked dashboard is a cache of the engine's last response (§13); a
-    process restart used to blank it to "awaiting engine" until the next
-    successful check-in, which on an offline box could be forever.
-    """
+    The ranked dashboard is a cache of the engine's last response (§13); it
+    must survive restarts, even with the network down."""
     try:
         snap = agent.snapshot.read(agent.snapshot.snapshot_path_for(config.report_path))
     except Exception:
@@ -717,17 +616,14 @@ def _cached_ranked_response(config, manifest):
     except (KeyError, TypeError, ValueError):
         return None
 
-
 def _run_ranked(config, manifest, ctx) -> None:
     queue_path = config.identity_path + ".queue"
     last_response = _cached_ranked_response(config, manifest)
 
     _warn_if_plain_http(manifest)
     identity = agent.identity.load_or_create(config.identity_path)
-    # Retry enrollment in-process: exiting would have systemd restart us
-    # every 5s (Restart=on-failure), and each start re-derives the public key
-    # and re-signs -- seconds of pure-Python crypto per attempt, forever, on
-    # a permanent failure like an expired token.
+    # Retry in-process: exiting lets systemd restart us every 5s, re-deriving
+    # the key each time — forever.
     while True:
         try:
             _ensure_enrolled(config, manifest, identity)
@@ -735,9 +631,7 @@ def _run_ranked(config, manifest, ctx) -> None:
         except (agent.identity.EnrollmentConflict,
                 agent.identity.EnrollmentRejected,
                 ValueError, FileNotFoundError) as e:
-            # Configuration errors and permanent rejections cannot be fixed by
-            # retrying. Fail loudly so an operator reprovisions; systemd will
-            # surface the non-zero exit instead of silently retrying forever.
+            # Permanent errors aren't fixed by retrying: fail for an operator.
             print(f"FATAL: enrollment cannot succeed without operator action: {e}",
                   file=sys.stderr)
             raise SystemExit(1)
@@ -776,10 +670,8 @@ def _run_ranked(config, manifest, ctx) -> None:
                   file=sys.stderr)
             raise SystemExit(1)
         except agent.transport.PermanentRejection as e:
-            # The engine refused the bundle outright (§14.2: logic error, not
-            # transient). The bundle is dropped; on a replay rejection the
-            # engine tells us its authoritative last_seq — resync so a
-            # desynced counter cannot wedge the box permanently.
+            # §14.2 logic rejection: bundle dropped. On a replay rejection the
+            # engine sends its authoritative last_seq — resync or stay wedged.
             print(f"WARNING: {e}", file=sys.stderr)
             if e.last_seq is not None:
                 identity.last_seq = e.last_seq
@@ -788,14 +680,11 @@ def _run_ranked(config, manifest, ctx) -> None:
 
         if response is not None:
             last_response = response
-            # A confirmed check-in from this keypair settles any enrollment
-            # ambiguity (e.g. a consumed token that may have been used by a
-            # different box identity).
             _mark_enrolled(config.identity_path)
             _run_directives(response, config.identity_path, ctx)
             if getattr(response, "disqualified", False):
-                # §7.1: told, not ejected. The run keeps its clock and the
-                # loop keeps going; only the leaderboard drops this score.
+                # §7.1: told, not ejected — clock keeps running; only the
+                # leaderboard drops the score.
                 print("DISQUALIFIED: you may keep working until your clock "
                       "ends, but your score is excluded from the "
                       "leaderboard.", file=sys.stderr)
@@ -803,11 +692,8 @@ def _run_ranked(config, manifest, ctx) -> None:
                 print(
                     f"run {response.run_status}: {response.player_name or 'player'}"
                     f" — final score {response.score.total}", file=sys.stderr)
-                # Not a bare exit: fall through to the render below so the
-                # box's final board is the run-over response — the frozen
-                # score carries the forensics results (including
-                # "answered — not correct") that every earlier render
-                # predated. The loop exits after publishing it.
+                # Not a bare exit: fall through so the run-over board (with
+                # forensics rows) is published before the loop ends.
                 run_over = True
 
         delta = None
@@ -864,13 +750,8 @@ def _run_ranked(config, manifest, ctx) -> None:
                 agent.notify.record_score(
                     agent.notify.state_path_for(config.report_path),
                     last_response.score.total, manifest.scenario_version)
-            # Publish the user-readable mirror (Documents/huitzilopochtli):
-            # the unit's ExecStartPost fires before the first check-in even
-            # exists, and the install dir is 0700 root -- without this, the
-            # huitz console can never see a grade in ranked mode.
             _sync_desktop_copies(config)
-        except Exception as e:  # noqa: BLE001 — report rendering must never
-            # stall the check-in loop (§9.1)
+        except Exception as e:  # noqa: BLE001 — rendering can't stall the check-in loop (§9.1)
             print(f"WARNING: failed to render/write report: {e}", file=sys.stderr)
 
         if delta:
@@ -882,8 +763,6 @@ def _run_ranked(config, manifest, ctx) -> None:
         if run_over:
             break
 
-        # The engine's next_checkin_s is authoritative when present (it backs
-        # the reporter countdown and SLA cadence); fall back to local config.
         interval = config.checkin_interval_s
         if last_response is not None:
             nxt = last_response.next_checkin_s
@@ -891,18 +770,8 @@ def _run_ranked(config, manifest, ctx) -> None:
                 interval = nxt
         time.sleep(interval)
 
-
 def main() -> None:
     argv = sys.argv[1:]
-    # `huitz` verb dispatch (agent/cli.py): score/grade/watch/forensics.
-    # A bare path still means the classic one-shot agent run. Verb-shaped
-    # tokens (no path separator, no extension) route to the CLI so typos
-    # like `huitz scroe` get usage help instead of a confusing
-    # "config file not found"; anything path-like — including a missing
-    # config path — keeps the classic behavior. When the zipapp is installed
-    # under the name `huitz` (boxbuilder copies it to /usr/local/bin/huitz),
-    # a bare invocation is help, not a hunt for a default config — that is
-    # the player's entry point.
     invoked_as_huitz = (
         os.path.basename(sys.argv[0] or "").rsplit(".", 1)[0] == "huitz"
     )
@@ -942,7 +811,6 @@ def main() -> None:
         _run_ranked(config, manifest, ctx)
     else:
         raise ValueError(f"unknown mode: {config.mode!r}")
-
 
 if __name__ == "__main__":
     main()

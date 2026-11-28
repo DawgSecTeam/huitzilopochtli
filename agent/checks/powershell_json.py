@@ -4,17 +4,12 @@ collect_params: {"script": str (PowerShell), "timeout_s": number (optional,
 overrides the spec timeout for the subprocess ceiling)}.
 Evidence.raw shape: {"data": <parsed JSON or None>, "text": str (stdout)}.
 
-The escape hatch for Windows hardening evidence that has no first-class
-check type (password policy via `net accounts`, share ACLs, audit policy...).
-The script MUST be read-only and MUST emit a single JSON document on stdout
-(`ConvertTo-Json -Compress`); anything else is ERROR-status evidence, which
-fails closed at scoring time.
-
-Trust model is unchanged from the other check types: the manifest is signed
-by the authoring key (§16), so collect_params are operator-authored, not
-adversary-controlled -- the adversary allowlist (§2.7) has no path here.
-Scripts still stay read-only by convention: collection must be
-side-effect-free (§9.1).
+The escape hatch for Windows evidence with no first-class check type
+(password policy, share ACLs, audit policy). The script MUST be read-only
+and MUST emit a single JSON document on stdout (`ConvertTo-Json -Compress`);
+anything else is ERROR evidence (fails closed at scoring). Params are
+signed-manifest operator input (§16); the adversary allowlist has no path
+here (§2.7).
 """
 import json
 import subprocess

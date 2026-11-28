@@ -8,11 +8,9 @@ class UnknownDirectiveError(Exception):
 
 
 def execute(directive: Directive, ctx: "agent.platform.base.PlatformContext") -> None:
-    """Dispatch directive.action via the ACTIONS registry with directive.params.
-    Unknown action -> UnknownDirectiveError (fail closed; never silently ignore
-    a directive from the engine, but also never execute anything outside
-    ACTIONS). Callers in the ranked loop catch this per-directive so one bad
-    directive cannot stall the run (§9.1)."""
+    """Dispatch directive.action via the ACTIONS registry. Unknown action ->
+    UnknownDirectiveError: fail closed — never ignore an engine directive,
+    never execute outside ACTIONS (callers catch per directive, §9.1)."""
     if directive.action not in ACTIONS:
         raise UnknownDirectiveError(f"unknown adversary action: {directive.action!r}")
     action_fn = ACTIONS[directive.action]

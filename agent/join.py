@@ -9,7 +9,6 @@ import json
 import os
 import ssl
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -20,10 +19,8 @@ from common import canon
 from common.crypto import signing
 from common.version import AGENT_VERSION
 
-
 class JoinError(Exception):
     pass
-
 
 def _post_join(engine_url: str, body: dict, private_key: bytes,
                timeout: float = 15.0, attempts: int = 6) -> dict:
@@ -50,10 +47,8 @@ def _post_join(engine_url: str, body: dict, private_key: bytes,
                 msg = parsed.get("error") or raw
             except ValueError:
                 msg = raw or f"HTTP {exc.code}"
-            # A ranked join storm legitimately exhausts the engine's bounded
-            # Ed25519 verify gate and gets a 503 "busy" (and the public rate
-            # limiter can 429). Both are transient: retry instead of dropping
-            # the player at the terminal. A 403 (bad/consumed code) is final.
+            # A join storm legitimately exhausts the engine's bounded Ed25519
+            # verify gate: 429/503 "busy" are transient (retry); 403 is final.
             transient = exc.code in (429, 503) or "busy" in str(msg).lower()
             if transient and attempt + 1 < attempts:
                 last = f"join rejected ({exc.code}): {msg}"
@@ -68,16 +63,11 @@ def _post_join(engine_url: str, body: dict, private_key: bytes,
             raise JoinError(last) from exc
     raise JoinError(last or "join failed")
 
-
 def _start_agent() -> None:
-    """Start the ranked agent after a successful join.
+    """Start the ranked agent after a successful join (systemd unit; on
+    Windows, enable+run the shipped disabled scheduled task).
 
-    Linux: enable+start the systemd unit. Windows: the box ships with the
-    SYSTEM scheduled task registered but disabled, so joining enables and
-    runs it. A failed start is a failed join: silently ignoring it leaves the
-    player bound to a box that never checks in (seen on 12/28 range Windows
-    clones), so raise JoinError instead.
-    """
+    A failed start is a failed join: bound-but-never-checking-in is worse."""
     if os.name == "nt":
         for args in (["schtasks", "/Change", "/TN", "HuitzilopochtliAgent",
                       "/ENABLE"],
@@ -105,7 +95,6 @@ def _start_agent() -> None:
             except Exception as exc:
                 last = str(exc)[:300]
         raise JoinError(f"could not start the agent service: {last}")
-
 
 def join(config_path: str, code: str, start_service: bool = True) -> dict:
     code = (code or "").strip().upper()

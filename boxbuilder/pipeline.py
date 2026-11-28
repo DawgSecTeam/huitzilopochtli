@@ -1,9 +1,6 @@
-"""The four-step build pipeline. Each step is a pure-ish function returning a
-JSON-serializable result dict, so the CLI layer is a thin wrapper that just
-adds argparse + stdout/stderr discipline.
-
-Steps are independently callable so an agent (or a test) can run/verify them
-piecemeal. The unified `build` in cli.py chains them with resumability.
+"""The four-step build pipeline: compile -> plant -> install -> package.
+Each step returns a JSON-serializable dict and is independently callable;
+the CLI layer chains them with resumability via build-state.json.
 """
 import hashlib
 import json
@@ -52,10 +49,8 @@ def _fingerprint_digest(parts: dict) -> str:
 def _verify_state_fresh(spec: BoxSpec, state: dict) -> None:
     """Refuse plant/install when build-state.json came from different inputs.
 
-    Fixed filenames (manifest.signed.json/agent.pyz) and the compiled
-    nakon-config.json are shared between runs; without this check a resume or
-    a failed-then-retried compile can silently deploy the previous box's
-    scenario/config while claiming success.
+    Artifact filenames are shared between runs, so without this a resume can
+    silently deploy the previous box's scenario/config while claiming success.
     """
     if not isinstance(state, dict):
         return
@@ -88,10 +83,8 @@ def compile_box(spec: BoxSpec, artifacts_dir: str, nakon_dir: Optional[str] = No
                 log=print) -> dict:
     """Step 1: compile scenario, build agent.pyz, and build the nakon bundle.
 
-    ``skip_bundle`` produces the install-time artefacts without touching nakon
-    or vulndb. A ranked template is built by installing the ranked agent over
-    an already-planted honor seal, so that path never plants and never needs
-    either dependency.
+    ``skip_bundle`` builds only the install artefacts (no nakon/vulndb) —
+    the ranked-template path installs over an already-planted box.
     """
     artifacts_dir = os.path.abspath(artifacts_dir)
     os.makedirs(artifacts_dir, mode=0o700, exist_ok=True)
@@ -210,15 +203,8 @@ def plant_box(spec: BoxSpec, artifacts_dir: str, bundle_path: Optional[str] = No
             "(e.g. provider: {name: ssh, host: ..., user: ..., password: ...})"
         )
 
-    # compile_box may have appended theme configurations (wallpaper/motd/readme/
-    # shortcuts) to the machine's configuration list before building the bundle,
-    # so the bundle's request_key was computed over that expanded list. Deriving
-    # the deploy config from the *raw* spec.nakon_config here would omit those
-    # extras and produce a different request_key that the bundle doesn't
-    # contain (nakon deploy looks plans up by request_key, never by machine
-    # name). Read back the compiled, theme-expanded config compile_box wrote to
-    # artifacts_dir/nakon-config.json when present, falling back to the raw
-    # spec config for callers that skip straight to `plant`.
+    # Read back the compiled (theme-expanded) config: the bundle's request_key
+    # was computed over that list, and deploy looks plans up by request_key.
     compiled_nakon_cfg_path = os.path.join(artifacts_dir, "nakon-config.json")
     if os.path.isfile(compiled_nakon_cfg_path):
         with open(compiled_nakon_cfg_path, "r", encoding="utf-8") as f:
@@ -268,13 +254,9 @@ def _resolve_provider(provider_cfg: dict, provider_factory, log):
     """Return (provider, handle). provider_factory overrides the registry for tests."""
     if provider_factory is not None:
         return provider_factory(provider_cfg.get("name"), provider_cfg)
-    # Production path: use the registry. Imported lazily so compile-only callers
-    # don't need paramiko installed.
     from boxbuilder.providers import load_provider
     name = provider_cfg.get("name")
     provider = load_provider(name, provider_cfg)
-    # Pass the FULL cfg (including `name`) through to start(), exactly like the
-    # test factory does, so SshProvider can use cfg["name"] for the handle name.
     handle = provider.start(provider_cfg)
     return provider, handle
 
@@ -285,23 +267,8 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                 enrollment_ttl_s: int = 86400, competition_mode: bool = False,
                 log=print) -> dict:
     """Step 3: place the agent + manifest (+ rubric for honor) on the box and
-    enable the init unit. For ranked mode, also upload the engine record and
-    mint an enrollment token first.
-
-    `compile_result` defaults to the state recorded by compile_box. `init_kind`
-    auto-detects (systemd/openrc) when None. `admin_token` defaults to
-    $HUITZILOPOCHTLI_ADMIN_TOKEN (required for ranked).
-
-    Returns:
-      {
-        "mode": ...,
-        "machine": {"name","addr",...},
-        "files": [<remote paths placed>],
-        "init": "systemd"|"openrc"|"none",
-        "ranked": {"scenario_uploaded": bool, "enrollment_token": str|null} | null,
-        "ok": True,
-      }
-    """
+    enable the init unit; ranked also uploads the engine record and mints an
+    enrollment token first (not in competition_mode — the player joins)."""
     if compile_result is None:
         compile_result = _load_state(artifacts_dir)
         if compile_result is None:
@@ -314,12 +281,8 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
     mode = compile_result["mode"]
     provider, handle = _resolve_provider(spec.provider, provider_factory, log)
     try:
-        # --- ranked: wire the engine first so the token can go in agent_config ---
         ranked = None
         enrollment_token = None
-        # Single source for the engine address (compile state wins over spec, but
-        # they derive from the same scenario); used for both the upload and the
-        # on-box agent_config so they can never diverge.
         resolved_engine_url = compile_result.get("engine_url") or spec.engine_url
         if mode == "ranked" and not competition_mode:
             from common.scenario_record import LOOPBACK_ENGINE_URL
@@ -347,12 +310,8 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                       "competition_mode": True}
             log("[boxbuilder] competition mode: no token; the player runs `huitz join`")
 
-        # --- build the on-box file set + agent_config.json per mode ---
         from boxbuilder import artifacts as artifacts_mod
         scenario_name = compile_result.get("scenario_name") or spec.scenario["scenario"]["name"]
-        # The target OS decides the install layout (paths, seal, init unit).
-        # SshHandle sets os_name at connect; fake providers in tests default
-        # to the historical POSIX behavior.
         os_name = getattr(handle, "os_name", None) or "posix"
         agent_cfg = artifacts_mod.agent_config_dict(
             scenario_name=scenario_name, mode=mode,
@@ -365,35 +324,20 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                                            os_name=os_name)
         install_dir = artifacts_mod.install_dir_for(os_name)
 
-        # --- place files ---
         log(f"[boxbuilder] installing agent ({mode}) on {handle.name} ({handle.addr})")
-        # Ensure the install dir exists first. On POSIX it is created
-        # root-owned (via sudo); if the connecting user is not root, hand the
-        # dir to them so the SFTP puts below succeed (SFTP runs as the SSH
-        # user, not via sudo). On Windows the dir is created directly (an SSH
-        # admin session carries the elevated token) and inherits usable ACLs.
         if is_windows(os_name):
-            # run_ps (EncodedCommand) rather than a raw `powershell -Command`
-            # string: Windows OpenSSH execs through cmd.exe, which strips the
-            # inner double quotes and turns the payload into cmd syntax.
             mk = handle.run_ps(f"New-Item -ItemType Directory -Force "
                                f"-Path '{install_dir}' | Out-Null")
             if not mk.ok:
                 raise RuntimeError(f"could not create {install_dir}: {mk.stderr.strip()}")
-            # A reinstall must not inherit a previous scenario's rubric,
-            # identity, enrollment marker or reports. On a Windows template
-            # that already carries the SYSTEM agent task, the old agent can
-            # be mid-run holding .grade.lock; stop the task and any running
-            # agent processes first, or Remove-Item fails with a sharing
-            # violation. `schtasks /End` stops the trigger; `taskkill` on
-            # python.exe releases the lock. Never kill powershell here: this
-            # installer and the task wrapper are both powershell.
+            # A reinstall must not inherit the previous scenario's rubric, and
+            # the old agent task may be mid-run: stop it before Remove-Item.
+            # Never kill powershell here: this installer runs inside powershell.
             clean_script = (
                 "$ErrorActionPreference = 'Continue'; "
                 "schtasks.exe /End /TN 'HuitzilopochtliAgent' 2>$null | Out-Null; "
-                # The agent's python process holds .grade.lock. Killing by
-                # image name is deliberate: the task wrapper is powershell,
-                # and killing powershell here would kill this installer.
+                # The agent's python process holds .grade.lock. Killing by image
+                # name is deliberate: the task wrapper itself is powershell.
                 "taskkill.exe /F /IM python.exe 2>$null | Out-Null; "
                 "Start-Sleep -Milliseconds 800; "
                 f"Get-ChildItem -LiteralPath '{install_dir}' -Force | "
@@ -401,8 +345,6 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             )
             clean = handle.run_ps(clean_script)
             if not clean.ok and "grade.lock" in (clean.stderr or ""):
-                # One retry after a short settle: a just-stopped SYSTEM
-                # process can take a moment to release the lock handle.
                 import time as _time
                 _time.sleep(2)
                 clean = handle.run_ps(clean_script)
@@ -429,10 +371,8 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                         f"could not chown {install_dir} to {parts[0]}:{parts[1]}: "
                         f"{ch.stderr.strip()}"
                     )
-            # Unconditional: root installs (and non-root ones after the chown
-            # above) must clear the sealed dir. An honor->ranked reinstall
-            # otherwise leaves .score.dat (the answer key) and ranked
-            # reinstalls leave identity/.enrolled for the old box.
+            # Unconditional: an honor->ranked reinstall would otherwise leave
+            # .score.dat (the answer key) sitting in the sealed dir.
             clean = handle.run(f"find {install_dir} -mindepth 1 -delete")
             if not clean.ok:
                 raise RuntimeError(
@@ -444,17 +384,11 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
             handle.put(f.local, f.remote, mode=f.mode)
             placed.append(f.remote)
         log(f"[boxbuilder] placed {len(placed)} file(s) under {install_dir}")
-        # Seal the dir. POSIX: root:root, and honor stays 0700 because the
-        # rubric there is the answer key. A ranked install has no rubric, and
-        # its CLI must read agent_config.json + the signed manifest before the
-        # box joins (there is no report mirror yet), so ranked seals 0755 with
-        # a world-readable config -- identity.json (the box's private key)
-        # stays 0600 and the report mirror is unchanged. Windows: strip
-        # inheritance, grant only SYSTEM + Administrators. The agent runs as
-        # SYSTEM, so nothing at runtime needs looser ACLs there.
+        # Seal: POSIX root:root — honor 0700 (the rubric there is the answer
+        # key), ranked 0755 so its CLI can read agent_config.json + manifest
+        # before the box joins; identity.json stays 0600. Windows: strip
+        # inheritance, grant only SYSTEM + Administrators.
         if is_windows(os_name):
-            # Also via run_ps: the /grant tokens contain parens cmd.exe could
-            # mangle, and running inside PowerShell keeps the quoting native.
             seal = handle.run_ps(
                 f"icacls '{install_dir}' /inheritance:r "
                 f"'/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F'; "
@@ -469,21 +403,11 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                 f"could not seal {install_dir}: {seal.stderr.strip()}")
 
         # --- Windows logon/browser hardening (best-effort) ---
-        # Kills the Edge first-run wizard, the Shutdown Event Tracker and
-        # Server Manager logon modals, and the python advertised-shortcut
-        # MSI self-repair trap -- the pop-ups a player would otherwise meet
-        # on first logon. Runs once over the
-        # elevated SSH session; the script guards every section and always
-        # exits 0, so this warns instead of failing the install. Reported
-        # via result["hardening"], not result["files"] (that list stays
-        # "everything under the install dir" placed via SFTP).
         hardening = None
         if is_windows(os_name):
             harden_local = os.path.join(_REPO_ROOT, "packaging", "huitz-hardening-win.ps1")
             harden_remote = f"{install_dir}\\huitz-hardening-win.ps1"
             handle.put(harden_local, harden_remote)
-            # Nested powershell with -ExecutionPolicy Bypass: it is a script
-            # FILE, so EncodedCommand's exemption does not apply.
             res = handle.run_ps(
                 f"& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy "
                 f"Bypass -File '{harden_remote}'\n"
@@ -498,13 +422,6 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                     f"still work): {res.stderr.strip() or res.stdout.strip()}")
 
         # --- first-login motd (POSIX only; Windows has no motd mechanism) ---
-        # Tells a player what to do the first time they get a shell, and
-        # introduces the huitz console. Root-owned target, so: SFTP stage to
-        # /tmp, then sudo-install (same pattern as the init units). Cosmetic
-        # onboarding -- a failure warns, never fails the install. Reported
-        # via result["motd"], not result["files"]: that list is "everything
-        # under the install dir", and the banner deliberately lives in
-        # /etc/update-motd.d.
         motd_path = None
         if os_name != "windows":
             title = spec.theme.get("title") or scenario_name
@@ -523,10 +440,7 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                 log(f"[boxbuilder] WARNING: could not install the motd "
                     f"banner: {res.stderr.strip()}")
 
-        # --- init unit ---
         if init_kind is None:
-            # Auto-detect. The ssh provider exports detect_init; fake providers
-            # in tests pass init_kind explicitly to skip this.
             try:
                 from boxbuilder.providers.ssh import detect_init
                 init_kind = detect_init(handle)
@@ -539,10 +453,6 @@ def install_box(spec: BoxSpec, artifacts_dir: str, compile_result: Optional[dict
                     f"no supported init system detected on {handle.addr}; "
                     f"the agent would never auto-start. Pass --init none only "
                     f"if you intend to run it manually.")
-        # A ranked-competition box ships its unit installed but not started:
-        # the player's `huitz join` binds the box and starts it. Starting it at
-        # install time would make the agent poll an engine it is not enrolled
-        # with yet.
         handle.install_init(init_kind, mode, start_agent=not competition_mode)
         log(f"[boxbuilder] init unit: {init_kind}")
 
@@ -572,17 +482,9 @@ def _load_state(artifacts_dir: str) -> Optional[dict]:
 
 def package_box(spec: BoxSpec, artifacts_dir: str, image_out: str, fmt: str = "ova",
                 provider_factory=None, log=print) -> dict:
-    """Step 4: export the box image for distribution via the provider.
-
-    The SshProvider returns mode="manual" (a remote box can't snapshot itself);
-    qemu/proxmox providers will return mode="wrote" with a real image path.
-
-    Returns:
-      {
-        "image": {"mode":"wrote"|"manual", "path": str|null, "format": str, "instructions": str|null},
-        "ok": True,   # always -- manual export is a documented outcome, not failure
-      }
-    """
+    """Step 4: export the box image via the provider. SshProvider returns
+    mode="manual" (a box can't snapshot itself); that is an outcome, not a
+    failure — ok is always True."""
     if not spec.provider.get("name"):
         raise ValueError("package requires a provider; set provider.name in the spec")
 
@@ -601,7 +503,6 @@ def package_box(spec: BoxSpec, artifacts_dir: str, image_out: str, fmt: str = "o
         provider.stop(handle)
 
 
-# Ordered steps for the unified build. Each entry: (name, runner).
 _BUILD_STEPS = ("compile", "plant", "install", "package")
 
 
@@ -613,20 +514,15 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
               admin_token: Optional[str] = None, checkin_interval_s: int = 60,
               enrollment_ttl_s: int = 86400, competition_mode: bool = False,
               log=print) -> dict:
-    """Run the full pipeline (or resume from `from_step`), returning a combined result.
-
-    Resumability: compile writes build-state.json; plant/install/package read it.
-    `from_step` skips earlier steps, assuming their state is already on disk.
-
-    Returns a dict keyed by step name, plus top-level ok + completed_step.
-    """
+    """Run the pipeline (or resume from `from_step`, whose earlier steps must
+    have left build-state.json on disk). Returns per-step results plus
+    top-level ok + completed_step."""
     if from_step not in _BUILD_STEPS:
         raise ValueError(f"from_step must be one of {_BUILD_STEPS}, got {from_step!r}")
 
     results = {"from_step": from_step, "ok": True}
     start_idx = _BUILD_STEPS.index(from_step)
 
-    # Fail before touching a box if packaging will need an output path.
     if start_idx <= 3 and not image_out:
         raise ValueError("package step requires --image-out (the output image path)")
 
@@ -640,7 +536,6 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
                 pass
             raise
 
-    # 1. compile (or load existing state if resuming past it).
     if start_idx <= 0:
         log("[boxbuilder] === step 1/4: compile ===")
         results["compile"] = _run_step("compile", lambda: compile_box(
@@ -657,7 +552,6 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
         results["compile"] = state
         log(f"[boxbuilder] resumed: loaded compile state from {artifacts_dir}")
 
-    # Track the last step actually run instead of deriving it arithmetically.
     last_run = "compile" if start_idx == 0 else from_step
     if start_idx <= 1:
         log("[boxbuilder] === step 2/4: plant ===")
@@ -671,7 +565,6 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
             results["completed_step"] = "plant"
             return results
 
-    # 3. install.
     if start_idx <= 2:
         log("[boxbuilder] === step 3/4: install ===")
         results["install"] = _run_step("install", lambda: install_box(
@@ -686,7 +579,6 @@ def build_all(spec: BoxSpec, artifacts_dir: str, image_out: Optional[str] = None
             results["completed_step"] = "install"
             return results
 
-    # 4. package.
     if start_idx <= 3:
         log("[boxbuilder] === step 4/4: package ===")
         results["package"] = _run_step("package", lambda: package_box(

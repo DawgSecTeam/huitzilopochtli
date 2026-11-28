@@ -2,9 +2,6 @@
 
 AGENT_VERSION = "1.2.0"
 
-# common.schema.SCHEMA_VERSION is the source of truth for wire schema
-# compatibility; re-exported here for convenience where only version.py
-# is imported.
-from common.schema import SCHEMA_VERSION  # noqa: E402,F401
+from common.schema import SCHEMA_VERSION  # noqa: E402,F401  (schema.py is the source of truth)
 
 __all__ = ["AGENT_VERSION", "SCHEMA_VERSION"]

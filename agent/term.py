@@ -1,18 +1,8 @@
-"""Terminal kit for the huitz CLI (agent/cli.py) — stdlib only, portable.
+"""Terminal kit for the huitz CLI — stdlib only, portable, no curses.
 
-Everything visual the CLI does goes through here so the command modules stay
-pure text layout. Behavior contract:
-
-- **Color depth** is detected once (`Style.detect`): NO_COLOR / non-TTY /
-  TERM=dumb degrade to plain text; COLORTERM=truecolor, TERM=*256color*, and
-  plain 16-color terminals each get a faithful accent (theme hex -> nearest
-  palette entry). `override` lets `--color=always|never|auto` win.
-- **Unicode** (box characters, check marks) is used only when the output
-  stream is UTF-8; otherwise ASCII equivalents. Same rule git/ls use.
-- **No curses** — the zipapp must also run on Windows (pinecrest boxes),
-  where curses does not exist. Frames are plain ANSI; key polling is
-  termios+select on POSIX and msvcrt on Windows.
-"""
+The zipapp must run on Windows boxes too, so frames are plain ANSI and key
+polling is termios+select / msvcrt. Color degrades under NO_COLOR/non-TTY/
+TERM=dumb; Unicode only when the stream is UTF-8 (the git/ls rule)."""
 import os
 import re
 import shutil
@@ -20,28 +10,20 @@ import sys
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-
 def sanitize_text(text) -> str:
     """Strip control characters from untrusted display text.
 
-    Terminal output is built from manifest titles, player-editable answers,
-    ranked evidence reasons and snapshot fields. A raw ESC can execute OSC/CSI
-    sequences (clipboard write, screen clear, title spoof) in the terminal;
-    C0/C1 controls are never legitimate here. Newlines and tabs survive so
-    multi-line content still lays out. Style-generated SGR is added later, at
-    the rendering boundary.
-    """
+    A raw ESC can execute OSC/CSI sequences (clipboard write, title spoof),
+    so C0/C1 never survive; newlines/tabs stay, SGR is added at render."""
     value = str(text)
     return "".join(
         ch for ch in value
         if (ch in "\n\t" or (ord(ch) >= 0x20 and not 0x7F <= ord(ch) <= 0x9F))
     )
 
-
 def visible_len(text: str) -> int:
     """Display width of possibly-styled text (SGR sequences count 0)."""
     return len(_ANSI_RE.sub("", text))
-
 
 def truncate_ansi(text: str, width: int) -> str:
     """Clip `text` to `width` visible columns without splitting escape
@@ -67,9 +49,7 @@ def truncate_ansi(text: str, width: int) -> str:
         out.append("\x1b[0m")
     return "".join(out)
 
-
 _WRAP_TOKEN_RE = re.compile(r"\x1b\[[0-9;]*m|\s+|\S+")
-
 
 def _wrap_words(text: str) -> list:
     """Split `text` into words as (chunk, visible_len) pairs. SGR runs attach
@@ -81,7 +61,6 @@ def _wrap_words(text: str) -> list:
         tok = m.group(0)
         if tok.isspace():
             if pending:
-                # Escapes trailing a word still belong to it (its reset, say).
                 if words:
                     chunk, vlen = words[-1]
                     words[-1] = (chunk + "".join(pending), vlen)
@@ -100,14 +79,11 @@ def _wrap_words(text: str) -> list:
         words.append(("".join(pending), 0))
     return words
 
-
 def wrap_ansi(text: str, width: int, indent: str = "",
               subsequent_indent: str | None = None) -> str:
-    """Greedy word-wrap for possibly-styled text: SGR sequences count as zero
-    columns and stay attached to their word, so bold/color spans flow across
-    the wrap intact. Newlines in `text` are treated as spaces (callers pass
-    folded paragraphs). Unbreakable words longer than the line are hard-split.
-    """
+    """Greedy word-wrap for possibly-styled text: SGR runs are zero-width,
+    attached to their word, and color spans flow across the wrap intact;
+    over-long words are hard-split at the column limit."""
     if subsequent_indent is None:
         subsequent_indent = indent
     width = max(1, width)
@@ -130,7 +106,6 @@ def wrap_ansi(text: str, width: int, indent: str = "",
         if cur and cur_len + 1 + vlen > limit():
             emit()
         if not cur and vlen > limit():
-            # Hard-split an unbreakable word at the column limit.
             while vlen > limit() - cur_len:
                 room = max(1, limit() - cur_len)
                 take = _split_styled(chunk, room)
@@ -154,7 +129,6 @@ def wrap_ansi(text: str, width: int, indent: str = "",
         emit()
     return "\n".join(lines)
 
-
 def _split_styled(chunk: str, room: int) -> int:
     """Byte index in `chunk` after `room` visible columns (escapes are free)."""
     used = 0
@@ -170,12 +144,8 @@ def _split_styled(chunk: str, room: int) -> int:
         i += 1
     return i
 
-# --- color depths ------------------------------------------------------------
-
 NONE, C16, C256, TRUECOLOR = 0, 4, 8, 24
 
-# Semantic palette — the same hex values agent/report_page.py uses for the
-# HTML report (ok/bad/warn/muted), so terminal and web agree on meaning.
 SEMANTIC = {
     "ok": "#1a7f37",
     "bad": "#cf222e",
@@ -191,11 +161,9 @@ _C16_RGB = [
     (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
 ]
 
-
 def _cube_gray(i: int) -> tuple:
     v = 8 + 10 * (i - 232)
     return (v, v, v)
-
 
 def _palette_rgb(i: int) -> tuple:
     """xterm-256 palette entry i as (r, g, b)."""
@@ -207,7 +175,6 @@ def _palette_rgb(i: int) -> tuple:
         return (levels[i // 36], levels[(i // 6) % 6], levels[i % 6])
     return _cube_gray(i)
 
-
 def _hex_rgb(value: str) -> tuple | None:
     value = value.strip()
     if not value.startswith("#") or len(value) != 7:
@@ -217,7 +184,6 @@ def _hex_rgb(value: str) -> tuple | None:
     except ValueError:
         return None
 
-
 def _nearest(rgb: tuple, count: int) -> int:
     best, best_d = 0, None
     for i in range(count):
@@ -226,7 +192,6 @@ def _nearest(rgb: tuple, count: int) -> int:
         if best_d is None or d < best_d:
             best, best_d = i, d
     return best
-
 
 def _rgb_ansi(rgb: tuple, depth: int) -> str | None:
     """SGR foreground parameter for an RGB at the given depth."""
@@ -238,21 +203,14 @@ def _rgb_ansi(rgb: tuple, depth: int) -> str | None:
         return f"38;5;{_nearest(rgb, 16)}"
     return None
 
-
-# --- detection ---------------------------------------------------------------
-
 def _stream_utf8(stream) -> bool:
     enc = getattr(stream, "encoding", "") or ""
     return "utf" in enc.lower().replace("-", "")
 
-
 def detect_depth(stream, override: str = "auto") -> int:
-    """Color depth for `stream`: one of NONE/C16/C256/TRUECOLOR.
-
-    override: "auto" (environment decides), "always" (force best depth),
-    "never" (plain text). NO_COLOR (https://no-color.org) and TERM=dumb win
-    over auto; FORCE_COLOR forces color back on for piped runs that want it.
-    """
+    """Color depth for `stream`: NONE/C16/C256/TRUECOLOR. override is
+    "auto" | "always" | "never"; NO_COLOR and TERM=dumb win over auto,
+    FORCE_COLOR forces color on for piped runs."""
     override = (override or "auto").lower()
     if override == "never":
         return NONE
@@ -271,7 +229,6 @@ def detect_depth(stream, override: str = "auto") -> int:
         return C16
     return NONE
 
-
 def detect_width(stream) -> int:
     """Current terminal width, >= 20 (below that, layout is hopeless)."""
     try:
@@ -280,7 +237,6 @@ def detect_width(stream) -> int:
         cols = 80
     del stream
     return max(20, cols)
-
 
 def detect_height(stream) -> int:
     """Current terminal height in rows, >= 4 (below that, layout is hopeless)."""
@@ -291,12 +247,8 @@ def detect_height(stream) -> int:
     del stream
     return max(4, rows)
 
-
 def is_interactive(stream) -> bool:
     return hasattr(stream, "isatty") and stream.isatty()
-
-
-# --- windows VT --------------------------------------------------------------
 
 def enable_windows_vt() -> bool:
     """Best-effort ENABLE_VIRTUAL_TERMINAL_PROCESSING on Windows consoles.
@@ -315,17 +267,11 @@ def enable_windows_vt() -> bool:
     except Exception:  # noqa: BLE001 — best effort; plain output still works
         return False
 
-
-# --- styling -----------------------------------------------------------------
-
 class Style:
     """ANSI styling at the detected depth; a no-op at NONE.
 
-    color() accepts semantic names (ok/bad/warn/muted/ink), theme accents
-    as "#rrggbb", or raw SGR attribute ints (1 = bold). Text is escaped at
-    call time; layout helpers pad plain strings BEFORE styling so widths
-    never need ANSI-aware math.
-    """
+    color() takes semantic names, "#rrggbb" accents, or SGR ints; layout
+    helpers pad plain strings BEFORE styling (no ANSI-width math)."""
 
     def __init__(self, depth: int, utf8: bool = True, accent: str | None = None):
         self.depth = depth
@@ -354,8 +300,8 @@ class Style:
                 param = _rgb_ansi(rgb, self.depth)
                 if param:
                     params.append(param)
-            # Unknown specs are dropped rather than interpolated raw: a
-            # forged snapshot accent must never inject an escape sequence.
+            # Unknown specs drop, never interpolate raw: a forged snapshot
+            # accent must not inject an escape sequence.
         return params
 
     def color(self, text: str, *specs) -> str:
@@ -375,9 +321,6 @@ class Style:
 
     def reverse(self, text: str) -> str:
         return self.color(text, 7)
-
-
-# --- symbols & layout --------------------------------------------------------
 
 class Symbols:
     """Unicode when the stream can take it, ASCII otherwise."""
@@ -423,10 +366,7 @@ class Symbols:
 
     @property
     def bell(self):
-        # Terminal bell: the CLI's native analog of the box's score-change
-        # chime, audible over SSH where the desktop PulseAudio is not.
         return "\a"
-
 
 def ellipsize(text: str, width: int, symbols: Symbols) -> str:
     if width <= 0:
@@ -437,23 +377,19 @@ def ellipsize(text: str, width: int, symbols: Symbols) -> str:
         return ""
     return text[: width - 1] + symbols.ellipsis
 
-
 def pad(text: str, width: int) -> str:
     if len(text) >= width:
         return text[:width]
     return text + " " * (width - len(text))
 
-
 def rule(width: int, symbols: Symbols) -> str:
     return symbols.hline * max(0, width)
-
 
 def progress_bar(pct: int, width: int, symbols: Symbols) -> str:
     """`width` includes the two bracket characters."""
     inner = max(3, width - 2)
     filled = int(round(inner * max(0, min(100, pct)) / 100.0))
     return "[" + symbols.block * filled + symbols.light * (inner - filled) + "]"
-
 
 def fmt_mmss(seconds: float) -> str:
     secs = max(0, int(seconds))
@@ -463,21 +399,16 @@ def fmt_mmss(seconds: float) -> str:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
-
-# --- frame control & key polling (watch mode) --------------------------------
-
 ALT_ENTER = "\x1b[?1049h"
 ALT_EXIT = "\x1b[?1049l"
 HIDE_CURSOR = "\x1b[?25l"
 SHOW_CURSOR = "\x1b[?25h"
 HOME_CLEAR = "\x1b[H\x1b[2J"
 
-
 class KeyPoller:
-    """Single-key input for the watch loop. `poll(timeout_s)` returns the
-    key name ("q", " ", "ctrl-c") or "" on timeout. Non-interactive stdin
-    is supported (poll always times out) so `watch --once` logic can share
-    the code path."""
+    """Single-key input for the watch loop: poll(timeout_s) returns the key
+    name ("q", " ", "ctrl-c") or "" on timeout; non-interactive stdin always
+    times out, so watch --once shares this code path."""
 
     def __init__(self, stream=None):
         self.stream = stream or sys.stdin
@@ -528,8 +459,7 @@ class KeyPoller:
             return ""
         raw = os.read(self._fd, 1)
         if raw == b"":
-            # EOF/hangup: select() keeps reporting readable, so returning a
-            # timeout would busy-spin the watch loop forever.
+            # EOF/hangup: select() would report readable forever — treat as quit.
             return "ctrl-c"
         ch = raw.decode("utf-8", "replace")
         if ch == "\x03":

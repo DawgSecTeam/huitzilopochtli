@@ -1,14 +1,9 @@
 """Concurrent check runner. See architecture.md §9.1.
 
-Each check has its own deadline measured from the moment a worker actually
-starts it. The old implementation used one global deadline equal to the
-*largest* timeout in the scenario; checks still queued behind the concurrency
-cap could be marked TIMEOUT without ever running. Checks are therefore run in
-daemon threads with a bounded number active at once, and a timed-out check's
-logical slot is released immediately (the OS thread may linger, as it always
-could with an unkillable check; the daemon flag keeps a one-shot honor run
-exitable).
-"""
+Each check's deadline is measured from when a worker actually starts it —
+never a global deadline, which could time out unstarted checks. Daemon
+threads; a timed-out check releases its logical slot immediately even if
+the OS thread lingers."""
 import math
 import os
 import shutil
@@ -17,7 +12,6 @@ import time
 
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-# Populate CHECKS registry via decorator side-effects.
 import agent.checks.command_json  # noqa: F401
 import agent.checks.db_query  # noqa: F401
 import agent.checks.file_regex  # noqa: F401
@@ -36,7 +30,6 @@ from agent.checks.base import CHECKS
 _MAX_CONCURRENCY = 20
 _POLL_INTERVAL_S = 0.02
 
-
 def _run_one(spec: CheckSpec, ctx: "agent.platform.base.PlatformContext") -> Evidence:
     """Instantiate and run the check for `spec`. Raises on any check-level
     failure; the runner translates that into ERROR evidence."""
@@ -44,14 +37,12 @@ def _run_one(spec: CheckSpec, ctx: "agent.platform.base.PlatformContext") -> Evi
     check = check_cls()
     return check.collect(spec, ctx)
 
-
 def _timeout_s(spec: CheckSpec) -> float:
     try:
         value = float(spec.timeout_s)
     except (TypeError, ValueError):
         return 5.0
     return value if math.isfinite(value) and value > 0 else 5.0
-
 
 def _timeout_evidence(spec: CheckSpec, elapsed: float) -> Evidence:
     return Evidence(
@@ -68,7 +59,6 @@ def _timeout_evidence(spec: CheckSpec, elapsed: float) -> Evidence:
         collected_wall_claim=time.time(),
     )
 
-
 def _error_evidence(spec: CheckSpec, reason: str) -> Evidence:
     return Evidence(
         check_id=spec.id,
@@ -80,7 +70,6 @@ def _error_evidence(spec: CheckSpec, reason: str) -> Evidence:
         collected_monotonic=time.monotonic(),
         collected_wall_claim=time.time(),
     )
-
 
 def _unavailable_evidence(spec: CheckSpec, missing: list) -> Evidence:
     """The check was never collected: a `requires` prerequisite is absent."""
@@ -94,7 +83,6 @@ def _unavailable_evidence(spec: CheckSpec, missing: list) -> Evidence:
         collected_monotonic=time.monotonic(),
         collected_wall_claim=time.time(),
     )
-
 
 def _missing_requires(spec: CheckSpec) -> list:
     """Prerequisites from ``spec.requires`` that this host lacks.
@@ -118,7 +106,6 @@ def _missing_requires(spec: CheckSpec) -> list:
         return missing
     except Exception as exc:  # noqa: BLE001 - requires probe must never crash a run
         return [f"requires probe failed: {exc}"]
-
 
 def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
     """Run checks concurrently; a hung check yields TIMEOUT after its own
@@ -157,8 +144,8 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
 
         with cond:
             if state[idx]["timed_out"]:
-                # The main loop already recorded TIMEOUT and released this
-                # check's logical slot; discard the late result.
+                # The main loop recorded TIMEOUT and released the slot;
+                # discard this late result.
                 return
             active["count"] -= 1
             state[idx]["done"] = True
@@ -173,10 +160,8 @@ def run_all(checks: list, ctx: "agent.platform.base.PlatformContext") -> list:
             continue
         missing = _missing_requires(spec)
         if missing:
-            # Prerequisite absent: report `unavailable` (not solved, not
-            # failed) without touching the collect script, so a check can
-            # never score its scripted fail-open way to a pass on a host
-            # where the software it grades is not even installed.
+            # Prereq absent: report UNAVAILABLE without touching the collect
+            # script, so a check can't fail open to a pass on an empty host.
             results[idx] = _unavailable_evidence(spec, missing)
             state[idx]["done"] = True
             continue

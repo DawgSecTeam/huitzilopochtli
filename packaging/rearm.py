@@ -1,44 +1,14 @@
 #!/usr/bin/env python3
-"""Re-arm/reset a provisioned box. See architecture.md §17:
-
-    "a documented reset path resets local state (seq, identity optional,
-    cached score, report) so a take-home box can be replayed without a
-    full redeploy."
-
-Usage (run ON the box, as the same user/root that owns the install dir):
-
+"""Re-arm/reset a provisioned box (architecture.md §17): clears local state
+so a take-home box replays without a redeploy. Run ON the box:
     python3 rearm.py [install_dir] [--config CONFIG] [--reset-identity]
-
-    install_dir   defaults to /opt/.huitzilopochtli
-    --config      path to agent_config.json, defaults to
-                  <install_dir>/agent_config.json
-    --reset-identity  ALSO delete the ranked-mode identity file (and its
-                  transport queue file). Opt-in and off by default: an
-                  identity reset generates a brand-new box_id + Ed25519
-                  keypair and resets last_seq to 0 (see
-                  agent/identity.py load_or_create). That is a much
-                  bigger action than "let me retry this take-home
-                  session" -- it effectively re-enrolls the box as a
-                  new entity from the engine's point of view. Re-arming
-                  for a retry within the same session/box normally
-                  should NOT rotate identity, so identity reset is
-                  opt-in via this flag rather than the default.
-
-This script is stdlib-only and imports agent.config (pure stdlib) to
-resolve the real report/identity paths from the box's own config
-rather than hardcoding filenames -- so it stays correct even if a
-scenario's config points paths somewhere nonstandard.
+--reset-identity is opt-in: rotating box_id/keypair/last_seq re-enrolls the
+box as a NEW entity at the engine — a far bigger action than a session retry.
 """
 import argparse
 import os
 import sys
 
-# Allow running this script directly from packaging/ on a box where the
-# repo (or at least agent/+common/) is laid out next to it, OR from an
-# install dir that only has the .pyz (see README: rearm.py is a plain
-# stdlib script, not itself part of the zipapp, so it needs `agent` and
-# `common` importable -- easiest is to run it via the same interpreter
-# with the .pyz on sys.path, or just from a repo checkout).
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_THIS_DIR)
 if _REPO_ROOT not in sys.path:
@@ -48,10 +18,8 @@ import agent.config  # noqa: E402
 
 
 def _enrolled_marker_path(identity_path: str) -> str:
-    """Path of the .enrolled first-boot gate marker, adjacent to the identity
-    file. Mirrors agent/__main__.py::_enrolled_marker_path exactly -- rearm.py
-    is a stdlib-only script and must not import agent/__main__ (it pulls the
-    whole agent runtime)."""
+    """Path of the .enrolled first-boot gate marker, mirroring
+    agent/__main__.py's version: rearm must not import the agent runtime."""
     return identity_path + ".enrolled"
 
 
@@ -84,11 +52,8 @@ def _maybe_remove(path: str) -> bool:
 
 
 def _remove_user_mirrors() -> list:
-    """Delete the per-user Documents/Desktop report mirrors.
-
-    The CLI searches those mirrors first, so leaving them behind means
-    `huitz score` keeps showing the previous session after a re-arm.
-    """
+    """Delete the per-user Documents/Desktop report mirrors: the CLI searches
+    them first, so a survivor keeps showing the dead session's grade."""
     removed = []
     if os.name == "nt":
         homes = [os.environ.get("PUBLIC", r"C:\Users\Public")]
@@ -115,7 +80,6 @@ def _remove_user_mirrors() -> list:
             if _maybe_remove(path):
                 removed.append(path)
     return removed
-    return False
 
 
 def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
@@ -137,9 +101,6 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
     else:
         actions.append(f"no score baseline to remove at: {score_state}")
 
-    # The CLI snapshot (report.json) must go too: `huitz score` renders
-    # whatever snapshot it finds, so a survivor here would keep showing the
-    # dead session's grade after a re-arm.
     snapshot = _snapshot_path(config.report_path)
     if _maybe_remove(snapshot):
         actions.append(f"removed report snapshot: {snapshot}")
@@ -167,10 +128,10 @@ def rearm(install_dir: str, config_path: str, reset_identity: bool) -> list:
                 path = config.identity_path + suffix
                 if _maybe_remove(path):
                     actions.append(f"removed state file: {path}")
-            # The .enrolled marker must go too: agent/__main__.py::_ensure_enrolled
-            # short-circuits on it, so a leftover marker would make the brand-new
-            # box_id/keypair (above) skip /enroll and be rejected by the engine
-            # with 403 "unknown box" forever (packaging/README.md §17 reset flow).
+            # The .enrolled marker goes too: _ensure_enrolled short-circuits
+            # on it, so a leftover would make the brand-new box_id/keypair
+            # skip /enroll and be rejected 403 forever (packaging/README.md
+            # §17 reset flow).
             enrolled_marker = _enrolled_marker_path(config.identity_path)
             if _maybe_remove(enrolled_marker):
                 actions.append(f"removed enrollment marker: {enrolled_marker}")

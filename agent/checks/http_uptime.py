@@ -3,10 +3,8 @@
 GET against a local URL using stdlib http.client only.
 collect_params: {"url": str}.
 Evidence.raw shape: {"status": int | None, "body": str, "error": str | None}.
-Note: expected-status / body-substring matching live in the RUBRIC matcher,
-not here — this check only reports what it observed (the actual status code
-and a bounded excerpt of the response body). It never pre-judges a match,
-since it has no access to rubric expectations (collect/evaluate split, §2.1-2.2).
+Expected-status / body-substring matching lives in the RUBRIC matcher, not
+here: this check reports observations only (collect/evaluate split, §2.1-2.2).
 """
 import http.client
 import time

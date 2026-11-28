@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """Build a versioned engine deployment tarball (stdlib only).
 
-Usage: python3 packaging/build_engine_bundle.py [OUT]
-Writes OUT (default dist/huitzilopochtli-engine.tar.gz) containing common/,
-engine/, and the committed boxes/ folder (the engine parses box scenarios
-itself) so the VM never runs from a git checkout.
-
-A build_info.json is stamped at the bundle root (git commit + build time) so
-the running engine can report its exact build on the admin dashboard
-(/admin/api/build reads the same file).
+Usage: python3 packaging/build_engine_bundle.py [OUT] — bundles common/,
+engine/ and the committed boxes/ (the engine parses scenarios itself) plus a
+build_info.json stamp the admin dashboard reports.
 """
 import datetime
 import io
@@ -23,12 +18,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _box_permissions(ti: tarfile.TarInfo) -> tarfile.TarInfo:
-    """Box directories are read by the engine's unprivileged service user.
-
-    A box directory committed as 0700 (easy to do with a restrictive umask)
-    would otherwise be preserved into /opt and silently hide the scenario
-    from the engine. Normalize everything under boxes/ to world-readable.
-    """
+    """The engine's unprivileged service user reads boxes/. A 0700 dir (easy
+    with a restrictive umask) would survive into /opt and silently hide the
+    scenario, so normalize boxes/ to world-readable."""
     if ti.name == "boxes" or ti.name.startswith("boxes/"):
         ti.mode = 0o755 if ti.isdir() else 0o644
     return ti
@@ -44,7 +36,7 @@ def _git_commit() -> str:
         return "unknown"
 
 
-def _build_info_entry() -> tarfile.TarInfo:
+def _build_info_entry() -> tuple:
     payload = json.dumps({
         "commit": _git_commit(),
         "built_at": datetime.datetime.now(datetime.timezone.utc)

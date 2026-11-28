@@ -16,8 +16,6 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
     """
     def _apply(rec):
         if rec is None:
-            # First-ever observation for this (box, check_id): initialize state
-            # from the single observation, no elapsed interval to credit yet.
             return SlaStateRecord(
                 box_id=box_id,
                 check_id=check_id,
@@ -38,7 +36,6 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
             rec.last_credited_at = received_at
             return rec
 
-        # Update consecutive counters.
         if is_up:
             rec.consec_ok += 1
             rec.consec_fail = 0
@@ -46,40 +43,36 @@ def update_sla(store: Store, box_id: str, check_id: str, sla_params: SlaParams,
             rec.consec_fail += 1
             rec.consec_ok = 0
 
-        # Hysteresis transition.
         if rec.state == "UP" and rec.consec_fail >= sla_params.hysteresis_fail_n:
             rec.state = "DOWN"
         elif rec.state == "DOWN" and rec.consec_ok >= sla_params.hysteresis_ok_n:
             rec.state = "UP"
-            # §11.3: no credit accrues while DOWN. The DOWN window sits in
-            # (last_credited_at, received_at), so on the transition back to UP
-            # we re-anchor crediting at now instead of crediting the outage.
+            # §11.3: no credit accrues while DOWN — the DOWN window sits in
+            # (last_credited_at, received_at), so returning UP re-anchors
+            # crediting at now instead of crediting the outage.
             rec.last_credited_at = received_at
 
         if rec.state == "UP" and sla_params.interval_s > 0:
             elapsed = received_at - rec.last_credited_at
             if elapsed <= 0:
-                # The engine clock stepped backwards (or this is the same
-                # instant): never credit and never move the anchor backwards.
+                # The engine clock stepped backwards, or the same instant:
+                # never credit and never move the anchor backwards.
                 return rec
             eligible = math.floor(elapsed / sla_params.interval_s)
             intervals = min(eligible, sla_params.max_intervals_per_checkin)
             rec.accrued_points += intervals * sla_params.points_per_interval
             if eligible > intervals:
-                # §11.3: the cap must *forfeit* a long silence, not merely
-                # defer it. The old code advanced the anchor by the credited
-                # intervals only, leaving the uncredited hours "elapsed" so a
-                # box could cash the whole outage in over later check-ins.
-                # Keep just the sub-interval remainder and drop the backlog.
+                # §11.3: the cap forfeits a long silence, not merely defers
+                # it — keep only the sub-interval remainder, drop the backlog.
                 remainder = elapsed - (eligible * sla_params.interval_s)
                 rec.last_credited_at = received_at - remainder
             else:
-                # Normal case: carry the fractional remainder so a check-in
-                # cadence that does not divide interval_s still credits fairly.
+                # Carry the fractional remainder: a cadence that does not
+                # divide interval_s still credits fairly.
                 rec.last_credited_at += intervals * sla_params.interval_s
         elif rec.state == "DOWN":
-            # Freeze the anchor while DOWN so a future UP stretch is only
-            # credited from the moment UP actually resumes.
+            # Freeze the anchor while DOWN so a future UP stretch is credited
+            # only from the moment UP resumes.
             rec.last_credited_at = received_at
         return rec
 

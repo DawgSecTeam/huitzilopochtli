@@ -1,11 +1,8 @@
 """Static HTML report renderer. See architecture.md §13.
 
-Scoring logic and data-driven fragments only; the visual shell (CSS, page
-document, masthead, countdown, accent guard) lives in agent/report_page.py.
-The derived player-facing facts (fixed vulns, active penalties, forensics
-state, progress) come from agent/board.py, shared with the huitz CLI and
-the report.json snapshot.
-"""
+Scoring/data-driven fragments only; the visual shell lives in
+agent/report_page.py, the derived facts in agent/board.py (shared with
+the huitz CLI and the report.json snapshot)."""
 import html
 import math
 import time
@@ -16,30 +13,19 @@ from agent.report_page import (
 )
 from common.schema import Mode, SLA_HISTORY_MAX, ScoreBreakdown
 
-# Display refresh cadence (not a scoring input). Short enough that a parked
-# "00:00 — checking…" expires within one refresh of the file being rewritten.
-REFRESH_SECONDS = 15
+REFRESH_SECONDS = 15  # display refresh only, never a scoring input
 
-# Honor re-grade cadence — mirrors packaging/huitzilopochtli-agent.timer.
-# OnUnitActiveSec is 60s, but the unit re-fires 60s after the previous
-# ACTIVATION and a grade run takes ~2s plus dispatch overhead, so observed
-# fires land ~70s apart. This is the countdown estimate only (display
-# cadence, never a scoring input).
+# ~70s = the timer's observed fire cadence (60s activation-to-activation +
+# grade time); countdown estimate, never a scoring input.
 _HONOR_INTERVAL_S = 70
-
 
 def _fmt_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
 
-
 def _render_config_cards(b) -> str:
-    """Positive-only configuration/forensics cards.
-
-    Shared by honor and ranked: only passed vulns (display_title) and
-    incurred penalties are named. A failed check id, category, reason, or
-    awarded=0 row never reaches the page — in ranked mode that is the answer
-    key, not a diagnostic.
-    """
+    """Positive-only cards, shared by honor and ranked: only passed vulns
+    and incurred penalties are named — a failed check id/reason row is the
+    answer key, not a diagnostic."""
     def _li(title_esc: str, pts: int) -> str:
         if pts > 0:
             pts_html = f'<span class="pts pos">+{html.escape(str(pts))} pts</span>'
@@ -82,14 +68,10 @@ def _render_config_cards(b) -> str:
                 )
                 icon = '<span class="icon ok">&#10003;</span> '
             elif f.submitted and f.graded:
-                # Answered but not correct: say so. This is the player's own
-                # submission being acknowledged — it names no correct answer.
                 pts_html = '<span class="pts warn">0 pts</span>'
                 icon = ('<span class="icon warn" title="your answer was '
                         'recorded but did not match">&#10007;</span> ')
             elif f.submitted:
-                # Submitted, no result visible (ranked live: the engine
-                # withholds per-question forensics results until the run ends).
                 pts_html = '<span class="pts muted">0 pts</span>'
                 icon = '<span class="icon muted">&#8230;</span> '
             else:
@@ -133,21 +115,12 @@ def _render_config_cards(b) -> str:
 {forensics_card}
 </div>"""
 
-
 def _render_honor_board(score: ScoreBreakdown, manifest, evidence=None) -> str:
-    """CyberPatriot-style honor board: positive-only.
+    """CyberPatriot-style honor board: positive-only, derived by board.py.
 
-    All derived facts (fixed vulns, active penalties, forensics state,
-    progress) come from agent/board.py — the same derivation the huitz CLI
-    and the report.json snapshot render from.
-
-    - Only passed vulns are listed with display_title + points.
-    - Penalties / prohibited only when incurred (awarded != 0).
-    - No check_id, category, reason, or awarded=0 rows ever surface.
-    - Shows k of n + progress bar + remaining count.
-    - Scored forensics questions get their own card and are excluded from the
-      vulnerabilities-fixed accounting (they still add to score.total).
-    """
+    Only passed vulns (display_title) and incurred penalties surface — no
+    check_id/category/reason/awarded=0 rows ever. Forensics get their own
+    card, excluded from the vulns-fixed count."""
     b = board_mod.build_board(score, manifest, evidence)
 
     max_label = (
@@ -179,14 +152,12 @@ def _render_honor_board(score: ScoreBreakdown, manifest, evidence=None) -> str:
 <p class="stamp honor-stamp">Last checked: {html.escape(_fmt_time(score.computed_at))} &middot; Honor mode — SLA not scored (untimed)</p>
 """
 
-
 def _render_delta_banner(score_delta) -> str:
     """One-run score-change banner ("" when None/0): the visual twin of the
     sound + toast -- green chime for a gain, red alarm for a penalty. Shows
     only on the run right after the change, then disappears again."""
     try:
-        # The evaluator supplies an int; coerce anything else defensively so
-        # a hostile/malformed value degrades to "no banner", never to markup.
+        # Coerce defensively: a hostile value degrades to no banner, not markup.
         score_delta = int(score_delta)
     except (TypeError, ValueError):
         return ""
@@ -203,17 +174,12 @@ def _render_delta_banner(score_delta) -> str:
         "setting was undone or a new issue introduced</div>"
     )
 
-
 def _render_event_bar(rank, rank_total, run_ends_at,
                       last_confirmed_at) -> "tuple[str, str]":
-    """Ranked-only top bar: event time left + live scoreboard position.
+    """Ranked-only top bar (html, countdown_script); metrics may be absent.
 
-    Returns (html, countdown_script). The clock is engine-relative: the
-    engine tells us how long was left when it scored this check-in, and the
-    baked render anchor turns that into a browser countdown, so a skewed box
-    clock cannot move the event's end. Either metric may be missing (legacy
-    engine, unbound box) without leaving an empty cell.
-    """
+    The clock is engine-relative and anchored at render time: a skewed box
+    clock must not move the event's end."""
     metrics = []
     script = ""
     run_end = None
@@ -257,19 +223,13 @@ def _render_event_bar(rank, rank_total, run_ends_at,
     return (f'<section class="event-bar" aria-label="Event status">'
             f'{"".join(metrics)}</section>', script)
 
-
 def _service_state_label(state: str) -> str:
     return {"UP": "Clean", "DOWN": "Down"}.get((state or "").upper(), "Pending")
 
-
 def _render_service_ticks(service) -> str:
-    """One block per engine-scored check-in, oldest -> newest.
-
-    The strip is always ``SLA_HISTORY_MAX`` slots wide: a service with fewer
-    observations shows hollow leading slots rather than pretending the ticks
-    before it existed were UP or DOWN. The engine sends the same bounded ring
-    to the portal, so both surfaces read alike.
-    """
+    """One block per engine-scored check-in, oldest -> newest, always
+    SLA_HISTORY_MAX slots wide: missing history shows as hollow slots, never
+    invented UP/DOWN (the portal reads the same bounded ring)."""
     states = list(getattr(service, "history", None) or [])[-SLA_HISTORY_MAX:]
     padded = [None] * (SLA_HISTORY_MAX - len(states)) + states
     blocks = []
@@ -291,7 +251,6 @@ def _render_service_ticks(service) -> str:
         f'{"".join(blocks)}</span>'
         f'<span class="ticks-label">last {SLA_HISTORY_MAX}</span>'
     )
-
 
 def _render_uptime_panel(board) -> str:
     """Current service status + recent tick history (ranked tab 2)."""
@@ -343,7 +302,6 @@ left is oldest, right is the latest. Uptime points accrue while a service
 stays up and are separate from the hardening score.</p>
 """
 
-
 def _render_ranked_detail(board, config_html: str) -> str:
     """Two-tab detail: configuration/forensics (positive-only) vs uptime."""
     return f"""
@@ -367,7 +325,6 @@ def _render_ranked_detail(board, config_html: str) -> str:
 </div>
 """
 
-
 def render_report(score: ScoreBreakdown, mode: Mode,
                    last_confirmed_at: float | None, theme: dict | None = None,
                    manifest=None, honor_interval_s: int | None = None,
@@ -380,31 +337,13 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                    evidence=None) -> str:
     """Render ScoreBreakdown to a self-contained HTML string.
 
-    Dashboard: total, point-in-time results, SLA status, and in ranked mode a
-    "last confirmed" stamp. Before the first engine response shows
-    "submitted — awaiting engine". Optional ``theme`` re-brands the masthead
-    and accent color; UP/DOWN colors stay semantic.
-
-    Honor mode is positive-only (CyberPatriot-style): only passed vulns
-    (display_title) and active penalties are listed; failed check_ids, categories,
-    reasons and awarded=0 rows are never surfaced. A live JS countdown shows
-    time until the next re-grade (honor_interval_s, default 60s) or next
-    ranked check-in (next_checkin_s), embedded as a render-time remainder
-    (seconds from page load) so a stale file reads 00:00 instead of counting
-    down from a long-dead target. ``score_delta`` (this run's total minus the
-    previous run's, from agent/notify.py) adds a transient up/down banner.
-
-    Ranked mode additionally opens with an event bar (time left in the run +
-    live scoreboard position, from the engine's check-in response) and splits
-    the detail into two tabs: the positive-only configuration/forensics board
-    (same spoiler contract as honor) and scored service uptime with its recent
-    tick history. No per-check result table exists in either mode.
-
-    ``evidence`` (the collection the score was computed from) lights up the
-    forensics card's submitted/not-correct states; omit it when the score's
-    evidence is not the one in hand (e.g. a redacted engine response paired
-    with fresh local evidence).
-    """
+    Positive-only in BOTH modes: only passed vulns and incurred penalties are
+    named; no per-check table, failed check ids/reasons/awarded=0 rows never
+    surface (spoiler contract, §13). Countdowns are embedded as render-time
+    remainders so a stale file reads 00:00 instead of counting down from a
+    dead target. Ranked adds the event bar (clock + position) and the uptime
+    tab. theme re-brands; score_delta a transient banner; evidence lights the
+    forensics submitted/not-correct states."""
     theme = theme or {}
     mode_label = html.escape(mode.value if hasattr(mode, "value") else str(mode))
 
@@ -422,7 +361,6 @@ def render_report(score: ScoreBreakdown, mode: Mode,
     body_suffix_html = ""
 
     if awaiting_engine:
-        # Ranked box with no engine response yet: no score table, no total.
         body_main = (
             '<div class="pending">submitted &mdash; awaiting engine</div>'
         )
@@ -431,7 +369,6 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             body_main = _render_delta_banner(score_delta) + _render_honor_board(
                 score, manifest, evidence
             )
-            # Countdown target: computed_at + honor interval
             interval = honor_interval_s if honor_interval_s is not None else _HONOR_INTERVAL_S
             try:
                 interval = int(interval)
@@ -442,10 +379,8 @@ def render_report(score: ScoreBreakdown, mode: Mode,
             target_epoch = float(score.computed_at) + interval
             body_suffix_html = countdown_script(target_epoch, time.time())
         else:
-            # Ranked is positive-only in the configuration/forensics tab,
-            # exactly like honor: the engine has already filtered failed
-            # zero-point checks, and the board only names fixed vulns and
-            # incurred penalties. Never render the per-check result table.
+            # Ranked is positive-only too: never render the per-check result
+            # table — a failed check row is the answer key.
             _rb = board_mod.build_board(score, manifest, evidence)
             config_html = _render_config_cards(_rb)
             stamp_html = ""
@@ -455,7 +390,6 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                     f'{html.escape(_fmt_time(last_confirmed_at))} '
                     '&mdash; this is the engine\'s authoritative score.</p>'
                 )
-            # Ranked countdown if next_checkin_s known, otherwise no countdown
             rank_countdown_block = ""
             rank_countdown_script = ""
             if next_checkin_s is not None and last_confirmed_at is not None:
@@ -471,8 +405,6 @@ def render_report(score: ScoreBreakdown, mode: Mode,
                     target_epoch = None
             else:
                 target_epoch = None
-            # Ranked opens with the event clock + board position, then the
-            # total, then the two-tab detail (config/forensics vs uptime).
             event_bar_html, event_countdown_script = _render_event_bar(
                 rank, rank_total, run_ends_at, last_confirmed_at)
             dq_html = ('<div class="dq-banner" role="alert">DISQUALIFIED — '

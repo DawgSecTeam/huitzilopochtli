@@ -1,26 +1,13 @@
-"""Cross-file consistency checks for a practice box.
-
-boxbuilder deliberately does not pair vulns with checks: the author writes both
-halves. This is the mechanical half of that discipline — it proves the two
-halves still agree, so a box cannot ship a planted finding that nothing scores
-(the classic silent failure: a hand-typed path drifts between ``nakon.json``
-and the scenario's ``collect`` params and the check either never passes or
-passes for free).
-
-Three severities:
-
-``error``    a planted value is scored nowhere. The finding is ungradeable.
-``error``    the build inputs do not validate for either target.
-``warning``  a scored path that nothing plants (often legitimate: environment
-             facts like /etc/shadow), an asset the theme references is missing,
-             or a configuration that only exists in the remote catalog.
+"""Cross-file consistency checks for a practice box: the mechanical half of
+the plant<->check pairing the author owns (a drifted path makes a check never
+pass, or pass for free). Severities: `error` = a planted value scored
+nowhere, or inputs that don't validate; `warning` = a scored path nothing
+plants, a missing theme asset, or a catalog-only config.
 """
 import json
 import os
 import re
 
-# Var-name suffixes whose values identify something on the box (a path, a file,
-# an account, a unit) and must therefore appear in the paired check.
 _IDENTIFYING_SUFFIXES = (
     "_PATH", "_FILE", "_DIR", "_NAME", "_USER", "_USERNAME", "_ACCOUNT",
     "_SERVICE", "_UNIT", "_DROPIN", "_LINE", "_TARGET", "_BINARY", "_LIB",
@@ -34,13 +21,10 @@ _IGNORED_VAR_PARTS = (
     "PORT", "COUNT", "SLEEP", "INTERVAL", "B64", "CERT", "EXTRA_LINE",
 )
 
-# A var whose value is the planted artefact itself: a drift here is always a
-# bug (the check reads a path the plant no longer writes).
 _PRIMARY_PATH_KEYS = frozenset({"FILE_PATH", "DIR", "TARGET_FILE", "LIB_PATH"})
 
 _MAX_IDENTIFIER_LEN = 200
 
-# Values that are too generic to prove a pairing.
 _GENERIC_VALUES = frozenset({
     "root", "admin", "linux", "ubuntu", "windows", "yes", "no", "true", "false",
     "www-data", "nobody",
@@ -59,12 +43,9 @@ def _looks_identifying(key: str, value: str) -> bool:
         return True
     if value.isdigit() or value.replace(".", "").isdigit():
         return False
-        return False
     upper = key.upper()
     if any(part in upper for part in _IGNORED_VAR_PARTS):
         return False
-    # An absolute path is the strongest identifier there is: it is what the
-    # paired check reads, and what historically drifted between the two files.
     if value.startswith("/") or (len(value) > 2 and value[1] == ":" and value[2] in "\\/"):
         return True
     if " " in value:
@@ -118,8 +99,8 @@ def _mentioned(value: str, blobs: list) -> bool:
         return True
     is_path = needle.startswith("/") or (len(needle) > 2 and needle[1] == ":")
     if is_path:
-        # A check that scores a directory covers everything under it (removing
-        # the tree removes the file); a sibling path must not match.
+        # A check that scores a directory covers everything under it
+        # (removing the tree removes the file); a sibling path must not match.
         for ancestor in _ancestors(needle):
             pattern = re.compile(re.escape(ancestor) + r"(?![A-Za-z0-9._/-])")
             if any(pattern.search(blob) for _, blob in blobs):
@@ -156,16 +137,10 @@ def _forensics_blobs(spec) -> list:
     return blobs
 
 
-
 def _guard_covers(guard: str, token: str) -> bool:
-    """Whether a `requires` guard explains a scored token.
-
-    Both may carry shell variables (`/home/$u/Maildir` from a check's loop, or a concrete path from
-    the requires list). A `$var` segment is a wildcard on either side; the guard matches when its
-    segments line up with the token's first N segments, or when the paths are equal. That covers
-    "the guard names the directory the token lives in" and "the guard names the artefact itself" —
-    the two ways a requires-guarded check refers to prep-owned state.
-    """
+    """Whether a `requires` guard explains a scored token: segment-wise
+    prefix or equality match, with `$var` segments as wildcards on either
+    side."""
     def segments(value):
         return [s for s in value.strip().rstrip("/").split("/") if s]
 
@@ -184,11 +159,8 @@ def _guard_covers(guard: str, token: str) -> bool:
 
 
 def _catalog_errors(spec, nakon_dir: str = None) -> tuple:
-    """Ask nakon to validate the authored config against the catalog.
-
-    This is the only check that needs the network (nakon reads vulndb). It is
-    opted into with --catalog because a purely offline lint must stay usable.
-    """
+    """Ask nakon to validate the config against the catalog — the only
+    networked check, so it is opted into with --catalog."""
     import tempfile
 
     from boxbuilder import nakon
@@ -227,25 +199,16 @@ def _catalog_errors(spec, nakon_dir: str = None) -> tuple:
     return errors, warnings
 
 
-# A shipped collector script that prints a bare boolean is an on-box verdict:
-# the pass condition must live in the rubric (engine-side in ranked), not in
-# the signed manifest the player can read. See authoring/readme_lint.py and
-# architecture.md §2.4.
+# A collector echoing a bare boolean is an on-box verdict: the pass condition
+# must live in the rubric (engine-side in ranked), not in the manifest the
+# player can read. See architecture.md §2.4.
 _VERDICT_ECHO_RE = re.compile(r"\becho\s+(?:true|false|yes|no)\b", re.I)
 
 
 def _ranked_oracle_gates(spec) -> list:
-    """Ranked-only hard errors: the manifest must not be a local answer oracle.
-
-    Checks, for the ranked variant of the scenario (when it has one):
-    - no command_json/powershell_json collect script may compute a boolean
-      verdict (``echo true``/``echo false``) or pair it with an
-      equals/not_equals-on-``data`` matcher — collectors must emit raw facts
-      and the condition moves to a data_* rubric matcher;
-    - the handbook must be free of the tier-5 leaks (planted names, scored
-      end-state paraphrases, count reveals, prose fix instructions) — these
-      block the ranked compile already; lint surfaces them here too.
-    """
+    """Ranked-only hard errors: the manifest must not be a local answer
+    oracle. No boolean-verdict collect scripts (facts out, conditions in the
+    rubric), and no tier-5 handbook leaks (ranked compile already blocks)."""
     from common.scenario_record import merge_effective, ScenarioModeError
     from authoring.readme_lint import lint_readme
 
@@ -308,8 +271,6 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
             if "no ranked variant" in message or "cannot be built as an honor" in message:
                 continue
             if target == "ranked" and "unset environment variable" in message:
-                # Deployment secrets (a pool template) are not a consistency
-                # problem; the box lints fine, it just cannot be built here.
                 warnings.append(f"ranked build needs deployment env: {message}")
                 continue
             errors.append(f"{target}: {message}")
@@ -326,10 +287,6 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
         errors.append("duplicate check ids in the effective scenario")
 
     blobs = [(c.get("id"), _check_text(c)) for c in checks if isinstance(c, dict)]
-    # A check may declare `requires:` (binaries/absolute paths the agent must find before
-    # it will run the collect script; absent -> `unavailable`, 0 points). A requires-guarded
-    # check whose state nothing plants is guarded, not a free-points bug, so the reverse
-    # pass below reports it separately.
     requires_guards = {c.get("id"): list(c.get("requires") or [])
                        for c in checks if isinstance(c, dict)}
     evidence = blobs + _forensics_blobs(spec)
@@ -352,13 +309,7 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
                        if _looks_identifying(key, value)]
         planted.extend((name, key, value) for key, value in identifiers)
 
-        # A configuration is graded when at least one of the things it plants
-        # is named by a check. Supporting details (a payload path behind a unit,
-        # a share name behind a permission) need not appear themselves.
         if identifiers and not any(_mentioned(value, evidence) for _, value in identifiers):
-            # The seed may hardcode the artefact (a GPP file path, a share the
-            # check greps by content). Worth flagging, but it cannot be proven
-            # mechanically, so it does not fail the build.
             warnings.append(
                 f"{name}: planted {_describe(identifiers)} but no check or "
                 f"forensics question names any of it -- confirm this finding is used")
@@ -370,9 +321,9 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
                     f"check reads it (or its directory) and no forensics question "
                     f"asks about it")
 
-    # Reverse direction: a scored path under a writable data root that nothing
+    # Reverse pass: a scored path under a writable data root that nothing
     # plants. Restricted to those roots so environment facts (/etc/passwd,
-    # /etc/shadow, sshd_config) do not drown the report.
+    # /etc/shadow) don't drown the report.
     planted_values = {_normalise(value) for _, _, value in planted}
     said = set()
     for cid, blob in blobs:
@@ -388,8 +339,6 @@ def lint_box(spec, seed_dir: str = None, catalog: bool = False,
                 continue  # a bundled seed hardcodes this artefact
             guards = requires_guards.get(cid) or []
             if any(_guard_covers(g, token) for g in guards if g.startswith('/')):
-                # `requires` already makes this check fail closed when the state is absent, so
-                # this is prep-owned state that is graded honestly — an advisory, not a bug.
                 advisories.append(
                     f"{cid}: scores {token} — prep-owned, guarded by requires {guards} "
                     f"(reports unavailable when absent)")

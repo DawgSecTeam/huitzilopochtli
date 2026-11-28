@@ -1,20 +1,11 @@
 """Windows PlatformContext strategy. See architecture.md §9.3.
 
-Selected by agent.platform.detect when sys.platform == "win32". Mirrors the
-systemd/OpenRC contract: best-effort, never raises -- a failed query reads as
-False/(False, None) and the check-level evidence carries the error, so a
+Best-effort, never raises: a failed query reads as False/(False, None), so a
 collector problem can never look like a satisfied check (fail closed).
-
-Service state comes from CIM (Get-CimInstance Win32_Service): State maps to
-active (== "Running") and StartMode maps to enabled (== "Auto", which covers
-delayed-auto too; Manual/Disabled are not boot-started). Package presence
-scans the HKLM uninstall keys (64- then 32-bit view).
-
-Also hosts run_ps(), the shared stdlib-only PowerShell invocation used by the
-Windows branches of the check modules (user_group, process_state) and the
-powershell_json check. Output encoding is pinned to UTF-8 and captured text
-is decoded leniently; scripts must emit their own JSON when parsed output is
-wanted.
+Service state via CIM: active == State "Running", enabled == StartMode
+"Auto" (delayed-auto included; Manual/Disabled are not boot-started).
+Also hosts run_ps(), the shared stdlib-only PowerShell invocation (UTF-8
+pinned; scripts emit their own JSON).
 """
 import json
 import subprocess

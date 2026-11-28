@@ -1,18 +1,8 @@
-"""Markdown -> standalone themed HTML page for the box README.
-
-Authored scenarios keep `theme.readme` as a plain Markdown file; boxbuilder runs
-this at build time and uploads the rendered page as the `theme-readme` attachment,
-so the Desktop gets a `README.html` that shares the score report's visual language
-by importing agent/report_page.py (pure stdlib, so safe to import at build time)
-instead of mirroring a second CSS copy. Build-machine only -- the on-box agent
-stays pure-consumer and never renders anything.
-
-`markdown_to_html` intentionally supports only the small Markdown subset the
-READMEs actually use: #/##/### headings, paragraphs, `-`/`*` bullets, `1.`
-ordered lists, fenced ``` code blocks, `---` rules, and inline `**bold**`,
-`*italic*`, `` `code` ``, `[text](url)`. Everything is HTML-escaped *before*
-markup is applied, so author text can never inject raw HTML, and link hrefs
-are limited to http(s)/mailto/relative URLs (no `javascript:`/`data:`).
+"""Markdown -> standalone themed HTML page for the box README, rendered at
+build time and uploaded as the `theme-readme` attachment (build-machine
+only; the agent never renders). Supports only the small Markdown subset the
+READMEs use; everything is HTML-escaped *before* markup is applied, and
+hrefs are limited to http(s)/mailto/relative URLs.
 """
 import html
 import re
@@ -49,8 +39,8 @@ def _link(m):
 
 
 def _inline(text: str) -> str:
-    # Escape first, then layer markup on the escaped text. Code spans are stashed
-    # behind placeholders so bold/link markup never touches their contents.
+    # Code spans are stashed behind placeholders first, so bold/link markup
+    # never touches their contents.
     esc = html.escape(text)
     codes = []
 
@@ -63,9 +53,6 @@ def _inline(text: str) -> str:
 
     esc = _CODE_RE.sub(_stash, esc)
     esc = _BOLD_RE.sub(r"<strong>\1</strong>", esc)
-    # Italic after bold: the ** pass has consumed every double-asterisk run,
-    # so a surviving single-* pair is emphasis. No-line-crossing keeps stray
-    # bullet/list asterisks (already stripped at the line level) irrelevant.
     esc = _EM_RE.sub(r"<em>\1</em>", esc)
     esc = _LINK_RE.sub(_link, esc)
     return re.sub("\x00(\\d+)\x00", _unstash, esc)
@@ -154,12 +141,9 @@ def markdown_to_html(md_text: str) -> str:
 
 def render_readme_page(md_text: str, theme: dict | None = None,
                        logo_b64: str | None = None) -> str:
-    """Render Markdown to a self-contained themed HTML page string.
-
-    `theme` is the scenario's theme dict; `title`/`organization`/`accent` brand the
-    masthead (accent validated by agent.report_page.accent_css) and `logo_b64` --
-    pre-encoded by the caller -- is embedded as a data: URI.
-    """
+    """Markdown -> self-contained themed HTML page string; `theme` brands the
+    masthead (accent validated upstream, logo_b64 pre-encoded by the
+    caller)."""
     theme = theme or {}
     title = str(theme.get("title") or "README")
     organization = theme.get("organization")

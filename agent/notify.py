@@ -1,23 +1,8 @@
-"""Score-change alerts: sound + desktop notification (CyberPatriot parity).
-
-The scoring engine never calls into this module -- scoring stays a pure
-function of (evidence, rubric, clock) (§2.1). After a run produces a new
-total, `consume_delta` diffs it against the persisted baseline from the
-previous run and `announce` makes noise about the change:
-
-    gain  -> the points-gained chime + a normal-urgency toast
-    loss  -> the penalty alarm + a critical-urgency toast
-
-The agent runs as root on a headless-ish box; reaching the *desktop
-user's* PulseAudio/session bus means dropping to them with sudo -u plus
-their XDG_RUNTIME_DIR, the same real-session pattern as
-boxes/shared/fix-xubuntu-vnc-display.sh. Everything here is best-effort
-(§9.1): a box with no sound stack or notification daemon still scores
-and reports -- announce never raises.
-
-Pure stdlib; agent.sounds carries the embedded WAV bytes so the zipapp
-needs no data-file loading.
-"""
+"""Score-change alerts: sound + desktop notification. Best-effort (§9.1):
+announce never raises — a run never stalls on cosmetics. Scoring never
+calls into this module (§2.1). Reaching the desktop user's session bus
+means sudo -u with their XDG_RUNTIME_DIR (_as_user); the chime WAVs are
+embedded in agent.sounds for the zipapp."""
 import json
 import os
 import subprocess
@@ -29,12 +14,8 @@ import agent.sounds
 _IS_WINDOWS = os.name == "nt"
 
 _STATE_FILENAME = "score_state.json"
-# alarm.wav is ~5s; let playback start and finish with headroom.
 _PLAY_TIMEOUT_S = 12.0
 _NOTIFY_TIMEOUT_S = 5.0
-
-
-# --- score baseline ---------------------------------------------------------
 
 def state_path_for(report_path: str) -> str:
     """Baseline file lives next to the cached report (same install dir)."""
@@ -42,12 +23,9 @@ def state_path_for(report_path: str) -> str:
         os.path.dirname(os.path.abspath(report_path)), _STATE_FILENAME
     )
 
-
 def _load_state(path: str) -> dict | None:
     """Return {'total': int, 'scenario_version': int|str} or None if
-    absent/bad. scenario_version is an int in the schema (§6.4) and that is
-    what both call sites pass; str is still accepted so state files written
-    by any other tooling keep comparing."""
+    absent/bad. schema says int (§6.4); str tolerated for foreign writers."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -62,7 +40,6 @@ def _load_state(path: str) -> dict | None:
     if isinstance(version, bool) or not isinstance(version, (int, str)):
         return None
     return {"total": total, "scenario_version": version}
-
 
 def _write_state(path: str, total: int, scenario_version: str) -> None:
     tmp = path + ".tmp"
@@ -82,32 +59,24 @@ def _write_state(path: str, total: int, scenario_version: str) -> None:
         except OSError:
             pass
 
-
 def peek_delta(state_path: str, total: int, scenario_version) -> int | None:
     """Return the change versus the baseline WITHOUT persisting the new total.
 
-    Publication code calls this before writing the report/snapshot and only
-    calls record_score() after they succeed, so a failed write cannot consume
-    the notification or advance the baseline.
-    """
+    Callers peek before publishing and record_score only after — a failed
+    write must not consume the notification or advance the baseline."""
     state = _load_state(state_path)
     if state is not None and state["scenario_version"] == scenario_version:
         return total - state["total"]
     return None
 
-
 def record_score(state_path: str, total: int, scenario_version) -> None:
     _write_state(state_path, total, scenario_version)
-
 
 def consume_delta(state_path: str, total: int, scenario_version: str) -> int | None:
     """Diff and persist in one step (kept for callers/tests that want it)."""
     delta = peek_delta(state_path, total, scenario_version)
     record_score(state_path, total, scenario_version)
     return delta
-
-
-# --- desktop session discovery ----------------------------------------------
 
 def _real_users():
     """All real interactive accounts (same heuristic as sync-report.sh:
@@ -126,12 +95,9 @@ def _real_users():
         users.append((entry.pw_name, entry.pw_uid))
     return users
 
-
 def _live_sessions():
-    """Real users with a running systemd user bus -- i.e. a live login whose
-    PulseAudio/notifyd we can actually reach. Falls back to the first real
-    user when none has one (best effort: sudo -u into a dead session is a
-    no-op, but trying costs nothing)."""
+    """Real users with a live systemd user bus (reachable session). Falls
+    back to the first real user — trying a dead session costs nothing."""
     users = _real_users()
     live = [
         (name, uid) for name, uid in users
@@ -139,21 +105,15 @@ def _live_sessions():
     ]
     return live or users[:1]
 
-
-# --- best-effort sound + toast ----------------------------------------------
-
 def _run(cmd: list, timeout: float) -> bool:
     try:
         proc = subprocess.run(
             cmd, timeout=timeout, check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        # A clean exit with a failure status (no session bus, dead audio
-        # stack, ...) is a failure -- the caller's fallbacks must run.
         return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
-
 
 def _as_user(user: str, uid: int, argv: list) -> list:
     """Run argv inside the user's live session (their runtime dir + session
@@ -165,15 +125,12 @@ def _as_user(user: str, uid: int, argv: list) -> list:
         *argv,
     ]
 
-
 def _extract_sound(kind: str) -> str | None:
-    """Write the embedded WAV to a fresh world-readable temp file for the
-    desktop user's player; the caller deletes it after playback.
+    """Write the embedded WAV to a fresh world-readable /tmp file.
 
-    We run as root and /tmp is world-writable, so the name must not be
-    predictable: a fixed path lets a local user pre-plant a symlink (or
-    their own file) there and redirect root's write + chmod onto any file.
-    mkstemp picks a random name and creates it O_EXCL|O_NOFOLLOW."""
+    Root + world-writable /tmp: a predictable name lets a local user
+    pre-plant a symlink and redirect root's write/chmod. mkstemp is
+    random + O_EXCL."""
     try:
         fd, path = tempfile.mkstemp(prefix=f"huitz-{kind}-", suffix=".wav",
                                     dir="/tmp")
@@ -191,13 +148,11 @@ def _extract_sound(kind: str) -> str | None:
         _unlink_quietly(path)
         return None
 
-
 def _unlink_quietly(path: str) -> None:
     try:
         os.unlink(path)
     except OSError:
         pass
-
 
 def _play_sound(kind: str, user: str | None, uid: int | None) -> None:
     path = _extract_sound(kind)
@@ -208,18 +163,13 @@ def _play_sound(kind: str, user: str | None, uid: int | None) -> None:
     finally:
         _unlink_quietly(path)
 
-
 def _play_file(path: str, user: str | None, uid: int | None) -> None:
     if user is not None:
-        # PulseAudio first (session volume/routing), then bare ALSA as the
-        # user, then bare ALSA as root -- aplay exists on every Xubuntu
-        # image, paplay usually; any single success is enough.
         if _run(_as_user(user, uid, ["paplay", path]), _PLAY_TIMEOUT_S):
             return
         if _run(_as_user(user, uid, ["aplay", "-q", path]), _PLAY_TIMEOUT_S):
             return
     _run(["aplay", "-q", path], _PLAY_TIMEOUT_S)
-
 
 def _notify(summary: str, body: str, urgency: str,
             user: str, uid: int) -> None:
@@ -240,7 +190,6 @@ def _notify(summary: str, body: str, urgency: str,
     ]
     _run(_as_user(user, uid, dbus_argv), _NOTIFY_TIMEOUT_S)
 
-
 def _copy(delta: int, total: int, title: str) -> tuple[str, str, str]:
     """(summary, body, urgency) for the notification."""
     title = title or "Scoring engine"
@@ -256,7 +205,6 @@ def _copy(delta: int, total: int, title: str) -> tuple[str, str, str]:
         f"introduced. Score is now {total}.",
         "critical",
     )
-
 
 def announce(delta: int, total: int, title: str = "",
              enabled: bool = True) -> None:
@@ -280,9 +228,6 @@ def announce(delta: int, total: int, title: str = "",
     except Exception as e:  # noqa: BLE001 — cosmetics must never stall a run
         print(f"WARNING: score-change notification failed: {e}", file=sys.stderr)
 
-
-# --- windows: winsound + best-effort toast -----------------------------------
-
 def _announce_windows(kind: str, summary: str, body: str) -> None:
     """Sound via winsound (plays the embedded WAV bytes directly -- no temp
     file, stdlib), then a best-effort toast through the Windows Runtime
@@ -304,15 +249,10 @@ def _announce_windows(kind: str, summary: str, body: str) -> None:
     except Exception as e:
         print(f"WARNING: windows toast failed: {e}", file=sys.stderr)
 
-
 def _ps_escape(text: str) -> str:
     """Single-quote escaping for string literals inside PowerShell snippets."""
     return "'" + text.replace("'", "''") + "'"
 
-
-# PowerShell's WinRT toast: text lines via the standard ToastText02 template.
-# Uses the PowerShell exe's own AppUserModelID (a registered AppId on stock
-# Windows) as the toast origin so no helper module needs installing.
 _WINDOWS_TOAST_TEMPLATE = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]

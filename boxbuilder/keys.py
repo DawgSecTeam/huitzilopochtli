@@ -1,21 +1,8 @@
-"""Authoring keypair handling for boxbuilder.
-
-compile_scenario (authoring/compile.py:96) requires authoring_private_key:
-bytes. Policy here:
-
-  - if a key path is supplied, load it (hex-encoded 32-byte Ed25519 seed);
-  - else generate one (common.crypto.signing.keypair()), persist it to the
-    artifacts dir as `authoring.key` (mode 0600) so a box rebuilds with a
-    stable manifest signature.
-
-Key custody stays with the build (author/CI), never on the box -- matching
-the invariant noted at compile.py:111-115. The .key file is gitignored at
-the repo root (*.key pattern added alongside this module).
-
-On-disk format: 64 hex characters (lowercase) encoding the 32-byte seed. Hex
-is used -- not raw bytes -- because a raw 32-byte seed may itself end in a
-whitespace byte (\\n/\\t/space), which makes a naive bytes.strip() corrupt the
-key. Hex is text, so strip() is safe, and the file is human-readable/editable.
+"""Authoring keypair handling: load the hex-encoded 32-byte Ed25519 seed at
+a given path, or generate one and persist it (0600) in the artifacts dir so
+rebuilds keep a stable manifest signature. Key custody stays with the build
+machine, never on the box. Hex, not raw bytes: a raw seed can end in a
+whitespace byte, so a naive strip() would corrupt it.
 """
 import os
 from typing import Optional
@@ -28,20 +15,15 @@ _KEY_FILE = "authoring.key"
 def load_authoring_key(
     key_path: Optional[str], artifacts_dir: str
 ) -> tuple:
-    """Return (private_key_bytes, key_path_used).
-
-    If `key_path` is given and exists, load it. If given but missing, that is
-    an error (the caller asked for a specific file). If None, generate a new
-    keypair and persist it under `artifacts_dir/authoring.key` so subsequent
-    rebuilds of the same box stay signature-stable.
-    """
+    """Return (private_key_bytes, key_path_used). A given-but-missing path is
+    an error; None generates + persists authoring.key in artifacts_dir so
+    rebuilds stay signature-stable."""
     if key_path is not None:
         if not os.path.isfile(key_path):
             raise FileNotFoundError(f"authoring key not found: {key_path}")
         priv = _read_key(key_path)
         return priv, key_path
 
-    # Auto-generate + persist into the artifacts dir.
     os.makedirs(artifacts_dir, exist_ok=True)
     path = os.path.join(artifacts_dir, _KEY_FILE)
     if os.path.isfile(path):
@@ -76,8 +58,8 @@ def _read_key(path: str) -> bytes:
 
 def _write_key(path: str, priv: bytes) -> None:
     # Atomic temp-file + rename, then lock down perms. 0600 because this
-    # signs manifests; a leaked key lets an attacker forge manifests for any
-    # box trusting the matching public key.
+    # signs manifests; a leaked key lets an attacker forge manifests for
+    # any box trusting the matching public key.
     import tempfile
     directory = os.path.dirname(os.path.abspath(path)) or "."
     fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".huitz-key-")

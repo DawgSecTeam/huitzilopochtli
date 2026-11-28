@@ -1,35 +1,23 @@
-"""Score-board derivation — one implementation, every renderer.
+"""Score-board derivation — one implementation shared by every renderer.
 
-The player-facing views (HTML report, `huitz` terminal UI, report.json
-snapshot) all present the same derived facts: which vulnerabilities are
-fixed, which penalties are active, how the forensics questions stand, and
-how far along the scenario the team is. This module derives those facts
-once from (ScoreBreakdown, manifest) so the renderers cannot drift — the
-same reason agent/report_page.py exists for the two HTML pages.
-
-Pure and I/O-free. Accepts both dataclass manifests and raw dicts (the
-same duck typing reporter.py has always used, so engine-side callers can
-pass parsed JSON). The honor board is CyberPatriot-style positive-only:
-failed checks are never identified, only counted ("N issue(s) remain").
-"""
+Pure, I/O-free; accepts dataclass or dict manifests. The honor board is
+positive-only: failed checks are never identified, only counted — the
+renderers cannot drift, and cannot leak an oracle either."""
 from dataclasses import dataclass, field
 
 from agent.report_page import ACCENT_RE
 from common.matchers import normalize_answer
 from common.schema import SLA_HISTORY_MAX
 
-
 @dataclass
 class FixedVuln:
     title: str
     points: int
 
-
 @dataclass
 class ActivePenalty:
     title: str
     points: int
-
 
 @dataclass
 class ForensicsEntry:
@@ -40,14 +28,8 @@ class ForensicsEntry:
     answers_path: str = ""          # resolved by agent/__main__._prepare_forensics
     answered: bool = False          # results say this question earned its points
     points: int = 0                 # awarded on the last grade (0 when unanswered)
-    # A non-blank answer was collected (evidence) — true for correct AND
-    # incorrect submissions; only `answered` means points were earned. With
-    # `graded` (a scoring result exists) it renders as the answered-but-not-
-    # correct warning; without a result (ranked live: the engine withholds
-    # per-question forensics results) it renders as a neutral "submitted".
-    submitted: bool = False
-    graded: bool = False
-
+    submitted: bool = False         # non-blank answer collected, correct or not
+    graded: bool = False            # a scoring result for it exists
 
 @dataclass
 class ServiceEntry:
@@ -56,7 +38,6 @@ class ServiceEntry:
     state: str                      # "UP" | "DOWN" | "" (pre-first-tick)
     accrued_points: int
     history: list = field(default_factory=list)  # list[str], oldest -> newest
-
 
 @dataclass
 class Board:
@@ -75,19 +56,12 @@ class Board:
     forensics: list = field(default_factory=list)   # list[ForensicsEntry]
     forensics_earned: int = 0
     forensics_submitted: int = 0    # questions with a non-blank answer collected
-    # Ranked only: scored services with their current state + recent tick
-    # history, derived once from the engine's SlaStatus list.
-    services: list = field(default_factory=list)    # list[ServiceEntry]
+    services: list = field(default_factory=list)    # ranked only, from SlaStatus
     services_total: int = 0
     services_clean: int = 0
-    # Ranked only (None in honor mode): the engine scores
-    # total = point-in-time hardening + SLA accrual (engine/checkin.py), so a
-    # long run's total can far exceed max_possible. The split keeps the
-    # headline number honest in every renderer (round 6 finding 2).
     hardening_points: int | None = None
     service_points: int | None = None
     forensics_points: int | None = None
-
 
 def _manifest_checks(manifest) -> list:
     checks = getattr(manifest, "checks", None)
@@ -95,17 +69,12 @@ def _manifest_checks(manifest) -> list:
         checks = manifest.get("checks", [])
     return checks or []
 
-
 def ranked_split(total, sla_status, forensics_points=None) -> tuple:
     """(hardening, forensics, service) split of a ranked total.
 
-    The engine scores ``final_total = hardening_total + sla_accrued_total``
-    (engine/checkin.py) and sends the box the final total plus each service's
-    accrual — so the box re-derives the exact same split from data it already
-    carries. ``forensics_points`` is the engine's own aggregate for the
-    answer_equals checks when it reports one (§11.4); it is carved out of the
-    hardening share, keeping ``hardening + forensics + service == total``.
-    """
+    The box re-derives the engine's own split (total + per-service accrual)
+    from data it already carries; forensics is carved from hardening, so the
+    three always sum to total (§11.4)."""
     service = 0
     for s in (sla_status or []):
         accrued = (s.accrued_points if hasattr(s, "accrued_points")
@@ -114,18 +83,15 @@ def ranked_split(total, sla_status, forensics_points=None) -> tuple:
     forensics = max(0, int(forensics_points or 0))
     return int(total) - service - forensics, forensics, service
 
-
 def _check_field(check, name, default=None):
     if isinstance(check, dict):
         return check.get(name, default)
     return getattr(check, name, default)
 
-
 def _sla_field(entry, name, default=None):
     if isinstance(entry, dict):
         return entry.get(name, default)
     return getattr(entry, name, default)
-
 
 def _sla_history(entry) -> list:
     """Normalized oldest->newest UP/DOWN ring (legacy engines: [])."""
@@ -135,10 +101,8 @@ def _sla_history(entry) -> list:
     states = [str(item).upper() for item in raw]
     return [state for state in states if state in ("UP", "DOWN")][-SLA_HISTORY_MAX:]
 
-
 def _category_str(value) -> str:
     return value.value if hasattr(value, "value") else str(value or "")
-
 
 def _manifest_forensics(manifest) -> list:
     """[{id, question, max_points}] from the manifest's forensics block."""
@@ -163,18 +127,10 @@ def _manifest_forensics(manifest) -> list:
             })
     return out
 
-
 def _submitted_answers(evidence) -> dict:
-    """{check_id: submitted_bool} from collected evidence (duck-typed).
-
-    A question counts as submitted when its forensics_answer evidence carries
-    a non-blank answer — the same normalization `answer_equals` scores
-    against, so a blank line, whitespace, or the untouched underscore
-    placeholder read as unanswered here exactly as they score. Callers that
-    hold the evidence they just collected (honor grade, ranked loop) pass it
-    so the boards can warn on answered-but-not-correct; callers rendering a
-    redacted engine response pass nothing and get today's behavior.
-    """
+    """{check_id: submitted_bool} from collected evidence: non-blank under
+    the same normalize_answer() answer_equals scores, so "submitted" here
+    means submitted to the scorer. Empty evidence (redacted views) → {}."""
     out = {}
     for e in evidence or []:
         if isinstance(e, dict):
@@ -191,23 +147,12 @@ def _submitted_answers(evidence) -> dict:
         )
     return out
 
-
 def build_board(score, manifest, evidence=None) -> Board:
     """Derive the player-facing board from a scoring result + manifest.
 
-    Splitting this from rendering is what lets the HTML report, the huitz
-    CLI, and the report.json snapshot stay in lockstep (§13): one derivation,
-    three presentations, and the unit tests pin each number once.
-
-    `evidence` (the list the score was computed from) is optional but should
-    be passed whenever the caller holds it: it is what lets a forensics
-    question show "submitted but not correct" instead of wearing the same
-    muted 0-points face as an unanswered one. The not-correct warning fires
-    only when the score also carries a failed result for the question, so
-    evidence newer than the score it is paired with (ranked retry after a
-    lost response) degrades to the neutral "submitted" state, never to a
-    false "not correct".
-    """
+    Pass `evidence` (what the score was computed from) when the caller holds
+    it: it enables "submitted but not correct" — never a false warning when
+    evidence is newer than the score (§13)."""
     manifest = manifest or {}
     theme = getattr(manifest, "theme", None)
     if theme is None and isinstance(manifest, dict):
@@ -230,32 +175,24 @@ def build_board(score, manifest, evidence=None) -> Board:
     forensics_ids = {f["id"] for f in forensics_meta}
     results_by_id = {r.check_id: r for r in (score.results or [])}
 
-    # --- fixed vulnerabilities + active penalties ---------------------------
     fixed = []
     penalties = []
     for r in score.results or []:
         cat = _category_str(r.category)
-        # Ranked manifests ship generic display titles; the engine sends the
-        # real wording only for results the box may see (passed / incurred
-        # penalties), so prefer it when present.
         title = (getattr(r, "title", "") or "") or \
             (lookup.get(r.check_id, {}) or {}).get("display_title") or r.check_id
         if cat == "vuln":
-            # Only surfaced once passed; failed vulns stay anonymous. Do not
-            # filter on awarded_points: a zero-point VULN (legacy artifact or
-            # an author mistake) still counts as fixed, otherwise progress can
-            # never reach 100% while the check remains in vulns_total.
+            # Filter on passed, NOT awarded_points: a 0-point vuln still counts
+            # as fixed, or progress can never reach 100%. Failed vulns stay
+            # anonymous (positive-only board).
             if r.passed and r.check_id not in forensics_ids:
                 fixed.append(FixedVuln(title=title, points=r.awarded_points))
         else:
-            # penalty / prohibited: surface only when actually incurred.
-            if r.awarded_points != 0:
+            if r.awarded_points != 0:  # penalties are negative: != 0, not > 0
                 penalties.append(ActivePenalty(title=title, points=r.awarded_points))
 
-    # --- progress accounting -------------------------------------------------
-    # Denominators come from the manifest when available (results only ever
-    # carry the checks that ran); SLA entries are engine-scored and never in
-    # results, and penalty/prohibited checks add nothing to the earnable max.
+    # Manifest denominators (results only carry checks that ran; SLA entries
+    # are engine-scored and never in results).
     vulns_total = 0
     max_possible = 0
     for cid, info in lookup.items():
@@ -265,7 +202,6 @@ def build_board(score, manifest, evidence=None) -> Board:
             vulns_total += 1
             max_possible += int(info["display_max_points"] or 0)
     if not lookup:
-        # No manifest: fall back to what the results themselves show.
         vulns_total = sum(
             1 for r in score.results or []
             if _category_str(r.category) == "vuln" and r.check_id not in forensics_ids
@@ -284,12 +220,10 @@ def build_board(score, manifest, evidence=None) -> Board:
             pct = int((vulns_fixed / vulns_total * 100) if vulns_total else 0)
     pct = max(0, min(100, pct))
 
-    # --- forensics ------------------------------------------------------------
     submitted_by_id = _submitted_answers(evidence)
     forensics = []
     for f in forensics_meta:
         r = results_by_id.get(f["id"])
-        # Ordinal + answers path live on the forensics_answer CheckSpec.
         spec_info = next(
             (info for cid, info in lookup.items()
              if cid == f["id"] and info["collect_params"]),
@@ -313,10 +247,8 @@ def build_board(score, manifest, evidence=None) -> Board:
     accent = theme.get("accent")
     accent = str(accent) if accent and ACCENT_RE.match(str(accent)) else None
 
-    # Ranked only: expose the hardening/service split so the headline total
-    # can never be mistaken for progress against max_possible. Honor runs get
-    # None (their total IS the hardening score); `sla_status` is empty in
-    # honor mode by construction (§9), so its presence identifies ranked.
+    # Honor gets None (its total IS the hardening score); a non-empty
+    # sla_status identifies ranked (§9) and splits the headline.
     hardening_points = service_points = None
     forensics_points = getattr(score, "forensics_points", None)
     sla_status = getattr(score, "sla_status", None) or []

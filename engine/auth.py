@@ -1,9 +1,4 @@
-"""Admin authentication: HTTP Basic login -> server-side session + CSRF.
-
-The engine itself is stdlib-only; this avoids an external identity provider
-for the first round. Cloudflare Tunnel/Access can sit in front later without
-changing these routes.
-"""
+"""Admin authentication: HTTP Basic login -> server-side session + CSRF."""
 import base64
 import hashlib
 import hmac

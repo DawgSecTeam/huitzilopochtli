@@ -1,27 +1,8 @@
 """Post-install verification and pre-seal cleanup.
 
-The deploy loop has two human-judgement steps that used to live only in prose:
-"is this box actually in the state I think it is?" and "is this box clean
-enough to seal?". Both are mechanical, so boxbuilder does them.
-
-Verification is split in two:
-
-* ``collect_facts`` talks to the box once and returns a plain dict of facts
-  (files, hashes, unit state, report, per-user artifacts). It makes no
-  judgements.
-* ``evaluate`` turns facts plus expectations into a list of :class:`Check`
-  results. It touches nothing remote, so every rule is unit-testable from a
-  fixture dict.
-
-``SEAL_CHECKS`` / ``prepare_seal`` handle the irreversible half: stopping the
-agent, removing per-player state, truncating ``/etc/machine-id`` and telling
-the operator the remaining manual steps. ``seal-prepare`` refuses to run
-unless verification passes (``--skip-verify`` overrides).
-
-Nothing here is box-specific: expectations come from the spec (mode, scenario
-theme) and from ``build-state.json`` (the manifest and key hashes compile
-recorded).
-"""
+``collect_facts`` talks to the box once and returns raw facts; ``evaluate``
+is a pure function of (facts, expectations), unit-testable from a fixture;
+``prepare_seal`` refuses to run unless verification passes."""
 import hashlib
 import json
 import os
@@ -36,12 +17,9 @@ FAIL = "fail"
 WARN = "warn"
 SKIP = "skip"
 
-# Files every install places under the sealed install dir.
 REQUIRED_FILES = ("agent.pyz", "manifest.signed.json",
                   "authoring_public_key.b64", "agent_config.json")
 
-# Journal lines that mean the agent is crash-looping. The agent logs its own
-# handled errors, so a traceback or an unhandled exception is the signal.
 _CRASH_MARKERS = ("Traceback (most recent call last)", "Unhandled exception",
                   "FATAL")
 
@@ -73,7 +51,6 @@ class Expectations:
     scenario_name: Optional[str] = None
 
 
-# --- facts -----------------------------------------------------------------
 
 def _sha256_local(path: str) -> Optional[str]:
     try:
@@ -226,12 +203,9 @@ def collect_facts(handle, spec, artifacts_dir: str = "artifacts") -> dict:
 
 
 def _desktop_pixels(handle) -> Optional[int]:
-    """Bytes captured from the live X root window, or None when unmeasurable.
-
-    This is the only check that proves the desktop actually paints: a VNC
-    console can show a live cursor over a black framebuffer. `xwd` capture
-    bypasses the VNC layer entirely.
-    """
+    """Bytes from the live X root window, or None when unmeasurable. The
+    only proof the desktop actually paints: xwd bypasses the VNC layer, so
+    a live cursor over a black framebuffer can't fake it."""
     res = handle.run("command -v xwd >/dev/null 2>&1 || exit 127; "
                      "DISPLAY=:0 timeout 10 xwd -root -silent 2>/dev/null | wc -c",
                      timeout=30)
@@ -244,15 +218,9 @@ def _desktop_pixels(handle) -> Optional[int]:
 
 
 def _collect_windows(handle, install_dir: str) -> dict:
-    """The subset of facts a Windows guest can report cheaply.
-
-    Player-facing state lives in shared locations on Windows (theme.py's
-    MIRROR_DIR_WINDOWS + the Public Desktop), so the Public mirror is probed
-    as the one artifact owner and reported as the synthetic "Public" user --
-    per-user homes have no mirrors to check. The wallpaper lands under
-    C:\\ProgramData\\huitz-theme (theme-wallpaper-win). What genuinely cannot
-    be measured stays skipped upstream: journal, machine-id, X framebuffer.
-    """
+    """The facts a Windows guest can report cheaply: shared locations (Public
+    Documents mirror, ProgramData wallpaper) as the synthetic "Public" user.
+    Journal / machine-id / X framebuffer stay skipped upstream."""
     ps = (
         f"$d='{install_dir}'; "
         f"if (Test-Path $d) {{ Get-ChildItem -LiteralPath $d -Force | "
@@ -348,7 +316,6 @@ def _collect_windows(handle, install_dir: str) -> dict:
     }
 
 
-# --- evaluation ------------------------------------------------------------
 
 def _check(check_id: str, ok: bool, detail: str, *, status_fail: str = FAIL) -> Check:
     return Check(check_id, PASS if ok else status_fail, detail)
@@ -360,14 +327,12 @@ def evaluate(facts: dict, exp: Expectations) -> list:
     present = set(facts.get("files") or [])
     is_win = facts.get("os") == "windows"
 
-    # 1. the install is complete
     missing = [name for name in REQUIRED_FILES if name not in present]
     checks.append(_check("install.files",
                          not missing,
                          "all required files present" if not missing
                          else f"missing: {', '.join(missing)}"))
 
-    # 2. honour ships the rubric on-box; ranked must never.
     has_rubric = artifacts_mod.RUBRIC_BASENAME in present
     if exp.mode == "honor":
         checks.append(_check("install.rubric", has_rubric,
@@ -378,7 +343,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
                              "no rubric on the box (ranked)"
                              if not has_rubric else "ranked box carries a rubric!"))
 
-    # 3. the box is running the build we verified locally
     expected = (exp.expected_manifest_sha or "").lower()
     got = (facts.get("manifest_sha") or "").lower()
     if not expected:
@@ -402,7 +366,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
                              f"on-box key {got_key[:12] or '(none)'} != "
                              f"lineage key {expected_key[:12]}"))
 
-    # 4. the agent is configured for the target we asked for
     cfg = facts.get("agent_config") or {}
     cfg_mode = cfg.get("mode")
     if not cfg:
@@ -427,7 +390,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
             checks.append(_check("config.rubric-path", bool(cfg.get("rubric_path")),
                                  f"rubric_path={cfg.get('rubric_path')!r}"))
 
-    # 5. init state matches the mode
     init = facts.get("init") or {}
     active = str(init.get("active") or "").strip().lower()
     if not is_win and active in ("", "unknown"):
@@ -436,17 +398,12 @@ def evaluate(facts: dict, exp: Expectations) -> list:
         checks.append(_check("init.state", active in ("inactive", "stopped", "ready", "disabled"),
                              f"unit is {active or 'absent'} (started by `huitz join`)"))
     else:
-        # A Windows scheduled task is the healthy steady state when Ready
-        # (Running = mid-grade); it never reports the systemd word "active".
+        # Windows tasks idle "Ready" between runs (Running = mid-grade),
+        # never the systemd word "active"; POSIX honor idles "inactive".
         enabled = str(init.get("enabled") or "").strip().lower()
         if is_win:
             healthy = active in ("ready", "running", "queued")
         elif exp.mode == "honor":
-            # Honor-mode's agent is a one-shot: it grades once and exits 0, so
-            # systemd reports "inactive (exited)" between timer runs (the unit
-            # has Restart=on-failure, which does not restart a clean exit). The
-            # timer-driving service being enabled and the timer itself active
-            # is the real health signal; "active" is only ranked's steady state.
             healthy = active in ("active", "inactive") and enabled == "enabled"
         else:
             healthy = active == "active"
@@ -463,7 +420,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
             checks.append(Check("init.timer", FAIL,
                                 "honor re-grade timer is active on a ranked box"))
 
-    # 6. the agent is not crash-looping
     journal = facts.get("journal")
     if not journal:
         checks.append(Check("agent.journal", SKIP, "no journal available"))
@@ -474,7 +430,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
                              "no tracebacks in the last 200 lines" if not hits
                              else f"{len(hits)} crash marker(s): {hits[0][:120]}"))
 
-    # 7. the report is the one this box should produce
     report = facts.get("report")
     if exp.competition:
         checks.append(Check("report.state", SKIP,
@@ -500,7 +455,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
             checks.append(_check("report.max", report["max_possible"] > 0,
                                  f"max_possible={report['max_possible']}"))
 
-    # 8. the player-facing mirrors exist
     per_user = facts.get("user_artifacts") or {}
     if exp.competition:
         checks.append(Check("report.mirror", SKIP, "no run yet"))
@@ -558,7 +512,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
     elif not is_win:
         checks.append(Check("theme.shortcuts", SKIP, "scenario has no theme shortcuts"))
 
-    # 10. the desktop actually paints
     pixels = facts.get("desktop_pixels")
     if pixels is None:
         checks.append(Check("desktop.renders", SKIP,
@@ -567,7 +520,6 @@ def evaluate(facts: dict, exp: Expectations) -> list:
         checks.append(_check("desktop.renders", pixels > 100_000,
                              f"framebuffer capture is {pixels} bytes"))
 
-    # 11. seal hygiene
     if exp.for_seal:
         machine_id = facts.get("machine_id")
         if machine_id is None:
@@ -598,7 +550,6 @@ def summarise(checks: list) -> dict:
                        for c in checks]}
 
 
-# --- expectations ----------------------------------------------------------
 
 def expectations_from(spec, artifacts_dir: str, *, competition: bool = False,
                        expect_total: Optional[int] = None,
@@ -624,7 +575,6 @@ def expectations_from(spec, artifacts_dir: str, *, competition: bool = False,
     )
 
 
-# --- seal ------------------------------------------------------------------
 
 @dataclass
 class SealStep:
@@ -633,7 +583,7 @@ class SealStep:
     detail: str
 
 
-def _seal_script(install_dir: str, mode: str) -> str:
+def _seal_script(install_dir: str) -> str:
     return f"""
 echo "##stop"
 if command -v systemctl >/dev/null 2>&1; then
@@ -669,10 +619,6 @@ def prepare_seal(handle, spec, artifacts_dir: str = "artifacts",
                  skip_verify: bool = False, expect_total: Optional[int] = None,
                  competition: bool = False, log=print) -> dict:
     """Remove per-player state and neutralize the box so it can be sealed."""
-    # The pre-seal gate must use the box's own expectations. Hardcoding
-    # competition here made an honor box unsealable: it demanded the very
-    # "unit stopped" state that seal-prepare itself is about to create (and
-    # skipped the report/mirror checks the box had just been verified for).
     exp = expectations_from(spec, artifacts_dir, competition=competition,
                              expect_total=expect_total, for_seal=True)
     verify_report = None
@@ -699,7 +645,7 @@ def prepare_seal(handle, spec, artifacts_dir: str = "artifacts",
                               (out.stdout or out.stderr).strip()[:200]))
         steps.append(SealStep("machine-id", "skipped", "Windows has no machine-id"))
     else:
-        sections = _parse_kv_sections(handle.run(_seal_script(install_dir, spec.mode)).stdout)
+        sections = _parse_kv_sections(handle.run(_seal_script(install_dir)).stdout)
         steps.append(SealStep("agent", "done" if sections.get("stop") == "ok" else "skipped",
                               "stopped and disabled" if sections.get("stop") == "ok"
                               else "no supported init system"))

@@ -50,11 +50,9 @@ def _agent_version_compatible(agent_version: str) -> bool:
 
 
 def _forensics_check_ids(rubric: Optional[Rubric]) -> set:
-    """The rubric's forensics check ids — its `answer_equals` entries.
-
-    Ids are the author's own string (the `fq-` prefix is convention, not
-    contract — nothing in the compiler or validator enforces it), so the
-    compiled matcher tag is the reliable discriminator.
+    """The rubric's forensics ids: its `answer_equals` entries. The `fq-` id
+    prefix is author convention, not contract — discriminate on the matcher
+    tag.
     """
     if rubric is None:
         return set()
@@ -113,8 +111,6 @@ def _redact_for_box(score, evidence_by_check_id: dict,
             continue  # a failed zero-point check is the answer key
         ev = evidence_by_check_id.get(result.check_id)
         result.reason = ev.reason if ev is not None and ev.reason else ""
-        # Ranked manifests ship generic display titles; the real wording may
-        # ride back only for results the box is already allowed to see.
         result.title = (titles or {}).get(result.check_id, "")
         visible.append(result)
     score.results = visible
@@ -250,12 +246,8 @@ def _run_over_message(grace_s: float) -> str:
 def _run_over_wall_directive(store: Store, box_id: str, player, now: float
                              ) -> Optional[Directive]:
     """The one run-over wall notice for this run, or None if already issued.
-
-    A deterministic event_id keeps it at-most-once per run: the check-in
-    that first sees an expired clock (``now >= ends_at``) issues the
-    directive the box walls with; a lost response is re-delivered through
-    the same at-least-once ``issued_directives`` re-send any directive gets,
-    and the agent's event_id dedup stops double execution.
+    A deterministic event_id keeps it at-most-once; a lost response is
+    re-delivered via the ``issued_directives`` re-send, never re-issued.
     """
     grace = claims.post_run_grace_s()
     event_id = f"run-over-{player.player_id}"
@@ -270,13 +262,10 @@ def _run_over_wall_directive(store: Store, box_id: str, player, now: float
 def run_state_for(player, comp, now: float) -> "tuple[bool, str]":
     """(finished, run_status) for a check-in from ``player`` right now.
 
-    §7.1 (boss directive, 2026-11-08): disqualification is a board
-    exclusion, not an eviction. A disqualified run keeps its VM, keeps its
-    clock and keeps checking in -- it is told via the response's
-    ``disqualified`` flag while ``run_status`` stays ``running``. Only a
-    Remove (tombstone), the run's own clock, the competition ending, or the
-    competition's scheduled end terminates it. The order of the remaining
-    checks is preserved verbatim from the inline chain this replaces.
+    Disqualification is a board exclusion, not an eviction: a DQ'd run keeps
+    its VM, clock and check-ins, flagged via the response's ``disqualified``
+    flag with ``run_status`` still "running". Only Remove, the run's clock,
+    or the competition ending/scheduled end terminates it.
     """
     if player is None:
         return False, "running"
@@ -288,11 +277,9 @@ def run_state_for(player, comp, now: float) -> "tuple[bool, str]":
         return True, "finished"
     if player.ends_at is not None and now >= player.ends_at:
         return True, "finished"
-    # A scheduled competition end is a hard stop for every still-running
-    # run (the sweeper persists the competition's end within one tick; the
-    # clock is the truth, so stop scoring at the wall time, not at the
-    # sweep). "ended", not "finished": the whole competition is over, so no
-    # per-run post-run access window is promised.
+    # A scheduled competition end hard-stops every live run at the wall time,
+    # not at the sweeper's persist. "ended", not "finished": no per-run
+    # post-run access window is promised.
     if getattr(comp, "scheduled_end_at", None) is not None and comp.status == "live" \
             and now >= comp.scheduled_end_at:
         return True, "ended"
@@ -319,14 +306,13 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
       8. Run adversary scheduler; collect any due directives (engine.adversary_oracle).
       9. Update scores.total (store.upsert_score); return the CheckinResponse.
     """
-    # 1. Look up box_id -> public key. Unknown box -> 403.
     box = store.get_box(bundle.box_id)
     if box is None:
         raise CheckinError(403, "unknown box")
 
-    # Protocol-version checks (§14.3) come before signature verification:
-    # they are cheap and leak no enrollment information, and rejecting an
-    # incompatible wire format before parsing/signature work is fail-closed.
+    # §14.2/§14.3 ordering: protocol-version checks come before signature
+    # work — cheap, leak no enrollment info, and rejecting an incompatible
+    # wire format early is fail-closed.
     if bundle.schema_version != SCHEMA_VERSION:
         raise CheckinError(
             400,
@@ -340,7 +326,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             f"(engine expects major version {AGENT_VERSION.split('.')[0]})",
         )
 
-    # Verify signature before scenario checks to avoid leaking enrollment info.
     canonical_bytes = canon.canonicalize(dataclasses.asdict(bundle))
     public_key = base64.b64decode(box.public_key)
     verified = verify_gate.verify(public_key, canonical_bytes, sig)
@@ -349,16 +334,16 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     if not verified:
         raise CheckinError(403, "bad signature")
 
+    # Signature verified before scenario checks: an unauthenticated caller
+    # must not learn enrollment state.
     if box.scenario_name != bundle.scenario_name:
         raise CheckinError(400, "scenario_name does not match the box's enrolled scenario")
 
+    # §14.2: every 409 carries the authoritative last_seq.
     if box.scenario_version != bundle.scenario_version:
-        # §14.2: every 409 carries the authoritative last_seq.
         raise CheckinError(409, "scenario_version does not match the box's enrolled version",
                            last_seq=box.last_seq)
 
-    # Ranked competition state (additive; legacy boxes have no player row and
-    # keep the pre-competition behavior).
     player = store.get_player_by_box(bundle.box_id)
     comp = store.get_competition(player.competition_id) if player else None
     now_for_run = time.time()
@@ -369,19 +354,14 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         finished, run_status = run_state_for(player, comp, now_for_run)
 
     # Load the rubric only after signature verification: an unauthenticated
-    # caller must not learn whether a scenario exists or force a JSON parse of
-    # the stored record. The record is keyed by the *enrolled* version, so a
-    # v2 upload cannot silently rescore a v1 box.
+    # caller must not learn whether a scenario exists or force a JSON parse.
+    # The record is keyed by the *enrolled* version, so a v2 upload cannot
+    # silently rescore a v1 box.
     if rubric is None:
         try:
             rubric, event_pool = scenario_mod.load_scenario(
                 store, box.scenario_name, box.scenario_version)
         except scenario_mod.ScenarioNotFound as exc:
-            # The message distinguishes "unknown scenario" from "version no
-            # longer current (engine has vN)". There is no migrate verb: the
-            # scenario version moved on, so the operator's exit is to
-            # discard this competition on its admin page and recreate it
-            # from the current scenario with 'New competition' (/admin).
             raise CheckinError(409, str(exc), last_seq=box.last_seq)
         except scenario_mod.ScenarioError:
             raise CheckinError(
@@ -390,30 +370,27 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     if event_pool is None:
         event_pool = []
     forensics_ids = _forensics_check_ids(rubric)
-    # Rubric-side display titles: the only place real check wording survives
-    # a ranked build (manifest titles are generic there). Sent to the box
-    # only for results the box may already see.
+    # Rubric display titles are the only place real check wording survives a
+    # ranked build (manifest titles are generic); they ride back only for
+    # results the box may already see.
     titles = {e.check_id: e.display_title for e in rubric.entries if e.display_title}
 
-    # 3. Reject seq <= last_seq (replay/dedup) -> 409 with last_seq.
     if bundle.seq <= box.last_seq:
         raise CheckinError(409, "replay/stale seq", last_seq=box.last_seq)
 
     if finished:
         # Accept the bundle so the agent's seq stays contiguous, but do not
-        # score it: the run is over. The agent stops on the returned status.
+        # score it: the run is over; the agent stops on the returned status.
         if (player is not None and run_status == "finished"
                 and player.status == "running"):
             store.update_player(player.player_id, status="finished",
                                 finished_at=now_for_run)
-        # An expired run walls the operator notice (post-run access window)
-        # via the directive channel; never re-issued after the first.
+        # The wall notice rides the directive channel, never re-issued after
+        # the first; the issued_directives re-send covers a lost response.
         wall = None
         if player is not None and run_status == "finished":
             wall = _run_over_wall_directive(store, bundle.box_id, player,
                                             now_for_run)
-        # Re-send everything issued so far (the wall included) so a response
-        # lost after commit can't lose the notice either.
         issued_directives = [
             Directive(event_id=d["event_id"], action=d["action"],
                       params=d["params"])
@@ -455,7 +432,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     # ledger and adversary log together, so the agent's retry of this same
     # bundle is scored instead of 409-rejected as a replay.
     with store.atomic():
-        # 4. Stamp received_at = engine_now(). First check-in for this box sets T0.
         received_at = time.time()
         if player is not None and player.started_at is not None:
             t0_to_use = player.started_at
@@ -480,14 +456,11 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             last = fresh.last_seq if fresh is not None else box.last_seq
             raise CheckinError(409, "replay/stale seq", last_seq=last)
 
-        # Steps 6-9. Point-in-time first: the evaluator's total mixes the
-        # hardening board and the forensics questions, so separate the
-        # forensics aggregate out of it (§11.4): hardening stays a pure
-        # configuration score and `total = hardening + forensics + SLA`.
-        # The aggregate rides the response (score.forensics_points); the
-        # per-question results keep the §14.2 redaction rules below.
+        # The evaluator's total mixes hardening and forensics; separate them
+        # so `total = hardening + forensics + SLA` (§11.4). The aggregate
+        # rides the response (score.forensics_points); the per-question
+        # results keep the §14.2 redaction rules below.
         clock = _Clock(received_at)
-        # 6. Evaluate point-in-time evidence against the engine-held rubric.
         score = evaluate(bundle.evidence, rubric, clock)
         forensics_total = sum(
             r.awarded_points for r in score.results
@@ -495,17 +468,17 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         )
         evidence_by_check_id = {e.check_id: e for e in bundle.evidence}
 
-        # 7. Run the adversary scheduler before the SLA ledger so a directive
-        # issued by *this* check-in can dock the mapped SLA immediately (§12.1).
+        # Run the adversary scheduler before the SLA ledger so a directive
+        # issued by *this* check-in can dock the mapped SLA immediately
+        # (§12.1).
         directives = adversary_oracle.due_directives(
             store, bundle.box_id, server_secret, event_pool, t0_to_use, received_at
         )
 
-        # The engine caused the disruption, so it knows the outage floor: from
-        # the check-in after issuance until the box reports the affected check
-        # healthy again, force that SLA DOWN. Evidence collected by the same
-        # check-in that receives a directive predates execution, so it cannot
-        # count as restoration.
+        # The engine caused the disruption, so it knows the outage floor:
+        # force the mapped SLA DOWN until a *later* check-in reports the check
+        # healthy — evidence in the same check-in that receives the directive
+        # predates execution.
         sla_ids = {e.check_id for e in rubric.entries if e.sla is not None}
         forced_down = set()
         for effect in store.get_active_adversary_effects(bundle.box_id, received_at):
@@ -524,19 +497,18 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             else:
                 forced_down.add(check_id)
 
-        # 8. Update SLA ledger (§11.3) for every rubric entry that has SLA params.
         sla_statuses = []
         sla_accrued_total = 0
         for entry in rubric.entries:
             if entry.sla is None:
                 continue
             ev = evidence_by_check_id.get(entry.check_id)
-            # Missing or failed SLA evidence counts as a DOWN observation: the
-            # hysteresis counters must keep advancing (a box whose SLA collection
-            # is broken cannot hold its prior UP state indefinitely).
             if ev is not None and ev.status == CollectorStatus.OK:
                 is_up, _reason = evaluate_matcher(entry.matcher, ev.raw)
             else:
+                # Missing/failed SLA evidence counts as DOWN: the hysteresis
+                # counters must keep advancing, so a broken collection cannot
+                # hold its prior UP state indefinitely.
                 is_up = False
             sla_rec = sla.update_sla(
                 store, bundle.box_id, entry.check_id, entry.sla, is_up,
@@ -554,8 +526,8 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         score.sla_status = sla_statuses
 
         # At-least-once delivery: re-send everything issued so far (this
-        # check-in's included), so a response lost after commit -- or dropped
-        # by the agent while flushing its queue -- can't lose a directive.
+        # check-in's included) so a response lost after commit can't lose a
+        # directive.
         issued_directives = [
             Directive(event_id=d["event_id"], action=d["action"], params=d["params"])
             for d in store.get_issued_directives(bundle.box_id)
@@ -566,11 +538,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
         score.total = final_total
         score.forensics_points = forensics_total
 
-        # Checks the agent could not grade because a `requires` prerequisite
-        # was absent on this host: they score 0 and are excluded from the
-        # solved count (the evaluator already marks them not passed); the
-        # count rides the score row so the admin roster and the player
-        # dashboard read a mis-provisioned box as broken, not healthy.
         rubric_check_ids = {entry.check_id for entry in rubric.entries}
         ungraded = len({
             e.check_id for e in bundle.evidence
@@ -587,12 +554,6 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
             ungraded_count=ungraded,
         )
 
-    # §2.4: matcher reasons embed expected values (the answer key), and a
-    # failed check's id/points are just as revealing. The box gets the
-    # positive-only board (passed checks + incurred penalties) with its own
-    # evidence reasons; the full result list stays engine-side. Forensics
-    # results ride the run-over (frozen) response instead — live runs hide
-    # them entirely, so the per-question oracle only opens once scoring has.
     _redact_for_box(score, evidence_by_check_id,
                     hide_forensics=(run_status == "running"),
                     forensics_ids=forensics_ids, titles=titles)
@@ -602,12 +563,9 @@ def handle_checkin(store: Store, bundle: Bundle, sig: bytes,
     rank, rank_total = competition.rank_for_player(
         store, comp, player, received_at)
 
-    # The check-in cadence is the engine's poll interval (how often the box
-    # should collect + report), NOT the SLA granularity: SLA accrual is
-    # elapsed-based and capped per check-in, so it works at any cadence.
-    # Deriving the cadence from min SLA interval_s made 1s-interval rubrics
-    # spin the box (seconds of Ed25519 per cycle) and 3600s-interval rubrics
-    # freeze scoreboard updates for an hour.
+    # next_checkin_s is the engine's collect/report cadence, NOT the SLA
+    # granularity: accrual is elapsed-based and capped per check-in, so any
+    # cadence scores correctly.
     return CheckinResponse(
         server_time=received_at,
         score=score,

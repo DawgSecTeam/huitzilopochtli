@@ -1,11 +1,7 @@
 """SshProvider: reach a box that is already running over SSH (paramiko).
-
-v1 concrete provider. cfg = {"host","port"?,"user","password"}. The box must
-already be booted and network-reachable; this provider does not create VMs.
-
-export() cannot self-export a remote box it doesn't own, so it returns
-mode="manual" with hypervisor-agnostic instructions. A future qemu/proxmox
-provider will produce a real image.
+cfg = {"host","port"?,"user","password"}; it never creates VMs.
+export() returns mode="manual" (a remote box can't self-export); a future
+qemu/proxmox provider will produce a real image.
 """
 import os
 import shlex
@@ -17,7 +13,6 @@ from boxbuilder.providers.base import (
     BoxHandle, BoxProvider, ExportResult, RunResult, register_provider, stage_path,
 )
 
-# packaging/ lives at <repo_root>/packaging/; we reference its init templates.
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _PACKAGING = os.path.join(_REPO_ROOT, "packaging")
 
@@ -52,7 +47,7 @@ def _host_key_policy(client, known_hosts, addr, port):
     import paramiko
 
     if known_hosts:
-        client.load_host_keys(known_hosts)  # explicit pins take precedence
+        client.load_host_keys(known_hosts)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
         return
     env_kh = os.environ.get("HUITZILOPOCHTLI_KNOWN_HOSTS")
@@ -77,14 +72,9 @@ def _host_key_policy(client, known_hosts, addr, port):
 
 
 class SshHandle(BoxHandle):
-    """A live SSH connection to a box (paramiko).
-
-    os_name is "windows" when the remote end is Windows OpenSSH (commands run
-    through cmd.exe, no sudo, POSIX sealing skipped) and "posix" otherwise.
-    It comes from the spec's provider.os when given, else auto-detected on
-    connect via `echo %OS%` through the login shell (cmd prints "Windows_NT",
-    a POSIX shell echoes the literal "%OS%").
-    """
+    """A live SSH connection to a box (paramiko). os_name "windows" means
+    commands run through cmd.exe without sudo; auto-detected on connect via
+    `echo %OS%` unless the spec pinned provider.os."""
 
     def __init__(self, name: str, addr: str, user: str, password: str, port: int = 22,
                  known_hosts: Optional[str] = None, os_name: Optional[str] = None):
@@ -95,11 +85,11 @@ class SshHandle(BoxHandle):
         self.port = port
         self.known_hosts = known_hosts
         self.os_name = os_name if os_name in ("windows", "posix") else None
-        self._client = None  # paramiko.SSHClient, lazily connected
+        self._client = None
 
     def connect(self) -> "SshHandle":
         try:
-            import paramiko  # imported lazily so boxbuilder imports without [deploy]
+            import paramiko
         except ImportError as e:
             raise RuntimeError(
                 "ssh provider requires paramiko; install with nakon[deploy] or pip install paramiko"
@@ -107,7 +97,6 @@ class SshHandle(BoxHandle):
 
         client = paramiko.SSHClient()
         _host_key_policy(client, self.known_hosts, self.addr, self.port)
-        # password auth, as nakon uses (config.json carries plaintext creds).
         try:
             client.connect(
                 self.addr, port=self.port, username=self.user, password=self.password,
@@ -123,13 +112,8 @@ class SshHandle(BoxHandle):
             self.os_name = self._detect_os_name()
 
         if self.os_name == "posix":
-            # Reachability + python3 presence. Alpine ships without python3;
-            # install it so the agent.pyz can run (see packaging/README.md,
-            # "Alpine" note).
             py = self.run("command -v python3 >/dev/null 2>&1 && echo ok", sudo=False)
             if not py.ok or "ok" not in py.stdout:
-                # Try to install (apt or apk); ignore failures -- surface a clear
-                # error when the agent install step actually needs it.
                 self.run(
                     "(apt-get update -qq && apt-get install -y -qq python3) 2>/dev/null "
                     "|| apk add --no-cache python3 2>/dev/null || true",
@@ -142,8 +126,6 @@ class SshHandle(BoxHandle):
                         "the huitzilopochtli agent.pyz requires it"
                     )
         else:
-            # Windows: python must already be on PATH (install it during
-            # template prep; boxbuilder cannot apt-get a Windows box).
             py = self.run("python --version", sudo=False)
             if not py.ok or "Python 3" not in py.stdout:
                 py = self.run("py -3 --version", sudo=False)
@@ -163,42 +145,28 @@ class SshHandle(BoxHandle):
         out = stdout.read().decode("utf-8", "replace").strip()
         return "windows" if out == "Windows_NT" else "posix"
 
-    # --- BoxHandle API ---------------------------------------------------
     def run(self, cmd: str, *, timeout: int = 1800, sudo: bool = True) -> RunResult:
         if self._client is None:
             raise SshProviderError("SSH connection is not open; call connect() first")
         if self.os_name == "windows":
-            # Windows OpenSSH: exec through the default shell (cmd.exe) with
-            # no wrapper and no sudo -- an SSH session for a local admin
-            # carries the elevated token. Install/file commands that need
-            # more than cmd.exe invoke powershell explicitly.
             stdin, stdout, stderr = self._client.exec_command(cmd, timeout=timeout)
             stdin.channel.shutdown_write()
         elif sudo and self.user != "root":
-            # Use /bin/sh (POSIX), NOT bash: minimal Alpine ships only busybox /bin/sh,
-            # and the openrc init script targets exactly those boxes. Every command we
-            # issue here is POSIX; shlex.quote() emits POSIX-safe quoting.
-            # Feed the password to sudo -S over stdin (paramiko exec can write
-            # to the channel stdin). Avoids tty allocation needed for -S.
             full = f"sudo -S -p '' /bin/sh -c {shlex.quote(cmd)}"
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
             stdin.write(self.password + "\n")
             stdin.flush()
-            # Close the write side so the remote shell sees EOF on stdin.
-            # Without this, a command that reads stdin (a prompt, a here-doc)
-            # blocks forever and recv_exit_status() below never returns.
+            # Without the stdin EOF, a command that reads stdin (a prompt,
+            # a here-doc) blocks forever and recv_exit_status() never returns.
             stdin.channel.shutdown_write()
         else:
             full = f"/bin/sh -c {shlex.quote(cmd)}"
             stdin, stdout, stderr = self._client.exec_command(full, timeout=timeout)
-            # Same latent hang applies to non-sudo commands that read stdin.
             stdin.channel.shutdown_write()
         import threading
 
-        # Drain stdout/stderr WHILE waiting for the exit status. Waiting for
-        # exit first deadlocks as soon as the remote writes more than the SSH
-        # channel window: the remote blocks on write, so the status never
-        # arrives.
+        # Drain stdout/stderr WHILE waiting for the exit status: waiting for
+        # the status first deadlocks once output exceeds the channel window.
         out_buf, err_buf = [], []
 
         def _drain(stream, buf):
@@ -215,8 +183,6 @@ class SshHandle(BoxHandle):
         err_reader.start()
 
         try:
-            # recv_exit_status() waits on a channel event that the timeout
-            # given to exec_command does NOT bound; a watchdog bounds it.
             status = {}
             watcher = threading.Thread(
                 target=lambda: status.__setitem__(
@@ -254,17 +220,9 @@ class SshHandle(BoxHandle):
         )
 
     def run_ps(self, script: str, *, timeout: int = 1800) -> RunResult:
-        """Run a PowerShell script on a windows handle via -EncodedCommand.
-
-        Windows OpenSSH execs the command through cmd.exe, which strips inner
-        double quotes from command lines -- silently corrupting
-        `powershell -Command "New-Item ... | Out-Null"` payloads into bare
-        cmd syntax. -EncodedCommand takes base64 (no quotable characters), so
-        the script survives the trip verbatim; the base64 payload is
-        UTF-16LE, per powershell.exe's documented encoding. Errors are
-        terminating: the wrapper promotes any cmdlet error to exit 1 with the
-        error text on stderr, so RunResult.ok tracks actual success.
-        """
+        """Run PowerShell via -EncodedCommand: cmd.exe strips inner quotes
+        from plain command lines, base64 (UTF-16LE payload) survives intact,
+        and cmdlet errors are promoted to exit 1."""
         if self.os_name != "windows":
             raise SshProviderError("run_ps is only valid on a windows handle")
         import base64
@@ -329,12 +287,6 @@ class SshHandle(BoxHandle):
                   f"(/usr/local/bin/huitz): {shim.stderr.strip()}")
         if kind == "none":
             return
-        # Ensure the install dir exists, then copy + enable the unit. We SFTP the
-        # template up and let the box's own init system install it, per
-        # the templates in packaging/.)
-        # The target dirs (/etc/systemd/system, /etc/init.d) are root-owned, so a
-        # non-root SSH user cannot SFTP into them. Stage the unit under /tmp (any
-        # user can write there), then sudo-install it into place.
         if kind == "systemd":
             local = os.path.join(_PACKAGING, "huitzilopochtli-agent.service")
             tmp = stage_path(self, "huitzilopochtli-agent.service")
@@ -357,11 +309,6 @@ class SshHandle(BoxHandle):
                 if not res.ok:
                     raise RuntimeError(f"failed to install systemd unit: {res.stderr.strip()}")
             if mode == "honor":
-                # Honor mode's agent process runs once and exits (see the
-                # unit's own comments); pair it with a timer so the report
-                # re-checks periodically instead of staying a single
-                # install-time snapshot forever. Ranked mode's agent already
-                # loops forever on its own and doesn't need this.
                 timer_local = os.path.join(_PACKAGING, "huitzilopochtli-agent.timer")
                 timer_tmp = stage_path(self, "huitzilopochtli-agent.timer")
                 self.put(timer_local, timer_tmp)
@@ -373,10 +320,9 @@ class SshHandle(BoxHandle):
                 if not res.ok:
                     raise RuntimeError(f"failed to enable systemd timer: {res.stderr.strip()}")
             else:
-                # A ranked install over an honor-sealed template (every
-                # static-pine clone) inherits the honor re-grade timer, which
-                # keeps restarting a deliberately stopped ranked agent. Remove
-                # it; absent-timer errors are expected and ignored.
+                # A ranked install over an honor template inherits its
+                # re-grade timer, which would keep restarting the stopped
+                # ranked agent. Remove it; absent-timer errors are ignored.
                 self.run(
                     "systemctl disable --now huitzilopochtli-agent.timer "
                     ">/dev/null 2>&1; "
@@ -450,7 +396,6 @@ class SshHandle(BoxHandle):
                 f"failed to register scheduled task: {res.stderr.strip() or res.stdout.strip()}"
             )
         if not start_agent:
-            # Registered so `huitz join` can start it, but not running yet.
             res = self.run_ps(
                 "schtasks.exe /Change /TN 'HuitzilopochtliAgent' /DISABLE; "
                 "exit $LASTEXITCODE")
@@ -460,8 +405,6 @@ class SshHandle(BoxHandle):
                     f"{res.stderr.strip() or res.stdout.strip()}")
 
     def export(self, out_path: str, fmt: str = "ova") -> ExportResult:
-        # A remote box over SSH can't snapshot itself; the operator must export
-        # from the hypervisor that owns its disk. Be explicit about that.
         return ExportResult(
             mode="manual",
             instructions=(

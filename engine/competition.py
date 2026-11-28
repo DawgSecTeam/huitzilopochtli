@@ -24,7 +24,7 @@ from engine import verify_gate
 from engine.store import (CompetitionRecord, JoinCodeCollision, PlayerRecord,
                           Store, normalize_name)
 
-# Unambiguous alphabet (no 0/O/1/I/L) for codes that get typed off a screen.
+#: unambiguous alphabet (no 0/O/1/I/L) — codes get typed off a screen.
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _CODE_LEN = 4
 _NAME_MAX = 40
@@ -32,7 +32,6 @@ _MEMBER_MAX = 60
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _WS_RE = re.compile(r"\s+")
 
-#: A player occupies exactly one competition slot until their run ends.
 ACTIVE_PLAYER_STATUSES = ("invited", "running")
 
 
@@ -179,9 +178,6 @@ def _service_rows_for(store: Store, comp: CompetitionRecord,
             "state": rec.state if rec is not None else "PENDING",
             "accrued_points": rec.accrued_points if rec is not None else 0,
             "last_changed_at": rec.last_changed_at if rec is not None else None,
-            # Oldest -> newest post-hysteresis observations (bounded by
-            # common.schema.SLA_HISTORY_MAX). Both the portal and the on-box
-            # report render this as the service's "last 10 ticks" strip.
             "history": list(rec.history) if rec is not None else [],
         })
     return out
@@ -311,10 +307,9 @@ def _scored_players(store: Store, comp: CompetitionRecord, now: float) -> list:
     scored = []
     for p, boxes in players:
         status = p.status
-        # The run's effective deadline includes a scheduled competition end:
-        # once that wall time passes the run is over even before the sweeper
-        # has persisted the competition's end (same lazy-finish rule as the
-        # per-player clock: the clock is the truth, the row catches up).
+        # Lazy finish: past the effective end (run clock or a live
+        # competition's scheduled-end wall time) the run is over even before
+        # the sweeper persists it — the clock is the truth, the row catches up.
         effective_end = effective_run_end(comp, p)
         if status == "running" and effective_end is not None and now >= effective_end:
             status = "finished"
@@ -369,13 +364,9 @@ def _row_for(store: Store, comp: CompetitionRecord, p, status, score, total,
         "service_points": score["service_points"] if score else 0,
         "forensics_points": (score.get("forensics_points", 0)
                              if score else 0),
-        # Checks the agent reported `unavailable` at the last check-in
-        # (required software missing); 0 keeps healthy rows unchanged.
         "ungraded_count": (score.get("ungraded_count", 0) if score else 0),
         "started_at": p.started_at,
         "ends_at": p.ends_at,
-        # Countdown target: the run clock or an earlier scheduled
-        # competition end (effective_run_end), whichever is sooner.
         "remaining_s": (_remaining_from(effective_run_end(comp, p), now)
                         if status == "running" else 0),
         "last_checkin": score["updated_at"] if score else None,
@@ -396,12 +387,10 @@ def player_board_row(store: Store, comp: CompetitionRecord, player,
                      now: Optional[float] = None) -> Optional[dict]:
     """The leaderboard row for one player, even when the public board is hidden.
 
-    A hidden leaderboard withholds everyone's standings, but a player's own
-    score and rank are their own data (the on-box report shows them too), so
-    /me and the run home page use this: a hidden board must never read as
-    "not joined" or "waiting for the first check-in". Returns None when the
-    player has no scored check-in yet. Adds ``board_total`` (players on the
-    board) so the rank line can say "of N" without the public rows.
+    A hidden board withholds everyone else's standings, but a player's own
+    score and rank are their own data (the on-box report shows them too).
+    Returns None with no scored check-in; adds ``board_total`` so the rank
+    line can say "of N" without the public rows.
     """
     now = time.time() if now is None else now
     scored = _scored_players(store, comp, now)
@@ -439,9 +428,6 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
                                now: Optional[float] = None) -> dict:
     now = time.time() if now is None else now
     count = store.count_players(comp.id)
-    # Reserved-but-unprovisioned seats, reported apart so a name waiting for
-    # a VM reads as what it is instead of a zero-point competitor (the board
-    # lists players only once a box is bound) or a phantom.
     waiting = store.count_waiting_players(comp.id)
     theme = {}
     if comp.theme_json:
@@ -467,9 +453,6 @@ def public_competition_payload(store: Store, comp: CompetitionRecord,
         "box_count": max(1, len(store.get_competition_scenarios(comp.id))),
         "started_at": comp.started_at,
         "ended_at": comp.ended_at,
-        # Wall-clock automatic end for the whole competition (None = none).
-        # Runs still in progress stop when it arrives; the competitor pages
-        # count down to it.
         "scheduled_end_at": getattr(comp, "scheduled_end_at", None),
         "theme": theme,
         "join_instructions": comp.join_instructions,
@@ -482,18 +465,12 @@ def extend_runs(store: Store, comp: CompetitionRecord, seconds: int, *,
                 now: Optional[float] = None) -> dict:
     """Grant overtime to a live competition's runs (admin action).
 
-    Runs are scored purely from the engine receipt clock against the stored
-    ``ends_at``, so an extension is a metadata move, not a scoring change:
-    every running clock slides forward by ``seconds``. A run already frozen
-    as ``finished`` by expiry (the only way an actively-participating player
-    ends up ``finished``) resumes on an even footing: its deadline restarts
-    at ``now + seconds``. A run whose box was already released after the
-    post-run access window is skipped: there is no agent to resume. Slots
-    that never claimed a box (invited) have no
-    clock to extend -- their join codes are refreshed by the claim sweep --
-    and removed/disqualified slots are never touched.
-
-    Returns a report the admin API forwards verbatim; the caller audits it.
+    Scoring runs on the engine receipt clock against stored ``ends_at``, so
+    this only moves deadlines, never box clocks: running clocks slide by
+    ``seconds``; a run frozen by expiry restarts at ``now + seconds`` on an
+    even footing; released boxes (no agent left) and never-claimed invited
+    slots are skipped; removed/disqualified are never touched. Returns a
+    report the admin API forwards verbatim; the caller audits it.
     """
     now = time.time() if now is None else now
     if comp.status != "live":
@@ -504,8 +481,6 @@ def extend_runs(store: Store, comp: CompetitionRecord, seconds: int, *,
     extended, resumed, skipped = [], [], []
     for p in store.list_players(comp.id):
         if p.box_released_at:
-            # The post-run access window already closed (or an admin released
-            # the box): the VM is destroyed, so there is no agent to resume.
             skipped.append({"name": p.display_name, "status": p.status,
                             "reason": "box released"})
             continue
@@ -521,10 +496,10 @@ def extend_runs(store: Store, comp: CompetitionRecord, seconds: int, *,
                             "name": p.display_name,
                             "ends_at": now + seconds})
         elif p.status in ("invited", "running"):
-            # invited: no clock yet; running without ends_at cannot happen,
-            # but leave anything unexplainable untouched and say so.
+            # invited has no clock yet; running-without-ends_at cannot happen,
+            # but leave anything unexplainable untouched and say so. Removed
+            # and disqualified slots fall through, never touched, by design.
             skipped.append({"name": p.display_name, "status": p.status})
-        # removed/disqualified stay untouched, by design.
     return {"minutes": seconds // 60, "seconds": seconds,
             "extended": extended, "resumed": resumed, "skipped": skipped}
 
@@ -533,8 +508,8 @@ class ExtendRefused(Exception):
     """The competition is not in a state that accepts an extension."""
 
 
-#: A scheduled end may sit at most this far in the future (30 days) — far
-#: enough for any multi-day event, tight enough to catch a fat-fingered year.
+#: sanity bound on a scheduled end: far enough for any multi-day event,
+#: tight enough to catch a fat-fingered year.
 MAX_SCHEDULE_HORIZON_S = 30 * 24 * 3600
 
 
@@ -609,16 +584,11 @@ def sweep_scheduled_ends(store: Store, *, now: Optional[float] = None,
                          cleanup=None) -> list:
     """End every live competition whose scheduled end has arrived.
 
-    Runs once per sweep tick, before and independent of the VM-claim sweep:
-    a scheduled end must fire even where no workshop portal is configured.
-    Ending is the exact admin-End path (``end_competition`` freezes every
-    still-running player at the receipt clock, then the pool teardown
-    releases the boxes); ``cleanup`` is the caller-injected pool teardown
-    (``claims.cleanup_pool`` — importing it here would be circular, and the
-    regular sweeper re-runs pool cleanup for ended competitions anyway, so a
-    ``None`` merely defers the VM work one tick). Returns one summary dict
-    per ended competition for logging and tests. Best effort per competition:
-    one failure never skips the others.
+    Runs once per sweep tick, independent of the VM-claim sweep: a scheduled
+    end must fire even with no portal configured. Ending is the exact
+    admin-End path; ``cleanup`` is the caller-injected pool teardown (claims
+    would import circularly; ``None`` defers VM work one tick). Best effort
+    per competition — one failure never skips the others.
     """
     now = time.time() if now is None else now
     ended = []
@@ -815,8 +785,8 @@ def create_player_with_code(store: Store, comp: CompetitionRecord,
                 time.time() + ttl_s, join_code_plain=code,
             )
         except JoinCodeCollision:
-            # A 40-bit code collision across concurrent fields. Mint another;
-            # this must not surface as "name already taken".
+            # A code collision across concurrent fields: mint another — this
+            # must not surface as "name already taken".
             continue
         if player is None:
             return None, None, "That name is already taken in this competition."

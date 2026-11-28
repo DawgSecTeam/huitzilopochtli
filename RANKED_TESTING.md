@@ -68,10 +68,10 @@ skips unless the suite runs as root.
 - **Boxbuilder integration uses fake providers.** `tests/integration/boxbuilder/`
   drives the pipeline against an in-process fake handle, so it needs no VM and
   no network; live SSH behaviour is only covered by the Proxmox tier.
-- **Proxmox clones need a fresh machine-id.** Ubuntu templates have shipped
-  with a duplicated `/etc/machine-id`, so two clones DHCP-collide; the helper
-  regenerates it per clone. Two-machine ranked runs also need
-  `HUITZILOPOCHTLI_BIND=0.0.0.0` on the engine VM.
+- **Proxmox clones need a fresh machine-id.** Two clones sharing an
+  `/etc/machine-id` DHCP-collide, so the helper regenerates it per clone.
+  Two-machine ranked runs also need `HUITZILOPOCHTLI_BIND=0.0.0.0` on the
+  engine VM.
 - **Guest-agent vs SSH.** Most Proxmox tests push files with the QEMU guest
   agent; Fedora's agent is SELinux-confined (no outbound `connect()`, no
   `/opt` writes) and Windows needs a real Python, so those paths use SSH.
@@ -83,13 +83,12 @@ skips unless the suite runs as root.
 
 ## Known defects and open decisions
 
-These are current, not historical. Each was checked against the code while the
-matrix was written.
+These describe the code as it stands; each maps to current behavior.
 
 1. **Scored services are self-reported.** A root player can forge
    `http_uptime`/`tcp_port` evidence. The competition UI says so, and the
-   ceiling is documented in `RANKED_COMPETITION.md` §5; engine-side probing is
-   a product decision, not a bug fix.
+   ceiling is documented in `RANKED_COMPETITION.md` §1 and `architecture.md`
+   §3; engine-side probing is a product decision, not a bug fix.
 2. **Idle connections hold `MAX_CONNS` slots for 30s.** `Handler.timeout` is
    hardcoded, not env-tunable. Bounded under the friendly-leaderboard threat
    model; worth a knob if ranked is ever exposed to hostile networks.
@@ -119,39 +118,38 @@ matrix was written.
 11. **No long-duration or scale soak.** Live runs have covered small fields for
     minutes to a couple of hours; nothing pins dozens of boxes for hours.
 
-## Fixed this round (pinned by `tests/integration/test_ranked_general_use_gaps.py`)
+## General-use contracts pinned by `tests/integration/test_ranked_general_use_gaps.py`
 
-- **An unresolvable `ranked.pool` no longer takes the picker down.** A box
-  whose `${...}` placeholders cannot expand is listed, disabled, with the
-  reason stated, instead of 400ing `GET`/`POST /admin/competitions/new` for
-  every box in the folder.
+- **The picker survives an unresolvable `ranked.pool`.** A box whose `${...}`
+  placeholders cannot expand is listed, disabled, with the reason stated;
+  `GET`/`POST /admin/competitions/new` renders for every box in the folder
+  regardless.
 - **A pool-block failure says so.** Creating a competition on such a scenario
   answers 400 naming the pool expansion failure, never "scenario 'X' is not
-  in the engine's box folder" about a file that is sitting right there.
+  in the engine's box folder".
 - **`start` on a non-draft competition answers 409** with the reason and
-  audits `competition_start_refused`, instead of `{"ok": true, "action":
-  "start"}` plus a success audit row while the competition stays `ended`.
+  audits `competition_start_refused`; the competition's status is untouched.
   `close-join`/`open-join` refuse the same way when the run is not live.
 - **`/api/public/me` 404s for a removed player.** The tombstone row exists to
   free the display name; it is not a session.
 - **The CSV export reads.** `started_at`/`ends_at`/`last_checkin` are
-  ISO-8601 local (they were raw epoch floats), and a display name starting
-  with `=`, `+`, `-` or `@` is apostrophe-neutralised so the results file
-  cannot execute a formula when an operator opens it.
-- **`open-join` exists** as the counterpart of `close-join` (verb plus a
-  "Reopen joins" button), so closing joins by mistake is reversible.
+  ISO-8601 local, and a display name starting with `=`, `+`, `-` or `@` is
+  apostrophe-neutralised so the results file cannot execute a formula when an
+  operator opens it.
+- **`open-join` is the counterpart of `close-join`** (verb plus a "Reopen
+  joins" button), so closing joins by mistake is reversible.
 
-## Fixed this round (audit surface, pinned by `tests/integration/test_admin_audit_page.py`)
+## Audit surface (pinned by `tests/integration/test_admin_audit_page.py`)
 
-- **`/admin/audit` renders the audit trail.** `store.list_audit()` now has a
-  production caller: the admin console links to it, gated by the same session
-  cookie (or `X-HUITZILOPOCHTLI-Admin-Token` header path) as its sibling
-  pages, newest first -- engine-local time, actor and the address the call
-  came from, action, the competition and player it touched, and the logged
-  detail. `?competition=<slug or id>` and `?limit=<n>` are query strings, so a
+- **`/admin/audit` renders the audit trail** from `store.list_audit()`,
+  linked from the admin console and gated by the same session cookie (or
+  `X-HUITZILOPOCHTLI-Admin-Token` header path) as its sibling pages, newest
+  first -- engine-local time, actor and the address the call came from,
+  action, the competition and player it touched, and the logged detail.
+  `?competition=<slug or id>` and `?limit=<n>` are query strings, so a
   filtered view is a URL. Columns are exactly what `audit_log` stores; the
   one gap against an ideal trail is that a row records ids, so a competition
-  removed since then shows its bare id rather than a name.
+  removed since shows its bare id rather than a name.
 
 ## Backlog for the next ranked round
 

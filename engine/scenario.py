@@ -254,17 +254,12 @@ def load_pool_spec(store: Store, scenario_name: str,
     return data if isinstance(data, dict) and data else None
 
 
-# --- repo box-folder source ---------------------------------------------------
-#
-# The engine parses the committed boxes/<box>/scenario.yaml files directly:
-# the box folder is the source of truth and the DB is only the serving cache.
-# The record is built by the same shared pipeline `boxbuilder compile` uses
-# (common.scenario_record), so what the engine serves can never drift from a
-# compiled build, and no engine_record.json artefact is required. Only
-# scenarios with a ranked: block are listed. The store keeps one version per
-# scenario (sync_box_scenarios purges the rest): running a competition against
-# anything but the box folder's current version is refused -- competitions are
-# migrated when a new version is released, never back-compatible.
+# The engine parses the committed boxes/<box>/scenario.yaml directly with the
+# same shared pipeline `boxbuilder compile` uses (common.scenario_record): the
+# box folder is the source of truth, the DB only a serving cache, and no
+# engine_record.json is required. Only scenarios with a `ranked:` block are
+# listed; running a competition against anything but the folder's current
+# version is refused — competitions migrate forward, never back.
 
 import os
 
@@ -286,12 +281,9 @@ def boxes_dir() -> str:
 _SCAN_LOCK = threading.Lock()
 _SCAN_CACHE = {"key": None, "result": (None, ())}
 
-#: scenario name -> why its ``ranked.pool`` block could not be expanded.
-#: Replaced whole with every full scan (the cache key covers the boxes
-#: folder and the pools file, so it can never outlive the scan that
-#: produced it). The box is listed anyway: the pool is what is unusable,
-#: not the rubric, and silently dropping a committed scenario used to send
-#: operators hunting for a file that was right there.
+#: scenario name -> why its ranked.pool block could not be expanded; replaced
+#: whole with every full scan (the cache key covers the boxes folder and the
+#: pools file). The box is listed anyway: the pool is unusable, not the rubric.
 _SCAN_POOL_PROBLEMS: dict = {}
 
 
@@ -486,8 +478,8 @@ def load_box_scenario(name: str, version: int) -> Optional[tuple]:
 def list_admin_scenarios() -> list:
     """(name, version, source) for the admin picker: the box folder only.
 
-    The engine-DB rows are a serving cache seeded from this folder (and,
-    historically, uploads); they never add picker entries.
+    The engine-DB rows are a serving cache seeded from this folder; they
+    never add picker entries.
     """
     return list_box_scenarios()
 
@@ -502,8 +494,7 @@ def pool_problem(scenario_name: str) -> Optional[str]:
     scenarios, _errors = _scan_box_folder()
     if not scenarios or scenario_name not in scenarios:
         # Nothing is known about this scenario right now (failed or empty
-        # scan): never refuse on a problem recorded against a pass that no
-        # longer stands.
+        # scan): never refuse on a problem recorded against a stale pass.
         return None
     with _SCAN_LOCK:
         return _SCAN_POOL_PROBLEMS.get(scenario_name)
@@ -553,7 +544,6 @@ def sync_box_scenarios(store: Store) -> list:
                   f"engine while live competition(s) still serve it; the "
                   f"folder's current version is v{version}", flush=True)
     if not errors:
-        # Orphan purge: rows for scenarios the folder does not declare at all.
         held = {name for (name, _v) in in_use}
         for stored_name, _version, _ts in store.list_scenarios():
             if stored_name not in scenarios and stored_name not in held:

@@ -1,32 +1,8 @@
-"""Generate the on-box install set + agent_config.json per mode.
-
-This module knows the exact agent/config.py::AgentConfig shape (10 fields)
-and the packaging/README.md install layout. It does NOT touch the box -- it returns
-a description of what to place; pipeline.install_box applies it via the provider
-handle. Separation makes the per-mode file set unit-testable without a box.
-
-Install layout (see packaging/README.md), all under the target OS's install
-dir -- /opt/.huitzilopochtli (POSIX) or ``C:\\ProgramData\\huitzilopochtli``
-(windows), sealed to admins-only by pipeline.install_box after placement:
-  agent.pyz                      both modes
-  manifest.signed.json           both modes
-  authoring_public_key.b64       both modes
-  .score.dat                     honor only (local scoring; the rubric,
-                                 obfuscated via common/rubric_codec.py)
-  agent_config.json              both modes (shape differs per mode)
-  identity.json                  ranked only, CREATED BY THE AGENT on first boot
-                                 (not placed by boxbuilder -- see note below)
-  report.html                    written by the agent at runtime
-  score_state.json               written by the agent at runtime (previous
-                                 run's total, for score-change alerts)
-  sync-report.sh                 both modes; mirrors report.html into each real
-                                 user's $HOME/Desktop (see packaging/sync-report.sh
-                                 -- a snap-confined browser can't see /opt)
-
-Note on identity.json: the agent generates its own Ed25519 identity on first
-ranked boot (agent/identity.py), so boxbuilder never ships one. We only set
-identity_path in agent_config.json so the agent knows where to create it.
-"""
+"""Generate the on-box install set + agent_config.json per mode; never
+touches the box — pipeline.install_box applies what this returns. Full
+layout table: packaging/README.md. The honor rubric ships as .score.dat,
+obfuscated so a casual `ls` doesn't hand over the answer key; identity.json
+is created by the agent on first ranked boot, never shipped."""
 import os
 
 from boxbuilder.os_family import is_windows
@@ -35,13 +11,7 @@ from typing import Optional
 
 INSTALL_DIR_POSIX = "/opt/.huitzilopochtli"
 INSTALL_DIR_WINDOWS = r"C:\ProgramData\huitzilopochtli"
-# Default kept for existing importers; new code should use install_dir_for()
-# with the target box's os_name (the BUILD machine is always POSIX, so this
-# constant says nothing about where the agent will run).
 INSTALL_DIR = INSTALL_DIR_POSIX
-# On-box name of the honor-mode rubric: dotfile, no .json extension, so
-# casual `ls` / `cat` discovery doesn't hand over the answer key. Encoded
-# content (common/rubric_codec.py) -- obfuscation, not a security boundary.
 RUBRIC_BASENAME = ".score.dat"
 
 
@@ -56,12 +26,9 @@ MOTD_PATH = "/etc/update-motd.d/90-huitzilopochtli"
 
 
 def _sh_single_quoted(text: str) -> str:
-    """Escape `text` for a single-quoted POSIX shell string (' -> '\\'').
-
-    Control characters (especially newlines) would terminate the generated
-    printf line and inject shell into a root-executed /etc/update-motd.d
-    script, so collapse them to spaces before quoting.
-    """
+    """Escape `text` for a single-quoted POSIX string; control characters
+    collapse to spaces because a newline would inject shell into the
+    root-executed motd script."""
     text = "".join(
         ch if ord(ch) >= 0x20 and not 0x7F <= ord(ch) <= 0x9F else " "
         for ch in str(text)
@@ -71,18 +38,9 @@ def _sh_single_quoted(text: str) -> str:
 
 def motd_script(title: str, organization: Optional[str] = None,
                 mode: str = "honor") -> str:
-    """The first-login banner: an /etc/update-motd.d/ fragment (POSIX).
-
-    Ubuntu's dynamic motd executes every script in /etc/update-motd.d/ at
-    each login (console + SSH), so this is what tells a player what to do
-    the first time they get a shell. Guidance leads with `huitz readme`
-    (the handbook carries the objective and rules) and spells out the
-    forensics answer syntax — the least discoverable command. Pure text
-    generation here; the pipeline places it (SFTP to /tmp, then
-    `install -m 755` — the target dir is root-owned). Windows has no motd
-    mechanism; the win task script's report shortcut is that box's
-    equivalent pointer.
-    """
+    """The first-login banner: an /etc/update-motd.d/ fragment (POSIX only;
+    Windows has no motd). Pure text generation — pipeline.install_box places
+    it via /tmp stage + install -m 755. Leads with `huitz readme`."""
     heading = f"Welcome to {_sh_single_quoted(title)}"
     if organization:
         heading += f" — {_sh_single_quoted(organization)}"
@@ -101,8 +59,6 @@ def motd_script(title: str, organization: Optional[str] = None,
             "  'Then work from the terminal:' \\",
         ]
     else:
-        # A ranked box has no report until `huitz join` binds it, so the
-        # first command the banner teaches must be the bind, not readme.
         intro = [
             "  'Your box joins when you open the competition link. If it did' \\",
             "  'not, run this here with the one-time code from your page:' \\",
@@ -112,7 +68,6 @@ def motd_script(title: str, organization: Optional[str] = None,
             "  'Then work from the terminal:' \\",
             "  '  huitz readme               the handbook: objective, rules, login' \\",
         ]
-    # The description column starts at character 29 in every command line.
     return "\n".join([
         "#!/bin/sh",
         "# Huitzilopochtli onboarding banner (placed by boxbuilder).",
@@ -133,7 +88,6 @@ def motd_script(title: str, organization: Optional[str] = None,
         "",
     ])
 
-# packaging/ lives at <repo_root>/packaging/ -- mirrors providers/ssh.py's _PACKAGING.
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 _SYNC_REPORT_SH = os.path.join(_REPO_ROOT, "packaging", "sync-report.sh")
 
@@ -151,20 +105,11 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
                       checkin_interval_s: Optional[int] = None,
                       enrollment_token: Optional[str] = None,
                       os_name: str = "posix") -> dict:
-    """Build the agent_config.json dict for the given mode.
-
-    Matches agent/config.py::AgentConfig exactly:
-      honor:  rubric_path set, identity_path/checkin_interval_s/enrollment_token null
-      ranked: rubric_path null, identity_path set, checkin_interval_s set,
-              enrollment_token set (consumed once on first boot)
-
-    `manifest_path` and `authoring_public_key_path` are always set (both modes
-    verify the manifest signature; the public key is the distributable artifact).
-    `os_name` selects the target box's install dir ("posix" | "windows").
-    """
+    """Build agent_config.json per agent/config.py::AgentConfig field names.
+    honor: rubric_path set, identity/checkin/token null; ranked: the mirror
+    image, plus engine_url (not an AgentConfig field — the agent reads it
+    from the raw JSON). `os_name` selects the install dir."""
     base = install_dir_for(os_name)
-    # The BUILD machine is POSIX; path separators for the TARGET box must be
-    # chosen explicitly, not via os.path.join.
     sep = "\\" if is_windows(os_name) else "/"
     cfg = {
         "mode": mode,
@@ -186,10 +131,9 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
         cfg["engine_url"] = engine_url
         if not checkin_interval_s or checkin_interval_s <= 0:
             raise ValueError("ranked mode requires a positive checkin_interval_s")
-        # identity.json is created by the agent on first boot; we just point at it.
         cfg["identity_path"] = f"{base}{sep}identity.json"
         cfg["checkin_interval_s"] = checkin_interval_s
-        cfg["enrollment_token"] = enrollment_token  # may be None if pre-seeded
+        cfg["enrollment_token"] = enrollment_token
     else:
         raise ValueError(f"unknown mode {mode!r}")
     return cfg
@@ -197,14 +141,9 @@ def agent_config_dict(scenario_name: str, mode: str, engine_url: Optional[str] =
 
 def on_box_files(compile_result: dict, mode: str, agent_config: dict,
                  os_name: str = "posix") -> list:
-    """Return the list of OnBoxFile to place, given a compile result + config.
-
-    `compile_result` is what compile_box returned (paths under artifacts_dir).
-    `agent_config` is the dict from agent_config_dict(); it's serialized to JSON
-    and placed as agent_config.json. `os_name` selects the target box layout
-    ("posix" | "windows"): on windows the install dir differs and sync-report.sh
-    is not placed (the scheduled-task wrapper copies the report itself).
-    """
+    """The OnBoxFile list to place for a compile result + config. `os_name`
+    picks the target layout; on windows sync-report.sh is not placed (the
+    scheduled-task wrapper mirrors the report itself)."""
     import json
 
     base = install_dir_for(os_name)
@@ -216,18 +155,11 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict,
                   f"{base}{sep}authoring_public_key.b64"),
     ]
     if not is_windows(os_name):
-        # POSIX only: huitzilopochtli-agent.service's ExecStartPost runs this
-        # after every agent run to mirror report.html into each real user's
-        # $HOME/Desktop (a snap-confined browser can't see /opt). Windows gets
-        # the same effect from the scheduled-task wrapper (Public Desktop copy).
         files.append(OnBoxFile(_SYNC_REPORT_SH, f"{base}/sync-report.sh",
                                mode=0o755))
     if mode == "honor":
         if not compile_result.get("rubric"):
             raise ValueError("honor mode requires rubric.json from compile, but it was missing")
-        # Compile emits plain rubric.json; the on-box copy is the obfuscated
-        # form, staged next to the other synthesized files (like
-        # agent_config.json below) and placed 0600 into the sealed dir.
         from common import rubric_codec
         with open(compile_result["rubric"], "r", encoding="utf-8") as f:
             rubric_dict = json.load(f)
@@ -238,8 +170,6 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict,
         files.append(OnBoxFile(rubric_stage,
                                f"{base}{sep}{RUBRIC_BASENAME}", mode=0o600))
 
-    # agent_config.json is synthesized (not on disk), so we write it to the
-    # artifacts dir first, then treat it as a normal file to place.
     artifacts_dir = os.path.dirname(compile_result["agent_pyz"])
     cfg_path = os.path.join(artifacts_dir, "agent_config.json")
     fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -251,9 +181,8 @@ def on_box_files(compile_result: dict, mode: str, agent_config: dict,
         os.chmod(cfg_path, 0o600)
     except OSError:
         pass
-    # Ranked boxes publish the config so `huitz` can tell the player the box
-    # has not joined yet (and render the handbook from the manifest); it
-    # carries no key material. Honor keeps it inside the sealed answer-key dir.
+    # Ranked's config is world-readable so `huitz` can answer before the box
+    # joined; it carries no key material. Honor keeps it 0600 in the seal.
     cfg_mode = 0o644 if mode == "ranked" else 0o600
     files.append(OnBoxFile(cfg_path, f"{base}{sep}agent_config.json", mode=cfg_mode))
     return files

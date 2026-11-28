@@ -1,9 +1,10 @@
 # Ranked competitions — operator runbook
 
-How to put a ranked competition on the engine: upload a scenario, create and
-start the competition, build the ranked template it hands out boxes from, then
-end and release it. The engine contract is `architecture.md`; building and
-sealing a box is `boxbuilder/README.md` + `boxbuilder/DEPLOY.md`.
+How to put a ranked competition on the engine: commit a scenario under
+`boxes/`, create and start the competition, build the ranked template it
+hands out boxes from, then end and release it. The engine contract is
+`architecture.md`; building and sealing a box is `boxbuilder/README.md` +
+`boxbuilder/DEPLOY.md`.
 
 Use placeholders, never committed values: `$HUITZILOPOCHTLI_ENGINE_URL`,
 `$HUITZILOPOCHTLI_ADMIN_TOKEN`, `$HUITZILOPOCHTLI_WORKSHOP_URL`,
@@ -12,7 +13,7 @@ Use placeholders, never committed values: `$HUITZILOPOCHTLI_ENGINE_URL`,
 `$HUITZILOPOCHTLI_TLS_CERT`/`$HUITZILOPOCHTLI_TLS_KEY` are set; put TLS in
 front. Admin auth is a header token or HTTP Basic; public pages are open.
 
-## 1. Write and upload the scenario
+## 1. Write and commit the scenario
 
 One authored file per box: `boxes/<box>/scenario.yaml`. Its base content is
 the **honor** box; an optional top-level `ranked:` block holds only what a
@@ -47,8 +48,7 @@ ranked:
 
 - **`scenario.mode` is the default target.** `honor` builds the base as an
   honor box and, with a `ranked:` block, the same file as a ranked box under
-  `--mode ranked`; `ranked` is ranked-only and refuses an honor build. There
-  is no separate ranked fork file.
+  `--mode ranked`; `ranked` is ranked-only and refuses an honor build.
 - **An honor build never reads `ranked:`**, so ranked checks, services,
   adversary, and pool cannot leak into an honor manifest or rubric.
 - **Engine address:** `--engine-url` > `$HUITZILOPOCHTLI_ENGINE_URL` >
@@ -78,9 +78,9 @@ deployment bundle ships it). Each scenario appears once, at its current
 authored version; versions are never shown in the UI. Running a competition
 against anything but the current version is refused — when you bump
 `scenario.version`, end and recreate (or rerun) competitions on the new
-version; there is no backwards compatibility. `POST /admin/scenarios` still
-exists for tooling, but an upload only seeds the scoring cache and never adds
-a picker entry.
+version; there is no backwards compatibility. `POST /admin/scenarios` is
+tooling-only: an upload only seeds the scoring cache and never adds a picker
+entry.
 
 ## 2. Create and start a competition
 
@@ -169,7 +169,7 @@ shows as **answered — not correct** (per-question results are hidden until
 exactly this moment — during the run they would be an oracle for iterating
 answers). Within the window the player keeps the box but nothing scores; an
 admin can end the window early on the roster (**Release box**), and ending
-the competition (End, or auto-end — which now
+the competition (End, or auto-end — which
 waits until the last window would have closed before releasing the pool)
 tears every box down as before. A window that has closed is final: Extend
 skips such slots (`reason: box released`) because there is no agent left to
@@ -329,11 +329,11 @@ installer creates an empty map if none is supplied and copies one from
 `HUITZ_POOLS_FILE` when given.
 
 **The file must be readable by the engine's own user** (`huitz` under the
-reference install — `chown huitz:huitz`, `chmod 640`). A root-owned 0600 file
+reference install — `chown huitz:huitz`, `chmod 600`). A root-owned 0600 file
 fails the scan exactly like a malformed one: the store keeps serving the last
 good mirror, claims answer *"the scenario has no pool provisioning block"*,
 and nothing else looks wrong. The admin competition picker shows the error,
-and the sweep loop now repeats it to stderr on first sight and on every
+and the sweep loop repeats it to stderr on first sight and on every
 change (`scenario sync: …` / `scenario sync: recovered`); a `Permission denied`
 there names the user that must be granted read.
 
@@ -444,7 +444,7 @@ plain claim; with only the portal side set, nothing changes.
   guest agent API does not implement `guest-exec` (stripped or shimmed PVE
   installs answer 501) fails every prebind, Windows included, and no amount
   of portal config fixes it — treat terminal fallback as the primary flow
-  there, and note prebind was never the security boundary: the code is
+  there, and note that prebind is not the security boundary: the code is
   one-time, per-player, and rotates.
 - **A ranked pool template is only sealed AFTER its plant step.** An
   install-only template (agent placed, `boxbuilder plant` skipped) binds,
@@ -455,7 +455,7 @@ plain claim; with only the portal side set, nothing changes.
   `seal-prepare`, and re-verify the installed `manifest.signed.json` carries
   THIS scenario's `scenario_name` — a template sealed with the wrong
   manifest rejects every player bind with 409 "built for a different
-  scenario". (Both failure modes were found in the 2026-11 range rehearsal.)
+  scenario".
 - **Some forensics evidence is adversary-authored.** In scenarios whose
   adversary actions plant or overwrite evidence (Broadneck: the
   `mailchute` forward in `/home/postmaster/.forward` replaces a benign
@@ -468,8 +468,7 @@ plain claim; with only the portal side set, nothing changes.
   scored check-in can land 3-5 minutes after `huitz join` says "the ranked
   agent is starting". A freshly bound Windows box that shows no score yet is
   not broken — watch the engine until the first check-in arrives before
-  calling a template dead. (Verification mistake made in the 2026-11
-  rehearsal: Windows templates were marked unscored after a 90-second wait.)
+  calling a template dead; a 90-second wait proves nothing.
 - **`--competition` is what makes a pool template installable.** A plain
   `install --mode ranked` uploads the scenario record and demands the
   engine's admin token; pool templates carry no token (`--competition`),
@@ -587,7 +586,7 @@ be true before the plant runs or the template is worthless:
    `Get-ADDomain` returns the expected DNSRoot, `Get-Service NTDS` is Running,
    and `C:\Windows\NTDS\ntds.dit` exists. Checking only for a substring like
    "DOMAIN=" is not a gate — PowerShell echoes the failing command line, so the
-   marker matches its own error text (this shipped two domain-less templates).
+   marker matches its own error text.
 3. **Plant only on a healthy DC, and require every `ad-*` step to pass.** With
    ADWS down, all 13 (Meridian) / 18 (Harborline) domain steps fail with
    "Unable to find a default server with Active Directory Web Services
@@ -596,11 +595,11 @@ be true before the plant runs or the template is worthless:
 
 Two consequences worth knowing:
 
-- **After promotion, the local `sysadmin` account no longer authenticates.**
+- **After promotion, the local `sysadmin` account stops authenticating.**
   The local Administrator becomes the domain Administrator; SSH and
   `boxbuilder install` must use `Administrator` with the password set in step 1
   (re-set `sysadmin`'s password afterwards so players can still log in).
-- **A correctly-promoted DC template clones fine.** Verified on the range: a
-  clone of the rebuilt Meridian template comes up with `meridian.local`, NTDS
-  and ADWS running, and the planted AD accounts present. The failures seen
-  before the rebuild were the broken promotion, not clone detection.
+- **A correctly-promoted DC template clones fine.** A healthy clone comes up
+  with the domain DNS name, NTDS and ADWS running, and the planted AD accounts
+  present. If a DC clone looks domain-less, suspect the promotion gating in
+  step 2, not clone detection.

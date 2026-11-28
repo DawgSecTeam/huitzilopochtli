@@ -39,16 +39,13 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
         store.enroll_box_atomic(...) and return an EnrollResponse-shaped
         dict {"ok": True, "box_id": ..., "checkin_interval_s": ...}.
     """
-    # 1. Validate shape. A non-object JSON body must be a clean 400, not an
-    # AttributeError that closes the connection at the HTTP layer.
     if not isinstance(body, dict):
         raise EnrollError(400, "malformed body: expected a JSON object")
-    # (isinstance(x, int) accepts bool, so scenario_version needs an explicit
-    # bool guard like the rest of the codebase.)
     for key, expected_type in _REQUIRED_FIELDS.items():
         if key not in body:
             raise EnrollError(400, f"malformed body: missing {key}")
         if key == "scenario_version":
+            # isinstance(x, int) accepts bool; guard it explicitly.
             if isinstance(body[key], bool) or not isinstance(body[key], int):
                 raise EnrollError(400, "malformed body: scenario_version has wrong type")
             if not 0 <= body[key] <= 2 ** 63 - 1:
@@ -63,9 +60,9 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
     except Exception:
         raise EnrollError(400, "malformed body: public_key is not valid base64")
 
-    # Cheap token checks first: signature verification costs seconds of
+    # Cheap token checks before signature work: verification costs seconds of
     # pure-Python CPU, so an unauthenticated caller with no valid token must
-    # never reach it. enroll_box_atomic below re-checks under the lock.
+    # never reach it. enroll_box_atomic re-checks token state under the lock.
     token = store.get_token(body["enrollment_token"])
     if token is None:
         raise EnrollError(400, "unknown token")
@@ -104,7 +101,6 @@ def handle_enroll(store: Store, body: dict, sig: bytes) -> dict:
     if status != "ok":
         raise EnrollError(400, f"enrollment failed: {status}")
 
-    # 8. EnrollResponse-shaped confirmation.
     return {
         "ok": True,
         "box_id": body["box_id"],

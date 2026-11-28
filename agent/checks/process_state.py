@@ -3,13 +3,8 @@
 collect_params: {"pattern": str} (regex).
 Evidence.raw shape: {"running": bool, "count": int, "pids": list[int], "sample_cmdline": str|None}.
 
-Detects whether a process matching `pattern` is currently running, by scanning
-/proc directly -- pure stdlib, no subprocess, no platform layer (process
-inspection via /proc is as distro-agnostic as the file/permission/user checks;
-see architecture.md §9.3's "only the parts that actually differ... are
-abstracted"). This exists to reward a team for finding and killing/removing a
-live rogue process (simulated malware/C2), not just for removing the artifact
-(cron entry, systemd unit, autostart file) that would have launched it.
+Scans /proc directly (stdlib, no platform layer, §9.3): rewards finding and
+killing a live rogue process, not just removing its launch artifact.
 """
 import json
 import os
@@ -20,14 +15,11 @@ from agent.checks.base import Check, register
 from common.matchers import _compile_pattern
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-# Keep raw payloads small and bounded regardless of how many processes match.
 _MAX_PIDS = 20
 _SAMPLE_CMDLINE_LIMIT = 200
 
-
 def _null_raw() -> dict:
     return {"running": False, "count": 0, "pids": [], "sample_cmdline": None}
-
 
 def _read_cmdline(pid: str) -> str:
     """Return the process's cmdline as a space-joined string, or "" if
@@ -36,23 +28,16 @@ def _read_cmdline(pid: str) -> str:
         raw = f.read()
     return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
 
-
 def _read_comm(pid: str) -> str:
     with open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="replace") as f:
         return f.read().strip()
 
-
 def _process_haystack(pid: str) -> str:
     """The string a check pattern is matched against for one pid.
 
-    cmdline is tried first and preferred: a shebang-launched payload (e.g.
-    systemd `ExecStart=/opt/x/daemon` where daemon is a shell script) is
-    kernel-exec'd as `/bin/sh /opt/x/daemon` -- `comm` truncates to just "sh"
-    and never contains the disguised name, but cmdline does. Fall back to
-    comm only when cmdline is empty/unreadable (e.g. kernel threads, or a
-    process owned by another user whose cmdline is not world-readable but
-    whose comm usually still is).
-    """
+    cmdline first: a shebang-launched payload runs as `/bin/sh /opt/x/daemon`,
+    so comm truncates to "sh" and hides the disguised name. comm is only the
+    fallback for empty/unreadable cmdlines (kernel threads, other users)."""
     try:
         cmdline = _read_cmdline(pid)
         if cmdline:
@@ -63,7 +48,6 @@ def _process_haystack(pid: str) -> str:
         return _read_comm(pid)
     except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
         return ""
-
 
 @register("process_state")
 class ProcessStateCheck(Check):
@@ -107,8 +91,8 @@ class ProcessStateCheck(Check):
                 break
             haystack = _process_haystack(entry)
             if not haystack:
-                # Process vanished mid-scan, or neither cmdline nor comm was
-                # readable -- routine under concurrent scanning, skip it.
+                # Vanished mid-scan or unreadable — routine under concurrent
+                # scanning; skip it.
                 continue
             try:
                 hit = compiled.search(haystack)

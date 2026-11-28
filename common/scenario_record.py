@@ -1,16 +1,9 @@
 """Scenario source -> compiled engine record: the one shared implementation.
 
-``authoring/compile.py`` (box builds) and ``engine/scenario.py`` (the engine
-parsing ``boxes/<box>/scenario.yaml`` directly) must produce the *same* engine
-record, so the whole pure dict pipeline lives here: mode merge
-(``authoring``-authored shape -> effective per-target shape), services ->
-synthetic SLA checks, adversary service-id rewrite, expect -> matcher rubric
-entries, and forensics answer entries. Only the YAML load itself and the
-manifest signing (an authoring concern) live elsewhere.
-
-Stdlib-only: this module ships inside the agent zipapp bundle (via ``common``)
-and must never import PyYAML or anything else beyond the standard library.
-"""
+authoring/compile.py and engine/scenario.py must produce the *same* record,
+so the pure dict pipeline (mode merge, services -> SLA checks, expect ->
+matcher, forensics) lives here. Stdlib-only: this ships inside the agent
+zipapp and must never import PyYAML."""
 import dataclasses
 import os
 from typing import Optional
@@ -28,15 +21,10 @@ from common.schema import (
 
 MODES = ("honor", "ranked")
 
-# Committed scenarios name the loopback default and a deployment overrides it
-# with --engine-url or $HUITZILOPOCHTLI_ENGINE_URL. A loopback value means
-# "no engine configured yet" and boxbuilder warns about it at install.
 LOOPBACK_ENGINE_URL = "http://127.0.0.1:8080"
 
 _RANKED_KEYS = frozenset({"engine_url", "checks", "services", "adversary", "pool"})
 
-# pool fields that are integers in the provision API but may be authored as
-# "${VAR}" strings so a committed scenario carries no deployment specifics.
 _POOL_INT_KEYS = ("template_vm_id", "vm_count", "guac_link_ttl_seconds")
 
 _DEFAULT_TIMEOUT_S = 5.0
@@ -112,11 +100,8 @@ def merge_effective(parsed: dict, mode: str, engine_url: str = None,
                     source: str = "<scenario>") -> dict:
     """Return the scenario as it should be compiled for ``mode``.
 
-    The returned dict has the classic shape ``authoring.compile`` consumes:
-    ``scenario`` (with a concrete ``engine_url`` when ranked), ``checks``,
-    ``theme``, ``forensics``, and — ranked only — ``services``, ``adversary``,
-    ``pool``.
-    """
+    Classic authoring.compile shape: scenario (concrete engine_url when
+    ranked), checks, theme, forensics; ranked only adds services/adversary/pool."""
     if mode not in MODES:
         raise ScenarioModeError(f"{source}: mode must be one of {MODES!r}, got {mode!r}")
 
@@ -157,16 +142,14 @@ def merge_effective(parsed: dict, mode: str, engine_url: str = None,
         effective["scenario"]["mode"] = "ranked"
         effective["scenario"]["engine_url"] = resolve_engine_url(
             parsed, mode, engine_url, source=source)
-        # The ranked block is the authored home for these; a ranked-only file
-        # (scenario.mode: ranked) may still carry them at top level.
         effective["services"] = list(block.get("services") or parsed.get("services") or [])
         effective["adversary"] = block.get("adversary") or parsed.get("adversary") or {}
         pool = block.get("pool") if block.get("pool") else parsed.get("pool")
         if pool:
             effective["pool"] = expand_pool(pool)
     else:
-        # Honor builds never see ranked content. Strip it so a caller cannot
-        # accidentally compile services/adversary/pool into an honor record.
+        # Honor builds never see ranked content: strip it so a ranked: block
+        # cannot leak into an honor manifest.
         effective["scenario"] = dict(scenario)
         effective["scenario"].pop("engine_url", None)
 
@@ -176,14 +159,9 @@ def merge_effective(parsed: dict, mode: str, engine_url: str = None,
 def _compile_requires(check: dict) -> list:
     """Validate and normalize one check's optional ``requires`` list.
 
-    Entries are bare binary names (resolved on PATH by the agent collector)
-    or absolute paths. The collector refuses to run the check -- reporting
-    status ``unavailable``, 0 points, never a pass -- when any entry is
-    missing, which is what keeps a collect script from "succeeding" via a
-    ``command -v <tool> || { echo true; }`` escape hatch on an
-    un-provisioned host. Absent (the common case) compiles to an empty
-    list, so every other check behaves exactly as before.
-    """
+    Missing entries make the collector refuse the check (unavailable, never
+    a pass) — that kills the ``command -v <tool> || echo true`` escape hatch
+    on un-provisioned hosts. Absent compiles to []."""
     requires = check.get("requires")
     if requires is None:
         return []
@@ -208,9 +186,8 @@ def _compile_requires(check: dict) -> list:
     return out
 
 
-#: Generic manifest display titles for ranked builds, by category. The real
-#: per-check wording stays in the rubric entries (engine-side) — see the
-#: ranked anti-oracle transform in build_scenario_parts.
+#: What ranked manifests ship instead of real check titles — see the ranked
+#: anti-oracle transform in build_scenario_parts.
 _RANKED_GENERIC_TITLES = {
     "vuln": "Hardening finding",
     "penalty": "Protective constraint",
@@ -274,8 +251,6 @@ def _build_rubric_entry(check: dict) -> RubricEntry:
         matcher=matcher,
         points=points,
         sla=sla,
-        # Ranked builds overwrite check["display"] with a generic label for
-        # the manifest; the authored wording survives here (engine-side only).
         display_title=str(check.get("_ranked_title") or check.get("display", "")),
     )
 
@@ -334,13 +309,10 @@ _SERVICE_KEYS = frozenset({
 
 
 def _build_service(service: dict) -> tuple:
-    """Expand one services[] entry into (CheckSpec dict, RubricEntry dict,
-    public ServiceSpec metadata).
+    """Expand one services[] entry into (CheckSpec, RubricEntry, ServiceSpec).
 
-    The check id is prefixed with ``svc_`` so a service can never collide with
-    an author-written check id. Expected values stay in the rubric only; the
-    manifest carries just the display metadata.
-    """
+    The ``svc_`` id prefix keeps services from colliding with author check
+    ids; expected values stay in the rubric, display metadata in the manifest."""
     sid = service["id"]
     check_id = f"svc_{sid}"
     display = service["display"]
@@ -379,24 +351,13 @@ def _build_service(service: dict) -> tuple:
 def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
                          engine_url: Optional[str] = None,
                          source: str = "<scenario>") -> dict:
-    """Parsed scenario -> every compiled artefact the two consumers need.
+    """Parsed scenario -> every compiled artefact both consumers need.
 
-    Returns a dict with:
-
-    - ``effective``: the merged per-target scenario dict (theme lives here)
-    - ``check_specs`` / ``rubric_entries``: compiled check + rubric objects
-    - ``forensics_questions``: manifest-side question metadata
-    - ``service_specs``: public service metadata
-    - ``rubric``: the assembled ``Rubric`` object
-    - ``engine_record``: the ``{rubric, adversary, services, mode,
-      requires?, pool?}`` dict the engine stores and serves (``requires`` is
-      present only when some check declares prerequisites)
-
-    Raises ``ScenarioModeError``/``ValueError`` on authored content that
-    cannot compile. Structural validation of the produced record is the
-    caller's job (``authoring.validate`` at build time;
-    ``engine.scenario.validate_scenario_record`` at engine time).
-    """
+    Keys: effective, check_specs, rubric_entries, forensics_questions,
+    service_specs, rubric, engine_record (the dict the engine stores;
+    requires?/pool? present only when declared). Raises ScenarioModeError/
+    ValueError on uncompilable content; structural record validation is the
+    caller's job."""
     effective = merge_effective(parsed, mode or base_mode(parsed),
                                 engine_url=engine_url, source=source)
 
@@ -406,15 +367,6 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
 
     # Ranked anti-oracle transform: the signed manifest is world-readable on
     # the box and players may have root, so it must not carry the answer key
-    # in its metadata. In ranked builds, non-forensics check ids become
-    # opaque (authored ids like "no_vega" name planted artifacts) and the
-    # manifest's display titles become generic category labels (authored
-    # titles state exact end-states). The real titles ride in the rubric
-    # entries (engine-side only) so the engine can still name PASSED checks
-    # back to the box as progressive hints. Forensics questions are exempt:
-    # their ids and question text are public (the question file ships on the
-    # box). Honor builds are unchanged — the honor box holds the rubric and
-    # the player is trusted.
     ranked = scenario["mode"] == "ranked"
     id_map = {}
     if ranked:
@@ -425,8 +377,6 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
             new_id = f"chk-{ordinal:03d}"
             id_map[old_id] = new_id
             check["id"] = new_id
-            # Keep the authored wording for the rubric entry (engine-side)
-            # before the manifest-facing display becomes generic.
             check["_ranked_title"] = str(check.get("display", ""))
             check["display"] = _RANKED_GENERIC_TITLES.get(
                 check.get("category"), "Hardening check")
@@ -439,10 +389,6 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
         service_specs.append(meta)
         service_check_ids[service["id"]] = check["id"]
 
-    # Let an adversary event name a service id (`web`) instead of the
-    # generated check id (`svc_web`); the rubric/scheduler needs the latter.
-    # Ranked id remap (above) applies first so events naming an authored
-    # check id land on its opaque replacement.
     adversary_raw = effective["adversary"] or {}
     if (service_check_ids or id_map) and isinstance(adversary_raw, dict):
         rewritten = []
@@ -484,22 +430,14 @@ def build_scenario_parts(parsed: dict, mode: Optional[str] = None,
         "rubric": dataclasses.asdict(rubric),
         "adversary": adversary_raw,
         "services": [dataclasses.asdict(s) for s in service_specs],
-        # The engine's box-folder listing filters on this (ranked boxes only);
-        # honor records simply carry "honor".
         "mode": scenario["mode"],
     }
-    # Optional per-check prerequisites (see CheckSpec.requires): recorded so
-    # the engine-side artefact says which checks are gated on which binaries
-    # or paths -- grading itself reacts to them through the agent's
-    # ``unavailable`` evidence, never from this map. Omitted when no check
-    # declares requires, so existing records are byte-identical.
+    # Prerequisites for engine views only; the box learns unavailability
+    # from ``unavailable`` evidence, never from this map. Omitted when none.
     requires_map = {spec.id: list(spec.requires)
                     for spec in check_specs if spec.requires}
     if requires_map:
         engine_record["requires"] = requires_map
-    # Workshop pool provisioning spec (ranked only; validation rejects a pool
-    # block on honor scenarios). Passed through to the engine, which provisions
-    # one pool per competition from it.
     if "pool" in effective:
         engine_record["pool"] = effective["pool"]
 

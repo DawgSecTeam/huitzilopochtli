@@ -1,24 +1,8 @@
-"""Resolve a scenario's `theme` block into vulndb catalog configuration entries to
-append to each machine's `configurations` list -- box theming lives entirely in this
-project (boxbuilder) and the vulndb catalog, using nakon exactly as it already works
-today (its `depends_on`/`vars` mechanism and its existing MinIO-backed attachment
-fetcher), with zero nakon source changes.
-
-Four small, generic, reusable catalog configurations do the actual work on the box --
-`theme-wallpaper`, `theme-motd`, `theme-readme`, `theme-shortcuts` (static definitions in
-boxbuilder/vulndb_theme_configs/, auto-created idempotently the first time they're
-needed via boxbuilder/vulndb.py::ensure_configuration). Free text (motd/issue/
-shortcut name+exec) is threaded through as `vars`; files (wallpaper/readme) go
-through one content-addressed attachment per distinct file, uploaded once and reused by
-every scenario that references identical bytes (boxbuilder/vulndb.py::ensure_attachment).
-
-Forensics questions are NOT handled here anymore: they are scored, compiled into
-the manifest + rubric by authoring/compile.py, and the agent writes/reads the
-answers file on the box itself (agent/__main__.py + agent/checks/forensics.py).
-
-`title`/`organization`/`accent`/`logo` are NOT handled here -- those are the small,
-cosmetic subset that flows through the signed Manifest instead (see
-authoring/compile.py::_build_manifest_theme); this module never touches them.
+"""Resolve a scenario's `theme` block into vulndb catalog `configurations`
+entries appended to each machine — via the four generic configs
+theme-wallpaper/-motd/-readme/-shortcuts (free text as `vars`, files as
+content-addressed attachments), with zero nakon changes. Cosmetic fields
+(title/accent/logo…) flow through the signed manifest, not here.
 """
 import base64
 import os
@@ -30,8 +14,6 @@ from boxbuilder import mdhtml, vulndb
 from boxbuilder.os_family import is_windows
 from boxbuilder.spec import BoxSpec, _resolve
 
-# Matches authoring/compile.py's manifest logo cap; the README page skips (rather
-# than fails) an over-cap/unreadable logo -- compile.py is the one that fail-fasts.
 _MAX_LOGO_BYTES = 150 * 1024
 
 
@@ -52,11 +34,9 @@ def _readme_logo_b64(theme: dict, base_dir: str) -> Optional[str]:
 
 
 def _readme_upload_path(readme_abs: str, theme: dict, base_dir: str) -> str:
-    """Return the file to upload for theme.readme. Markdown is rendered to a themed
-    HTML page (boxbuilder/mdhtml.py) in a temp dir that the caller removes after the
-    upload; an author-supplied .html passes through untouched. The fixed `README.html`
-    basename -- not the scenario's own filename -- is what lands in the content-
-    addressed attachment name, matching the on-box script's Desktop filename."""
+    """theme.readme upload target: Markdown renders to a themed HTML page in a
+    temp dir (caller cleans up); an author .html passes through. The fixed
+    README.html basename is what lands in the attachment name."""
     if readme_abs.lower().endswith((".html", ".htm")):
         return readme_abs
     with open(readme_abs, encoding="utf-8") as f:
@@ -71,9 +51,6 @@ def _readme_upload_path(readme_abs: str, theme: dict, base_dir: str) -> str:
 
 
 def _motd_vars(theme: dict) -> dict:
-    # `issue` falls back to `motd` and vice versa (documented author-facing behavior,
-    # unchanged from before this rework) -- resolved here in Python since the catalog
-    # script itself now only ever sees the two vars independently, already resolved.
     motd_text = theme.get("motd") or theme.get("issue") or ""
     issue_text = theme.get("issue") or theme.get("motd") or ""
     v = {}
@@ -84,31 +61,16 @@ def _motd_vars(theme: dict) -> dict:
     return v
 
 
-# Where the user-readable mirrors (report.html/report.json, README.html) live,
-# off the Desktop but still readable by a strictly snap-confined browser (the
-# snap `home` interface covers plain $HOME paths like ~/Documents, never /opt,
-# and hides dot-directories). sync-report.sh / the win task script maintain the
-# report copies; theme-readme plants the handbook there.
+# The mirror must live under plain $HOME: snap's `home` interface covers
+# ~/Documents but never /opt, so a snap-confined browser can't read /opt.
 MIRROR_DIR_POSIX = "Documents/huitzilopochtli"
 MIRROR_DIR_WINDOWS = r"%PUBLIC%\Documents\huitzilopochtli"
 
 
 def _shortcut_pairs(theme: dict, windows: bool = False) -> list:
-    """Author's desktop_shortcuts list plus the auto-appended "Scoring Report" launcher
-    (unless opted out) -- one (name, exec) pair per eventual `theme-shortcuts` entry.
-
-    POSIX: The Scoring Report opens the ~/Documents/huitzilopochtli/report.html
-    mirror, not _REPORT_PATH (/opt/...) directly: a snap-confined browser (e.g.
-    Ubuntu's default Firefox) can't see /opt at all and would show "File not
-    found" for it. The mirror lives off the Desktop (which stays at exactly the
-    forensics answers file + shortcuts) but still under $HOME so the snap can
-    read it. sh -c wrapped so $HOME actually expands -- a bare `~`/`$HOME` in a
-    .desktop Exec= line isn't guaranteed to be shell-expanded by whatever
-    launches it.
-
-    Windows: shortcuts are .lnk files (theme-shortcuts-win) whose exec is the
-    TARGET path, so the report launcher points at the Public Documents copy the
-    scheduled-task wrapper maintains (always readable by the team account)."""
+    """Author's shortcuts plus the auto "Scoring Report" launcher (unless
+    opted out), as (name, exec) pairs. The report opens via the $HOME/Public
+    Documents mirror (snap can't read /opt), sh -c wrapped to expand $HOME."""
     shortcuts = list(theme.get("desktop_shortcuts") or [])
     for idx, sc in enumerate(shortcuts):
         if not isinstance(sc, dict) or not sc.get("name") or not sc.get("exec"):
@@ -139,20 +101,13 @@ def _target_is_windows(spec: BoxSpec) -> bool:
 
 
 def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None) -> list:
-    """Return the configuration entries to append to EVERY machine's `configurations`
-    list in nakon's config.json -- empty list if the scenario has no theme block (fully
-    backward compatible: doesn't touch vulndb at all when there's nothing themed).
-
-    `vulndb_url` defaults via vulndb.resolve_vulndb_url() ($VULNDB_UI_URL, else
-    http://127.0.0.1:3000). Raises ValueError early (before any network call) if
-    wallpaper/readme reference a missing file, mirroring spec.py::load_spec's existing
-    existence checks; raises vulndb.VulndbError if vulndb-ui isn't reachable/writable.
-    """
+    """Configuration entries to append to every machine's `configurations`
+    list; empty (no vulndb contact at all) without a theme block. Raises
+    ValueError before any network call if a referenced file is missing."""
     theme = spec.theme
     if not theme:
         return []
 
-    # Fail fast on missing files before touching the network at all.
     wallpaper_abs = None
     if theme.get("wallpaper"):
         wallpaper_abs = _resolve(theme["wallpaper"], spec.base_dir)
@@ -180,8 +135,6 @@ def resolve_theme_configurations(spec: BoxSpec, vulndb_url: Optional[str] = None
         entries.append({"name": seed, "vars": {"WALLPAPER_FILENAME": filename}})
 
     if not windows:
-        # No motd/issue analog is planted on Windows (the console-banner
-        # concept has no useful equivalent); theme text lives in the README.
         motd_vars = _motd_vars(theme)
         if motd_vars:
             vulndb.ensure_configuration(url, vulndb.load_seed_definition("theme-motd"),

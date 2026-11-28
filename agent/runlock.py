@@ -1,10 +1,8 @@
 """Best-effort inter-process lock for grade/report publication.
 
-The honor timer and a manual `sudo huitz grade` run the same pipeline. Without
-a lock they can both read the same baseline and announce the same change
-twice, or one can overwrite the other's report/snapshot mid-write. This is a
-cooperative lock for the agent's own processes, not a security boundary.
-"""
+Keeps the timer and `sudo huitz grade` from double-announcing a change or
+clobbering each other's report mid-write. Cooperative, for the agent's own
+processes — NOT a security boundary."""
 import os
 
 

@@ -1,19 +1,8 @@
-"""Thin subprocess wrappers around the nakon CLI.
-
-boxbuilder treats nakon as a CLI dependency (never imports it as a library) --
-consistent with how tezcatlipoca consumes nakon and with nakon's documented CLI contract
-(see the pinned `vendor/nakon/README.md` submodule).
-
-Contract (mirrors tezcatlipoca):
-  - `nakon build --json` prints exactly ONE JSON line on stdout (the summary),
-    after any log lines. We parse stdout.splitlines()[-1].
-  - `nakon deploy --json` prints a single JSON object on stdout.
-  - Logs go to stderr; the result goes to stdout. So `--json | jq` works.
-
-Build needs vulndb reachable + nakon[build]; deploy needs only nakon[deploy]
-(paramiko), no vulndb. We run nakon with cwd=NAKON_DIR so it can read its own
-.env / config (vulndb creds, bundles dir).
-"""
+"""Thin subprocess wrappers around the nakon CLI (a dependency, never
+imported as a library; see the pinned vendor/nakon submodule). Contract:
+--json puts the result on stdout (logs on stderr): `build` one summary
+line, `deploy` one object. Run with cwd=NAKON_DIR so nakon reads its own
+.env; build needs vulndb + nakon[build], deploy only nakon[deploy]."""
 import json
 import os
 import subprocess
@@ -39,8 +28,8 @@ def resolve_nakon_dir(explicit: str = None) -> str:
     else:
         here = os.path.dirname(__file__)
         candidates = [
-            os.path.normpath(os.path.join(here, "..", "vendor", "nakon")),  # submodule
-            os.path.normpath(os.path.join(here, "..", "..", "nakon")),       # sibling checkout
+            os.path.normpath(os.path.join(here, "..", "vendor", "nakon")),
+            os.path.normpath(os.path.join(here, "..", "..", "nakon")),
         ]
     for path in candidates:
         if os.path.isfile(os.path.join(path, "nakon", "cli.py")):
@@ -85,18 +74,13 @@ def _run_nakon(args: list, nakon_dir: str, timeout: int) -> subprocess.Completed
 
 
 def catalog_check(nakon_dir: str, config_path: str, timeout: int = 300) -> dict:
-    """Run `nakon catalog check --config ... --json` (read-only).
-
-    Validates that every configuration in the file exists in the catalog and
-    that its required vars are satisfied -- the one check boxbuilder cannot do
-    offline. Returns the parsed result; raises NakonError on a non-zero exit.
-    """
+    """`nakon catalog check --config ... --json` (read-only): the one check
+    boxbuilder cannot do offline. Raises NakonError on non-zero exit."""
     result = _run_nakon(["catalog", "check", "--config", str(config_path), "--json"],
                         nakon_dir, timeout)
     stdout = result.stdout.strip()
     if not stdout:
         return {}
-    # catalog check pretty-prints one document; build/deploy print one line.
     try:
         parsed = json.loads(stdout)
     except json.JSONDecodeError:
@@ -114,12 +98,8 @@ def build_bundle(
     out_dir: str = "bundles",
     timeout: int = 900,
 ) -> dict:
-    """Run `nakon build --json`. Returns the parsed summary dict.
-
-    Shape: {"bundle_id", "path", "plans", "machines"} (bundles are
-    content-addressed; there is no cache, so every build is fresh).
-    `path` is absolute (nakon writes it relative to cwd=nakon_dir; we resolve).
-    """
+    """`nakon build --json` -> summary dict {"bundle_id","path","plans",
+    "machines"}; `path` is made absolute (builds are fresh, no cache)."""
     args = ["build", "--config", str(config_path), "--out", str(out_dir), "--json"]
     result = _run_nakon(args, nakon_dir, timeout)
 
@@ -141,7 +121,6 @@ def build_bundle(
             stderr=result.stderr,
         )
 
-    # nakon's `path` is relative to its cwd; make it absolute for the caller.
     if info.get("path") and not os.path.isabs(info["path"]):
         info["path"] = os.path.normpath(os.path.join(nakon_dir, info["path"]))
     return info
@@ -156,12 +135,8 @@ def deploy_bundle(
     keep_remote: bool = False,
     timeout: int = 1800,
 ) -> dict:
-    """Run `nakon deploy --json`. Returns the parsed outcome dict.
-
-    Shape: {"bundle_id", "machines":[...], "failures": N, "ok": bool, "log_dir"}.
-    Raises NakonError on non-zero exit (deploy exits 1 on failure under
-    --strict / NAKON_STRICT).
-    """
+    """`nakon deploy --json` -> {"bundle_id","machines","failures","ok",
+    "log_dir"}; raises NakonError on non-zero exit (strict mode)."""
     args = ["deploy", "--bundle", str(bundle_path), "--config", str(config_path), "--json"]
     if only:
         args += ["--only", *only]
@@ -193,14 +168,9 @@ def deploy_bundle(
 
 def derive_deploy_config(agent_nakon_config: dict, machine_name: str, host: str,
                          user: str, password: str, port: int = 22) -> dict:
-    """Address reconciliation: take the vuln list from the agent's nakon
-    config for the named machine, but rewrite the address to come from the
-    provider handle (the provider is the single source of truth for where the
-    box actually is).
-
-    Returns a fresh one-machine nakon config suitable for `nakon deploy`.
-    Raises KeyError if `machine_name` is not in the agent config.
-    """
+    """Build a one-machine `nakon deploy` config: vuln list from the agent's
+    config for `machine_name` (KeyError if absent), address from the provider
+    handle — the handle is the single source of truth for where the box is."""
     src = None
     for m in agent_nakon_config.get("machines", []):
         if m.get("name") == machine_name:

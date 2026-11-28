@@ -14,7 +14,7 @@ from typing import Optional
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-ACCENT = (31, 78, 121)      # composed, non-alarming blue
+ACCENT = (31, 78, 121)
 MUTED = (110, 118, 130)
 GOOD = (46, 125, 50)
 WARN = (176, 28, 46)
@@ -24,9 +24,6 @@ PAGE_H = 297.0
 MARGIN = 16.0
 CONTENT_W = PAGE_W - 2 * MARGIN
 
-# The core fonts are latin-1 (cp1252)-only; every string that reaches a
-# cell goes through _ascii so a stray em-dash or a non-latin team name
-# degrades to a lookalike instead of killing the render.
 _TRANSLATE = {
     "\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'",
     "\u201c": '"', "\u201d": '"', "\u2022": "-", "\u00a0": " ",
@@ -35,6 +32,9 @@ _TRANSLATE = {
 
 
 def _ascii(text: object) -> str:
+    """Every string that reaches a PDF cell, via the core fonts' latin-1
+    charset: a stray em-dash or non-latin team name degrades to a lookalike
+    instead of raising and killing the render."""
     if text is None:
         return ""
     text = str(text)
@@ -61,7 +61,6 @@ def render_pdf(digest: dict, out_path: Path) -> Path:
     return out_path
 
 
-# --- sections ---------------------------------------------------------------
 
 
 def _header(pdf: FPDF, digest: dict) -> None:
@@ -120,12 +119,9 @@ def _score_section(pdf: FPDF, digest: dict) -> None:
 
 
 def _checks_section(pdf: FPDF, digest: dict) -> None:
-    """Every check the engine scored, split caught vs missed.
-
-    Two labelled lists in a two-column grid (the scenarios carry ~90
-    checks) rendered straight from the digest's per-check rows; the
-    per-cell "points/max" is shown only when the run's rubric is still
-    in the store, else the bare id."""
+    """Every check the engine scored, caught vs missed, in a two-column
+    grid (scenarios carry ~90 checks). "points/max" only while the rubric
+    is still in the store — else the bare id."""
     team = digest.get("team", {})
     checks = _digest_facts(digest)[0]
     checks = [c for c in checks if not str(c.get("id") or "").startswith("svc_")]
@@ -265,7 +261,6 @@ def _narrative_section(pdf: FPDF, digest: dict) -> None:
         pdf.ln(2)
 
 
-# --- helpers ----------------------------------------------------------------
 
 
 def _digest_facts(digest: dict) -> tuple:

@@ -1,32 +1,13 @@
 #!/sbin/openrc-run
-# Huitzilopochtli agent OpenRC init script (Alpine/musl-style systems).
-# See architecture.md §17. Functional equivalent of
-# packaging/huitzilopochtli-agent.service.
-#
-# Install layout assumed (see packaging/README.md):
-#   /opt/.huitzilopochtli/agent.pyz
-#   /opt/.huitzilopochtli/agent_config.json
-#   /opt/.huitzilopochtli/manifest.signed.json
-#   /opt/.huitzilopochtli/.score.dat         (honor mode only, 0600, encoded)
-#   /opt/.huitzilopochtli/identity.json      (ranked mode only, 0600)
-#
-# Alpine caveat: minimal Alpine ships without Python at all -- image
-# provisioning must run `apk add python3` before this service can start.
-#
-# Same caveat as the systemd unit applies here: honor mode's agent
-# process runs the checks once and exits 0; ranked mode's process
-# loops forever. This script backgrounds the process either way
-# (command_background=true) so `rc-service` returns promptly; for
-# honor mode that just means the backgrounded process exits shortly
-# after start and rc-status will show it as stopped, which is
-# expected and harmless.
-#
-# Known gap: unlike the systemd unit (paired with
-# huitzilopochtli-agent.timer for periodic honor-mode re-grading),
-# there is no OpenRC equivalent here yet -- OpenRC has no built-in
-# timer unit, so an honor-mode box on an OpenRC init system needs a
-# cron entry (e.g. `* * * * * rc-service huitzilopochtli-agent
-# restart`) added separately if periodic re-grading is wanted there.
+# Huitzilopochtli agent OpenRC init script (Alpine/musl), functional
+# equivalent of packaging/huitzilopochtli-agent.service (architecture.md
+# §17; install layout: packaging/README.md).
+# Alpine caveat: minimal images ship without python3 — `apk add python3`
+# at provisioning or this service cannot start.
+# The honor agent runs once and exits, so rc-status showing it "stopped"
+# shortly after start is expected (both modes are backgrounded here).
+# No OpenRC re-grade timer exists: for honor-mode periodic re-grades add
+# a cron entry (`* * * * * rc-service huitzilopochtli-agent restart`).
 
 name="huitzilopochtli-agent"
 description="Huitzilopochtli scoring agent"
@@ -41,10 +22,8 @@ output_log="/var/log/${RC_SVCNAME}.log"
 error_log="/var/log/${RC_SVCNAME}.log"
 
 depend() {
-	# Ranked mode needs network connectivity to check in with the
-	# engine; honor mode does not strictly need it but declaring the
-	# dependency is harmless (and this same init script serves both
-	# modes, selected via agent_config.json).
+	# Ranked check-ins need the engine; honor works offline. Same script
+	# serves both modes (agent_config.json selects).
 	need net
 	use dns
 	after firewall

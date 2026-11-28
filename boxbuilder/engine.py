@@ -1,14 +1,7 @@
-"""Ranked-mode engine wiring: upload the scenario record + mint an enrollment token.
-
-Uses the engine's admin HTTP API (engine/server.py), gated by the
-X-HUITZILOPOCHTLI-Admin-Token header:
-  POST /admin/scenarios   {rubric, adversary}   -> {ok, scenario_name}
-  POST /admin/tokens      {scenario_name, ttl_s} -> {token, expires_at}
-
-stdlib http.client only (like the agent transport), so boxbuilder adds no HTTP
-dependency. TLS is used when engine_url is https://.
-
-This module is ranked-only; honor mode never imports it.
+"""Ranked-mode engine wiring: upload the scenario record, mint an
+enrollment token. Admin API (engine/server.py) behind the
+X-HUITZILOPOCHTLI-Admin-Token header: POST /admin/scenarios and
+POST /admin/tokens. stdlib http.client only; ranked-only module.
 """
 import ipaddress
 import json
@@ -88,7 +81,6 @@ def _request(scheme: str, host: str, port: int, method: str, path: str,
 
     if resp.status >= 400:
         msg = parsed.get("error") or parsed.get("raw") or f"HTTP {resp.status}"
-        # 503 means admin endpoints are disabled (no admin token on the engine).
         hint = ""
         if resp.status == 503:
             hint = " (is HUITZILOPOCHTLI_ADMIN_TOKEN set on the engine?)"
@@ -99,11 +91,8 @@ def _request(scheme: str, host: str, port: int, method: str, path: str,
 
 def upload_scenario(engine_url: str, admin_token: str, engine_record_path: str,
                     timeout: int = 30) -> dict:
-    """POST /admin/scenarios with the compiled engine_record.json.
-
-    `engine_record_path` is produced by authoring/compile.py (rubric + adversary).
-    Returns the engine's {"ok", "scenario_name"} response.
-    """
+    """POST /admin/scenarios with the compiled engine_record.json (rubric +
+    adversary, from authoring/compile.py) -> {"ok","scenario_name"}."""
     if not admin_token:
         raise EngineError(
             "admin token is required to upload the scenario record; set "
@@ -121,8 +110,6 @@ def upload_scenario(engine_url: str, admin_token: str, engine_record_path: str,
         raise EngineError(
             f"engine record at {engine_record_path} is not valid JSON: {e}"
         ) from e
-    # The endpoint accepts the engine_record shape (rubric, adversary, plus
-    # optional services and pool) and validates what it needs.
     scheme, host, port = _split_url(engine_url)
     return _request(scheme, host, port, "POST", "/admin/scenarios", admin_token,
                     body=record, timeout=timeout)
@@ -130,11 +117,8 @@ def upload_scenario(engine_url: str, admin_token: str, engine_record_path: str,
 
 def mint_enrollment_token(engine_url: str, admin_token: str, scenario_name: str,
                           ttl_s: int = 86400, timeout: int = 30) -> str:
-    """POST /admin/tokens -> return the one-time enrollment token string.
-
-    The token is embedded in agent_config.json.enrollment_token and consumed
-    once by the agent on its first ranked boot (see agent/config.py).
-    """
+    """POST /admin/tokens -> the one-time enrollment token, embedded in
+    agent_config.json and consumed on the agent's first ranked boot."""
     if not admin_token:
         raise EngineError("admin token is required to mint an enrollment token")
     scheme, host, port = _split_url(engine_url)

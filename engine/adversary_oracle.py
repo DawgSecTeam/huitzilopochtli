@@ -15,14 +15,10 @@ def _event_rng(server_secret: bytes, box_id: str, event_id: str) -> random.Rando
 
 def due_directives(store: Store, box_id: str, server_secret: bytes,
                     event_pool: list, t0: float, received_at: float) -> list:
-    """Derive a deterministic RNG per (server_secret, box_id, event_id); for
-    each event in event_pool pick (reproducibly) a concrete fire_time within
-    its window_s, anchored to t0. Keying on event_id (not pool position) keeps
-    an event's fire time stable when a re-upload adds, drops or reorders other
-    events. For any event whose fire_time <= received_at and
-    whose event_id is not already in store.get_issued_event_ids(box_id):
-    log it via store.log_adversary_event and include it in the returned
-    list[Directive]. Already-issued events are never re-issued.
+    """Derive a deterministic RNG per (server_secret, box_id, event_id); pick
+    a reproducible fire_time within window_s anchored to t0 — keying on
+    event_id keeps it stable across re-uploads. Return directives for un-issued
+    due events; already-issued events are never re-issued.
     """
     # CAUTION: fire times are *derived*, not stored. Rotating
     # HUITZILOPOCHTLI_SERVER_SECRET silently re-schedules every box's events

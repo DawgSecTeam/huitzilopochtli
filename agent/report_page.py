@@ -1,32 +1,16 @@
-"""Shared presentation layer for the huitz HTML pages.
+"""Shared presentation layer for the huitz HTML pages (report + README).
 
-Holds everything visual that the score report (agent/reporter.py, runs on the
-box) and the box README page (boxbuilder/mdhtml.py, build machine only) have
-in common: the CSS, the page shell, the masthead, the accent-color guard, and
-the countdown script. Both import from here instead of mirroring copies, so
-the two pages cannot drift apart.
-
-Everything lives in Python (not a .css/.html data file) on purpose: the agent
-ships as a zipapp, and reading data files from inside a zipapp would need
-zip-internal resource loading on the box. Plain .py modules bundle for free
-(packaging/build_zipapp.py copies the whole agent/ package) and keep the
-pure-stdlib invariant.
-
-Callers pass plain-text values; `page_shell` and `masthead_html` escape them.
-The body HTML is inserted verbatim -- fragments built in reporter.py escape
-their own dynamic pieces.
-"""
+Plain .py (no data files) so the zipapp bundles free and stays stdlib-only.
+Contract: callers pass plain text — page_shell/masthead_html escape it; body
+HTML is inserted verbatim, so fragments escape their own dynamic pieces."""
 import html
 import json
 import re
 
-# Defensive accent validation: only a 6-digit hex may reach the <style> block.
 ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
-# Paper ground the box pages paint on (body background below).
 _PAPER = "#fbfbf9"
 _INK = "#1f2328"
-
 
 def _rel_lum(hex_color: str) -> float:
     def channel(v):
@@ -35,12 +19,10 @@ def _rel_lum(hex_color: str) -> float:
     r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
     return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
 
-
 def _mix(hex_a: str, hex_b: str, t: float) -> str:
     a = [int(hex_a[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(hex_b[i:i + 2], 16) for i in (1, 3, 5)]
     return "#%02x%02x%02x" % tuple(round(x * (1 - t) + y * t) for x, y in zip(a, b))
-
 
 def _readable_on_paper(accent: str, target: float = 4.5) -> str:
     """The accent as *text* on the paper ground, blended toward ink until the
@@ -57,28 +39,23 @@ def _readable_on_paper(accent: str, target: float = 4.5) -> str:
             return cand
     return _INK
 
-
 def accent_css(accent) -> str:
     """:root overrides for a theme accent, or "" if absent/invalid.
 
     Emits --accent (fills, rules, the big total) and --accent-text (links),
     the latter blended until it is readable as text on the paper ground.
-    """
+    Only a validated 6-digit hex may reach the <style> block."""
     if not (accent and ACCENT_RE.match(str(accent))):
         return ""
     accent = str(accent)
     return (f":root {{ --accent: {accent}; "
             f"--accent-text: {_readable_on_paper(accent)}; }}\n")
 
-
-# Inline SVG favicon (an "H" monogram on paper) so opening the report over
-# http does not log a /favicon.ico 404.
 _FAVICON = ("data:image/svg+xml,"
             "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
             "%3Crect width='32' height='32' fill='%23fbfbf9'/%3E"
             "%3Cpath d='M7 6h5v8h8V6h5v20h-5v-8h-8v8H7z' fill='%231f2328'/%3E"
             "%3C/svg%3E")
-
 
 def masthead_html(title: str, organization=None, logo_b64=None) -> str:
     """Logo + h1 masthead with optional organization line. Escapes inputs."""
@@ -94,28 +71,16 @@ def masthead_html(title: str, organization=None, logo_b64=None) -> str:
         f"{org_html}"
     )
 
-
 def countdown_script(target_epoch_s: float, render_epoch_s: float,
                       element_id: str = "countdown",
                       done_text: str = "00:00 \u2014 checking\u2026",
                       show_hours: bool = False) -> str:
-    """Inline JS counting down to target_epoch_s. No deps.
+    """Inline dependency-free JS counting down to target_epoch_s.
 
-    The report is a static file that outlives its render instant: it is
-    re-executed on every reload and on the meta-refresh, so the deadline must
-    be baked into the file (endMs is fixed) -- anchoring it to the page-load
-    clock would restart the countdown on every reload. The anchor is the
-    render instant, not the raw epoch target: the box's browser and the
-    render-time clock() are the same clock, so engine/box skew stays absorbed
-    in (target - render) exactly as it would be in a pre-computed remainder,
-    and a file rendered after its deadline simply reads the done text at load.
-
-    ``element_id`` lets one report carry two independent clocks (the ranked
-    event clock and the next check-in). ``show_hours`` switches the format to
-    H:MM:SS for a multi-hour event rather than growing the minute field.
-    """
-    # integer seconds, clamped at 0: a render that already past its deadline
-    # (stale file) must read 00:00 at load, never a negative countdown.
+    The deadline is baked at render time — the file outlives the render and
+    re-runs on reload, so the page-load clock must not anchor it; element_id
+    allows two independent clocks, show_hours formats H:MM:SS."""
+    # Clamp at 0: a stale file reads 00:00 at load, never a negative countdown.
     remaining_int = max(0, int(target_epoch_s - render_epoch_s))
     render_ms = int(render_epoch_s * 1000)
     el_id_js = json.dumps(str(element_id))
@@ -147,14 +112,11 @@ def countdown_script(target_epoch_s: float, render_epoch_s: float,
 </script>
 """
 
-
 def tabs_script() -> str:
     """Progressive-enhancement tabs: click + arrow/Home/End keyboard support.
 
-    The report is a single file with no framework, so this is the whole tab
-    implementation. Panels are already correct in the static HTML (first
-    visible, rest ``hidden``); the script only switches which one is shown.
-    """
+    The static HTML is already correct (first panel visible, rest hidden);
+    the script only switches which one shows."""
     return """
 <script>
 (function(){
@@ -189,17 +151,13 @@ def tabs_script() -> str:
 </script>
 """
 
-
 def page_shell(title: str, body_html: str, accent: str = "",
                head_extra: str = "", body_suffix: str = "",
                wide: bool = False) -> str:
     """Wrap body HTML in the standalone page document.
 
-    `title` (plain text, escaped here), `accent` is the pre-built :root block
-    from accent_css(), `head_extra` adds caller-specific <head> tags (report
-    meta-refresh), `body_suffix` appends scripts after the container
-    (countdown), `wide` widens the container for table-heavy pages.
-    """
+    `title` is escaped here; `accent` is the pre-built accent_css() block;
+    `body_html` goes in verbatim — the caller escapes its own pieces."""
     container_class = "container wide" if wide else "container"
     return f"""<!doctype html>
 <html lang="en">
@@ -220,10 +178,6 @@ def page_shell(title: str, body_html: str, accent: str = "",
 </html>
 """
 
-
-# Light "paper" look shared by the score report and the README page: flat
-# surfaces separated by hairline rules (no cards/shadows), one accent color,
-# generous line height and a capped measure for readability.
 _STYLE = """
 :root { --ink: #1f2328; --muted: #6e7378; --hairline: #ececea; --rule: #d9d9d4; }
 * { box-sizing: border-box; }

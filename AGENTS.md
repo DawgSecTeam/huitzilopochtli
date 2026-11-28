@@ -164,7 +164,8 @@ password, VMID, bridge, or engine address — and never put one in `box.yaml`.
 - **Layout:** `common/` (shared schema + evaluator + crypto), `agent/` (on-box
   collector, ships as `.pyz`), `engine/` (ranked-mode server), `authoring/`
   (scenario compile + sign), `packaging/` (zipapp build + init units + re-arm),
-  `boxbuilder/` (the practice-box factory).
+  `boxbuilder/` (the practice-box factory), `debrief/` (post-competition team
+  report PDFs, read-only over the engine store).
 - **Tests:** `pytest` runs unit + integration (Proxmox tier is deselected by
   default; opt in with `pytest -m proxmox` — it is a live tier whose targets
   and credentials come from the gitignored `tests/proxmox/.env`, never from

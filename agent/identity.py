@@ -13,14 +13,12 @@ from common.canon import canonicalize
 
 _TIMEOUT_S = 10  # matches agent/transport.py
 
-
 @dataclass
 class Identity:
     box_id: str
     private_key: bytes
     public_key: bytes
     last_seq: int
-
 
 def load_or_create(identity_path: str) -> Identity:
     """Load the identity file, or generate a new Ed25519 keypair + box_id
@@ -88,21 +86,17 @@ def load_or_create(identity_path: str) -> Identity:
     save(identity_path, identity)
     return identity
 
-
 class EnrollmentTokenConsumed(Exception):
     """Raised on HTTP 409 token-already-consumed: an idempotent retry of this
     same box's enrollment, not a fatal failure."""
-
 
 class EnrollmentConflict(Exception):
     """Raised on HTTP 409 box-id-already-enrolled: the token was consumed by
     a different identity. Retrying cannot fix it; the box needs a new token
     (or the conflicting box must be removed)."""
 
-
 class EnrollmentRejected(Exception):
     """A permanent enrollment rejection (400/410): reprovisioning is required."""
-
 
 def enroll(engine_url: str, enrollment_token: str, identity: Identity,
            agent_version: str, scenario_name: str, scenario_version: int) -> dict:
@@ -177,7 +171,6 @@ def enroll(engine_url: str, enrollment_token: str, identity: Identity,
         raise EnrollmentRejected(f"enrollment failed: HTTP {status} ({reason})")
     raise Exception(f"enrollment failed: HTTP {status} ({reason})")
 
-
 def save(identity_path: str, identity: Identity) -> None:
     """Persist identity (including updated last_seq) back to disk, 0600."""
     data = {
@@ -200,8 +193,6 @@ def save(identity_path: str, identity: Identity) -> None:
             os.fsync(f.fileno())
         os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, identity_path)
-        # Persist the rename itself on POSIX. Best-effort: Windows has no
-        # directory fsync.
         if os.name != "nt":
             try:
                 dfd = os.open(directory, os.O_RDONLY)

@@ -1,27 +1,20 @@
 """Light obfuscation for the on-box honor-mode rubric file.
 
-The honor-mode box must hold its rubric to score offline (architecture.md
-§2.4/§6.1), so the answer key necessarily lives on the box it grades. This
-module makes that file unrecognizable at a glance: the content is canonical
-JSON -> gzip -> XOR with a static key -> base64, so `cat` shows an opaque
-ASCII blob and `grep -r <check id> /opt` finds nothing.
+An honor box holds its own rubric to score offline (§2.4/§6.1), so the key
+lives on the box it grades. Format: canonical JSON -> gzip -> static-XOR ->
+base64 — opaque to `cat`/`grep -r`, not to a reader.
 
-This is obfuscation, NOT a security boundary -- the XOR key ships in
-plaintext inside agent.pyz on the same box, so anyone willing to read the
-agent source can decode the file. Ranked mode is the actual fix for rubric
-secrecy (the rubric never leaves the engine).
-
-Both sides import this module -- boxbuilder/artifacts.py encodes at build
-time, agent/__main__.py decodes at run time -- so the format cannot drift.
-stdlib-only (zipapp invariant).
+This is obfuscation, NOT a security boundary: the XOR key ships in plaintext
+inside agent.pyz on the same box. Ranked mode is the actual secrecy fix.
+Both sides import this module (boxbuilder encodes, agent decodes) so the
+format cannot drift; stdlib-only (zipapp invariant).
 """
 import base64
 import gzip
 import json
 
-# Static XOR key, deliberately not derived from anything secret: the goal is
-# defeating `base64 -d` / `strings` drive-bys, not concealing content from
-# someone who reads this file.
+# Static XOR key, deliberately not secret: defeats base64 -d / strings drive-bys,
+# not anyone who reads this file.
 _KEY = b"huitzilopochtli-rubric"
 
 

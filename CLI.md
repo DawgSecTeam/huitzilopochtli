@@ -82,6 +82,8 @@ Windows boxes have no shim; run the zipapp directly (`py C:\ProgramData\huitzilo
 | `install` | Place the agent + manifest (+ honor rubric) and enable the init unit; ranked also uploads the engine record and mints a one-time enrollment token. `--init systemd\|openrc\|none`, `--admin-token`, `--checkin-interval`, `--enrollment-ttl`, `--competition` (no enrollment token; the player binds with `huitz join`). |
 | `package` | Export the box image. `--image-out PATH` (required), `--format ova\|qcow2\|raw`. |
 | `build` | All four steps with resumability. `--from-step compile\|plant\|install\|package`, `--image-out`, `--format`, plus the `compile`/`install` flags above. |
+| `verify` | Check a live box against its build (files, lineage, init, report, theme). `--for-seal`, `--expect-total N`, `--competition`; see [`boxbuilder/DEPLOY.md`](boxbuilder/DEPLOY.md). |
+| `seal-prepare` | Remove per-player state and neutralize the box before sealing. Same flags as `verify`, plus `--skip-verify`; `--yes` is required because it mutates the box irreversibly. |
 | `lint` | Cross-check every planted finding against the scored checks (and theme assets). `--all` walks `boxes/*/box.yaml`; or give `--spec` / `--scenario` + `--nakon-config`. `--boxes-dir`, `--mode`. Errors: build inputs that do not validate for either target, missing/duplicate check ids, a primary planted artefact path no check or forensics question reads, a missing theme asset. Warnings: pairings it cannot prove, scored paths under writable data roots that nothing plants, catalog-only configs. |
 | `answer-key` | Render authored `solution:` walkthroughs into a post-event handout. `--scenario`, `--out`, `--html`. |
 

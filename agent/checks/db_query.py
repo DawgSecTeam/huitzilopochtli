@@ -1,10 +1,7 @@
 """`db_query` check type (SLA-capable). See architecture.md §9.2.
 
-Runs a fixed test query on a local socket. DB driver must remain
-optional/stdlib-friendly — since no pure-Python driver is guaranteed
-available for a given DB engine, this check is implemented as a
-socket-connect probe only (degradation path per §9.2), rather than a
-DB-engine-specific SQL query. This keeps the check DB-engine-agnostic.
+No guaranteed pure-Python driver exists, so this is a socket-connect probe
+only (§9.2 degradation path) — DB-engine-agnostic by construction.
 
 collect_params: {"host": str, "port": int}.
 Evidence.raw shape: {"ok": bool, "error": str | None}.

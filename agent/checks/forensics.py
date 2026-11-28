@@ -4,9 +4,8 @@ collect_params: {"path": str, "question_id": str, "ordinal": int}.
 Evidence.raw shape: {"answer": str} — empty string when the question is
 unanswered (blank line or the untouched ______ placeholder).
 
-The answers file is team-editable; its format (one `Q<ordinal>:` block with
-an `Answer:` line per question) lives in agent/answers.py, shared with the
-template writer (agent/__main__.py) and the huitz CLI (agent/cli.py).
+The team-editable file format lives in agent/answers.py (shared with the
+template writer and the huitz CLI).
 """
 import time
 
@@ -14,9 +13,7 @@ import agent.answers
 from agent.checks.base import Check, register
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-# Cap read size — the answers file is team-editable (see agent/answers.py).
 _CONTENT_LIMIT = agent.answers.CONTENT_LIMIT
-
 
 @register("forensics_answer")
 class ForensicsAnswerCheck(Check):
@@ -69,8 +66,7 @@ class ForensicsAnswerCheck(Check):
 
     @staticmethod
     def _extract_answer(content: str, ordinal: int) -> tuple:
-        """Return (answer_or_None, found). Answer is the text on the Answer:
-        line following the Q<ordinal> line, stripped; None when left blank."""
+        """(answer_or_None, found) — see agent.answers.extract_answer."""
         return agent.answers.extract_answer(content, ordinal)
 
     @staticmethod

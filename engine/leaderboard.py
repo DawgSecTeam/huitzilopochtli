@@ -1,9 +1,7 @@
 """GET /leaderboard aggregation. See architecture.md §11.4.
 
-The original endpoint is scenario-wide: it was written for honor boxes, which
-have no competition. With several competitions live at once, a scenario-wide
-board would mix them, so a competition can be selected explicitly (and an
-ambiguous scenario is refused rather than silently merged).
+Several competitions may be live at once, so a competition must be selected
+explicitly: boards are never silently merged across competitions.
 """
 from engine import competition as competition_mod
 from engine.store import Store

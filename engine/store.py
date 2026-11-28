@@ -101,10 +101,10 @@ class CompetitionRecord:
     created_at: float
     started_at: Optional[float]
     ended_at: Optional[float]
-    #: Portal pool name provisioned for this competition; None for a legacy
-    #: row (fall back to ``competition_pool_name(slug)``) or an unpinned one.
+    #: Portal pool name this competition owns; None = legacy row (derive from
+    #: the slug) or unpinned. Teardown matches on it, never a slug prefix.
     workshop_pool_name: Optional[str] = None
-    #: End automatically when joins are closed and every run has finished.
+    #: End automatically once joins are closed and every run has finished.
     auto_end: bool = False
     #: Wall-clock time (engine receipt clock) at which the competition ends
     #: itself (runs still in progress stop, pool torn down); None = none set.
@@ -138,10 +138,9 @@ class PlayerRecord:
     claim_attempts: int = 0
     claim_last_attempt_at: Optional[float] = None
     claim_last_poll_at: Optional[float] = None
-    # When the run's VM was released (engine-side teardown after the run
-    # ended + its post-run access window, or an admin release). Set means
-    # the box is gone: the sweeper will not release again and Extend must
-    # not try to resume a headless run.
+    #: When the run's VM was released (teardown after the post-run window, or
+    #: an admin release). Set means the box is gone: the sweeper must not
+    #: release again and Extend must not resume a headless run.
     box_released_at: Optional[float] = None
     # v1.2 teams: the seat's long-lived access token (shown in plaintext so
     # the dashboard can render the share link; hashed for the lookup index,
@@ -309,33 +308,20 @@ class Store:
                         f"ALTER TABLE adversary_log ADD COLUMN {column} {decl}"
                     )
 
-        # --- ranked competition mode (v1.1) -------------------------------
         for table, columns in (
             ("competitions", (
                 # Pool identity is stored, not just the code: teardown must
-                # match this competition's pool exactly, never by slug prefix
-                # ("demo" used to match "demo-2").
+                # match this competition's pool exactly, never by slug prefix.
                 ("workshop_pool_name", "TEXT"),
                 ("auto_end", "INTEGER NOT NULL DEFAULT 0"),
-                # Scheduled competition end (wall-clock auto-End); see
-                # engine.competition.sweep_scheduled_ends.
                 ("scheduled_end_at", "REAL"),
             )),
             ("boxes", (("competition_id", "TEXT"), ("player_id", "TEXT"))),
             ("scores", (
                 ("hardening_points", "INTEGER NOT NULL DEFAULT 0"),
                 ("service_points", "INTEGER NOT NULL DEFAULT 0"),
-                # The forensics aggregate, separated from hardening_points
-                # (§11.4/§21.3). Legacy rows (written before the split) keep 0
-                # with their forensics points still lumped into
-                # hardening_points until the next check-in rewrites the row:
-                # the three cells still sum to total in the meantime.
                 ("forensics_points", "INTEGER NOT NULL DEFAULT 0"),
                 ("score_json", "TEXT"),
-                # Checks the agent could not grade this check-in (a `requires`
-                # prerequisite was absent). Carried on the score row so the
-                # roster and the player dashboard can show "N checks ungraded"
-                # instead of reading a mis-provisioned box as merely low-score.
                 ("ungraded_count", "INTEGER NOT NULL DEFAULT 0"),
             )),
             ("scenarios", (
@@ -471,11 +457,9 @@ class Store:
             "AND instr(display_name_norm, char(31)) = 0"
         )
 
-        # A join code must resolve to exactly one player. The lookup was a
-        # global SELECT with no constraint; concurrent fields raise the odds
-        # of a collision, whose failure mode is binding a box to another
-        # competition's player. Null out any pre-existing duplicate (keeping
-        # the newest) before the index can be created.
+        # A join code must resolve to exactly one player — a collision would
+        # bind a box to another competition's player. Null duplicates (keeping
+        # the newest) so the unique index can be created.
         dupes = self._conn.execute(
             "SELECT join_code_hash FROM players "
             "WHERE join_code_hash IS NOT NULL "
@@ -546,7 +530,6 @@ class Store:
             finally:
                 self._txn_depth -= 1
 
-    # --- enrollment.py -----------------------------------------------------
 
     def get_token(self, token: str) -> Optional[dict]:
         """Returns {"scenario_name": str, "expires_at": float,
@@ -644,7 +627,6 @@ class Store:
             )
             self._commit()
 
-    # --- checkin.py ----------------------------------------------------------
 
     def get_box(self, box_id: str) -> Optional[BoxRecord]:
         with self._lock:
@@ -681,9 +663,8 @@ class Store:
     def get_or_set_t0(self, box_id: str, now: float) -> float:
         """Atomically set T0 if unset and return the authoritative value.
 
-        Reading `box.t0` before the transaction meant two concurrent first
-        check-ins could compute different T0s; the scheduler for the loser used
-        its own receipt time instead of the committed anchor.
+        The read must stay inside the transaction: concurrent first check-ins
+        would otherwise anchor their schedules to different receipt times.
         """
         with self._lock:
             self._conn.execute(
@@ -770,7 +751,6 @@ class Store:
             "ungraded_count": row["ungraded_count"],
         }
 
-    # --- sla.py --------------------------------------------------------------
 
     def get_sla_state(self, box_id: str, check_id: str) -> Optional[SlaStateRecord]:
         with self._lock:
@@ -846,8 +826,6 @@ class Store:
                 new_rec.last_changed_at = observed
             elif not new_rec.last_changed_at:
                 new_rec.last_changed_at = observed
-            # One tick per update: record the post-hysteresis state this
-            # check-in settled on, keeping a bounded oldest->newest ring.
             history = list(new_rec.history or [])
             history.append(new_rec.state)
             new_rec.history = history[-SLA_HISTORY_MAX:]
@@ -871,8 +849,6 @@ class Store:
             )
             self._commit()
             return new_rec
-
-    # --- adversary_oracle.py ---------------------------------------------------
 
     def get_issued_event_ids(self, box_id: str) -> set:
         with self._lock:
@@ -945,14 +921,12 @@ class Store:
             )
             self._commit()
 
-    # --- leaderboard.py --------------------------------------------------------
 
     def get_scores(self, scenario_name: str) -> list:
         """Return scores ranked by total, then immutable first-scored time.
 
-        Ties used to be ordered by the *last* check-in timestamp ascending,
-        which ranked the box that had been silent longest above active peers
-        and let a player freeze a winning tie by stopping check-ins.
+        Tie-break by first-scored, never last check-in: a player must not be
+        able to freeze a winning tie by stopping check-ins.
         """
         with self._lock:
             cur = self._conn.execute(
@@ -973,7 +947,6 @@ class Store:
             for row in rows
         ]
 
-    # --- engine/server.py: multi-scenario support (POST /admin/scenarios) ---
 
     def save_scenario(self, scenario_name: str, scenario_version: int,
                        rubric_json: str, adversary_json: str,
@@ -1078,7 +1051,6 @@ class Store:
             )
             self._commit()
 
-    # --- ranked competition mode -------------------------------------------
 
     @staticmethod
     def _competition_from_row(row) -> CompetitionRecord:
@@ -1378,11 +1350,11 @@ class Store:
             return cur.rowcount == 1
 
     def end_competition(self, comp_id: str) -> bool:
+        # Drafts are end-able too: that is how an abandoned draft gets its
+        # pre-deployed pool cleaned up (the End path tears pools down). For a
+        # live competition this freezes the runs.
         now = time.time()
         with self._lock:
-            # A draft can be ended too: that is how an abandoned draft gets its
-            # pre-deployed pool cleaned up (the end path always calls
-            # claims.cleanup_pool). For a live competition this freezes runs.
             cur = self._conn.execute(
                 "UPDATE competitions SET status = 'ended', join_open = 0, "
                 "ended_at = ? WHERE id = ? AND status IN ('draft', 'live')",
@@ -1469,12 +1441,9 @@ class Store:
     def count_players(self, comp_id: str, include_removed: bool = False) -> int:
         """Player slots that occupy the competition's capacity.
 
-        §7.1 (boss directive): a disqualified run keeps its VM and keeps
-        playing its full clock, so it keeps occupying its seat -- capacity
-        is about boxes handed out, not about who is still ranked. Only the
-        ``removed`` tombstone frees a seat, because only Remove gives the
-        box back. The roster/board render the disqualified row; the board
-        excludes its score, the seat count does not.
+        §7.1: a disqualified run keeps its VM, clock and seat -- capacity
+        counts boxes handed out, not who is ranked. Only the ``removed``
+        tombstone frees a seat, because only Remove gives the box back.
         """
         with self._lock:
             if include_removed:
@@ -1522,8 +1491,6 @@ class Store:
             except sqlite3.IntegrityError as exc:
                 self._conn.rollback()
                 if "join_code_hash" in str(exc):
-                    # A code collision, not a duplicate display name: let the
-                    # caller mint another code instead of reporting "taken".
                     raise JoinCodeCollision() from exc
                 return None
             self._commit()
@@ -1563,9 +1530,9 @@ class Store:
                                    display_name_norm: str) -> Optional[PlayerRecord]:
         """The player currently competing under this normalized name, if any.
 
-        "Competing" means an invited/running slot in a **live** competition.
-        Used to keep one person to one competition at a time even when they
-        clear their player cookie or switch browsers.
+        "Competing" means an invited/running slot in a **live** competition:
+        keeps one person to one competition even if they clear their player
+        cookie or switch browsers.
         """
         with self._lock:
             row = self._conn.execute(
@@ -1941,7 +1908,6 @@ class Store:
             )
             self._commit()
 
-    # --- admin sessions / audit --------------------------------------------
 
     def create_admin_session(self, session_hash: str, username: str,
                              csrf_token: str, expires_at: float) -> None:
@@ -2007,8 +1973,6 @@ class Store:
             competition_id=r["competition_id"], player_id=r["player_id"],
             details_json=r["details_json"], remote_addr=r["remote_addr"],
         ) for r in rows]
-
-    # --- engine/server.py: persisted server_secret (§4) ---------------------
 
     def get_meta(self, key: str) -> Optional[str]:
         with self._lock:

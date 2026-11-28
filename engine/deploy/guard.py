@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Refuse an engine code deploy while a competition is live.
-
-The six-player field showed why: an engine redeploy mid-run replaced the code
-between End and pool cleanup, leaving seven clones and a pool pin behind.
-install.sh pipes the local /health body through this guard before copying
-anything. ``HUITZ_DEPLOY_FORCE=1`` is the explicit operator override.
+"""Refuse an engine code deploy while a competition is live: a mid-run
+redeploy races pool cleanup and orphans clones. install.sh pipes the local
+/health body through this guard before copying. HUITZ_DEPLOY_FORCE=1
+is the explicit operator override.
 """
 import json
 import os

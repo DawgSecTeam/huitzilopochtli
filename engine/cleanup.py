@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
-"""Operator teardown for a competition's workshop pool.
+"""Operator teardown for a competition's workshop pool — the fallback for an
+interrupted End path.
 
-    python3 -m engine.cleanup --slug broadneck-six2 [--dry-run]
+    python3 -m engine.cleanup --slug <slug> [--dry-run]
     python3 -m engine.cleanup --all-ended [--dry-run]
 
-This is the fallback for a competition whose End path was interrupted (an
-engine redeploy between End and cleanup, a crash, or a portal restart). It
-uses the same ``claims.cleanup_pool`` the sweeper uses: release claimed VMs,
-destroy every clone belonging to *that* pool (exact pool code, or the portal's
-``<pool name>-<digits>`` student id -- never a slug prefix, so ending ``demo``
-cannot destroy ``demo-2``'s boxes), delete the pool, and clear the pin only
-when a fresh listing is empty.
-
-``--all-ended`` is the multi-event recovery command: it sweeps every ended
-competition that still holds a pool pin, which is what a crash during a day of
-back-to-back events leaves behind.
+Uses ``claims.cleanup_pool``: clones are matched by exact pool code or the
+anchored ``<pool name>-<digits>`` student id — never a slug prefix (ending
+``demo`` must not destroy ``demo-2``); the pin clears only when a fresh
+listing is empty. ``--all-ended`` sweeps every ended competition holding a pin.
 """
 import argparse
 import json
@@ -46,7 +40,6 @@ def main(argv=None) -> int:
             print(json.dumps({"ok": False,
                               "error": f"no competition {args.slug!r}"}))
             return 1
-        # Single-competition shape is unchanged for existing operators/scripts.
         if args.dry_run:
             print(json.dumps({
                 "ok": True, "dry_run": True, "slug": comp.slug,

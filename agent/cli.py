@@ -1,31 +1,10 @@
-"""huitz — the native terminal experience for a scored box.
+"""huitz — the terminal twin of the Desktop report.html.
 
-The terminal twin of the Desktop report.html: same data, same moment, same
-design language (flat "paper" surfaces, one theme accent, semantic green/red)
-rendered idiomatically for a terminal instead of ported from the web page.
-
-    huitz score              one-shot scorecard
-    huitz watch              live frame: countdown, updates, change bell
-    huitz forensics          forensics questions: list, answer, re-answer
-    huitz grade              re-grade right now (root, honor boxes)
-    huitz help
-
-Data source: agent/snapshot.py's report.json, published by the agent on
-every grade and mirrored for every user by packaging/sync-report.sh — so
-every command works as ANY user on the box, no root and no sealed-dir
-access
-needed (except `grade`, which runs the scoring pipeline and therefore
-requires root, exactly like the systemd timer does).
-
-Honor and ranked both render the CyberPatriot-style board (positive-only:
-failed checks stay anonymous, both here and in the snapshot, so the CLI
-can't leak what the HTML doesn't). Ranked adds the engine's SLA service
-state, live rank and run clock; it never shows a per-check diagnostic
-table, because a failed check id is the answer key.
-
-Pure stdlib; terminal behavior lives in agent/term.py. Only `grade`
-touches the scoring pipeline (via agent/__main__), and only for honor
-mode — ranked grading is the engine's job (§13).
+Verbs: score / watch / forensics / readme / join / grade / help (see USAGE).
+Data source is report.json (agent/snapshot.py), so every verb works as ANY
+user; only `grade` runs the scoring pipeline, and only for honor (§13).
+Positive-only in both modes: a failed check id is the answer key, so it is
+never rendered here.
 """
 import difflib
 import json
@@ -118,16 +97,11 @@ def _join_command() -> str:
 
 _EXIT_OK, EXIT_ERROR, _EXIT_USAGE = 0, 1, 2
 
-
 class UsageError(Exception):
     """Bad arguments — prints usage guidance, exit code 2."""
 
-
 class CliError(Exception):
     """User-facing failure — message printed verbatim, exit code 1."""
-
-
-# --- argument plumbing --------------------------------------------------------
 
 def _split_flags(argv: list, bool_flags: set, val_flags: set) -> tuple:
     """Return (positional, opts). Flags may appear anywhere; `--flag value`
@@ -158,13 +132,11 @@ def _split_flags(argv: list, bool_flags: set, val_flags: set) -> tuple:
         i += 1
     return positional, opts
 
-
 def _color_override(opts: dict) -> str:
     when = opts.get("--color", "auto").lower()
     if when not in ("auto", "always", "never"):
         raise UsageError(f"--color must be auto|always|never, not {when!r}")
     return when
-
 
 def _make_style(opts: dict, stream, snapshot: dict | None = None) -> Style:
     accent = (snapshot or {}).get("accent")
@@ -172,12 +144,8 @@ def _make_style(opts: dict, stream, snapshot: dict | None = None) -> Style:
         accent = None
     return agent.term.Style.detect(stream, _color_override(opts), accent=accent)
 
-
-# --- snapshot discovery --------------------------------------------------------
-
 def _install_config_path() -> str:
     return os.environ.get(ENV_CONFIG) or DEFAULT_CONFIGS["nt" if os.name == "nt" else "posix"]
-
 
 def _report_json_from_config(config_path: str) -> str | None:
     """report.json path from a readable agent_config.json, else the known
@@ -193,14 +161,10 @@ def _report_json_from_config(config_path: str) -> str | None:
         pass
     return DEFAULT_REPORT_JSON["nt" if os.name == "nt" else "posix"]
 
-
 def _desktop_report_paths() -> list:
-    """report.json mirror candidates. Current builds mirror into
-    <home>/Documents/huitzilopochtli/ (off the Desktop, but still readable by
-    a snap-confined browser); older templates mirrored into Desktop/. Both
-    are searched, mirror before legacy, this user before other real accounts
-    (the uid 1000-59999 + login-shell heuristic that sync-report.sh and
-    agent/notify.py use)."""
+    """report.json mirror candidates: Documents/huitzilopochtli/ (current)
+    then Desktop/ (legacy templates); this user before other real accounts
+    (uid 1000-59999 + login-shell heuristic)."""
     out = []
     home = os.path.expanduser("~")
 
@@ -231,7 +195,6 @@ def _desktop_report_paths() -> list:
         pass
     return out
 
-
 def locate_snapshot(explicit: str | None = None) -> tuple:
     """Return (path_or_None, searched). With `explicit`, that path is the
     only candidate; otherwise: $HUITZ_REPORT, the install dir (root path),
@@ -246,8 +209,8 @@ def locate_snapshot(explicit: str | None = None) -> tuple:
     candidates = []
     env = os.environ.get(ENV_REPORT)
     if env:
-        # HUITZ_REPORT is documented as authoritative: a stale value must be
-        # an error, not silently fall through to another user's mirror.
+        # $HUITZ_REPORT is authoritative: a bad value errors, never falls
+        # through to another user's mirror.
         candidates = [env]
     else:
         candidates.append(_report_json_from_config(_install_config_path()))
@@ -262,15 +225,11 @@ def locate_snapshot(explicit: str | None = None) -> tuple:
             return candidate, searched
     return None, searched
 
-
 def _ranked_unjoined() -> bool:
-    """True for a ranked install whose box has not joined a competition yet.
+    """True for a ranked box with no identity file yet (never joined).
 
-    A ranked box has no report until `huitz join` binds it to a player slot;
-    the generic "no grade" error sends a player to `sudo huitz grade` (honor
-    only) or to wait for a check-in that cannot arrive. This lets the reading
-    verbs say what is actually missing.
-    """
+    Lets the reading verbs name `huitz join` as the fix instead of a
+    grade/wait that cannot work pre-join."""
     try:
         import agent.config
         config = agent.config.load_config(_install_config_path())
@@ -279,14 +238,11 @@ def _ranked_unjoined() -> bool:
     return (config.mode.value == "ranked"
             and not os.path.isfile(config.identity_path))
 
-
 def _installed_handbook() -> tuple:
     """(readme_text, accent) from the installed signed manifest.
 
-    The report snapshot that `huitz readme` normally reads only exists after
-    the box joins/grades; the handbook ships in the manifest, so a fresh
-    ranked box can still show it before it is bound to a player slot.
-    """
+    The handbook ships in the manifest, so readme works on a fresh box
+    before any snapshot exists."""
     try:
         import agent.config
         import agent.__main__ as agent_main
@@ -305,7 +261,6 @@ def _installed_handbook() -> tuple:
     accent = theme.get("accent")
     return (text if isinstance(text, str) and text.strip() else None,
             accent if isinstance(accent, str) else None)
-
 
 def _load_snapshot(explicit: str | None) -> dict:
     path, searched = locate_snapshot(explicit)
@@ -328,16 +283,8 @@ def _load_snapshot(explicit: str | None) -> dict:
     except agent.snapshot.SnapshotError as e:
         raise CliError(str(e)) from e
 
-
-# --- formatting helpers ---------------------------------------------------------
-
-def _fmt_utc(ts: float) -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
-
-
 def _fmt_clock(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.gmtime(ts))
-
 
 def _pts_cell(sty: Style, points: int) -> str:
     if points > 0:
@@ -346,10 +293,8 @@ def _pts_cell(sty: Style, points: int) -> str:
         return sty.color(str(points), "bad", 1)
     return sty.color("0", "muted")
 
-
 def _pts_plain(points: int) -> str:
     return f"+{points}" if points > 0 else str(points)
-
 
 def _leader_line(sty: Style, sym: Symbols, title: str, right_plain: str,
                  right_styled: str, width: int, indent: int = 4) -> str:
@@ -365,9 +310,6 @@ def _leader_line(sty: Style, sym: Symbols, title: str, right_plain: str,
     leader = " " + (fill * lead_width) + " "
     return " " * indent + title + sty.color(leader, "muted") + right_styled
 
-
-# --- scorecard rendering ---------------------------------------------------------
-
 def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
                      now: float | None = None, hints: bool = False) -> str:
     """The full frame. Pure: takes the snapshot dict + style, returns text
@@ -376,7 +318,6 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     mode = snap.get("mode", "honor")
     lines = []
 
-    # masthead — same information architecture as the HTML report
     title = str(snap.get("title") or snap.get("scenario_name") or "Score report")
     lines.append(sty.color(sty.bold(title), "accent"))
     sub = [f"{mode} mode"]
@@ -398,9 +339,6 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     total = snap.get("total") or 0
     pct = int(snap.get("progress_pct") or 0)
 
-    # total + progress. The total stands alone (forensics points are part of
-    # it but not of the vuln-check max, so "total / max" would mislead — the
-    # bar row carries progress context instead).
     lines.append("  " + sty.color(sty.bold(f"{total} pts"), "accent"))
     bar_width = min(31, max(9, width - 42))
     bar = agent.term.progress_bar(pct, bar_width, sym)
@@ -416,17 +354,12 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
         row += "  the engine's authoritative score"
     lines.append(row)
     # Split the headline so accrual is never mistaken for hardening progress:
-    # total = hardening + SLA uptime (engine/checkin.py). Its own line so a
-    # narrow terminal cannot truncate the breakdown.
     hard = snap.get("hardening_points")
     svc = snap.get("service_points")
     if mode != "honor" and isinstance(hard, int) and isinstance(svc, int):
         lines.append("  " + sty.color(
             f"{hard} hardening  +  {svc} service uptime", "muted"))
     if mode != "honor":
-        # Same two facts as the ranked HTML event bar. The clock is labelled
-        # as of the last check-in: the snapshot is written once per check-in,
-        # so this is the engine's remainder at that moment, not a live tick.
         bits = []
         rank = snap.get("rank")
         rank_total = snap.get("rank_total")
@@ -447,9 +380,6 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
             lines.append("  " + sty.color("  ·  ".join(bits), "muted"))
         if (isinstance(run_ends_at, (int, float))
                 and not isinstance(run_ends_at, bool)):
-            # Keep the deadline on its own line: folded into the position /
-            # remaining line it gets clipped at 80 columns, which is exactly
-            # the fact players need most.
             lines.append("  " + sty.color(
                 f"run ends {_fmt_clock(run_ends_at)} UTC"
                 f"  ·  agent stops collecting {_fmt_clock(run_ends_at - 300)}"
@@ -460,15 +390,11 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
     if mode == "honor":
         lines.extend(_board_sections(snap, sty, sym, width))
     else:
-        # Positive-only, like honor. The ranked header already carries the
-        # engine total, rank and run clock; SLA state is the only extra
-        # ranked detail, never a per-check diagnostic table.
+        # Ranked detail: positive-only board + SLA; never a check-level table.
         lines.extend(_board_sections(snap, sty, sym, width))
         lines.extend(_sla_section(snap, sty, sym, width))
         lines.append("")
 
-    # delta banner — same one-run semantics as the HTML (nonzero only on the
-    # grade right after the change)
     delta = snap.get("delta")
     if isinstance(delta, int) and not isinstance(delta, bool) and delta != 0:
         lines.append("")
@@ -480,7 +406,6 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
                 f"{sym.down} {delta} pts — penalty: a scored setting was "
                 "undone or a new issue introduced", "bad", 1))
 
-    # footer stamps
     stamps = []
     computed_at = snap.get("computed_at")
     if computed_at:
@@ -494,7 +419,6 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
         if remaining_s > 0:
             stamps.append(f"{label} ~{agent.term.fmt_mmss(remaining_s)}")
         elif -remaining_s > _OVERDUE_NOTE_AFTER_S:
-            # Kept short: the footer shares a line with the last-graded stamp.
             stamps.append(f"{label} overdue by {agent.term.fmt_mmss(-remaining_s)}"
                           " (timer stalled?)")
         else:
@@ -503,12 +427,9 @@ def render_scorecard(snap: dict, sty: Style, sym: Symbols, width: int,
         lines.append("")
         lines.append("  " + "  ·  ".join(stamps))
     if hints:
-        # Chrome, but readable: semantic muted, never SGR 2 (faint) — faint
-        # all but disappears on several dark terminals.
         lines.append(sty.color(
             "  try: huitz watch  ·  huitz forensics  ·  huitz grade", "muted"))
     return "\n".join(agent.term.truncate_ansi(l, width) for l in lines)
-
 
 def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
     """Honor board: fixed vulns, penalties, forensics (positive-only)."""
@@ -552,8 +473,6 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
         submitted = sum(1 for f in forensics if f.get("submitted"))
         header = f"FORENSICS — {earned} of {len(forensics)}"
         if submitted > earned:
-            # Answers were collected that have not earned points: say so,
-            # or a wrong answer is indistinguishable from an unanswered one.
             header += f" · {submitted} answered"
         lines.append("  " + sty.bold(header))
         for f in forensics:
@@ -585,20 +504,15 @@ def _board_sections(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
         answers_paths = sorted({f.get("answers_path") for f in forensics
                                 if f.get("answers_path")})
         if answers_paths:
-            # The path is the actionable bit — accent, like a readme code
-            # span; the label stays chrome.
             lines.append("      " + sty.color("answers: ", "muted")
                          + sty.color(answers_paths[0], "accent"))
     return lines
 
-
 def _sla_section(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
     """Ranked-only scored-service state; no per-check hardening results.
 
-    Service ids/names are already public (they are the player-facing services
-    the scenario scores), and uptime is the one ranked signal honor mode
-    cannot show. A failed *hardening* check is never rendered here.
-    """
+    Service names are already public (player-facing); a failed hardening
+    check is never rendered here."""
     lines = []
     sla = snap.get("sla_status") or []
     if sla:
@@ -619,8 +533,6 @@ def _sla_section(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
             history = [str(h).upper() for h in (s.get("history") or [])
                        if str(h).upper() in ("UP", "DOWN")][-10:]
             if history:
-                # Same oldest->newest tick strip as the HTML uptime tab:
-                # solid = UP, light = DOWN, colored per tick.
                 marks = "".join(
                     sty.color(sym.block if h == "UP" else sym.light,
                               "ok" if h == "UP" else "bad")
@@ -628,9 +540,6 @@ def _sla_section(snap: dict, sty: Style, sym: Symbols, width: int) -> list:
                 line += f"  ticks {marks}"
             lines.append(line)
     return lines
-
-
-# --- forensics -------------------------------------------------------------------
 
 def _default_answers_path() -> str:
     if os.name == "nt":
@@ -640,7 +549,6 @@ def _default_answers_path() -> str:
     return os.path.join(os.path.expanduser("~"), "Desktop",
                         "Forensics-Questions.txt")
 
-
 def _display_answer(content: str, ordinal: int) -> str | None:
     """The team's answer as the CLI should show it: an untouched underscore
     placeholder reads as blank."""
@@ -649,16 +557,13 @@ def _display_answer(content: str, ordinal: int) -> str | None:
         return None
     return agent.term.sanitize_text(answer) if answer else answer
 
-
 def _forensics_entries(snap: dict) -> list:
     entries = sorted(snap.get("forensics") or [],
                      key=lambda f: (f.get("ordinal") or 0, str(f.get("id"))))
     return entries
 
-
 def _entry_ordinal(entry: dict, index: int) -> int:
     return int(entry.get("ordinal") or 0) or (index + 1)
-
 
 def _dir_owner(path: str):
     """(uid, gid) of path's directory if not root-owned, else None."""
@@ -668,14 +573,11 @@ def _dir_owner(path: str):
         return None
     return None if st.st_uid == 0 else (st.st_uid, st.st_gid)
 
-
 def _write_answers_file(path: str, content: str) -> None:
     """Replace the answers file, preserving mode + ownership (root editing a
     user's file must not seize it)."""
     directory = os.path.dirname(os.path.abspath(path)) or "."
     if not os.path.isdir(directory):
-        # Scenario-authored answer homes (…/Desktop) are missing on some
-        # base images; creating the parent beats a raw mkstemp traceback.
         try:
             os.makedirs(directory, exist_ok=True)
         except OSError as e:
@@ -688,8 +590,8 @@ def _write_answers_file(path: str, content: str) -> None:
     except OSError:
         mode = uid = gid = None
     if os.name != "nt" and os.geteuid() == 0:
-        # `sudo huitz forensics` on a user's file: write as its owner so a
-        # symlink planted at the temp path can't redirect a root write.
+        # Write as the file's owner: a symlink at the temp path must not
+        # redirect a root write.
         owner = (uid, gid) if uid not in (None, 0) else _dir_owner(path)
         if owner is not None:
             agent.answers.write_as_owner(
@@ -725,16 +627,12 @@ def _write_answers_file(path: str, content: str) -> None:
             pass
         raise
 
-
 def _ensure_answers_file(path: str, entries: list) -> None:
     questions = [
         (_entry_ordinal(e, i), str(e.get("question", "")))
         for i, e in enumerate(entries)
     ]
     if os.path.exists(path):
-        # Same stale-image guard as the boot writer: an untouched file with
-        # another scenario's questions is replaced; anything a team touched
-        # is left alone.
         try:
             with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
                 current = f.read(agent.answers.CONTENT_LIMIT + 1)
@@ -745,7 +643,6 @@ def _ensure_answers_file(path: str, entries: list) -> None:
             return
     _write_answers_file(path, agent.answers.render_template(questions))
 
-
 def _read_answers(path: str) -> str:
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         content = f.read(agent.answers.CONTENT_LIMIT + 1)
@@ -755,7 +652,6 @@ def _read_answers(path: str) -> str:
             f"bytes; trim it before editing so nothing is truncated")
     return content
 
-
 def _answer_status(entry: dict, current: str | None) -> tuple:
     """(label, styled) describing the relationship between the file's current
     answer and the last grade's verdict."""
@@ -764,8 +660,6 @@ def _answer_status(entry: dict, current: str | None) -> tuple:
         if entry.get("answered"):
             return "recorded", None
         if entry.get("submitted") and graded:
-            # The last grade saw this (or a later) answer and rejected it:
-            # say so instead of leaving "awaiting re-grade" up forever.
             return "recorded — not correct on the last grade", "warn"
         return "recorded — awaiting re-grade", "muted"
     if entry.get("answered"):
@@ -774,7 +668,6 @@ def _answer_status(entry: dict, current: str | None) -> tuple:
         return "not correct on the last grade; the file is now blank", "warn"
     return "blank", "muted"
 
-
 def _answers_path_for(entry: dict, override: str | None) -> str:
     """Resolve the answers file for one question, honoring a per-question
     ``path`` from the scenario instead of silently using a global default."""
@@ -782,7 +675,6 @@ def _answers_path_for(entry: dict, override: str | None) -> str:
         return override
     path = entry.get("answers_path")
     return str(path) if path else _default_answers_path()
-
 
 def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
                      answers_override: str | None) -> str:
@@ -861,7 +753,6 @@ def render_forensics(snap: dict, sty: Style, sym: Symbols, width: int,
         "muted"))
     return "\n".join(lines)
 
-
 def set_forensics_answer(snap: dict, ordinal: int, text: str | None,
                          answers_override: str | None,
                          instream, outstream) -> int:
@@ -904,7 +795,6 @@ def set_forensics_answer(snap: dict, ordinal: int, text: str | None,
             print("unchanged.", file=outstream)
             return _EXIT_OK
     if text == "-":
-        # "-" means clear, interactively or scripted.
         text = ""
 
     new_content, found = agent.answers.set_answer(content, ordinal, text)
@@ -927,9 +817,6 @@ def set_forensics_answer(snap: dict, ordinal: int, text: str | None,
           file=outstream)
     return _EXIT_OK
 
-
-# --- readme (the scenario handbook) ------------------------------------------------
-
 _INLINE_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_ITAL_RE = re.compile(r"(?<!\*)\*([^*\s][^*]*)\*(?!\*)")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
@@ -938,7 +825,6 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _LIST_RE = re.compile(r"^[-*]\s+(.*)$")
 _ORDERED_RE = re.compile(r"^(\d+[.)])\s+(.*)$")
 _RULE_LINES = ("---", "***", "___")
-
 
 def _inline(text: str, sty: Style) -> str:
     """Inline markdown rendered for the terminal: **bold**, *italic*, `code`
@@ -949,7 +835,6 @@ def _inline(text: str, sty: Style) -> str:
     text = _INLINE_ITAL_RE.sub(lambda m: sty.italic(m.group(1)), text)
     text = _INLINE_CODE_RE.sub(lambda m: sty.color(m.group(1), "accent"), text)
     return text
-
 
 def _readme_blocks(text: str) -> list:
     """Markdown-subset block parser. Consecutive non-blank lines fold into
@@ -1022,13 +907,10 @@ def _readme_blocks(text: str) -> list:
     flush()
     return blocks
 
-
 def render_readme(text: str, sty: Style, sym: Symbols, width: int) -> str:
-    """The handbook, typeset for a terminal: paragraphs re-wrap to the
-    terminal width (styling flows across the wrap), fences keep every line
-    (wrapped, never ellipsized), headings/lists/quotes/rules as before. The
-    markdown subset stays deliberately small — anything fancier belongs in
-    the themed README.html on desktop boxes."""
+    """The handbook, typeset for a terminal: paragraphs re-wrap to width,
+    fences keep every line (wrapped, never ellipsized); deliberately a small
+    markdown subset — fancier belongs in the themed README.html."""
     out = []
     for block in _readme_blocks(text):
         kind = block[0]
@@ -1079,9 +961,6 @@ def render_readme(text: str, sty: Style, sym: Symbols, width: int) -> str:
                     raw, width, indent="  ", subsequent_indent="  "), "muted"))
     return "\n".join(out)
 
-
-# --- paging ------------------------------------------------------------------------
-
 def _pager_argv() -> list | None:
     """The pager command line for an interactive terminal, or None to print
     flat. $PAGER wins verbatim (given -R when it looks like less); otherwise
@@ -1102,7 +981,6 @@ def _pager_argv() -> list | None:
     if shutil.which("more"):
         return ["more"]
     return None
-
 
 def _page(text: str, outstream) -> bool:
     """Show `text` through the pager; True when handled. Never engages for a
@@ -1127,7 +1005,6 @@ def _page(text: str, outstream) -> bool:
         if proc is not None and proc.poll() is None:
             proc.terminate()
 
-
 def cmd_readme(argv: list, outstream) -> int:
     positional, opts = _split_flags(argv, {"--raw", "--no-pager"},
                                     {"--report", "--color"})
@@ -1139,9 +1016,8 @@ def cmd_readme(argv: list, outstream) -> int:
     except CliError:
         if explicit:
             raise
-        # Before a ranked box joins there is no report, but the handbook is
-        # already on disk inside the signed manifest. The login banner tells
-        # players to start here, so it must work on a fresh box.
+        # No snapshot yet (unjoined ranked box): the handbook is already on
+        # disk inside the signed manifest.
         text, accent = _installed_handbook()
         if not text:
             raise
@@ -1167,9 +1043,6 @@ def cmd_readme(argv: list, outstream) -> int:
     outstream.write(page)
     return _EXIT_OK
 
-
-# --- commands ---------------------------------------------------------------------
-
 def cmd_score(argv: list, outstream) -> int:
     positional, opts = _split_flags(
         argv, {"--json", "--quiet", "--no-pager"}, {"--report", "--color"})
@@ -1187,8 +1060,6 @@ def cmd_score(argv: list, outstream) -> int:
     width = agent.term.detect_width(outstream)
     frame = render_scorecard(snap, sty, sym, width, hints=True)
     lines = frame.splitlines()
-    # Page only when the board actually overflows the window: a glance at a
-    # short board should not cost a keystroke.
     if (not opts.get("--no-pager")
             and len(lines) > agent.term.detect_height(outstream) - 1
             and _page("\n".join(lines) + "\n", outstream)):
@@ -1196,7 +1067,6 @@ def cmd_score(argv: list, outstream) -> int:
     for line in lines:
         print(agent.term.truncate_ansi(line, width), file=outstream)
     return _EXIT_OK
-
 
 def cmd_watch(argv: list, outstream, instream) -> int:
     positional, opts = _split_flags(
@@ -1239,17 +1109,12 @@ def cmd_watch(argv: list, outstream, instream) -> int:
                     raw_bytes = current
                     last_snap = agent.snapshot.read(snap_path)
                     if not restyled:
-                        # Unlike score, watch had no snapshot when it built
-                        # its style — restyle once so the theme accent
-                        # reaches the frame.
                         restyled = True
                         sty = _make_style(opts, outstream, last_snap)
                         sym = Symbols(sty.utf8)
                     delta = last_snap.get("delta")
                     if is_regrade and isinstance(delta, int) \
                             and not isinstance(delta, bool) and delta != 0:
-                        # Only changes observed *while watching* ring the
-                        # bell and log; a pre-existing banner is old news.
                         session_log.append((now, delta))
                         session_log[:] = session_log[-5:]
                         rang_bell = True
@@ -1304,18 +1169,15 @@ def cmd_watch(argv: list, outstream, instream) -> int:
             outstream.flush()
         poller.close()
 
-
 _OVERDUE_NOTE_AFTER_S = 120  # ~two missed 60s grades before we call it stalled
-
 
 def _overdue_suffix(mode: str, overdue_s: float) -> str:
     """What to say when the next grade is more than a couple of intervals
-    late. A stalled re-grade used to render as an eternal "checking…", which
-    reads as the CLI being frozen — name the likely cause instead."""
+    late: an eternal "checking…" reads as a frozen CLI, so name the likely
+    cause."""
     label = "re-grade" if mode == "honor" else "check-in"
     return (f" ({label} overdue by {agent.term.fmt_mmss(overdue_s)} — "
             "timer/agent stalled?)")
-
 
 def _countdown_note(snap: dict | None, now: float, sty: Style) -> str:
     if not snap:
@@ -1326,8 +1188,6 @@ def _countdown_note(snap: dict | None, now: float, sty: Style) -> str:
     mode = "honor" if snap.get("mode") == "honor" else "ranked"
     remaining = float(next_at) - now
     if remaining <= 0:
-        # Same language as the HTML countdown's expiry state — but escalate
-        # when the wait clearly isn't a normal cadence any more.
         due = "checking…" if mode == "honor" else "checking in…"
         note = f"00:00 — {due}"
         overdue = -remaining
@@ -1337,7 +1197,6 @@ def _countdown_note(snap: dict | None, now: float, sty: Style) -> str:
         return "  " + note
     label = "next re-grade" if mode == "honor" else "next check-in"
     return "  " + f"{label} in {agent.term.fmt_mmss(remaining)}"
-
 
 def cmd_grade(argv: list, outstream) -> int:
     positional, opts = _split_flags(
@@ -1349,8 +1208,6 @@ def cmd_grade(argv: list, outstream) -> int:
         raise CliError("grade runs the scoring pipeline and needs root:\n"
                        "  sudo huitz grade")
 
-    # Deferred imports keep `huitz score` free of the collector/evaluator
-    # stack and avoid an import cycle (agent/__main__ dispatches into here).
     import agent.config
     import agent.platform.detect
     import agent.__main__ as agent_main
@@ -1381,13 +1238,7 @@ def cmd_grade(argv: list, outstream) -> int:
     except agent.runlock.AlreadyRunning as e:
         raise CliError(str(e)) from e
     except (OSError, ValueError) as e:
-        # Unreadable/missing rubric (and friends) surface as an actionable
-        # ValueError from agent_main.honor_grade; render it as a clean CLI
-        # error instead of a traceback.
         raise CliError(f"grade failed: {e}") from e
-    # Desktop mirroring is honor_grade's last step (the Documents/huitzilopochtli
-    # mirror — the unit's ExecStartPost races a Type=simple agent and lands one
-    # grade stale), so the reading verbs see this grade immediately.
 
     if opts.get("--quiet"):
         change = f"  (delta {delta:+d})" if delta else ""
@@ -1403,7 +1254,6 @@ def cmd_grade(argv: list, outstream) -> int:
     for line in frame.splitlines():
         print(agent.term.truncate_ansi(line, width), file=outstream)
     return _EXIT_OK
-
 
 def cmd_forensics(argv: list, outstream, instream) -> int:
     positional, opts = _split_flags(
@@ -1429,9 +1279,6 @@ def cmd_forensics(argv: list, outstream, instream) -> int:
     snap = _load_snapshot(opts.get("--report"))
     return set_forensics_answer(snap, ordinal, text, opts.get("--answers"),
                                 instream, outstream)
-
-
-# --- entry -------------------------------------------------------------------------
 
 def cmd_join(argv: list, outstream, instream) -> int:
     positional, opts = _split_flags(
@@ -1474,7 +1321,6 @@ def cmd_join(argv: list, outstream, instream) -> int:
               "along.", file=outstream)
     return _EXIT_OK
 
-
 def cmd_help(outstream) -> int:
     print(USAGE, file=outstream)
     if _is_windows():
@@ -1489,12 +1335,8 @@ def cmd_help(outstream) -> int:
               file=outstream)
     return _EXIT_OK
 
-
 def main(argv: list | None = None, outstream=None, instream=None) -> int:
     agent.term.enable_windows_vt()
-    # A C/POSIX locale or legacy Windows codepage must degrade punctuation,
-    # not raise UnicodeEncodeError out of help/error paths. Only touch the
-    # real std streams; caller-provided streams are their owner's problem.
     if outstream is None and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(errors="replace")
@@ -1541,8 +1383,6 @@ def main(argv: list | None = None, outstream=None, instream=None) -> int:
         print(f"huitz: {e}", file=sys.stderr)
         return EXIT_ERROR
     except BrokenPipeError:
-        # `huitz score | head`: the reader went away. Avoid the traceback and
-        # Python's shutdown "Exception ignored" noise.
         try:
             sys.stdout.close()
         except OSError:

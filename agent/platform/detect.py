@@ -6,12 +6,8 @@ from agent.platform.base import PlatformContext
 
 
 def detect() -> PlatformContext:
-    """Detect the init system and return a ready PlatformContext.
-
-    Windows: sys.platform == "win32" (no init system; services via CIM).
-    systemd: presence of /run/systemd/system.
-    OpenRC: else, presence of /sbin/openrc or the `rc-status` binary.
-    """
+    """Detect the init system: win32 -> Windows (CIM), /run/systemd/system
+    -> systemd, else OpenRC."""
     if sys.platform == "win32":
         from agent.platform.windows import WindowsContext
         return WindowsContext()

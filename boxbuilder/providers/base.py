@@ -1,19 +1,8 @@
 """Provider abstraction: how boxbuilder reaches a box and packages it.
 
-This is the seam that makes the VM environment pluggable. v1 ships SshProvider
-(box already running, reached over SSH). Future providers (qemu, proxmox) boot
-their own VM and export an image.
-
-Design notes:
-  - A BoxHandle is the single source of truth for the box's addr/user/password.
-    When boxbuilder drives `nakon deploy`, it derives a one-machine config whose
-    address comes from the handle (see nakon.derive_deploy_config), NOT from the
-    agent's nakon config. This keeps addresses in sync and lets dynamic-IP
-    providers (qemu/proxmox) work without the agent knowing the address up front.
-  - `export()` returns an ExportResult because not every provider can self-export
-    (SshProvider can't snapshot a remote box it doesn't own). Those return
-    mode="manual" with instructions; the caller surfaces that in --json.
-"""
+The BoxHandle is the single source of truth for addr/user/password: the
+nakon deploy config derives its address from the handle, so dynamic-IP
+providers work."""
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -34,12 +23,9 @@ class RunResult:
 
 @dataclass
 class ExportResult:
-    """Result of packaging the box.
-
-    mode == "wrote": the image at `path` is ready to distribute.
-    mode == "manual": the provider can't self-export; `instructions` tells the
-        operator what to do (e.g. snapshot from the hypervisor). `path` is None.
-    """
+    """Packaging result: mode "wrote" -> image ready at `path`; mode
+    "manual" -> the provider can't self-export, `instructions` tell the
+    operator what to do, `path` is None."""
     mode: str  # "wrote" | "manual"
     path: Optional[str] = None
     format: Optional[str] = None
@@ -67,20 +53,10 @@ class BoxHandle(ABC):
     @abstractmethod
     def install_init(self, kind: str, mode: str = "honor",
                      start_agent: bool = True) -> None:
-        """Install + enable the huitzilopochtli-agent init unit.
-        kind is one of: 'systemd', 'openrc', 'none' (none = skip, the operator
-        will wire it up). Copies the template from packaging/ and runs the
-        enable commands from the templates in packaging/ (huitzilopochtli-agent.*).
-        mode is 'honor' or 'ranked' (BoxSpec.mode). Honor mode's agent runs
-        the checks once and exits (see packaging/huitzilopochtli-agent.service's
-        comments); on systemd, this also installs+enables the paired
-        huitzilopochtli-agent.timer so the report re-checks periodically
-        without operator action. Ranked mode's agent already loops forever
-        on its own and does not need the timer.
-
-        start_agent=False installs the unit (or Windows scheduled task) but
-        leaves it stopped/disabled -- a ranked competition box is started by
-        the player's `huitz join`, not at install time."""
+        """Install + enable the agent's init unit ('systemd' | 'openrc' |
+        'windows' | 'none') from the packaging/ templates; honor also wires
+        the paired re-grade timer. start_agent=False installs it stopped —
+        a ranked competition box starts via the player's `huitz join`."""
 
     @abstractmethod
     def export(self, out_path: str, fmt: str = "ova") -> ExportResult:
@@ -95,15 +71,10 @@ _STAGE_DIR_RE = re.compile(r"^/tmp/huitzilopochtli-stage\.[A-Za-z0-9]+$")
 
 
 def stage_path(handle, name: str) -> str:
-    """A private remote path on `handle`'s box for staging a file before
-    `sudo install`.
-
-    Root-installed files (init units, the motd script) are uploaded as the
-    SSH user and then installed by root. A fixed name like
-    /tmp/huitzilopochtli-motd.sh lets any local account pre-create it
-    world-writable and swap its contents between upload and install; a
-    per-handle `mktemp -d` dir (0700, SSH-user-owned) closes that race.
-    """
+    """A private remote staging path for files that root will `sudo
+    install`. A fixed /tmp name would let any local account pre-create it and
+    swap contents between upload and install; a per-handle mktemp -d (0700)
+    closes that race."""
     stage_dir = getattr(handle, "_stage_dir", None)
     if stage_dir is None:
         res = handle.run(f"mktemp -d {_STAGE_PREFIX}XXXXXX", sudo=False)
@@ -132,9 +103,6 @@ class BoxProvider(ABC):
         handle.close()
 
 
-# --- registry -------------------------------------------------------------
-# Simple name -> class registry so providers can be selected by string without
-# importing every transport (which may pull heavy deps like paramiko).
 _REGISTRY: dict = {}
 
 

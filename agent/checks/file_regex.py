@@ -10,9 +10,8 @@ from agent.checks.base import Check, register
 from common.matchers import _REGEX_HAYSTACK_LIMIT, _compile_pattern
 from common.schema import CheckSpec, CollectorStatus, Evidence
 
-# Cap read size to mitigate ReDoS via a huge file (see common/matchers.py).
-_CONTENT_LIMIT = _REGEX_HAYSTACK_LIMIT  # 1 MB
-
+# Read cap mitigates ReDoS via a huge haystack file (see common/matchers.py).
+_CONTENT_LIMIT = _REGEX_HAYSTACK_LIMIT
 
 @register("file_regex")
 class FileRegexCheck(Check):

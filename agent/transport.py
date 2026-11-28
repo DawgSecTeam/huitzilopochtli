@@ -28,7 +28,6 @@ from common.schema import (
 _TIMEOUT_S = 10
 
 # Engine request bodies are capped at 1 MiB. Leave headroom for the canonical
-# envelope and for JSON escaping, and shrink oversized evidence client-side
 # rather than sending a bundle the engine will permanently reject.
 MAX_BUNDLE_BYTES = 900_000
 _MAX_QUEUE_BUNDLES = 500
@@ -80,7 +79,6 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         results=results,
         sla_status=sla_status,
         computed_at=score_data.get("computed_at"),
-        # Absent from engines predating the forensics/hardening split.
         forensics_points=_optional_int(score_data.get("forensics_points")),
     )
 
@@ -95,7 +93,6 @@ def _parse_checkin_response(data: dict) -> CheckinResponse:
         ]
 
     directives = _directives("directives")
-    # Absent from engines that predate at-least-once delivery.
     issued_directives = _directives("issued_directives")
 
     return CheckinResponse(
@@ -161,7 +158,6 @@ class TransportClient:
         self._fail_path = queue_path + ".fail"
         self._dead_path = queue_path + ".dead"
 
-    # -- queue file helpers ------------------------------------------------
 
     def _read_queue(self) -> list:
         if not os.path.exists(self.queue_path):
@@ -183,8 +179,7 @@ class TransportClient:
         return lines
 
     def _write_queue(self, lines: list) -> None:
-        # Atomic write via temp file + rename, mode 0600 (bundles carry
-        # evidence, including forensics answers).
+        # Atomic write via temp file + rename, mode 0600 (bundles carry evidence).
         tmp_path = self.queue_path + ".tmp"
         fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -214,7 +209,6 @@ class TransportClient:
             f.write("\n")
             f.flush()
             os.fsync(f.fileno())
-        # Enforce the size cap by trimming the oldest entries.
         lines = self._read_queue()
         if len(lines) > _MAX_QUEUE_BUNDLES:
             self._write_queue(lines[-_MAX_QUEUE_BUNDLES:])
@@ -290,10 +284,8 @@ class TransportClient:
     def _shrink_bundle(bundle: Bundle) -> bool:
         """Shrink evidence until the canonical bundle fits the engine cap.
 
-        Returns True if anything was changed. Truncation is always visible in
-        the evidence reason; a check whose raw data had to be dropped becomes
-        ERROR so it fails closed instead of silently scoring garbage.
-        """
+        Truncation is always visible in the reason; dropped raw data becomes
+        ERROR evidence — fails closed instead of silently scoring garbage."""
         def _truncate_strings(value, limit: int):
             if isinstance(value, str):
                 return value if len(value) <= limit else value[:limit]
@@ -313,8 +305,6 @@ class TransportClient:
         if len(canonicalize(dataclasses.asdict(bundle))) <= MAX_BUNDLE_BYTES:
             return changed
 
-        # Still too large: drop raw payloads largest-first, turning those
-        # checks into explicit ERROR evidence rather than an unsendable bundle.
         def _raw_size(ev):
             return len(canonicalize(ev.raw))
 
@@ -326,14 +316,10 @@ class TransportClient:
                 break
         return True
 
-    # -- wire send ----------------------------------------------------------
 
     def _send_canonical(self, canonical_bytes: bytes) -> CheckinResponse:
-        """POST already-canonicalized bundle bytes to the engine.
-
-        Raises _NetworkFailure on transient network errors and
-        PermanentRejection on a non-retryable 4xx response.
-        """
+        """POST canonicalized bytes; raises _NetworkFailure on transient errors,
+        PermanentRejection on a non-retryable 4xx."""
         sig = signing.sign(self.identity.private_key, canonical_bytes)
         headers = {
             "Content-Type": "application/json",
@@ -407,10 +393,9 @@ class TransportClient:
 
     @staticmethod
     def _with_directives(response, extra: list):
-        """Prepend `extra` directives to response.directives (duplicates are
-        fine: the caller skips event_ids it already ran). None stays None:
-        with no usable response there is nothing to attach them to, and the
-        engine re-sends them via issued_directives on the next check-in."""
+        """Prepend `extra` directives to response.directives; duplicates are
+        fine (the caller dedups). None stays None — the engine re-sends via
+        issued_directives next check-in, so none is dropped."""
         if response is not None and extra:
             seen = {d.event_id for d in response.directives}
             response.directives = (
@@ -418,32 +403,21 @@ class TransportClient:
             )
         return response
 
-    # -- public API -----------------------------------------------------
 
     def checkin(self, bundle: Bundle) -> CheckinResponse:
         """Sign bundle's canonical form, POST to <engine_url>/checkin over TLS.
 
-        On success: flush any previously-queued bundles first (in seq order),
-        then send `bundle`, return the parsed CheckinResponse. The response to
-        a successfully flushed queued bundle is authoritative too — the most
-        recent successful response from any send is returned.
-
-        On network failure: append `bundle` to the queue file and return None.
-        On _ResponseParseFailure (engine accepted the bundle but the response
-        body was unusable): nothing is queued (a replay would 409 forever) and
-        None is returned; the bundle counts as accepted.
-        A queued bundle the engine permanently rejects (non-retryable 4xx) is
-        dropped and the flush continues. Raises PermanentRejection only when
-        the current `bundle` is rejected; it is dropped, not queued.
-        """
+        Queue-and-forward (§9.5): flush queued bundles in seq order first —
+        the most recent successful response from any send is returned. On
+        network failure: queue `bundle`, return None. If the engine accepted a
+        bundle but its response was unusable: do NOT queue (a replay would 409
+        forever); it counts as accepted. A queued bundle that is permanently
+        rejected is dropped and the flush continues; PermanentRejection is
+        raised only for the current `bundle` (dropped, never queued)."""
         self._shrink_bundle(bundle)
         queued = self._read_queue()
         remaining = list(queued)
-        last_response = None  # most recent successful response from any send
-        # Directives from flushed queued bundles' responses. The first
-        # check-in after a fire time gets the directive, and that may be a
-        # queued bundle whose response is superseded below -- carry them
-        # into whatever response we return so none is dropped.
+        last_response = None
         flushed_directives = []
 
         while remaining:
@@ -453,11 +427,10 @@ class TransportClient:
                 flushed_directives.extend(last_response.directives)
                 self._clear_failure(line)
             except _NetworkFailure as exc:
-                # A 5xx on a queued bundle may be deterministic (e.g. a bad
-                # stored rubric): retrying it at the head forever blocks all
-                # later evidence. Give it a few tries, then dead-letter it.
-                # 503 is the engine's explicit "busy, retry" signal and must
-                # never consume an attempt.
+                # A deterministic 5xx on a queued bundle must not block newer
+                # evidence: retry a few times, then dead-letter. 503 is the
+                # engine's explicit "busy, retry" signal — never consume an
+                # attempt on it.
                 if exc.status >= 500 and exc.status != 503:
                     if self._bump_failure(line) >= _MAX_QUEUED_ATTEMPTS:
                         print(
@@ -474,8 +447,7 @@ class TransportClient:
                 self._append_queue(new_canonical.decode("utf-8"))
                 return self._with_directives(last_response, flushed_directives)
             except _ResponseParseFailure as e:
-                # Engine accepted this queued bundle (HTTP 200) but the body
-                # didn't parse; retrying it would only earn a 409 replay.
+                # Engine accepted it (200); retrying would only earn a 409 replay.
                 print(
                     f"WARNING: dropping queued bundle the engine accepted but "
                     f"whose response didn't parse: {e}",
@@ -483,10 +455,9 @@ class TransportClient:
                 )
                 self._clear_failure(line)
             except PermanentRejection as e:
-                # A stale queued bundle (e.g. a replay after a crash) is dead,
-                # but later entries and the current bundle are not: drop it
-                # and keep flushing. Raising here lost the current cycle's
-                # evidence even though its seq was already persisted.
+                # This bundle is dead, later entries and the current bundle
+                # are not: drop it and keep flushing — raising here would lose
+                # current evidence whose seq was already persisted.
                 print(
                     f"WARNING: dropping queued bundle the engine permanently "
                     f"rejected: {e}",
@@ -503,13 +474,9 @@ class TransportClient:
             return self._with_directives(
                 self._send_canonical(canonical_bytes), flushed_directives)
         except _NetworkFailure:
-            # Queue the new bundle for next cycle, then return the flushed
-            # queued bundle's response — it is the most recent authoritative
-            # engine response (score, directives).
             self._append_queue(canonical_bytes.decode("utf-8"))
             return self._with_directives(last_response, flushed_directives)
         except _ResponseParseFailure as e:
-            # Engine accepted the current bundle (HTTP 200) but the response
             # body didn't parse. Do NOT queue it: the next cycle would replay
             # an accepted bundle and be permanently 409-rejected.
             print(

@@ -12,35 +12,22 @@ from common.schema import (
 
 
 class Clock(Protocol):
-    """Supplies the timestamp stamped into ScoreBreakdown.computed_at.
-
-    Honor mode: a trivial wrapper around time.time().
-    Ranked mode: the engine's authoritative received_at for this check-in.
-    Never used for SLA accrual — that lives entirely in engine/sla.py (§10.3).
-    """
+    """Timestamp for ScoreBreakdown.computed_at: box wall time in honor, the
+    engine's authoritative receipt time in ranked. Never used for SLA accrual
+    — that is engine/sla.py (§10.3)."""
     def now(self) -> float: ...
 
 
 def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
     """Score point-in-time (non-SLA) rubric entries against collected evidence.
 
-    For each non-SLA RubricEntry: match the corresponding Evidence.raw against
-    entry.matcher, then award entry.points per category (§10.1):
-      - VULN: award points (positive) if matched, else 0.
-      - PENALTY: award points (negative) if the required state is broken
-        (match fails), else 0.
-      - PROHIBITED: award points (negative) if the forbidden state is present
-        (match succeeds), else 0.
-
-    SLA entries (rubric entry with .sla set) are ignored here entirely — they
-    are scored statefully by engine/sla.py, never by this pure pass (§10.3).
-
-    Missing/ERROR/TIMEOUT evidence is scored as "not satisfied" for every
-    category (VULN scores 0, PENALTY/PROHIBITED apply no negative points): a
-    collector fault is never treated as a confirmed observation. The matcher
-    still runs for an informative reason, but its result is overridden to
-    not-matched when the evidence is undetermined.
-    """
+    Awards per category (§10.1): VULN points when matched; PENALTY negative
+    points when the match FAILS; PROHIBITED negative points when it SUCCEEDS
+    (`passed` = "requirement met", so a forbidden match passes=False). Entries
+    with .sla are ignored here — engine/sla.py scores them statefully (§10.3).
+    Missing/ERROR/TIMEOUT evidence scores "not satisfied" in every category:
+    a collector fault is never a confirmed observation; the matcher still
+    runs, only for an informative reason."""
     evidence_by_check_id = {e.check_id: e for e in evidence}
 
     results = []
@@ -63,14 +50,13 @@ def evaluate(evidence: list, rubric: Rubric, clock: Clock) -> ScoreBreakdown:
                 f"evidence unavailable; scored as not satisfied ({matcher_reason})"
             )
         else:
-            # `passed` is the human-facing "requirement satisfied" bit, not
-            # "matcher returned True": for PROHIBITED, a passing matcher means
-            # the forbidden state is present, so the requirement is NOT met.
             if entry.category == Category.PENALTY:
                 awarded = entry.points if not matched else 0
                 passed = matched
             elif entry.category == Category.PROHIBITED:
                 awarded = entry.points if matched else 0
+                # passed = "requirement met": a forbidden state present means
+                # the requirement is NOT met, matcher True notwithstanding.
                 passed = not matched
             else:
                 awarded = entry.points if matched else 0

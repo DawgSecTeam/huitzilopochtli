@@ -15,9 +15,9 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-# A deploy replaces the code the live scoring loop is running. Refuse while a
-# competition is live: the six-player field lost its End-time teardown to a
-# mid-run redeploy. HUITZ_DEPLOY_FORCE=1 is the explicit override.
+# A deploy replaces the code the live scoring loop runs; refuse while a
+# competition is live (a mid-run redeploy races End-time teardown).
+# HUITZ_DEPLOY_FORCE=1 is the explicit override.
 if HEALTH=$(curl -fsS --max-time 3 \
     "http://127.0.0.1:${HUITZ_PORT:-8080}/health" 2>/dev/null); then
   printf '%s' "$HEALTH" | python3 "$SRC_DIR/engine/deploy/guard.py" || exit 1
@@ -34,8 +34,8 @@ chmod -R u+w "$APP_DIR" 2>/dev/null || true
 cp -a "$SRC_DIR/common/." "$APP_DIR/common/"
 cp -a "$SRC_DIR/engine/." "$APP_DIR/engine/"
 cp -a "$SRC_DIR/engine/deploy/." "$APP_DIR/deploy/"
-# The engine parses the committed box scenarios itself (the admin picker
-# serves exactly what boxes/ holds), so the bundle must carry them.
+# The engine serves exactly what boxes/ holds (admin picker), so the bundle
+# must carry it.
 if [[ -d "$SRC_DIR/boxes" ]]; then
   install -d -o root -g root -m 755 "$APP_DIR/boxes"
   cp -a "$SRC_DIR/boxes/." "$APP_DIR/boxes/"
@@ -64,8 +64,8 @@ HUITZILOPOCHTLI_MAX_CONNS=128
 HUITZILOPOCHTLI_MAX_VERIFY=4
 HUITZILOPOCHTLI_WORKSHOP_URL=${HUITZ_WORKSHOP_URL:-}
 HUITZILOPOCHTLI_WORKSHOP_ADMIN_PASSWORD=${HUITZ_WORKSHOP_ADMIN_PASSWORD:-}
-# Shared with the portal's HUITZ_PREBIND_SECRET. Setting only one side is
-# harmless (the engine falls back to manual join), but you want both.
+# Shared with the portal's HUITZ_PREBIND_SECRET; one side only is harmless
+# (manual join), but you want both.
 HUITZILOPOCHTLI_WORKSHOP_SECRET=${HUITZ_WORKSHOP_SECRET:-}
 HUITZILOPOCHTLI_SWEEP_INTERVAL_S=${HUITZ_SWEEP_INTERVAL_S:-15}
 HUITZILOPOCHTLI_PUBLIC_URL=${HUITZ_PUBLIC_URL:-http://127.0.0.1:8080}
@@ -83,8 +83,8 @@ EOF
   chmod 600 /root/huitz-engine-credentials.txt
 fi
 
-# The box-folder source carries ${VAR} placeholders; per-box deployment values
-# live in this local map, never in the repository.
+# Box scenarios carry ${VAR} placeholders; per-box deployment values live in
+# pools.yaml, never in the repository.
 if ! grep -q '^HUITZILOPOCHTLI_POOLS_FILE=' "$ENV_FILE"; then
   printf 'HUITZILOPOCHTLI_POOLS_FILE=%s\n' "$ETC_DIR/pools.yaml" >> "$ENV_FILE"
 fi

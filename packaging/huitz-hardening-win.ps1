@@ -1,24 +1,12 @@
-# Huitzilopochtli Windows logon/browser hardening (build-time). See architecture.md §17.
-#
-# Placed into the install dir by boxbuilder's install step (pipeline.install_box, Windows
-# targets only) and run once over the elevated SSH session. Best-effort by design: every
-# section guards itself and the script always exits 0 -- a hardening miss must never fail
-# an install. What it kills (the pop-ups players should never meet):
-#
-#   1. Microsoft Edge first-run onboarding -- the "welcome to Edge" wizard every fresh
-#      profile walks through -- via machine-wide Edge policies.
-#   2. The Shutdown Event Tracker modal at logon ("Why did the computer shut down
-#      unexpectedly?").
-#   3. Server Manager auto-open at logon and its Windows Admin Center promo, set in
-#      C:\Users\Default\NTUSER.DAT so every profile created from now on inherits it.
-#      An HKCU write over SSH does not survive template sealing.
-#   4. The python.org MSI advertised-shortcut trap: the Start-menu entries
-#      are MSI entry points; on a clone they fire MSI self-repair, which pops
-#      "Another program called 'C:\Program' ... Would you like to rename it?" /
-#      "Windows cannot find 'C:\Program\python.exe'" -- clicking Rename renames the
-#      python home away and scoring silently dies. Repair the products (/faus refreshes
-#      files, registry, and shortcuts so they stop being advertised) and delete the
-#      Start-menu folder.
+# Huitzilopochtli Windows logon/browser hardening (build-time), §17. Placed in
+# the install dir by pipeline.install_box (Windows targets) and run once over
+# the elevated SSH session. Best-effort: every section guards itself and the
+# script always exits 0. Kills: Edge first-run (machine policy), the Shutdown
+# Event Tracker, Server Manager at logon (set in C:\Users\Default so profiles
+# inherit it — HKCU writes over SSH don't survive sealing), and the python MSI
+# advertised-shortcut trap (self-repair on clones can rename the python home
+# and silently break scoring — /faus de-advertises, then the Start-menu
+# folder goes).
 
 $ErrorActionPreference = 'Continue'
 
@@ -33,9 +21,8 @@ try {
     # 4 = import nothing at first launch (no bookmarks/settings wizard).
     New-ItemProperty -Path $edge -Name 'AutoImportAtFirstRun' `
         -PropertyType DWord -Value 4 -Force | Out-Null
-    # Software rendering: GPU-composited text smears into gray ghost-streaks on
-    # virtual displays under lossy remote encoders (Guacamole/RDP) -- exactly
-    # what a player sees with the handbook open over the workshop link.
+    # Software rendering: GPU-composited text smears under lossy remote
+    # encoders (Guacamole/RDP) — what players see over the workshop link.
     New-ItemProperty -Path $edge -Name 'HardwareAccelerationModeEnabled' `
         -PropertyType DWord -Value 0 -Force | Out-Null
     Info 'Edge first-run experience disabled (machine policy)'
@@ -108,9 +95,8 @@ try {
     } else {
         foreach ($code in ($codes | Select-Object -Unique)) {
             Info "repairing python MSI $code (defuses advertised-shortcut self-repair)"
-            # Bounded wait, not -Wait: msiexec /faus can block for many
-            # minutes on a healthy install. Hardening is best-effort and must
-            # never stall a build, so give it two minutes and move on.
+            # Bounded, not -Wait: /faus can block for minutes; hardening must
+            # never stall a build. Two minutes, then move on.
             $repair = Start-Process msiexec.exe -ArgumentList "/faus $code /qn" -PassThru
             if (-not $repair.WaitForExit(120000)) {
                 Info "WARNING: python MSI repair $code exceeded 120s; continuing"

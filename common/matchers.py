@@ -45,14 +45,10 @@ rubric rather than as an OR/AND chain inside an on-box script:
 common single-value raw field, e.g. file_regex's raw["matched"]) when not
 given explicitly.
 
-Shorthand (architecture.md §8 example): the author-facing YAML writes
-`expect: {equals: "no", points: 5}`. The compiler is expected to tag this as
-{"tag": "equals", "equals": "no", "points": 5} (i.e. it just stamps "tag" onto
-the expect dict; it does not rewrite "equals" -> "value"). So equals/
-not_equals/contains/regex also accept the value/pattern under a key that
-matches their own tag name (e.g. "equals", "pattern"/"regex") as a fallback
-when the conventional "value"/"pattern" key is absent. This lets the
-documented §8 YAML example work unmodified through the pipeline.
+Shorthand (§8): the compiler just stamps "tag" onto the author's expect dict,
+so `expect: {equals: "no"}` arrives as {"tag": "equals", "equals": "no"} —
+predicates therefore also read the value from a key named after their own
+tag when "value"/"pattern" is absent.
 """
 import re
 import string
@@ -60,10 +56,9 @@ from typing import Callable
 
 MATCHERS: dict[str, Callable[[dict, dict], tuple]] = {}
 
-# Haystack is collector-controlled and may be large; stdlib ``re`` has no
-# per-match timeout and holds the GIL, so cap input length and cache
-# compiled patterns. Pathological trusted patterns are an operator concern.
-_REGEX_HAYSTACK_LIMIT = 1_000_000  # 1 MB
+# stdlib re has no per-match timeout and holds the GIL while running, so the
+# haystack is capped; pathological trusted patterns are an operator concern.
+_REGEX_HAYSTACK_LIMIT = 1_000_000
 _REGEX_CACHE: dict[str, "re.Pattern"] = {}
 
 
@@ -106,12 +101,9 @@ def _resolve_tag(matcher: dict):
 def validate_matcher(matcher: dict) -> list:
     """Return human-readable argument errors for a matcher (empty = valid).
 
-    Upload-time validation is tag-only without this: a rubric such as
-    ``{"tag": "regex", "pattern": 123}`` passes the tag check and then raises
-    TypeError inside evaluate(), which (on the engine) fails every check-in for
-    the scenario. This validates the arguments each registered predicate
-    actually reads, using the same shorthand fallbacks the predicate uses.
-    """
+    Without this, {"tag": "regex", "pattern": 123} passes tag-only checks and
+    raises TypeError inside every later check-in. Validates the arguments each
+    predicate actually reads, with the same shorthand fallbacks."""
     errors = []
     if not isinstance(matcher, dict):
         return ["matcher must be an object"]
@@ -224,12 +216,10 @@ def validate_matcher(matcher: dict) -> list:
 
 
 def evaluate_matcher(matcher: dict, raw: dict) -> tuple:
-    """Look up matcher['tag'] in MATCHERS and evaluate it against raw.
+    """Look up matcher['tag'] in MATCHERS and evaluate against raw.
 
-    Returns (passed: bool, reason: str). Never raises: a malformed matcher is
-    an unsatisfied/unavailable observation, not a crash that aborts a whole
-    check-in. Upload-time validation should catch these first.
-    """
+    Returns (passed, reason). Never raises: a malformed matcher is an
+    unsatisfied observation, never an aborted check-in."""
     tag = _resolve_tag(matcher)
     if tag is None:
         return False, "matcher has no resolvable tag"
@@ -239,7 +229,6 @@ def evaluate_matcher(matcher: dict, raw: dict) -> tuple:
         return False, f"matcher {tag!r} could not be evaluated ({type(exc).__name__})"
 
 
-# --- internal helpers -------------------------------------------------------
 
 _MISSING = object()
 
@@ -249,12 +238,8 @@ def _field_name(matcher: dict, default: str = "matched") -> str:
 
 
 def _expected_value(matcher: dict, *fallback_keys: str):
-    """Pull the expected value out of a matcher dict.
-
-    Checks "value" first, then each of fallback_keys (e.g. the matcher's own
-    tag name, to support the §8 shorthand form {"equals": "no"}). Returns
-    _MISSING if none present.
-    """
+    """Pull the expected value: "value" first, then fallback_keys (the tag
+    name, for the §8 shorthand {"equals": "no"}). _MISSING if none present."""
     if "value" in matcher:
         return matcher["value"]
     for key in fallback_keys:
@@ -271,15 +256,10 @@ def _get_raw(raw: dict, field: str):
 
 
 def _parse_mode(value) -> int:
-    """Normalize a file-mode value to its integer permission bits.
+    """Normalize a file mode to int permission bits (masked to the low 12).
 
-    Accepts either an octal *string* (the convention the permission collector
-    emits, e.g. "0755") or a plain *int* (a collector returning os.stat().st_mode
-    directly, where the decimal int 493 == 0o755). For an int the digits are the
-    value itself, so `int(str(493), 8)` would wrongly re-parse "493" as octal and
-    raise; instead we take the int as-is. Masks to the low 12 bits
-    (permission + setuid/setgid/sticky). Raises ValueError/TypeError otherwise.
-    """
+    Accepts an octal *string* ("0755", the permission collector's convention)
+    or a plain *int* — take ints as-is: re-parsing 493 as octal is wrong."""
     if isinstance(value, bool):
         raise TypeError("bool is not a valid file mode")
     if isinstance(value, int):
@@ -289,7 +269,6 @@ def _parse_mode(value) -> int:
     raise TypeError(f"unsupported mode type: {type(value).__name__}")
 
 
-# --- predicates --------------------------------------------------------------
 
 @register("equals")
 def _equals(matcher: dict, raw: dict) -> tuple:
@@ -349,7 +328,6 @@ def _regex(matcher: dict, raw: dict) -> tuple:
     if actual is None:
         return False, f"{field} is None; cannot match pattern {pattern!r}"
     haystack = str(actual)
-    # Mitigate ReDoS by capping haystack length (see _REGEX_HAYSTACK_LIMIT).
     if len(haystack) > _REGEX_HAYSTACK_LIMIT:
         return False, f"{field} exceeds length limit {_REGEX_HAYSTACK_LIMIT}; not evaluated"
     try:
@@ -367,14 +345,9 @@ def _regex(matcher: dict, raw: dict) -> tuple:
 
 @register("answer_equals")
 def _answer_equals(matcher: dict, raw: dict) -> tuple:
-    """Forensics answer comparison with forgiving normalization.
-
-    Matcher keys: "value" (expected answer) or "accept" (list of acceptable
-    answers); raw must carry "answer" (the team's submission, from the
-    forensics_answer collector). Comparison is case-insensitive with internal
-    whitespace collapsed and surrounding punctuation ignored. A blank or
-    missing submission never matches — an unanswered question earns nothing.
-    """
+    """Forensics answers: value/accept vs raw["answer"], normalized via
+    normalize_answer(). A blank or missing submission NEVER matches —
+    unanswered earns nothing."""
     expected = _expected_value(matcher, "answer_equals")
     accept = matcher.get("accept")
     if expected is _MISSING and accept is None:
@@ -406,12 +379,10 @@ def _answer_equals(matcher: dict, raw: dict) -> tuple:
 
 
 def normalize_answer(value: str) -> str:
-    """Casefold, collapse whitespace, and strip surrounding punctuation.
+    """Casefold, collapse whitespace, strip surrounding punctuation.
 
-    The one definition of "counts as blank" for a forensics answer: the
-    matcher scores against it, and the board's submitted flag (whether a
-    non-blank answer was collected at all) must agree with it.
-    """
+    The single definition of "blank" — the matcher and the board's submitted
+    flag must agree with it."""
     collapsed = " ".join(str(value).casefold().split())
     return collapsed.strip(string.punctuation + "\u201c\u201d\u2018\u2019")
 
@@ -430,8 +401,6 @@ def _mode_at_most(matcher: dict, raw: dict) -> tuple:
         max_bits = _parse_mode(max_mode)
     except (ValueError, TypeError):
         return False, f"could not parse mode(s): actual={actual!r} max={max_mode!r}"
-    # Passes if actual has no bits set beyond what max_mode allows, i.e.
-    # actual is no looser than max_mode (a subset of its permission bits).
     if actual_bits & ~max_bits == 0:
         return True, f"mode {actual!r} is no looser than max {max_mode!r}"
     return False, f"mode {actual!r} is looser than max {max_mode!r}"
@@ -471,10 +440,8 @@ def _user_present(matcher: dict, raw: dict) -> tuple:
     return False, f"user {username!r} is absent"
 
 
-# --- data_* matchers: subfields of raw["data"] (command_json / powershell_json)
-#
-# Ranked collectors must emit raw facts only; the pass condition is expressed
-# here, in the rubric, so the on-box script never contains the verdict.
+# data_* predicates. Contract: ranked collectors ship raw facts only — the
+# pass condition lives here, in the rubric, never in the on-box script.
 
 def _get_data_field(raw: dict, field: str):
     """Dotted-path lookup into raw["data"]; _MISSING when absent/not an object."""

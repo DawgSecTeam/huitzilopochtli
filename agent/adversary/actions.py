@@ -17,13 +17,12 @@ from typing import Callable
 
 ACTIONS: dict[str, Callable] = {}
 
-#: Directory confining ``drop_inert_artifact`` — resolved paths never escape it.
+#: Directory confining ``drop_inert_artifact``; resolved paths never escape it.
 #: POSIX uses a root-owned dir, not /tmp: in a world-writable parent a local
 #: user could pre-create the base (or symlinks inside it) and redirect the
-#: root write onto any file. On Windows, SYSTEM's temp dir is private only
-#: on newer builds (C:\Windows\SystemTemp); on older ones it is
-#: C:\Windows\Temp, where users can create subdirs, so _resolve_artifact_path
-#: refuses a linked base and compares real paths.
+#: root write onto any file. Windows' SYSTEM temp dir is private only on
+#: newer builds, so _resolve_artifact_path refuses a linked base and
+#: compares real paths.
 _DEFAULT_ARTIFACT_DIR = (
     os.path.join(tempfile.gettempdir(), "huitzilopochtli-adversary")
     if os.name == "nt" else "/var/lib/huitzilopochtli/adversary"
@@ -33,10 +32,8 @@ from common.adversary import SERVICE_NAME_RE as _SERVICE_NAME_RE
 
 _IS_WINDOWS = os.name == "nt"
 
-
 def _artifact_base() -> str:
     return os.environ.get("HUITZILOPOCHTLI_ARTIFACT_DIR", _DEFAULT_ARTIFACT_DIR)
-
 
 def _is_link_or_junction(path: str) -> bool:
     if os.path.islink(path):
@@ -44,14 +41,11 @@ def _is_link_or_junction(path: str) -> bool:
     attrs = getattr(os.lstat(path), "st_file_attributes", 0)
     return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
-
 def _resolve_artifact_path(base: str, requested: str):
-    """Resolve ``requested`` inside ``base``; return None if it would escape.
+    """Resolve ``requested`` inside ``base``; None if it would escape.
 
-    Creates ``base`` if missing and refuses it if it is a symlink/junction,
-    then compares *real* paths, so a link planted anywhere under the base
-    cannot redirect the write outside it.
-    """
+    Refuses a symlink/junction base and compares *real* paths, so no link
+    planted under the base can redirect the write out of it."""
     try:
         os.makedirs(base, exist_ok=True)
         if _is_link_or_junction(base):
@@ -65,16 +59,12 @@ def _resolve_artifact_path(base: str, requested: str):
         return None
     return candidate
 
-
 def _open_confined_posix(base: str, requested: str):
-    """Open ``requested`` for writing inside ``base`` without following any
-    symlink; return an fd, or None if the path or the base is unsafe.
+    """Open a write target inside ``base`` following no symlinks; None if unsafe.
 
-    The base must be a real directory owned by us and not group/other-
-    writable; each path component is opened relative to its parent with
-    O_NOFOLLOW, so a symlink anywhere in the chain fails (ELOOP/ENOTDIR)
-    instead of being traversed.
-    """
+    Base must be a real dir, ours, not group/other-writable; every component
+    opens relative to its parent with O_NOFOLLOW, so a link anywhere in the
+    chain fails (ELOOP/ENOTDIR) instead of being traversed."""
     parts = [p for p in requested.replace("\\", "/").split("/") if p not in ("", ".")]
     if not parts or ".." in parts:
         return None
@@ -100,20 +90,16 @@ def _open_confined_posix(base: str, requested: str):
     finally:
         os.close(dfd)
 
-
 def register(name: str):
     def deco(fn):
         ACTIONS[name] = fn
         return fn
     return deco
 
-
 @register("flush_firewall")
 def _flush_firewall(params: dict, ctx: "agent.platform.base.PlatformContext") -> None:
     """Flush local packet filter rules. Tries iptables then nft; no-op if absent."""
     if _IS_WINDOWS:
-        # Windows has no iptables/nft. Reset the advfirewall profiles to their
-        # default rule set (removes the box's custom rules).
         try:
             subprocess.run(["netsh", "advfirewall", "reset"], check=False,
                            capture_output=True, timeout=15)
@@ -140,8 +126,6 @@ def _flush_firewall(params: dict, ctx: "agent.platform.base.PlatformContext") ->
         except Exception:
             pass
         return
-    # Neither tool present: no-op, not an error.
-
 
 @register("kill_service")
 def _kill_service(params: dict, ctx: "agent.platform.base.PlatformContext") -> None:
@@ -167,20 +151,13 @@ def _kill_service(params: dict, ctx: "agent.platform.base.PlatformContext") -> N
             subprocess.run(["rc-service", service, "stop"], check=False,
                             capture_output=True, timeout=15)
     except Exception:
-        # Ignore failures: a failed kill just means the box is more secure
-        # than expected, not an executor error.
         pass
-
 
 @register("drop_inert_artifact")
 def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext") -> None:
-    """Writes a benign, inert marker file. Never an executable payload,
-    never a callback.
-
-    params = {"path": <file path>}. Content is a fixed, non-executable,
-    plain-text marker string; permissions are explicitly set to 0o644
-    (never executable).
-    """
+    """Writes a benign, inert marker file. Never an executable payload, never
+    a callback. params = {"path": ...}; fixed plain-text content, forced 0644
+    (never executable), confined to the artifact sandbox."""
     requested = params.get("path")
     if not requested:
         return
@@ -221,19 +198,13 @@ def _drop_inert_artifact(params: dict, ctx: "agent.platform.base.PlatformContext
     except Exception:
         pass
 
-
 @register("wall_message")
 def _wall_message(params: dict, ctx: "agent.platform.base.PlatformContext") -> None:
     """Broadcast an engine-issued notice to every logged-in session (wall).
 
-    params = {"message": <text>}. The engine composes the message itself at
-    run end (post-run access notice); the box only renders it. This action
-    is engine-reserved — deliberately absent from
-    ``common.adversary.ADVERSARY_ACTIONS`` so no scenario can author it.
-    Control characters are stripped and the text is capped so a bad param
-    cannot inject terminal escapes beyond the message itself. Best effort:
-    no logged-in session means wall succeeds silently, which is fine.
-    """
+    Engine-reserved: deliberately absent from common.adversary
+    ADVERSARY_ACTIONS, so no scenario can author it. Control chars stripped
+    and length capped so a bad param cannot inject terminal escapes."""
     message = params.get("message")
     if not isinstance(message, str) or not message.strip():
         return
@@ -249,7 +220,6 @@ def _wall_message(params: dict, ctx: "agent.platform.base.PlatformContext") -> N
         print(f"NOTICE: {clean}", file=sys.stderr)
         return
     try:
-        # -n drops the "<hostname> broadcast message" banner where supported.
         posted = subprocess.run(["wall", "-n"], input=clean, check=False,
                                 capture_output=True, timeout=10)
         if posted.returncode != 0:

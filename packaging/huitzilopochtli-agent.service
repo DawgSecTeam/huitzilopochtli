@@ -1,27 +1,13 @@
 # Huitzilopochtli agent systemd unit. See architecture.md §17.
+# Install layout (packaging/README.md): honor ships .score.dat (0600),
+# ranked ships identity.json (0600) — never both.
 #
-# Install layout assumed (see packaging/README.md):
-#   /opt/.huitzilopochtli/agent.pyz
-#   /opt/.huitzilopochtli/agent_config.json
-#   /opt/.huitzilopochtli/manifest.signed.json
-#   /opt/.huitzilopochtli/.score.dat         (honor mode only, 0600, encoded)
-#   /opt/.huitzilopochtli/identity.json      (ranked mode only, 0600)
-#
-# Ranked mode: agent/__main__.py's _run_ranked() loops forever
-# (collect -> check-in -> sleep), so this is modeled as a long-running
-# service, not a oneshot.
-#
-# Honor mode: main() runs the checks once, writes the report, and
-# exits 0. The unit below (Restart=on-failure) will NOT restart it on
-# a clean exit, which is usually fine for a one-shot honor-mode grade;
-# systemd just leaves the service in an "inactive (exited, status=0)"
-# state and the report file already reflects the single run. If you
-# want honor mode to re-grade periodically without operator action,
-# pair this unit with a systemd timer instead, or swap the commented
-# alternatives below. The SAME box image / unit file can be used for
-# either mode -- behavior is controlled entirely by agent_config.json's
-# "mode" field, so no unit changes are required to switch.
-#
+# Ranked: _run_ranked() loops forever -> long-running service, not oneshot.
+# Honor: main() grades once and exits 0; Restart=on-failure does NOT
+# restart a clean exit (unit settles at "inactive (exited)"), and the
+# paired huitzilopochtli-agent.timer drives periodic re-grades — or swap
+# the commented alternatives below. The SAME unit serves both modes:
+# behavior comes from agent_config.json's "mode" field.
 # Alternative Restart= policies (uncomment the one you want instead of
 # the default below):
 #   Restart=no          # recommended for a strictly one-shot honor install
@@ -41,22 +27,11 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/bin/python3 /opt/.huitzilopochtli/agent.pyz /opt/.huitzilopochtli/agent_config.json
 # Mirrors report.html into each real user's $HOME/Documents/huitzilopochtli
-# dir (see that script's comments): a snap-confined browser (e.g. Ubuntu's
-# default Firefox) can only see plain $HOME paths, never /opt, so a "Scoring
-# Report" desktop shortcut pointed straight at /opt/.huitzilopochtli/
-# report.html shows "File not found" from inside one. Honor mode's timer restarts this service every 60s, so the
-# synced copy stays fresh; ranked mode's single long-running process only
-# gets the very first snapshot synced (ExecStartPost fires once, at service
-# start) -- a known limitation, same shape as the honor/ranked asymmetry
-# already documented in huitzilopochtli-agent.timer.
-# CAUTION: with Type=simple this fires when the agent process is FORKED,
-# not when it exits — it races the ~2s grade and copies the PREVIOUS
-# cycle's snapshot to the mirrors (mtime fresh, content one grade stale,
-# which pinned the huitz CLI countdown at zero). The agent itself now runs
-# this script at the END of every honor grade (agent/__main__.py:
-# _sync_desktop_copies), which is ordered after the write; this
-# ExecStartPost remains only for ranked mode's first snapshot and as a
-# belt-and-suspenders fallback.
+# (a snap-confined browser can't read /opt, so shortcuts point at $HOME).
+# NOTE: with Type=simple this fires when the process is FORKED, racing the
+# grade — the agent itself now syncs at the END of every honor grade
+# (agent/__main__.py::_sync_desktop_copies); this remains for ranked mode's
+# first snapshot only (its loop never re-fires ExecStartPost) + fallback.
 ExecStartPost=/opt/.huitzilopochtli/sync-report.sh
 WorkingDirectory=/opt/.huitzilopochtli
 Restart=on-failure

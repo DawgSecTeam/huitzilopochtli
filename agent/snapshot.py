@@ -1,31 +1,9 @@
 """Machine-readable report snapshot (`report.json`) — the huitz CLI's source.
 
-Every grade (honor run or ranked check-in) writes a snapshot next to the
-HTML report; `packaging/sync-report.sh` mirrors both to each user's Desktop
-the same way. The CLI (agent/cli.py) renders from the snapshot instead of
-re-scoring, which is what lets `huitz score` / `huitz watch` / `huitz
-forensics` work as ANY user on the box — including non-root desktop
-accounts that cannot read the sealed install dir (§17). The snapshot is a
-presentation of the ScoreBreakdown, never a scoring input (§2.1): nothing
-reads it back into the evaluator.
-
-Secrecy follows the HTML report's positive-only contract (§13):
-
-- **honor**: CyberPatriot positive-only. Failed checks are never identified
-  — no `results` list, no reasons — only the derived board (fixed titles,
-  incurred penalties, forensics state, counts). Spoiler-safety survives
-  `cat`, `jq`, and the Desktop copy.
-- **ranked**: also positive-only. The snapshot may carry the passed and
-  incurred-penalty results needed to derive the board, plus SLA states, live
-  rank, and the run clock — never a failed zero-point check, with one
-  exception: failed FORENSICS results (engine/checkin.py sends them only
-  once the run is over; their reasons name the player's own answer, never
-  the expected value). The engine filters that list too, so an
-  old/compromised response cannot reintroduce the answer key; the CLI/HTML
-  mirror honor mode's board.
-
-`snapshot_version` gates the format; the CLI refuses newer majors with a
-clear message instead of misrendering.
+The CLI renders from the snapshot instead of re-scoring, so `huitz` works
+as ANY user (§17); it is a presentation of the ScoreBreakdown, never a
+scoring input (§2.1). Secrecy: positive-only in both modes (§13) — the
+read() sweep below is the enforcement that makes that true of the file.
 """
 import json
 import math
@@ -39,17 +17,14 @@ from agent import term as term_mod
 SNAPSHOT_VERSION = 1
 _FILENAME = "report.json"
 
-
 class SnapshotError(Exception):
     """A snapshot exists but cannot be used (unreadable, corrupt, newer)."""
-
 
 def snapshot_path_for(report_path: str) -> str:
     """The snapshot lives next to the HTML report (same install dir)."""
     return os.path.join(
         os.path.dirname(os.path.abspath(report_path)), _FILENAME
     )
-
 
 def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                    delta: int | None, computed_at: float,
@@ -63,24 +38,10 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                    evidence=None) -> dict:
     """Assemble the snapshot dict. Pure; `write` serializes it.
 
-    `mode` is "honor" | "ranked" (str, so callers need not import schema).
-    Honor derives the estimated next re-grade from computed_at + the timer
-    cadence; ranked anchors to the engine's server_time + next_checkin_s.
-    Both are display estimates for a countdown, never scoring inputs (§13).
-    The honor default is 70s, not the timer's OnUnitActiveSec=60: the unit
-    re-fires 60s after the previous ACTIVATION, and a grade takes ~2s plus
-    dispatch, so observed fires land ~70s apart — a 60s estimate spends the
-    last stretch of every cycle pinned at "00:00 — checking…".
-
-    ``rank``/``rank_total``/``run_ends_at`` are the engine's live scoreboard
-    position and run clock (ranked only). Like the countdown they are
-    presentation facts, never scoring inputs; honor mode leaves them null.
-
-    ``evidence`` is the list the score was computed from; pass it whenever
-    the caller holds it so forensics questions can show that an answer was
-    submitted (and, when a result exists and failed, that it was not
-    correct). Omitting it degrades to the pre-evidence behavior.
-    """
+    Countdowns (honor: computed_at + ~70s observed fire cadence — the timer's
+    60s is activation-to-activation, not wall cadence; ranked: server_time +
+    next_checkin_s) and rank/run_ends_at are display estimates, never scoring
+    inputs (§13). Pass `evidence` to enable forensics submitted-state."""
     b = board_mod.build_board(score, manifest, evidence)
     theme = getattr(manifest, "theme", None)
     if theme is None and isinstance(manifest, dict):
@@ -95,11 +56,8 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         "title": b.title,
         "organization": b.organization,
         "accent": b.accent,
-        # Handbook text embedded by the compiler (theme.readme); None when
-        # the scenario ships none. `huitz readme` renders it in the terminal.
         "readme": theme.get("readme_text"),
         "awaiting_engine": awaiting_engine,
-        # null (not 0) while awaiting the engine: no score exists yet.
         "total": None if awaiting_engine else b.total,
         "max_possible": b.max_possible,
         "progress_pct": b.progress_pct,
@@ -117,9 +75,6 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "max_points": f.max_points,
                 "answered": f.answered,
                 "points": f.points,
-                # A non-blank answer was collected; with `graded` also true
-                # and `answered` false it was judged incorrect. Optional keys
-                # (older snapshots validate without them).
                 "submitted": f.submitted,
                 "graded": f.graded,
                 "answers_path": f.answers_path,
@@ -128,14 +83,8 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         ],
         "forensics_earned": b.forensics_earned,
         "forensics_submitted": b.forensics_submitted,
-        # Ranked only: total = hardening_points + service_points (null in
-        # honor mode). One derivation in agent/board.py; every renderer reads
-        # these rather than re-splitting the total.
         "hardening_points": b.hardening_points,
         "service_points": b.service_points,
-        # Ranked only: the engine's own forensics aggregate (answer_equals
-        # checks), carved back out of the total so every reader gets the same
-        # three-way split the engine stored. Kept None in honor mode.
         "forensics_points": b.forensics_points,
         "delta": delta,
         "computed_at": computed_at,
@@ -143,22 +92,16 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         "last_confirmed_at": None,
         "next_checkin_s": None,
         "sla_status": [],
-        # Ranked only: live scoreboard position + the event's end clock, as
-        # reported by the engine on this check-in. None in honor mode / for
-        # a legacy engine.
         "rank": None,
         "rank_total": None,
         "run_ends_at": None,
     }
 
     if mode == "ranked":
-        # Positive-only, exactly like honor: a failed zero-point check names
-        # a misconfiguration, so it never enters the world-readable snapshot.
-        # Passing/incurred-penalty rows are kept because the derived board
-        # needs them (and they are facts the player already knows). The one
-        # exception is forensics (engine/checkin.py): a failed forensics row
-        # carries no expected value — it is the run-over "answered — not
-        # correct" signal — so it is kept whenever the engine sends it.
+        # Positive-only, like honor: a failed zero-point check would identify
+        # what wasn't hardened, so it never enters this world-readable file.
+        # The sole exception is forensics — a failed row names only the
+        # player's own answer, never the expected value (run-over signal).
         forensics_ids = {
             f["id"] for f in board_mod._manifest_forensics(manifest)
         }
@@ -170,8 +113,6 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
                 "awarded_points": r.awarded_points,
                 "passed": bool(r.passed),
                 "reason": r.reason,
-                # Engine-sent title for visible results (ranked progressive
-                # hints); empty when the engine does not send one.
                 "title": getattr(r, "title", "") or "",
             }
             for r in (score.results or [])
@@ -193,26 +134,21 @@ def build_snapshot(score, manifest, *, mode: str, agent_version: str,
         snap["next_checkin_s"] = next_checkin_s
         if server_time is not None and isinstance(next_checkin_s, (int, float)) \
                 and not isinstance(next_checkin_s, bool) and next_checkin_s > 0:
-            # Countdown must be anchored to the box receipt time, not the
-            # engine clock: the browser/CLI compares it with Date.now()/
-            # time.time() (box clock). Using server_time made a skewed box
-            # clock show 00:00 (or 11:00) for the whole interval.
+            # Anchor to the box clock, not engine server_time: the browser/CLI
+            # compares next_event_at with time.time(); a skewed box clock would
+            # otherwise pin the countdown at the wrong value all interval.
             snap["next_event_at"] = time.time() + float(next_checkin_s)
     else:
         snap["next_event_at"] = float(computed_at) + float(honor_interval_s)
 
     return snap
 
-
 def write(report_path: str, snapshot: dict) -> bool:
     """Write the snapshot next to the HTML report (atomic, world-readable).
 
-    0644 on purpose: the file is mirrored into every user's Documents/
-    huitzilopochtli dir (packaging/sync-report.sh) and, in either mode,
-    carries nothing the synced HTML wouldn't. Returns False
-    (after a WARNING) instead of raising — cosmetics must never stall a
-    grade (§9.1).
-    """
+    0644 on purpose: it mirrors into every user's Documents and carries
+    nothing the synced HTML wouldn't. False on failure — cosmetics never
+    stall a grade (§9.1)."""
     path = snapshot_path_for(report_path)
     tmp = path + ".tmp"
     try:
@@ -229,14 +165,12 @@ def write(report_path: str, snapshot: dict) -> bool:
             pass
         return False
 
-
 def _is_number(value) -> bool:
     return (
         not isinstance(value, bool)
         and isinstance(value, (int, float))
         and math.isfinite(value)
     )
-
 
 def _validate_snapshot(data: dict, path: str) -> None:
     """Validate the fields the CLI dereferences, so a corrupt/forged snapshot
@@ -301,7 +235,6 @@ def _validate_snapshot(data: dict, path: str) -> None:
                 elif kind == "bool" and not isinstance(value, bool):
                     bad(f"{key}[{i}].{field} must be a boolean")
                 elif kind == "opt_bool" and value is not None and not isinstance(value, bool):
-                    # Written by the current agent; absent in older snapshots.
                     bad(f"{key}[{i}].{field} must be a boolean or absent")
                 elif kind == "strlist" and value is not None and (
                         not isinstance(value, list)
@@ -340,14 +273,11 @@ def _validate_snapshot(data: dict, path: str) -> None:
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             bad(f"{key} must be an integer or null")
     if data.get("accent") is not None and not board_mod.ACCENT_RE.match(data["accent"]):
-        # Drop an invalid accent rather than abort the whole report; it is
-        # cosmetic, and the renderer already guards.
         data["accent"] = None
 
     if errors:
         raise SnapshotError(
             f"{path} is not a usable huitz snapshot: " + "; ".join(errors[:6]))
-
 
 def _sanitize_strings(value):
     if isinstance(value, str):
@@ -357,7 +287,6 @@ def _sanitize_strings(value):
     if isinstance(value, list):
         return [_sanitize_strings(v) for v in value]
     return value
-
 
 def read(path: str) -> dict:
     """Load + validate a snapshot. Raises SnapshotError with a message meant
@@ -382,12 +311,9 @@ def read(path: str) -> dict:
         )
     _validate_snapshot(data, path)
     if data.get("mode") == "ranked" and isinstance(data.get("results"), list):
-        # A snapshot written before the positive-only change (or by a
-        # compromised agent) may still list failed checks. Never let the CLI
-        # or `score --json` render/echo them: that is the answer key. The one
-        # exception is forensics (engine/checkin.py): a failed forensics row
-        # carries no expected value — it is the run-over "answered — not
-        # correct" signal — so it survives the sweep.
+        # A pre-positive-only or forged snapshot may still list failed
+        # checks: sweep them out — that list is the answer key. Only passed,
+        # incurred-penalty, and forensics rows survive (see build_snapshot).
         forensics_ids = {
             f.get("id") for f in (data.get("forensics") or [])
             if isinstance(f, dict)

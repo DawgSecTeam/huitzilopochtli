@@ -1,20 +1,15 @@
 """Per-box deployment values for the engine's box-folder source.
 
-The committed ``boxes/<box>/scenario.yaml`` files carry ``${VAR}`` placeholders
-for deployment facts (the ranked template VMID, its login). A single global
-environment variable cannot serve several ranked boxes that clone different
-templates, so the engine reads a local, gitignored map keyed by scenario name:
+Committed ``boxes/<box>/scenario.yaml`` files carry ``${VAR}`` placeholders;
+one global env var cannot serve boxes cloning different templates, so the
+engine reads a local gitignored map (see pools_path, mode 0600) keyed by
+scenario name:
 
-    # /etc/huitzilopochtli/pools.yaml (0600)
     scenarios:
-      "Broadneck Post":
-        template_vm_id: <template-vmid>
-        template_vm_access_method: ssh
-        template_vm_username: <template-login-user>
-        template_vm_password: <template-login-password>
+      "<scenario name>": {template_vm_id: ..., template_vm_password: ...}
 
-A box with no entry falls back to the committed ``${VAR}`` expansion (the
-single-box/simple deployment). The file never lives in the repository.
+A box with no entry falls back to ``${VAR}`` expansion. The file never lives
+in the repository.
 """
 import os
 import threading
@@ -33,14 +28,10 @@ def pools_path() -> str:
 
 
 def source_stamp() -> tuple:
-    """(path, mtime_ns, size, mode, uid) for the scan cache.
-
-    Missing file is (path, 0, 0, 0, 0). Mode and owner ride the key on
-    purpose: chown/chmod move neither mtime nor size, so a pools file that
-    becomes unreadable (or readable again) mid-run would otherwise never
-    invalidate the cached scan -- the engine would keep serving a stale
-    mirror in total silence, which is exactly how this file's permission
-    failure stayed invisible once already.
+    """(path, mtime_ns, size, mode, uid) for the scan cache; a missing file
+    is (path, 0, 0, 0, 0). Mode and owner ride the key because chown/chmod
+    move neither mtime nor size — a pools file that becomes unreadable
+    mid-run must still invalidate the cached scan.
     """
     path = pools_path()
     try:
@@ -60,7 +51,7 @@ def load_overrides(path: str = None) -> dict:
         return {}
     except OSError as exc:
         # A root-owned 0600 file on a huitz-run engine is the classic case:
-        # the engine can see the path but not read it, so say who must be
+        # the engine sees the path but cannot read it, so say who must be
         # able to read it instead of leaving a bare errno behind.
         hint = ""
         if isinstance(exc, PermissionError):
